@@ -2053,8 +2053,11 @@ router.post('/search', validateAvatarUrlMiddleware, function (request, response)
 
 router.post('/recent', async function (request, response) {
     try {
-        /** @type {{pngFile?: string, groupId?: string, filePath: string, mtime: number}[]} */
+        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number}} ChatFile */
+        /** @type {ChatFile[]} */
         const allChatFiles = [];
+        /** @type {import('../../public/scripts/welcome-screen.js').PinnedChat[]} */
+        const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
 
         const getCharacterChatFiles = async () => {
             const pngDirents = await fs.promises.readdir(request.user.directories.characters, { withFileTypes: true });
@@ -2121,8 +2124,19 @@ router.post('/recent', async function (request, response) {
         await Promise.allSettled([getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
 
         const requestedMax = Number.parseInt(String(request.body.max ?? ''), 10);
-        const max = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : Number.MAX_SAFE_INTEGER;
-        const jsonFilesPromise = allChatFiles.map((file) => {
+        const requested = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : Number.MAX_SAFE_INTEGER;
+        const max = requested + pinnedChats.length;
+        const isPinned = (/** @type {ChatFile} */ chatFile) => pinnedChats.some(p => p.file_name === path.basename(chatFile.filePath) && (p.avatar === chatFile.pngFile || p.group === chatFile.groupId));
+        const recentChats = allChatFiles.sort((a, b) => {
+            const isAPinned = isPinned(a);
+            const isBPinned = isPinned(b);
+
+            if (isAPinned && !isBPinned) return -1;
+            if (!isAPinned && isBPinned) return 1;
+
+            return b.mtime - a.mtime;
+        }).slice(0, max);
+        const jsonFilesPromise = recentChats.map((file) => {
             const withMetadata = !!request.body.metadata;
             return file.groupId
                 ? getChatInfo(file.filePath, { group: file.groupId }, withMetadata)
@@ -2130,14 +2144,7 @@ router.post('/recent', async function (request, response) {
         });
 
         const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
-        const validFiles = chatData
-            .filter(i => i.file_name)
-            .sort((a, b) => {
-                const aTs = new Date(a.last_mes || 0).getTime() || 0;
-                const bTs = new Date(b.last_mes || 0).getTime() || 0;
-                return bTs - aTs;
-            })
-            .slice(0, max);
+        const validFiles = chatData.filter(i => i.file_name);
 
         return response.send(validFiles);
     } catch (error) {
