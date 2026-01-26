@@ -35,6 +35,7 @@ import { PollinationsTtsProvider } from './pollinations.js';
 import { MiniMaxTtsProvider } from './minimax.js';
 import { ElectronHubTtsProvider } from './electronhub.js';
 import { ChutesTtsProvider } from './chutes.js';
+import { VolcengineTtsProvider } from './volcengine.js';
 
 const UPDATE_INTERVAL = 1000;
 const wrapper = new ModuleWorkerWrapper(moduleWorker);
@@ -149,6 +150,7 @@ const ttsProviders = {
     'TTS WebUI': TtsWebuiProvider,
     VITS: VITSTtsProvider,
     XTTSv2: XTTSTtsProvider,
+    Volcengine: VolcengineTtsProvider,
 };
 let ttsProvider;
 let ttsProviderName;
