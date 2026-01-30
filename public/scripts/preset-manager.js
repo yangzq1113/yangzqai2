@@ -714,6 +714,7 @@ class PresetManager {
             'featherless_model',
             'max_tokens_second',
             'openrouter_providers',
+            'openrouter_quantizations',
             'openrouter_allow_fallbacks',
             'tabby_model',
             'derived',
