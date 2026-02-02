@@ -450,7 +450,7 @@ function createIntegrityMismatchError(filePath, expectedIntegrity) {
  * @param {ChatMatchFunction|null} matcher - Optional function to match messages
  * @returns {Promise<ChatInfo>}
  *
- * @typedef {(text: string) => boolean} ChatMatchFunction
+ * @typedef {(textArray: string[]) => boolean} ChatMatchFunction
  */
 export async function getChatInfo(pathToFile, additionalData = {}, withMetadata = false, matcher = null) {
     return new Promise(async (res) => {
@@ -483,6 +483,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
         let lastLine;
         let itemCounter = 0;
         let hasAnyMatch = false;
+        let matchBuffer = [];
         rl.on('line', (line) => {
             if (withMetadata && itemCounter === 0) {
                 const jsonData = tryParse(line);
@@ -493,8 +494,12 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
             // Skip matching if any match was already found
             if (hasMatcher && !hasAnyMatch && itemCounter > 0) {
                 const jsonData = tryParse(line);
-                if (jsonData && matcher(jsonData.mes || '')) {
-                    hasAnyMatch = true;
+                if (jsonData) {
+                    matchBuffer.push(jsonData.mes || '');
+                    if (matcher(matchBuffer)) {
+                        hasAnyMatch = true;
+                        matchBuffer = [];
+                    }
                 }
             }
             itemCounter++;
@@ -2013,18 +2018,17 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
         const fragments = query ? query.trim().toLowerCase().split(/\s+/).filter(x => x) : [];
 
         /** @type {ChatMatchFunction} */
-        const hasTextMatch = (text) => {
+        const hasTextMatch = (textArray) => {
             if (fragments.length === 0) {
                 return true;
             }
-            const loweredText = String(text).toLowerCase();
-            return fragments.every(fragment => loweredText.includes(fragment));
+            return fragments.every(fragment => textArray.some(text => String(text ?? '').toLowerCase().includes(fragment)));
         };
 
         for (const chatFile of chatFiles) {
             const matcher = query ? hasTextMatch : null;
             const chatInfo = await getChatInfo(chatFile, {}, false, matcher);
-            const hasMatch = hasTextMatch(chatInfo.file_id ?? '') || chatInfo.match;
+            const hasMatch = chatInfo.match || hasTextMatch([chatInfo.file_id ?? '']);
 
             // Skip corrupted or invalid chat files
             if (!chatInfo.file_name) {
