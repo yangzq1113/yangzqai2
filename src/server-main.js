@@ -60,7 +60,6 @@ import {
 } from './util.js';
 import { installLogCapture } from './log-capture.js';
 import { UPLOADS_DIRECTORY } from './constants.js';
-import { ensureThumbnailCache } from './endpoints/thumbnails.js';
 
 // Routers
 import { router as usersPublicRouter } from './endpoints/users-public.js';
@@ -300,7 +299,6 @@ async function preSetupTasks() {
     const directories = await getUserDirectoriesList();
     await migrateGroupChatsMetadataFormat(directories);
     await checkForNewContent(directories);
-    await ensureThumbnailCache(directories);
     await diskCache.verify(directories);
     migrateFlatSecrets(directories);
     cleanUploads();
