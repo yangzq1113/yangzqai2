@@ -2071,11 +2071,12 @@ export async function openGroupById(groupId) {
 
         if (selected_group !== groupId) {
             groupChatQueueOrder = new Map();
+            setCharacterId(undefined);
+            setCharacterName('');
+            resetSelectedGroup();
             await clearChat();
             cancelTtsPlay();
             selected_group = groupId;
-            setCharacterId(undefined);
-            setCharacterName('');
             setEditedMessageId(undefined);
             updateChatMetadata({}, true);
             chat.length = 0;
