@@ -1654,12 +1654,11 @@ export async function selectCharacterById(id, { switchMenu = true } = {}) {
             setCharacterId(undefined);
             setCharacterName('');
             resetSelectedGroup();
-            await clearChat();
+            await clearChat({ clearData: true });
             cancelTtsPlay();
             this_edit_mes_id = undefined;
             selected_button = 'character_edit';
             setCharacterId(id);
-            chat.length = 0;
             chat_metadata = {};
             await getChat();
         }
@@ -2166,8 +2165,7 @@ export async function deleteCharacterChatByName(characterId, fileName) {
 }
 
 export async function replaceCurrentChat() {
-    await clearChat();
-    chat.length = 0;
+    await clearChat({ clearData: true });
 
     const chatsResponse = await fetch('/api/characters/chats', {
         method: 'POST',
@@ -2371,7 +2369,12 @@ export function cancelDebouncedChatSave() {
     }
 }
 
-export async function clearChat() {
+/**
+ * Visually removes all chat message elements.
+ * @param {object} [options] Options
+ * @param {boolean} [options.clearData=false] Optionally clear the chat array's contents.
+ */
+export async function clearChat({ clearData = false } = {}) {
     stopLukerGenerationRecovery();
     cancelDebouncedChatSave();
     cancelDebouncedMetadataSave();
@@ -2389,6 +2392,8 @@ export async function clearChat() {
 
     await saveItemizedPrompts(getCurrentChatId());
     itemizedPrompts.length = 0;
+
+    if (clearData) chat.length = 0;
 }
 
 export async function deleteLastMessage() {
@@ -2629,8 +2634,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
 export async function reloadCurrentChat() {
     preserveNeutralChat();
-    await clearChat();
-    chat.length = 0;
+    await clearChat({ clearData: true });
 
     if (selected_group) {
         await getGroupChat(selected_group, true);
@@ -9987,9 +9991,8 @@ function getFirstMessage() {
 
 export async function openCharacterChat(file_name) {
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
-    await clearChat();
-    characters[this_chid]['chat'] = file_name;
-    chat.length = 0;
+    await clearChat({ clearData: true });
+    characters[this_chid].chat = file_name;
     chat_metadata = {};
     chatServerState.nextOlderIndex = 0;
     chatServerState.totalMessages = 0;
@@ -13074,8 +13077,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
 
     //Fix it; New chat doesn't create while open create character menu
     await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
-    await clearChat();
-    chat.length = 0;
+    await clearChat({ clearData: true });
 
     chat_file_for_del = getCurrentChatDetails()?.sessionName;
 
@@ -13198,8 +13200,7 @@ export async function renameChat(oldFileName, newName) {
 export async function closeCurrentChat() {
     if (is_send_press == false) {
         await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
-        await clearChat();
-        chat.length = 0;
+        await clearChat({ clearData: true });
         resetSelectedGroup();
         setCharacterId(undefined);
         setCharacterName('');
