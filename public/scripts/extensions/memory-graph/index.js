@@ -210,7 +210,15 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大轮数',
         'Extract batch turns': '写入批量轮数',
         'Recall max selection (0 = unlimited)': '召回最大选择数（0=不限制）',
+        'Recall root candidates': '召回根候选上限',
+        'Recall expanded candidates': '召回扩展候选上限',
+        'Recall neighbor limit': '召回邻接扩展预算',
         'Tool-call retries': '工具调用重试次数',
+        'Advanced Settings': '高级设置',
+        'Open Advanced Settings': '打开高级设置',
+        'Save Advanced Settings': '保存高级设置',
+        'Advanced settings saved.': '高级设置已保存。',
+        'Saved advanced settings.': '已保存高级设置。',
         'Update every N messages': '每 N 条消息更新',
         'Turns / Episode': '每 Episode 回合数',
         'Episodes / Arc': '每 Arc 的 Episode 数',
@@ -386,7 +394,15 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大輪數',
         'Extract batch turns': '寫入批次輪數',
         'Recall max selection (0 = unlimited)': '召回最大選取數（0=不限）',
+        'Recall root candidates': '召回根候選上限',
+        'Recall expanded candidates': '召回擴展候選上限',
+        'Recall neighbor limit': '召回鄰接擴展預算',
         'Tool-call retries': '工具呼叫重試次數',
+        'Advanced Settings': '進階設定',
+        'Open Advanced Settings': '打開進階設定',
+        'Save Advanced Settings': '儲存進階設定',
+        'Advanced settings saved.': '進階設定已儲存。',
+        'Saved advanced settings.': '已儲存進階設定。',
         'Update every N messages': '每 N 條訊息更新',
         'Turns / Episode': '每 Episode 回合數',
         'Episodes / Arc': '每 Arc 的 Episode 數',
@@ -703,6 +719,10 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    extension_settings[MODULE_NAME].recallMaxIterations = Math.max(
+        2,
+        Math.min(6, Math.floor(Number(extension_settings[MODULE_NAME].recallMaxIterations) || defaultSettings.recallMaxIterations)),
+    );
     extension_settings[MODULE_NAME].recallMaxSelection = Math.max(
         0,
         Math.floor(Number(extension_settings[MODULE_NAME].recallMaxSelection)),
@@ -710,6 +730,31 @@ function ensureSettings() {
     if (!Number.isFinite(extension_settings[MODULE_NAME].recallMaxSelection)) {
         extension_settings[MODULE_NAME].recallMaxSelection = defaultSettings.recallMaxSelection;
     }
+    const recallRootCandidatesRaw = Number(extension_settings[MODULE_NAME].recallRootCandidates);
+    const recallExpandedCandidatesRaw = Number(extension_settings[MODULE_NAME].recallExpandedCandidates);
+    const recallNeighborLimitRaw = Number(extension_settings[MODULE_NAME].recallNeighborLimit);
+    const extractBatchTurnsRaw = Number(extension_settings[MODULE_NAME].extractBatchTurns);
+    const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
+    extension_settings[MODULE_NAME].recallRootCandidates = Math.max(
+        1,
+        Math.floor(Number.isFinite(recallRootCandidatesRaw) ? recallRootCandidatesRaw : defaultSettings.recallRootCandidates),
+    );
+    extension_settings[MODULE_NAME].recallExpandedCandidates = Math.max(
+        1,
+        Math.floor(Number.isFinite(recallExpandedCandidatesRaw) ? recallExpandedCandidatesRaw : defaultSettings.recallExpandedCandidates),
+    );
+    extension_settings[MODULE_NAME].recallNeighborLimit = Math.max(
+        1,
+        Math.floor(Number.isFinite(recallNeighborLimitRaw) ? recallNeighborLimitRaw : defaultSettings.recallNeighborLimit),
+    );
+    extension_settings[MODULE_NAME].extractBatchTurns = Math.max(
+        2,
+        Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : defaultSettings.extractBatchTurns),
+    );
+    extension_settings[MODULE_NAME].recentRawTurns = Math.max(
+        0,
+        Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : defaultSettings.recentRawTurns),
+    );
     extension_settings[MODULE_NAME].nodeTypeSchema = normalizeNodeTypeSchema(extension_settings[MODULE_NAME].nodeTypeSchema);
 }
 
@@ -2231,7 +2276,7 @@ function snapshotCanonToRollup(store, settings) {
         return null;
     }
 
-    const snapshotKey = `${summary.slice(0, 180)}::${Number(canon.toTurn ?? store.totalTurns)}`;
+    const snapshotKey = `${hashTextFNV1a(summary)}::${Number(canon.toTurn ?? store.totalTurns)}`;
     if (snapshotKey === String(store.lastCanonSnapshotKey || '')) {
         return null;
     }
@@ -2801,7 +2846,7 @@ function hasTitleOrAliasHit(queryText, node) {
 }
 
 function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) {
-    const maxItems = Math.max(6, Number(settings.recallRootCandidates || 24));
+    const maxItems = Math.max(1, Number(settings.recallRootCandidates || 24));
     const query = normalizeText(queryBundle?.fullText || '');
     const rollups = listNodesByLevel(store, LEVEL.ROLLUP)
         .filter(node => node.id !== store.rollupRootId && !node.archived)
@@ -2988,7 +3033,7 @@ async function chooseRecallRoute(context, settings, recallState) {
             referenced_always_inject_ids: Array.isArray(parsed?.referenced_always_inject_ids)
                 ? parsed.referenced_always_inject_ids.map(id => String(id || '').trim()).filter(Boolean)
                 : [],
-            reason: String(parsed?.reason || '').slice(0, 280),
+            reason: String(parsed?.reason || ''),
         };
     } catch (error) {
         console.warn(`[${MODULE_NAME}] recall route failed`, error);
@@ -3017,7 +3062,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
     const candidateMap = new Map();
     const expandPlan = Array.isArray(route?.expand_plan) ? route.expand_plan : [];
     const edges = Array.isArray(store?.edges) ? store.edges : [];
-    const expandedCap = Math.max(12, Number(settings.recallExpandedCandidates || 48));
+    const expandedCap = Math.max(1, Number(settings.recallExpandedCandidates || 48));
 
     for (const node of rootCandidates) {
         addCandidate(candidateMap, node);
@@ -3172,7 +3217,7 @@ async function chooseFocusNodes(context, settings, recallState) {
             : [];
         return {
             selected_node_ids: selectedIds,
-            reason: String(parsed?.reason || '').slice(0, 260),
+            reason: String(parsed?.reason || ''),
         };
     } catch (error) {
         console.warn(`[${MODULE_NAME}] recall select failed`, error);
@@ -3292,7 +3337,7 @@ function buildGlobalSpineText(store, settings) {
         if (!summary) {
             continue;
         }
-        const dedupeKey = `${item.level}:${item.node_id}:${summary.slice(0, 120)}`;
+        const dedupeKey = `${item.level}:${item.node_id}:${hashTextFNV1a(summary)}`;
         if (seen.has(dedupeKey)) {
             continue;
         }
@@ -3506,7 +3551,7 @@ function buildRuntimeLorebookName(context) {
     const chatId = String(context.chatId || context.getCurrentChatId?.() || '').trim();
     const groupPart = context.groupId ? 'group' : 'char';
     const suffix = chatId || `${groupPart}_${Date.now()}`;
-    return `Luker Memory ${suffix}`.replace(/[^a-z0-9 _\-]/gi, '_').slice(0, 64);
+    return `Luker Memory ${suffix}`.replace(/[^a-z0-9 _\-]/gi, '_');
 }
 
 async function ensureRuntimeLorebook(context, settings) {
@@ -3841,7 +3886,7 @@ async function injectMemoryPrompts(context, payload) {
     };
     const chatKey = getChatKey(context, { allowFallback: true });
     await persistMemoryStoreByChatKey(context, chatKey, store);
-    updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query.slice(0, 90), selectedNodes.length));
+    updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query, selectedNodes.length));
     return true;
 }
 
@@ -3857,7 +3902,7 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world
         updateUiStatus(i18nFormat(
             'Recall injection failed (${0}): ${1}',
             trigger,
-            String(error?.message || error).slice(0, 180),
+            String(error?.message || error),
         ));
         return false;
     }
@@ -3957,7 +4002,7 @@ function renderGraphInspectorHtml(store) {
 <td>${node.level}</td>
 <td>${node.type}</td>
 <td>${String(node.title || '').replace(/</g, '&lt;')}</td>
-<td>${String(node.summary || '').slice(0, 120).replace(/</g, '&lt;')}</td>
+<td>${String(node.summary || '').replace(/</g, '&lt;')}</td>
 <td>${Array.isArray(node.childrenIds) ? node.childrenIds.length : 0}</td>
 <td>${node.fromTurn ?? ''}~${node.toTurn ?? node.turnIndex ?? ''}</td>
 <td>
@@ -4114,7 +4159,7 @@ function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
     for (const node of nodes) {
         const id = String(node.id || '');
         const title = String(node.title || '').trim();
-        const label = `${id} | ${node.level}/${node.type} | ${title.slice(0, 52)}`;
+        const label = `${id} | ${node.level}/${node.type} | ${title}`;
         options.push(`<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
     }
     if (selected && !nodes.find(node => String(node.id || '') === selected)) {
@@ -4321,7 +4366,7 @@ function buildGraphCytoscapeElements(store) {
             data: {
                 id: `node:${node.id}`,
                 nodeId: String(node.id),
-                label: `${String(node.title || node.id).slice(0, 36)}${String(node.title || '').length > 36 ? '…' : ''}\n${String(node.level || '')}/${String(node.type || '')}`,
+                label: `${String(node.title || node.id)}\n${String(node.level || '')}/${String(node.type || '')}`,
                 level: String(node.level || ''),
                 type: String(node.type || ''),
                 archived: Boolean(node.archived),
@@ -4361,7 +4406,7 @@ function getEdgeNodeOptionsHtml(store, selectedNodeId = '') {
         if (!id) {
             continue;
         }
-        const label = `${id} | ${node.level}/${node.type} | ${(node.title || '').slice(0, 48)}`;
+        const label = `${id} | ${node.level}/${node.type} | ${(node.title || '')}`;
         options.push(`<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
     }
     if (selected && !nodes.find(node => String(node.id || '') === selected)) {
@@ -5610,7 +5655,7 @@ async function openSchemaEditorPopup(context, settings, root) {
 
         if (action === 'duplicate') {
             const clone = structuredClone(current[index]);
-            clone.id = `${clone.id || 'custom'}_copy_${Date.now().toString().slice(-4)}`;
+            clone.id = `${clone.id || 'custom'}_copy_${Date.now()}`;
             clone.label = `${clone.label || 'Custom'} Copy`;
             current.splice(index + 1, 0, clone);
             rerender(current);
@@ -5646,6 +5691,113 @@ async function openSchemaEditorPopup(context, settings, root) {
     }
 }
 
+function buildAdvancedSettingsPopupHtml(popupId, settings) {
+    return `
+<div id="${popupId}" class="flex-container flexFlowColumn">
+    <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
+    <label>${escapeHtml(i18n('Exclude latest N turns from memory injection'))}
+        <input id="${popupId}_recent_raw_turns" class="text_pole" type="number" min="0" step="1" value="${Number(settings.recentRawTurns || defaultSettings.recentRawTurns)}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall max iterations'))}
+        <input id="${popupId}_recall_iterations" class="text_pole" type="number" min="2" max="6" step="1" value="${Number(settings.recallMaxIterations || defaultSettings.recallMaxIterations)}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall max selection (0 = unlimited)'))}
+        <input id="${popupId}_recall_max_selection" class="text_pole" type="number" min="0" step="1" value="${Number(getRecallSelectionLimit(settings))}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall root candidates'))}
+        <input id="${popupId}_recall_root_candidates" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.recallRootCandidates || defaultSettings.recallRootCandidates))}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall expanded candidates'))}
+        <input id="${popupId}_recall_expanded_candidates" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.recallExpandedCandidates || defaultSettings.recallExpandedCandidates))}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall neighbor limit'))}
+        <input id="${popupId}_recall_neighbor_limit" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.recallNeighborLimit || defaultSettings.recallNeighborLimit))}" />
+    </label>
+    <label>${escapeHtml(i18n('Tool-call retries'))}
+        <input id="${popupId}_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Number(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))}" />
+    </label>
+    <label>${escapeHtml(i18n('Extract batch turns'))}
+        <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="2" step="1" value="${Math.max(2, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
+    </label>
+</div>`;
+}
+
+async function openAdvancedSettingsPopup(context, settings, root) {
+    const popupId = `luker_rpg_memory_advanced_popup_${Date.now()}`;
+    const html = buildAdvancedSettingsPopupHtml(popupId, settings);
+    const result = await context.callGenericPopup(
+        html,
+        context.POPUP_TYPE.CONFIRM,
+        '',
+        {
+            okButton: i18n('Save Advanced Settings'),
+            cancelButton: i18n('Cancel'),
+            wide: true,
+            large: false,
+            allowVerticalScrolling: true,
+        },
+    );
+
+    if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
+        return;
+    }
+
+    const popupRoot = jQuery(`#${popupId}`);
+    if (!popupRoot.length) {
+        return;
+    }
+
+    const recentRawTurnsValue = Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val());
+    const recallIterationsValue = Number(popupRoot.find(`#${popupId}_recall_iterations`).val());
+    const recallMaxSelectionValue = Number(popupRoot.find(`#${popupId}_recall_max_selection`).val());
+    const recallRootCandidatesValue = Number(popupRoot.find(`#${popupId}_recall_root_candidates`).val());
+    const recallExpandedCandidatesValue = Number(popupRoot.find(`#${popupId}_recall_expanded_candidates`).val());
+    const recallNeighborLimitValue = Number(popupRoot.find(`#${popupId}_recall_neighbor_limit`).val());
+    const toolRetriesValue = Number(popupRoot.find(`#${popupId}_tool_retries`).val());
+    const extractBatchTurnsValue = Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val());
+
+    settings.recentRawTurns = Math.max(
+        0,
+        Math.floor(Number.isFinite(recentRawTurnsValue) ? recentRawTurnsValue : defaultSettings.recentRawTurns),
+    );
+    settings.recallMaxIterations = Math.max(
+        2,
+        Math.min(6, Math.floor(Number.isFinite(recallIterationsValue) ? recallIterationsValue : defaultSettings.recallMaxIterations)),
+    );
+    settings.recallMaxSelection = Math.max(
+        0,
+        Math.floor(Number.isFinite(recallMaxSelectionValue) ? recallMaxSelectionValue : defaultSettings.recallMaxSelection),
+    );
+    settings.recallRootCandidates = Math.max(
+        1,
+        Math.floor(Number.isFinite(recallRootCandidatesValue) ? recallRootCandidatesValue : defaultSettings.recallRootCandidates),
+    );
+    settings.recallExpandedCandidates = Math.max(
+        1,
+        Math.floor(Number.isFinite(recallExpandedCandidatesValue) ? recallExpandedCandidatesValue : defaultSettings.recallExpandedCandidates),
+    );
+    settings.recallNeighborLimit = Math.max(
+        1,
+        Math.floor(Number.isFinite(recallNeighborLimitValue) ? recallNeighborLimitValue : defaultSettings.recallNeighborLimit),
+    );
+    settings.toolCallRetryMax = Math.max(
+        0,
+        Math.min(10, Math.floor(Number.isFinite(toolRetriesValue) ? toolRetriesValue : defaultSettings.toolCallRetryMax)),
+    );
+    settings.extractBatchTurns = Math.max(
+        2,
+        Math.floor(Number.isFinite(extractBatchTurnsValue) ? extractBatchTurnsValue : defaultSettings.extractBatchTurns),
+    );
+
+    saveSettingsDebounced();
+    notifySuccess(i18n('Advanced settings saved.'));
+    updateUiStatus(i18n('Saved advanced settings.'));
+    bindUi();
+    if (root?.length) {
+        updateSchemaSummary(root, settings.nodeTypeSchema);
+    }
+}
+
 function bindUi() {
     const context = getContext();
     const settings = getSettings();
@@ -5662,11 +5814,6 @@ function bindUi() {
     root.find('#luker_rpg_memory_extract_api_preset').val(String(settings.extractApiPresetName || ''));
     root.find('#luker_rpg_memory_extract_preset').val(String(settings.extractPresetName || ''));
     root.find('#luker_rpg_memory_projection_enabled').prop('checked', Boolean(settings.lorebookProjectionEnabled));
-    root.find('#luker_rpg_memory_recent_raw_turns').val(String(settings.recentRawTurns || 5));
-    root.find('#luker_rpg_memory_recall_iterations').val(String(settings.recallMaxIterations || 3));
-    root.find('#luker_rpg_memory_recall_max_selection').val(String(getRecallSelectionLimit(settings)));
-    root.find('#luker_rpg_memory_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
-    root.find('#luker_rpg_memory_extract_batch_turns').val(String(settings.extractBatchTurns || 12));
     root.find('#luker_rpg_memory_update_every').val(String(settings.updateEvery));
     root.find('#luker_rpg_memory_turns_episode').val(String(settings.turnsPerEpisode));
     root.find('#luker_rpg_memory_episodes_arc').val(String(settings.episodesPerArc));
@@ -5714,23 +5861,11 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.find('#luker_rpg_memory_recent_raw_turns').off('change').on('change', function () {
-        settings.recentRawTurns = Math.max(0, Number(jQuery(this).val()) || defaultSettings.recentRawTurns);
-        saveSettingsDebounced();
-    });
-
-    root.find('#luker_rpg_memory_tool_retries').off('change').on('change', function () {
-        settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(jQuery(this).val()) || 0)));
-        saveSettingsDebounced();
-    });
-    root.find('#luker_rpg_memory_recall_max_selection').off('change').on('change', function () {
-        const value = Math.max(0, Math.floor(Number(jQuery(this).val()) || 0));
-        settings.recallMaxSelection = Number.isFinite(value) ? value : defaultSettings.recallMaxSelection;
-        saveSettingsDebounced();
-    });
-
     root.find('#luker_rpg_memory_open_schema_editor').off('click').on('click', async function () {
         await openSchemaEditorPopup(context, settings, root);
+    });
+    root.find('#luker_rpg_memory_open_advanced').off('click').on('click', async function () {
+        await openAdvancedSettingsPopup(context, settings, root);
     });
 
     root.find('#luker_rpg_memory_save').off('click').on('click', function () {
@@ -5740,11 +5875,6 @@ function bindUi() {
             settings.episodesPerArc = Math.max(2, Number(root.find('#luker_rpg_memory_episodes_arc').val()) || defaultSettings.episodesPerArc);
             settings.arcsPerCanon = Math.max(1, Number(root.find('#luker_rpg_memory_arcs_canon').val()) || defaultSettings.arcsPerCanon);
             settings.rollupFanIn = Math.max(2, Number(root.find('#luker_rpg_memory_rollup_fanin').val()) || defaultSettings.rollupFanIn);
-            settings.recentRawTurns = Math.max(0, Number(root.find('#luker_rpg_memory_recent_raw_turns').val()) || defaultSettings.recentRawTurns);
-            settings.recallMaxIterations = Math.max(2, Math.min(6, Number(root.find('#luker_rpg_memory_recall_iterations').val()) || defaultSettings.recallMaxIterations));
-            settings.recallMaxSelection = Math.max(0, Math.floor(Number(root.find('#luker_rpg_memory_recall_max_selection').val()) || 0));
-            settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(root.find('#luker_rpg_memory_tool_retries').val()) || 0)));
-            settings.extractBatchTurns = Math.max(2, Number(root.find('#luker_rpg_memory_extract_batch_turns').val()) || defaultSettings.extractBatchTurns);
             settings.lorebookProjectionEnabled = Boolean(root.find('#luker_rpg_memory_projection_enabled').prop('checked'));
             updateSchemaSummary(root, settings.nodeTypeSchema);
 
@@ -5911,19 +6041,6 @@ function ensureUi() {
             <label for="luker_rpg_memory_extract_preset">${escapeHtml(i18n('Extract preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_preset" class="text_pole"></select>
             <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook before WI scan'))}</label>
-            <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Exclude latest N turns from memory injection'))} <input id="luker_rpg_memory_recent_raw_turns" class="text_pole" type="number" min="0" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Recall max iterations'))} <input id="luker_rpg_memory_recall_iterations" class="text_pole" type="number" min="2" max="6" step="1" /></label>
-                <label style="flex:1">${escapeHtml(i18n('Extract batch turns'))} <input id="luker_rpg_memory_extract_batch_turns" class="text_pole" type="number" min="2" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Recall max selection (0 = unlimited)'))} <input id="luker_rpg_memory_recall_max_selection" class="text_pole" type="number" min="0" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Tool-call retries'))} <input id="luker_rpg_memory_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" /></label>
-            </div>
 
             <div class="flex-container">
                 <label style="flex:1">${escapeHtml(i18n('Update every N messages'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
@@ -5942,6 +6059,7 @@ function ensureUi() {
             <small id="luker_rpg_memory_schema_summary" style="opacity:0.85"></small>
             <div class="flex-container">
                 <div id="luker_rpg_memory_open_schema_editor" class="menu_button">${escapeHtml(i18n('Open Schema Editor'))}</div>
+                <div id="luker_rpg_memory_open_advanced" class="menu_button">${escapeHtml(i18n('Open Advanced Settings'))}</div>
             </div>
 
             <div class="flex-container">
