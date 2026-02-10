@@ -40,6 +40,7 @@ function getDefaultAiSuggestSystemPrompt() {
         'Do not invent any other placeholder names.',
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
         'Call luker_orch_append_stage one stage per call.',
+        'luker_orch_append_stage arguments must be flat: stage_id, mode, nodes.',
         'Call luker_orch_upsert_preset one preset per call.',
         'Hard rule: one response must contain COMPLETE tool calls for this task. Do not stop after a single tool call.',
         'Hard rule: minimum 2 tool calls in one response, and must include luker_orch_append_stage plus luker_orch_finalize_profile.',
@@ -751,7 +752,7 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
             parsedCalls.push({
                 id: String(call?.id || ''),
                 name: fnName,
-                arguments: JSON.parse(argsText),
+                args: JSON.parse(argsText),
             });
         } catch {
             throw new Error(`Tool call '${fnName}' arguments are not valid JSON.`);
@@ -2049,12 +2050,16 @@ function buildAiProfileFromToolCalls(toolCalls) {
 
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
         const fnName = String(call?.name || '').trim();
-        const args = call?.arguments && typeof call.arguments === 'object' ? call.arguments : {};
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
         if (!fnName) {
             continue;
         }
         if (fnName === 'luker_orch_append_stage') {
-            upsertStage(args.stage);
+            upsertStage({
+                id: args.stage_id,
+                mode: args.mode,
+                nodes: args.nodes,
+            });
             continue;
         }
         if (fnName === 'luker_orch_upsert_preset') {
@@ -2136,11 +2141,9 @@ async function runAiCharacterProfileBuild(context, settings) {
             append_stage: {
                 function: 'luker_orch_append_stage',
                 shape: {
-                    stage: {
-                        id: 'string',
-                        mode: 'serial|parallel',
-                        nodes: [{ id: 'string', preset: 'string', userPromptTemplate: 'optional string' }],
-                    },
+                    stage_id: 'string',
+                    mode: 'serial|parallel',
+                    nodes: [{ id: 'string', preset: 'string', userPromptTemplate: 'optional string' }],
                 },
             },
             upsert_preset: {
@@ -2180,35 +2183,28 @@ async function runAiCharacterProfileBuild(context, settings) {
                 parameters: {
                     type: 'object',
                     properties: {
-                        stage: {
-                            type: 'object',
-                            properties: {
-                                id: { type: 'string' },
-                                mode: { type: 'string', enum: ['serial', 'parallel'] },
-                                nodes: {
-                                    type: 'array',
-                                    items: {
-                                        anyOf: [
-                                            { type: 'string' },
-                                            {
-                                                type: 'object',
-                                                properties: {
-                                                    id: { type: 'string' },
-                                                    preset: { type: 'string' },
-                                                    userPromptTemplate: { type: 'string' },
-                                                },
-                                                required: ['id', 'preset'],
-                                                additionalProperties: false,
-                                            },
-                                        ],
+                        stage_id: { type: 'string' },
+                        mode: { type: 'string', enum: ['serial', 'parallel'] },
+                        nodes: {
+                            type: 'array',
+                            items: {
+                                anyOf: [
+                                    { type: 'string' },
+                                    {
+                                        type: 'object',
+                                        properties: {
+                                            id: { type: 'string' },
+                                            preset: { type: 'string' },
+                                            userPromptTemplate: { type: 'string' },
+                                        },
+                                        required: ['id', 'preset'],
+                                        additionalProperties: false,
                                     },
-                                },
+                                ],
                             },
-                            required: ['id', 'mode', 'nodes'],
-                            additionalProperties: false,
                         },
                     },
-                    required: ['stage'],
+                    required: ['stage_id', 'mode', 'nodes'],
                     additionalProperties: false,
                 },
             },

@@ -1766,7 +1766,7 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
             parsedCalls.push({
                 id: String(call?.id || ''),
                 name: fnName,
-                arguments: JSON.parse(argsText),
+                args: JSON.parse(argsText),
             });
         } catch {
             throw new Error(`Tool call '${fnName}' arguments are not valid JSON.`);
@@ -2036,7 +2036,7 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
             }
             const upserts = calls
                 .filter(call => String(call?.name || '') === 'luker_rpg_extract_upsert')
-                .map(call => call.arguments)
+                .map(call => call.args)
                 .filter(item => item && typeof item === 'object' && String(item.title || '').trim());
             if (upserts.length < 1) {
                 continue;
