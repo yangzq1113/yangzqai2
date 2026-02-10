@@ -41,6 +41,9 @@ function getDefaultAiSuggestSystemPrompt() {
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
         'Call luker_orch_append_stage one stage per call.',
         'Call luker_orch_upsert_preset one preset per call.',
+        'Hard rule: one response must contain COMPLETE tool calls for this task. Do not stop after a single tool call.',
+        'Hard rule: minimum 2 tool calls in one response, and must include luker_orch_append_stage plus luker_orch_finalize_profile.',
+        'Hard rule: luker_orch_finalize_profile must be the last tool call.',
         'Call luker_orch_finalize_profile at the end.',
     ].join('\n');
 }
@@ -194,6 +197,7 @@ function registerLocaleData() {
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 构建未显式调用 finalize。已直接采用解析结果。',
         'AI build did not call finalize explicitly.': 'AI 构建未显式调用 finalize。',
+        'AI build must return multiple tool calls in one response.': 'AI 构建必须在一次响应里返回多个工具调用。',
         'AI profile generation failed: ${0}': 'AI 配置生成失败：${0}',
         'Function output is invalid.': '函数输出无效。',
         'AI build did not provide any stage tool calls.': 'AI 构建未提供任何阶段工具调用。',
@@ -297,6 +301,7 @@ function registerLocaleData() {
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 建構未明確呼叫 finalize。已直接採用解析結果。',
         'AI build did not call finalize explicitly.': 'AI 建構未明確呼叫 finalize。',
+        'AI build must return multiple tool calls in one response.': 'AI 建構必須在一次回應中返回多個工具呼叫。',
         'AI profile generation failed: ${0}': 'AI 設定生成失敗：${0}',
         'Function output is invalid.': '函式輸出無效。',
         'AI build did not provide any stage tool calls.': 'AI 建構未提供任何階段工具呼叫。',
@@ -2101,7 +2106,13 @@ async function runAiCharacterProfileBuild(context, settings) {
 
     const currentSpec = sanitizeSpec(settings.orchestrationSpec);
     const currentPresets = serializeEditorPresetMap(settings.presets);
-    const suggestSystemPrompt = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
+    const suggestSystemPromptBase = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
+    const suggestSystemPrompt = [
+        suggestSystemPromptBase,
+        'Runtime hard contract (must follow): return COMPLETE tool calls in one response; never return only one tool call.',
+        'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
+        'luker_orch_finalize_profile must be last.',
+    ].join('\n');
     const suggestUserPrompt = JSON.stringify({
         character: characterCard,
         override_goal: String(uiState.aiGoal || ''),
@@ -2249,7 +2260,7 @@ async function runAiCharacterProfileBuild(context, settings) {
         const reminder = attempt > 0
             ? [{
                 role: 'user',
-                content: 'Previous tool calls were incomplete. You MUST include at least one luker_orch_append_stage and one luker_orch_finalize_profile in this response. Return all required tool calls now.',
+                content: 'Previous tool calls were incomplete. Return COMPLETE tool calls in one response (not one call). MUST include luker_orch_append_stage and luker_orch_finalize_profile, with finalize as the last call.',
             }]
             : [];
         const toolCalls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
@@ -2259,6 +2270,19 @@ async function runAiCharacterProfileBuild(context, settings) {
             apiSettingsOverride,
             retriesOverride: 0,
         });
+        if (!Array.isArray(toolCalls) || toolCalls.length < 2) {
+            lastBuildError = new Error(i18n('AI build must return multiple tool calls in one response.'));
+            continue;
+        }
+        const callNames = toolCalls.map(call => String(call?.name || '').trim()).filter(Boolean);
+        if (!callNames.includes('luker_orch_append_stage')) {
+            lastBuildError = new Error(i18n('AI build did not provide any stage tool calls.'));
+            continue;
+        }
+        if (callNames[callNames.length - 1] !== 'luker_orch_finalize_profile') {
+            lastBuildError = new Error(i18n('AI build did not call finalize explicitly.'));
+            continue;
+        }
         const candidate = buildAiProfileFromToolCalls(toolCalls);
         if (!candidate || typeof candidate !== 'object') {
             lastBuildError = new Error(i18n('Function output is invalid.'));

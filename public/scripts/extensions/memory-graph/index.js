@@ -175,6 +175,8 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Use tool calls only. Do not return plain JSON text.',
     'Call luker_rpg_extract_upsert once per node update. Never emit one huge array payload.',
     'Call luker_rpg_extract_done after all upserts are emitted.',
+    'Hard rule: one response must contain COMPLETE extraction tool calls. Do not stop after a single tool call.',
+    'Hard rule: return at least 2 tool calls in one response: >=1 luker_rpg_extract_upsert + 1 luker_rpg_extract_done (done must be last).',
     'For events, include links to involved entities/locations/threads whenever possible.',
     'Summary rule is strict: summary must be compact abstraction, not raw text copy.',
     'Length guide for summary: target 80-150 Chinese characters (soft limit). If critical context would be lost, allow slight overflow.',
@@ -1840,12 +1842,16 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     responseLength = 320,
     llmPresetName = '',
     apiSettingsOverride = null,
+    retriesOverride = null,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
     }
 
-    const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const retriesSource = retriesOverride === null || retriesOverride === undefined
+        ? Number(settings?.toolCallRetryMax)
+        : Number(retriesOverride);
+    const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -2000,19 +2006,46 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
             resolvedApiPresetName,
             String(context?.chatCompletionSettings?.chat_completion_source || ''),
         );
-        const calls = await requestToolCallsWithRetry(settings, promptMessages, {
-            tools,
-            allowedNames,
-            responseLength: Number(settings.extractResponseLength || 360),
-            llmPresetName: promptPresetName,
-            apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
-        });
-        const upserts = calls
-            .filter(call => String(call?.name || '') === 'luker_rpg_extract_upsert')
-            .map(call => call.arguments)
-            .filter(item => item && typeof item === 'object' && String(item.title || '').trim());
-        if (upserts.length > 0) {
-            return upserts;
+        const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+        let validatedUpserts = [];
+        for (let attempt = 0; attempt <= semanticRetries; attempt++) {
+            const reminder = attempt > 0
+                ? [{
+                    role: 'user',
+                    content: 'Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one luker_rpg_extract_upsert and exactly one final luker_rpg_extract_done as the last call.',
+                }]
+                : [];
+            const calls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
+                tools,
+                allowedNames,
+                responseLength: Number(settings.extractResponseLength || 360),
+                llmPresetName: promptPresetName,
+                apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                retriesOverride: 0,
+            });
+            if (!Array.isArray(calls) || calls.length < 2) {
+                continue;
+            }
+            const names = calls.map(call => String(call?.name || '').trim()).filter(Boolean);
+            const doneCount = names.filter(name => name === 'luker_rpg_extract_done').length;
+            if (doneCount < 1) {
+                continue;
+            }
+            if (names[names.length - 1] !== 'luker_rpg_extract_done') {
+                continue;
+            }
+            const upserts = calls
+                .filter(call => String(call?.name || '') === 'luker_rpg_extract_upsert')
+                .map(call => call.arguments)
+                .filter(item => item && typeof item === 'object' && String(item.title || '').trim());
+            if (upserts.length < 1) {
+                continue;
+            }
+            validatedUpserts = upserts;
+            break;
+        }
+        if (validatedUpserts.length > 0) {
+            return validatedUpserts;
         }
     } catch (error) {
         console.warn(`[${MODULE_NAME}] extract llm failed`, error);
