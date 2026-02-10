@@ -4722,13 +4722,13 @@ function ensureStyles() {
 .luker-rpg-schema-popup {
     display: flex;
     flex-direction: column;
-    align-items: stretch !important;
+    align-items: stretch;
     gap: 10px;
-    width: min(1120px, 92vw);
-    max-width: 92vw;
+    width: 100%;
+    max-width: 100%;
     min-width: 0;
-    margin: 0 auto;
     box-sizing: border-box;
+    text-align: left;
 }
 
 .luker-rpg-schema-popup .luker-schema-topbar {
@@ -4787,6 +4787,9 @@ function ensureStyles() {
 }
 
 .luker-rpg-schema-popup .luker-schema-editor-list {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -4799,6 +4802,9 @@ function ensureStyles() {
 }
 
 .luker-rpg-schema-popup .luker-schema-card {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -4874,10 +4880,6 @@ function ensureStyles() {
     gap: 3px;
 }
 
-.luker-rpg-schema-popup .luker-schema-card.flex-container.flexFlowColumn {
-    align-items: stretch;
-}
-
 .luker-rpg-schema-popup .text_pole,
 .luker-rpg-schema-popup textarea,
 .luker-rpg-schema-popup input,
@@ -4920,6 +4922,13 @@ function ensureStyles() {
 .luker-rpg-schema-popup .luker-schema-footer-note {
     opacity: 0.76;
     font-size: 0.86em;
+}
+
+.luker-rpg-schema-popup .luker-schema-footer-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .luker-rpg-memory-graph-popup {
@@ -5006,8 +5015,8 @@ function ensureStyles() {
 
 @media (max-width: 980px) {
     .luker-rpg-schema-popup {
-        width: 96vw;
-        max-width: 96vw;
+        width: 100%;
+        max-width: 100%;
     }
     .luker-rpg-schema-popup .luker-schema-topbar {
         flex-direction: column;
@@ -5018,6 +5027,9 @@ function ensureStyles() {
     .luker-rpg-schema-popup .luker-schema-footer {
         flex-direction: column;
         align-items: stretch;
+    }
+    .luker-rpg-schema-popup .luker-schema-footer-actions {
+        justify-content: flex-start;
     }
 }
 </style>`);
@@ -5035,7 +5047,7 @@ function renderNodeTypeSchemaCard(spec, index) {
     const tableName = String(spec?.tableName || spec?.id || '').trim();
     const cardClass = `mode-${mode}${spec.alwaysInject ? ' is-always' : ''}`;
     return `
-<div class="luker-schema-card flex-container flexFlowColumn ${cardClass}" data-index="${index}">
+<div class="luker-schema-card ${cardClass}" data-index="${index}">
     <div class="luker-schema-card-header">
         <div>
             <div class="luker-schema-card-title">${escapeHtml(cardTitle)}</div>
@@ -5176,7 +5188,7 @@ function buildSchemaEditorPopupHtml(popupId, schema) {
     const normalized = normalizeNodeTypeSchema(schema);
     const cardsHtml = normalized.map((spec, index) => renderNodeTypeSchemaCard(spec, index)).join('');
     return `
-<div id="${popupId}" class="luker-rpg-schema-popup flex-container flexFlowColumn">
+<div id="${popupId}" class="luker-rpg-schema-popup">
     <div class="luker-schema-topbar">
         <div>
             <div class="luker-schema-topbar-title">${escapeHtml(i18n('Memory Node Schema Editor'))}</div>
@@ -5188,10 +5200,10 @@ function buildSchemaEditorPopupHtml(popupId, schema) {
             <span class="luker-schema-chip inject">${escapeHtml(i18n('Always Inject'))}</span>
         </div>
     </div>
-    <div class="luker-schema-editor-list flex-container flexFlowColumn">${cardsHtml}</div>
+    <div class="luker-schema-editor-list">${cardsHtml}</div>
     <div class="luker-schema-footer">
         <div class="luker-schema-footer-note">${escapeHtml(i18nFormat('Current type count: ${0}', normalized.length))}</div>
-        <div class="flex-container">
+        <div class="luker-schema-footer-actions">
             <div class="menu_button luker-schema-editor-add">${escapeHtml(i18n('Add Type'))}</div>
             <div class="menu_button luker-schema-editor-default">${escapeHtml(i18n('Load Recommended Schema'))}</div>
             <div class="menu_button luker-schema-editor-reset">${escapeHtml(i18n('Reset to Default Schema'))}</div>
