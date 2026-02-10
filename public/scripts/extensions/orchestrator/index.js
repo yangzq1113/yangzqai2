@@ -8,6 +8,7 @@ const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const MAX_FIELD_CHARS = 420;
+const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'wi_summary'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const ORCH_AI_QUALITY_AXES = {
@@ -30,17 +31,17 @@ const defaultSpec = {
 const defaultPresets = {
     distiller: {
         systemPrompt: 'You are a narrative distiller. Extract key story state and user intent.',
-        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nReturn JSON only.',
+        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
         responseLength: 240,
     },
     director: {
         systemPrompt: 'You are a roleplay director. Produce concise tactical guidance for the next assistant reply.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nReturn JSON only.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
         responseLength: 280,
     },
     critic: {
         systemPrompt: 'You are an RP critic. Flag OOC, pacing, and consistency risks.',
-        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nReturn JSON only.',
+        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
         responseLength: 240,
     },
 };
@@ -57,6 +58,7 @@ const defaultSettings = {
     capsuleInjectPosition: extension_prompt_types.IN_CHAT,
     capsuleInjectDepth: 1,
     capsuleInjectRole: extension_prompt_roles.SYSTEM,
+    capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
     saveTarget: 'global',
     orchestrationSpec: defaultSpec,
     presets: defaultPresets,
@@ -91,9 +93,24 @@ function registerLocaleData() {
         'Before-Prompt': '提示词前',
         'Capsule depth (IN_CHAT only, recommended 1 = before latest message)': '胶囊深度（仅聊天内，建议 1=最后一条消息前）',
         'Capsule role (IN_CHAT only)': '胶囊角色（仅聊天内）',
+        'Custom capsule instruction (prepended before analysis)': '自定义胶囊指令（会放在分析结果前）',
+        'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指导，再用角色语气完成最终回复。',
         'System': 'System',
         'User': 'User',
         'Assistant': 'Assistant',
+        'Orchestration Guidance': '编排指导',
+        'Use this guidance as high-priority planning context for the next reply.': '将这份指导作为下一条回复的高优先级规划上下文。',
+        'Meta': '元信息',
+        'Stage': '阶段',
+        'Node': '节点',
+        'Summary': '摘要',
+        'Directives': '执行指令',
+        'Risks': '风险',
+        'Tags': '标签',
+        'Patch Last User': '用户消息修订建议',
+        'Structured Notes': '结构化补充',
+        'WI Summary': '世界书摘要',
+        'World Info Activated': '已激活世界书',
         'Current card:': '当前角色卡：',
         '(No character card)': '（无角色卡）',
         '(No character selected)': '（未选择角色卡）',
@@ -182,9 +199,24 @@ function registerLocaleData() {
         'Before-Prompt': '提示詞前',
         'Capsule depth (IN_CHAT only, recommended 1 = before latest message)': '膠囊深度（僅聊天內，建議 1=最後一則訊息前）',
         'Capsule role (IN_CHAT only)': '膠囊角色（僅聊天內）',
+        'Custom capsule instruction (prepended before analysis)': '自訂膠囊指令（會放在分析結果前）',
+        'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指導，再以角色語氣完成最終回覆。',
         'System': 'System',
         'User': 'User',
         'Assistant': 'Assistant',
+        'Orchestration Guidance': '編排指導',
+        'Use this guidance as high-priority planning context for the next reply.': '將此指導作為下一則回覆的高優先規劃上下文。',
+        'Meta': '中繼資訊',
+        'Stage': '階段',
+        'Node': '節點',
+        'Summary': '摘要',
+        'Directives': '執行指令',
+        'Risks': '風險',
+        'Tags': '標籤',
+        'Patch Last User': '使用者訊息修訂建議',
+        'Structured Notes': '結構化補充',
+        'WI Summary': '世界書摘要',
+        'World Info Activated': '已啟動世界書',
         'Current card:': '目前角色卡：',
         '(No character card)': '（無角色卡）',
         '(No character selected)': '（未選擇角色卡）',
@@ -437,6 +469,9 @@ function ensureSettings() {
             ? role
             : extension_prompt_roles.SYSTEM;
     }
+    delete extension_settings[MODULE_NAME].capsuleRenderFormat;
+    extension_settings[MODULE_NAME].capsuleCustomInstruction = String(extension_settings[MODULE_NAME].capsuleCustomInstruction || '').trim();
+    delete extension_settings[MODULE_NAME].capsuleIncludeRawJson;
     extension_settings[MODULE_NAME].toolCallRetryMax = Math.max(
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
@@ -868,8 +903,8 @@ function renderTemplate(template, vars) {
 }
 
 function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, { api = '', promptPresetName = '' } = {}) {
-    const systemText = String(systemPrompt || '').trim() || 'Return concise JSON guidance.';
-    const userText = String(userPrompt || '').trim() || 'Return concise JSON guidance.';
+    const systemText = String(systemPrompt || '').trim() || 'Return concise guidance through function-call fields.';
+    const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
 
@@ -924,6 +959,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         type: 'object',
         properties: {
             summary: { type: 'string' },
+            xml_guidance: { type: 'string' },
             directives: {
                 type: 'array',
                 items: { type: 'string' },
@@ -1031,6 +1067,164 @@ function compactStageOutputs(stageOutputs) {
     }));
 }
 
+function escapeXml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('\'', '&apos;');
+}
+
+function encodeCdata(value) {
+    return String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
+}
+
+function tryParseJsonObject(value) {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    const text = value.trim();
+    if (!text || (!text.startsWith('{') && !text.startsWith('['))) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(text);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function normalizeNodeOutputForCapsule(output) {
+    const normalized = output && typeof output === 'object'
+        ? structuredClone(output)
+        : { value: output };
+
+    if (typeof normalized.summary !== 'string') {
+        return normalized;
+    }
+    const parsed = tryParseJsonObject(normalized.summary);
+    if (!parsed || Array.isArray(parsed)) {
+        return normalized;
+    }
+
+    if ((!Array.isArray(normalized.directives) || normalized.directives.length === 0) && Array.isArray(parsed.directives)) {
+        normalized.directives = parsed.directives;
+    }
+    if ((!Array.isArray(normalized.risks) || normalized.risks.length === 0) && Array.isArray(parsed.risks)) {
+        normalized.risks = parsed.risks;
+    }
+    if ((!Array.isArray(normalized.tags) || normalized.tags.length === 0) && Array.isArray(parsed.tags)) {
+        normalized.tags = parsed.tags;
+    }
+    if (!normalized.patch_last_user && typeof parsed.patch_last_user === 'string') {
+        normalized.patch_last_user = parsed.patch_last_user;
+    }
+    if (!normalized.xml_guidance && typeof parsed.xml_guidance === 'string') {
+        normalized.xml_guidance = parsed.xml_guidance;
+    }
+    normalized.summary = typeof parsed.summary === 'string' ? parsed.summary : '';
+
+    const extras = {};
+    for (const [key, value] of Object.entries(parsed)) {
+        if (['summary', 'directives', 'risks', 'tags', 'patch_last_user', 'xml_guidance'].includes(key)) {
+            continue;
+        }
+        extras[key] = value;
+    }
+    if (Object.keys(extras).length > 0) {
+        normalized.__summary_object = extras;
+    }
+    return normalized;
+}
+
+function getFinalStageSnapshot(stageOutputs) {
+    const compact = compactStageOutputs(stageOutputs);
+    if (!Array.isArray(compact) || compact.length === 0) {
+        return null;
+    }
+    const last = compact[compact.length - 1];
+    if (!last || !Array.isArray(last.nodes)) {
+        return null;
+    }
+    return {
+        id: String(last.id || `stage_${compact.length}`),
+        mode: String(last.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial',
+        nodes: last.nodes
+            .map(node => ({
+                node: String(node?.node || ''),
+                output: normalizeNodeOutputForCapsule(node?.output),
+            }))
+            .filter(node => node.node),
+    };
+}
+
+function formatNodeOutputAsXml(nodeOutput, nodeId) {
+    const output = normalizeNodeOutputForCapsule(nodeOutput);
+    const lines = [];
+    lines.push(`    <agent id="${escapeXml(nodeId)}">`);
+
+    if (typeof output.summary === 'string' && output.summary.trim()) {
+        lines.push(`      <summary>${escapeXml(output.summary.trim())}</summary>`);
+    }
+
+    const pushList = (tagName, itemTagName, items) => {
+        if (!Array.isArray(items) || items.length === 0) {
+            return;
+        }
+        lines.push(`      <${tagName}>`);
+        for (const item of items) {
+            const text = String(item || '').trim();
+            if (text) {
+                lines.push(`        <${itemTagName}>${escapeXml(text)}</${itemTagName}>`);
+            }
+        }
+        lines.push(`      </${tagName}>`);
+    };
+
+    pushList('directives', 'directive', output.directives);
+    pushList('risks', 'risk', output.risks);
+    pushList('tags', 'tag', output.tags);
+
+    if (typeof output.patch_last_user === 'string' && output.patch_last_user.trim()) {
+        lines.push(`      <patch_last_user>${escapeXml(output.patch_last_user.trim())}</patch_last_user>`);
+    }
+
+    const extraPayload = {};
+    for (const [key, value] of Object.entries(output)) {
+        if ([
+            'summary',
+            'directives',
+            'risks',
+            'tags',
+            'patch_last_user',
+            'xml_guidance',
+            '__summary_object',
+        ].includes(key)) {
+            continue;
+        }
+        extraPayload[key] = value;
+    }
+    if (output.__summary_object && typeof output.__summary_object === 'object') {
+        for (const [key, value] of Object.entries(output.__summary_object)) {
+            if (!(key in extraPayload)) {
+                extraPayload[key] = value;
+            }
+        }
+    }
+    if (Object.keys(extraPayload).length > 0) {
+        lines.push(`      <structured_notes><![CDATA[${encodeCdata(JSON.stringify(extraPayload, null, 2))}]]></structured_notes>`);
+    }
+    const xmlGuidance = String(output.xml_guidance || '').trim();
+    if (xmlGuidance) {
+        lines.push(`      <model_xml_hint><![CDATA[${encodeCdata(xmlGuidance)}]]></model_xml_hint>`);
+    }
+
+    lines.push('    </agent>');
+    return lines.join('\n');
+}
+
 function buildWISummary(payload) {
     return [
         truncate(payload?.worldInfoBefore || '', 160),
@@ -1069,13 +1263,45 @@ function summarizeActivatedEntries(payload) {
     return result;
 }
 
+function buildCapsuleText(capsule, settings) {
+    const lines = [];
+    const customInstruction = String(settings?.capsuleCustomInstruction || '').trim();
+    if (customInstruction) {
+        lines.push(customInstruction);
+    }
+    lines.push(`<luker_orchestration phase="${escapeXml(capsule.phase)}" trigger="${escapeXml(capsule.trigger)}" profile_source="${escapeXml(capsule.profile_source)}" profile_key="${escapeXml(capsule.profile_key)}">`);
+    lines.push('  <guidance_policy>Use this as high-priority planning context for the next roleplay reply.</guidance_policy>');
+    if (capsule.wi_summary) {
+        lines.push(`  <wi_summary>${escapeXml(capsule.wi_summary)}</wi_summary>`);
+    }
+    if (Array.isArray(capsule.wi_activated) && capsule.wi_activated.length > 0) {
+        lines.push('  <wi_activated>');
+        for (const item of capsule.wi_activated) {
+            lines.push(`    <entry>${escapeXml(item)}</entry>`);
+        }
+        lines.push('  </wi_activated>');
+    }
+    if (capsule.final_stage) {
+        lines.push(`  <final_stage id="${escapeXml(capsule.final_stage.id)}" mode="${escapeXml(capsule.final_stage.mode)}">`);
+        for (const node of capsule.final_stage.nodes || []) {
+            lines.push(formatNodeOutputAsXml(node.output, node.node));
+        }
+        lines.push('  </final_stage>');
+    } else {
+        lines.push('  <final_stage id="" mode="serial" />');
+    }
+    lines.push('</luker_orchestration>');
+    return lines.join('\n').trim();
+}
+
 function buildCapsule(payload, stageOutputs, profile, options = {}) {
+    const finalStage = getFinalStageSnapshot(stageOutputs);
     const capsule = {
         phase: options.phase || 'final',
         trigger: payload?.type || 'normal',
         profile_source: profile?.source || 'global',
         profile_key: profile?.key || 'global',
-        stages: compactStageOutputs(stageOutputs),
+        final_stage: finalStage,
     };
 
     if (extension_settings[MODULE_NAME].includeWorldInfoSummary && options.wiSummary) {
@@ -1085,7 +1311,8 @@ function buildCapsule(payload, stageOutputs, profile, options = {}) {
         capsule.wi_activated = options.wiActivated.slice(0, 10);
     }
 
-    return `[[LUKER_ORCH_CAPSULE]]\n${JSON.stringify(capsule)}`;
+    const settings = extension_settings[MODULE_NAME];
+    return buildCapsuleText(capsule, settings);
 }
 
 function injectCapsule(context, text) {
@@ -1983,6 +2210,11 @@ async function runAiCharacterProfileBuild(context, settings) {
         'Use tool calls only. Do not return plain JSON text.',
         'Call multiple functions in one response to build the profile incrementally.',
         'Keep stages concise, operational, and easy to run in a single request turn.',
+        'Only the LAST stage outputs are injected into the final generation context.',
+        'Therefore, design the last stage as PARALLEL multi-agent synthesis and put final actionable guidance there.',
+        'Node outputs are returned via function fields. Do NOT embed JSON blobs inside summary.',
+        'For last-stage nodes, use plain structured fields (summary, directives, risks, tags, patch_last_user).',
+        'Runtime will assemble the final injected XML from those structured fields.',
         'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
         'Do NOT repeat full character biography in every node prompt. Prefer compact behavior policy and decision criteria.',
         'Each node must have a distinct role, concrete output focus, and minimal overlap.',
@@ -2006,6 +2238,12 @@ async function runAiCharacterProfileBuild(context, settings) {
             world_info_context_is_available: true,
             recent_messages_are_available: true,
             reminder: 'Do not duplicate static card data in every node; use behavior-focused checks.',
+        },
+        injection_contract: {
+            injected_stage: 'only_last_stage',
+            expected_last_stage_mode: 'parallel',
+            expected_guidance_format: 'runtime_assembled_xml_from_structured_fields',
+            no_json_in_summary: true,
         },
         mandatory_quality_axes: ORCH_AI_QUALITY_AXES,
         global_orchestration_spec: currentSpec,
@@ -2257,6 +2495,7 @@ function bindUi() {
     root.find('#luker_orch_capsule_position').val(String(Number(settings.capsuleInjectPosition)));
     root.find('#luker_orch_capsule_depth').val(String(Number(settings.capsuleInjectDepth || 0)));
     root.find('#luker_orch_capsule_role').val(String(Number(settings.capsuleInjectRole)));
+    root.find('#luker_orch_capsule_custom_instruction').val(String(settings.capsuleCustomInstruction || ''));
     root.find('#luker_orch_save_target').val(String(settings.saveTarget || 'global'));
     refreshOpenAIPresetSelectors(root, context, settings);
     renderDynamicPanels(root, context);
@@ -2319,6 +2558,11 @@ function bindUi() {
         const value = Number(jQuery(this).val());
         const allowedRoles = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
         settings.capsuleInjectRole = allowedRoles.includes(value) ? value : extension_prompt_roles.SYSTEM;
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_capsule_custom_instruction', function () {
+        settings.capsuleCustomInstruction = String(jQuery(this).val() || '').trim();
         saveSettingsDebounced();
     });
 
@@ -2730,6 +2974,8 @@ function ensureUi() {
                 <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
                 <option value="${extension_prompt_roles.ASSISTANT}">${escapeHtml(i18n('Assistant'))}</option>
             </select>
+            <label for="luker_orch_capsule_custom_instruction">${escapeHtml(i18n('Custom capsule instruction (prepended before analysis)'))}</label>
+            <textarea id="luker_orch_capsule_custom_instruction" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. Follow this guidance first, then write final reply in-character.'))}"></textarea>
 
             <hr>
             <div class="luker_orch_board">
