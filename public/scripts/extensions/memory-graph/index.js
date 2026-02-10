@@ -1318,22 +1318,21 @@ function getSemanticCompressionConfig(settings, type) {
     };
 }
 
-function scoreQueryKeywords(query, keywords) {
+function hasQueryKeywordHit(query, keywords) {
     const normalizedQuery = normalizeText(query).toLowerCase();
     if (!normalizedQuery || !Array.isArray(keywords) || keywords.length === 0) {
-        return 0;
+        return false;
     }
-    let score = 0;
     for (const keyword of keywords) {
         const token = normalizeText(keyword).toLowerCase();
         if (!token) {
             continue;
         }
         if (normalizedQuery.includes(token)) {
-            score += 1;
+            return true;
         }
     }
-    return score;
+    return false;
 }
 
 function nextNodeId(store) {
@@ -2635,17 +2634,26 @@ function extractWorldInfoHints(payload) {
     return hints;
 }
 
-function getNodeScore(node) {
-    const toTurn = Number(node?.toTurn ?? node?.turnIndex ?? 0);
-    const updatedAt = Number(node?.updatedAt ?? node?.createdAt ?? 0);
-    const depth = Number(node?.metadata?.depth ?? 0);
-    return (toTurn * 1000) + updatedAt + (depth * 100);
+function compareNodesByRecency(a, b) {
+    const aTurn = Number(a?.toTurn ?? a?.turnIndex ?? -1);
+    const bTurn = Number(b?.toTurn ?? b?.turnIndex ?? -1);
+    if (aTurn !== bTurn) {
+        return bTurn - aTurn;
+    }
+    const aUpdated = Number(a?.updatedAt ?? a?.createdAt ?? 0);
+    const bUpdated = Number(b?.updatedAt ?? b?.createdAt ?? 0);
+    if (aUpdated !== bUpdated) {
+        return bUpdated - aUpdated;
+    }
+    const aDepth = Number(a?.metadata?.depth ?? 0);
+    const bDepth = Number(b?.metadata?.depth ?? 0);
+    return bDepth - aDepth;
 }
 
-function getSortedNodesByScore(nodes) {
+function getSortedNodesByRecency(nodes) {
     return nodes
         .slice()
-        .sort((a, b) => getNodeScore(b) - getNodeScore(a));
+        .sort(compareNodesByRecency);
 }
 
 function getRecallQueryBundle(payload, context) {
@@ -2696,18 +2704,6 @@ function getNodeRecallExposure(settings, node) {
         return 'latest';
     }
     return 'full';
-}
-
-function buildNodeDegreeMap(store) {
-    const degree = new Map();
-    for (const edge of store.edges || []) {
-        if (!edge) {
-            continue;
-        }
-        degree.set(edge.from, Number(degree.get(edge.from) || 0) + 1);
-        degree.set(edge.to, Number(degree.get(edge.to) || 0) + 1);
-    }
-    return degree;
 }
 
 function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null, limit = 10 } = {}) {
@@ -2782,10 +2778,10 @@ function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null,
     };
 }
 
-function scoreTitleAndAliasHit(queryText, node) {
+function hasTitleOrAliasHit(queryText, node) {
     const normalizedQuery = normalizeText(queryText).toLowerCase();
     if (!normalizedQuery) {
-        return 0;
+        return false;
     }
     const title = normalizeText(node?.title || '').toLowerCase();
     const aliases = []
@@ -2793,16 +2789,15 @@ function scoreTitleAndAliasHit(queryText, node) {
         .concat(Array.isArray(node?.metadata?.alias) ? node.metadata.alias : [])
         .map(item => normalizeText(item).toLowerCase())
         .filter(Boolean);
-    let score = 0;
     if (title && normalizedQuery.includes(title)) {
-        score += 3;
+        return true;
     }
     for (const alias of aliases) {
         if (alias && normalizedQuery.includes(alias)) {
-            score += 2;
+            return true;
         }
     }
-    return score;
+    return false;
 }
 
 function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) {
@@ -2819,14 +2814,13 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) 
         .filter(node => !String(node.parentId || '').trim());
     const turns = store.turnOrder.map(id => store.nodes[id]).filter(Boolean).filter(node => !node.archived);
     const schemaMap = getNodeTypeSchemaMap(settings);
-    const degreeMap = buildNodeDegreeMap(store);
     const merged = [
-        ...getSortedNodesByScore(rollups).slice(0, 8),
+        ...getSortedNodesByRecency(rollups).slice(0, 8),
         ...canon,
-        ...getSortedNodesByScore(arcs).slice(0, 10),
-        ...getSortedNodesByScore(episodes).slice(0, 10),
-        ...getSortedNodesByScore(semantic).slice(0, 24),
-        ...getSortedNodesByScore(turns).slice(0, 8),
+        ...getSortedNodesByRecency(arcs).slice(0, 10),
+        ...getSortedNodesByRecency(episodes).slice(0, 10),
+        ...getSortedNodesByRecency(semantic).slice(0, 24),
+        ...getSortedNodesByRecency(turns).slice(0, 8),
     ];
 
     const uniqueNodes = [];
@@ -2839,63 +2833,38 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) 
         uniqueNodes.push(node);
     }
 
-    const scored = uniqueNodes.map(node => {
+    const mandatoryRows = [];
+    const optionalRows = [];
+    for (const node of uniqueNodes) {
         const type = String(node.type || '').toLowerCase();
         const spec = schemaMap.get(type);
-        const keywordHit = scoreQueryKeywords(query, spec?.keywords);
-        const titleHit = scoreTitleAndAliasHit(query, node);
-        const mandatory = keywordHit > 0 || titleHit > 0;
-        const alwaysInject = Boolean(spec?.alwaysInject);
-        const levelBoost = node.level === LEVEL.SEMANTIC ? 16_000
-            : node.level === LEVEL.ROLLUP ? 14_000
-                : node.level === LEVEL.CANON ? 13_000
-                    : node.level === LEVEL.ARC ? 12_000
-                        : node.level === LEVEL.EPISODE ? 11_000
-                            : node.level === LEVEL.TURN ? 8_000
-                                : 0;
-        const typeBoost = alwaysInject ? 220_000
-            : type === 'event' ? 35_000
-                : type === 'thread' ? 26_000
-                    : type.includes('character') ? 22_000
-                        : type.includes('location') ? 20_000
-                            : type.includes('item') ? 18_000
-                                : 8_000;
-        const keywordBoost = (keywordHit * 60_000) + (titleHit * 40_000);
-        const recency = Math.max(0, Number(node.toTurn ?? node.turnIndex ?? 0)) * 400;
-        const connectivity = Math.min(60_000, Number(degreeMap.get(node.id) || 0) * 1200);
-        return {
-            node,
-            mandatory,
-            score: getNodeScore(node) + levelBoost + typeBoost + keywordBoost + recency + connectivity,
-        };
-    });
-    scored.sort((a, b) => {
-        if (a.mandatory !== b.mandatory) {
-            return a.mandatory ? -1 : 1;
+        const keywordHit = hasQueryKeywordHit(query, spec?.keywords);
+        const titleHit = hasTitleOrAliasHit(query, node);
+        const mandatory = keywordHit || titleHit;
+        if (mandatory) {
+            mandatoryRows.push(node);
+        } else {
+            optionalRows.push(node);
         }
-        return b.score - a.score;
-    });
-
-    const mandatoryRows = scored.filter(item => item.mandatory);
-    const optionalRows = scored.filter(item => !item.mandatory);
+    }
     const picked = [];
     const pickedIds = new Set();
-    for (const row of mandatoryRows) {
-        if (!row?.node?.id || pickedIds.has(row.node.id)) {
+    for (const node of mandatoryRows) {
+        if (!node?.id || pickedIds.has(node.id)) {
             continue;
         }
-        pickedIds.add(row.node.id);
-        picked.push(row.node);
+        pickedIds.add(node.id);
+        picked.push(node);
     }
-    for (const row of optionalRows) {
+    for (const node of optionalRows) {
         if (picked.length >= maxItems && mandatoryRows.length <= maxItems) {
             break;
         }
-        if (!row?.node?.id || pickedIds.has(row.node.id)) {
+        if (!node?.id || pickedIds.has(node.id)) {
             continue;
         }
-        pickedIds.add(row.node.id);
-        picked.push(row.node);
+        pickedIds.add(node.id);
+        picked.push(node);
         if (picked.length >= maxItems && mandatoryRows.length <= maxItems) {
             break;
         }
@@ -3035,14 +3004,12 @@ async function chooseRecallRoute(context, settings, recallState) {
     }
 }
 
-function addCandidate(candidateMap, node, scoreBoost = 0) {
+function addCandidate(candidateMap, node) {
     if (!node?.id) {
         return;
     }
-    const current = candidateMap.get(node.id);
-    const baseScore = getNodeScore(node) + Number(scoreBoost || 0);
-    if (!current || baseScore > current.score) {
-        candidateMap.set(node.id, { node, score: baseScore });
+    if (!candidateMap.has(node.id)) {
+        candidateMap.set(node.id, node);
     }
 }
 
@@ -3053,7 +3020,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
     const expandedCap = Math.max(12, Number(settings.recallExpandedCandidates || 48));
 
     for (const node of rootCandidates) {
-        addCandidate(candidateMap, node, 0);
+        addCandidate(candidateMap, node);
     }
     for (const request of expandPlan) {
         const seedId = String(request?.seed_node_id || '').trim();
@@ -3068,7 +3035,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
         const seen = new Set([seedId]);
         let frontier = [seedId];
         let used = 0;
-        addCandidate(candidateMap, store.nodes[seedId], 210_000);
+        addCandidate(candidateMap, store.nodes[seedId]);
         for (let hop = 0; hop < depth; hop++) {
             if (frontier.length === 0 || used >= budget) {
                 break;
@@ -3088,7 +3055,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
                             continue;
                         }
                         seen.add(child.id);
-                        addCandidate(candidateMap, child, 150_000 - (hop * 12_000));
+                        addCandidate(candidateMap, child);
                         next.push(child.id);
                         used += 1;
                         if (used >= budget) {
@@ -3123,7 +3090,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
                         continue;
                     }
                     seen.add(neighborId);
-                    addCandidate(candidateMap, neighbor, 130_000 - (hop * 10_000));
+                    addCandidate(candidateMap, neighbor);
                     next.push(neighborId);
                     used += 1;
                     if (used >= budget) {
@@ -3136,9 +3103,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
     }
 
     const expanded = Array.from(candidateMap.values())
-        .sort((a, b) => b.score - a.score)
-        .slice(0, expandedCap)
-        .map(item => item.node);
+        .slice(0, expandedCap);
 
     return expanded;
 }
@@ -3232,7 +3197,7 @@ function collectAlwaysInjectNodes(store, settings) {
     return listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => !node.archived)
         .filter(node => alwaysTypes.includes(String(node.type || '').toLowerCase()))
-        .sort((a, b) => getNodeScore(b) - getNodeScore(a))
+        .sort(compareNodesByRecency)
         .slice(0, 6);
 }
 
