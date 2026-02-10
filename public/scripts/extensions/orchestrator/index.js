@@ -7,7 +7,6 @@ const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
-const MAX_FIELD_CHARS = 420;
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'wi_summary'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
@@ -79,7 +78,6 @@ const defaultSettings = {
     llmNodePresetName: '',
     llmNodeResponseLength: 280,
     toolCallRetryMax: 2,
-    promptEnvelopeMaxChars: 2800,
     maxRecentMessages: 14,
     includeWorldInfoSummary: true,
     capsuleInjectPosition: extension_prompt_types.IN_CHAT,
@@ -113,7 +111,6 @@ function registerLocaleData() {
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成预设（参数+提示词，留空=当前）',
         'AI build system prompt': 'AI 生成系统提示词',
-        'Preset envelope max chars': '预设封装最大字符数',
         'Recent messages (N)': '最近消息数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Capsule injection position': '胶囊注入位置',
@@ -220,7 +217,6 @@ function registerLocaleData() {
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成預設（參數+提示詞，留空=目前）',
         'AI build system prompt': 'AI 生成系統提示詞',
-        'Preset envelope max chars': '預設封裝最大字元數',
         'Recent messages (N)': '最近訊息數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Capsule injection position': '膠囊注入位置',
@@ -579,10 +575,6 @@ function getChatKey(context) {
     const avatar = context.characters?.[context.characterId]?.avatar || 'unknown_avatar';
     const chatId = context.chatId || 'unknown_chat';
     return `char:${avatar}:${chatId}`;
-}
-
-function truncate(value, maxLength = MAX_FIELD_CHARS) {
-    return String(value || '').trim().slice(0, maxLength);
 }
 
 function getCoreMessages(payload) {
@@ -946,12 +938,10 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
         ],
         envelopeOptions: {
             includeCharacterCard: true,
-            maxBlockChars: 1200,
             api: envelopeApi,
             promptPresetName: selectedPromptPresetName,
         },
         promptPresetName: selectedPromptPresetName,
-        envelopeMaxChars: Number(settings.promptEnvelopeMaxChars || 2800),
     });
 }
 
@@ -961,7 +951,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
         .join('\n');
     const { message: lastUser } = extractLastUserMessage(messages);
-    const previousOutputs = JSON.stringify(Object.fromEntries(previousNodeOutputs), null, 2).slice(0, 2200);
+    const previousOutputs = JSON.stringify(Object.fromEntries(previousNodeOutputs), null, 2);
     const userPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
         recent_chat: recent,
         last_user: String(lastUser?.mes || ''),
@@ -1258,8 +1248,8 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
 
 function buildWISummary(payload) {
     return [
-        truncate(payload?.worldInfoBefore || '', 160),
-        truncate(payload?.worldInfoAfter || '', 160),
+        String(payload?.worldInfoBefore || '').trim(),
+        String(payload?.worldInfoAfter || '').trim(),
     ].filter(Boolean).join('\n');
 }
 
@@ -1273,7 +1263,7 @@ function summarizeActivatedEntries(payload) {
             }
             const label = String(entry.comment || entry.key || entry.content || '').trim();
             if (label) {
-                result.push(truncate(label, 120));
+                result.push(label);
             }
             if (result.length >= 10) {
                 break;
@@ -1286,7 +1276,7 @@ function summarizeActivatedEntries(payload) {
             const depth = Number(depthEntry?.depth);
             const text = Array.isArray(depthEntry?.entries) ? depthEntry.entries.join(' ') : '';
             if (text) {
-                result.push(`depth:${Number.isFinite(depth) ? depth : 0} ${truncate(text, 100)}`);
+                result.push(`depth:${Number.isFinite(depth) ? depth : 0} ${String(text).trim()}`);
             }
         }
     }
@@ -1336,7 +1326,7 @@ function buildCapsule(payload, stageOutputs, profile, options = {}) {
     };
 
     if (extension_settings[MODULE_NAME].includeWorldInfoSummary && options.wiSummary) {
-        capsule.wi_summary = truncate(options.wiSummary, 480);
+        capsule.wi_summary = String(options.wiSummary || '').trim();
     }
     if (Array.isArray(options.wiActivated) && options.wiActivated.length > 0) {
         capsule.wi_activated = options.wiActivated.slice(0, 10);
@@ -2498,7 +2488,6 @@ function bindUi() {
     root.find('#luker_orch_ai_suggest_api_preset').val(String(settings.aiSuggestApiPresetName || ''));
     root.find('#luker_orch_ai_suggest_preset').val(String(settings.aiSuggestPresetName || ''));
     root.find('#luker_orch_ai_suggest_system_prompt').val(String(settings.aiSuggestSystemPrompt || ''));
-    root.find('#luker_orch_preset_envelope_chars').val(String(settings.promptEnvelopeMaxChars || 2800));
     root.find('#luker_orch_max_recent_messages').val(String(settings.maxRecentMessages || 14));
     root.find('#luker_orch_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
     root.find('#luker_orch_capsule_position').val(String(Number(settings.capsuleInjectPosition)));
@@ -2538,11 +2527,6 @@ function bindUi() {
 
     root.on('input.lukerOrch', '#luker_orch_ai_suggest_system_prompt', function () {
         settings.aiSuggestSystemPrompt = String(jQuery(this).val() || '');
-        saveSettingsDebounced();
-    });
-
-    root.on('change.lukerOrch', '#luker_orch_preset_envelope_chars', function () {
-        settings.promptEnvelopeMaxChars = Math.max(1000, Number(jQuery(this).val()) || 2800);
         saveSettingsDebounced();
     });
 
@@ -2976,8 +2960,6 @@ function ensureUi() {
             <select id="luker_orch_ai_suggest_preset" class="text_pole"></select>
             <label for="luker_orch_ai_suggest_system_prompt">${escapeHtml(i18n('AI build system prompt'))}</label>
             <textarea id="luker_orch_ai_suggest_system_prompt" class="text_pole textarea_compact" rows="6"></textarea>
-            <label for="luker_orch_preset_envelope_chars">${escapeHtml(i18n('Preset envelope max chars'))}</label>
-            <input id="luker_orch_preset_envelope_chars" class="text_pole" type="number" min="1000" step="100" />
             <label for="luker_orch_max_recent_messages">${escapeHtml(i18n('Recent messages (N)'))}</label>
             <input id="luker_orch_max_recent_messages" class="text_pole" type="number" min="1" max="80" step="1" />
             <label for="luker_orch_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>

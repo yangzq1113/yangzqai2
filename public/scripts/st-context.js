@@ -121,8 +121,8 @@ function safeClone(value, fallback = {}) {
     }
 }
 
-function truncateText(value, maxChars = 1200) {
-    return String(value ?? '').trim().slice(0, Math.max(80, Number(maxChars) || 1200));
+function cleanText(value) {
+    return String(value ?? '').trim();
 }
 
 function normalizePresetApi(api) {
@@ -180,7 +180,7 @@ function getPresetSnapshot(apiId, presetName = '') {
     };
 }
 
-function pickPromptLikeFields(settings, maxChars = 1200) {
+function pickPromptLikeFields(settings) {
     const result = {};
     const source = settings && typeof settings === 'object' ? settings : {};
     const promptLikeRegex = /(prompt|story|sequence|suffix|prefix|format|separator|jailbreak|chat_start|example|system|scenario|personality|wi_|anchor)/i;
@@ -190,7 +190,7 @@ function pickPromptLikeFields(settings, maxChars = 1200) {
             continue;
         }
         if (typeof value === 'string') {
-            const trimmed = truncateText(value, maxChars);
+            const trimmed = cleanText(value);
             if (trimmed) {
                 result[key] = trimmed;
             }
@@ -204,7 +204,7 @@ function pickPromptLikeFields(settings, maxChars = 1200) {
     return result;
 }
 
-function getCompletionPromptCore(api, settings, maxChars = 1200) {
+function getCompletionPromptCore(api, settings) {
     const source = settings && typeof settings === 'object' ? settings : {};
     const apiId = normalizePresetApi(api);
 
@@ -234,7 +234,7 @@ function getCompletionPromptCore(api, settings, maxChars = 1200) {
             }
             const value = source[key];
             if (typeof value === 'string') {
-                core[key] = truncateText(value, maxChars);
+                core[key] = cleanText(value);
             } else if (Array.isArray(value) || (value && typeof value === 'object')) {
                 core[key] = safeClone(value, {});
             } else {
@@ -244,10 +244,10 @@ function getCompletionPromptCore(api, settings, maxChars = 1200) {
         return core;
     }
 
-    return pickPromptLikeFields(source, maxChars);
+    return pickPromptLikeFields(source);
 }
 
-function getContextPromptCore(settings, maxChars = 1200) {
+function getContextPromptCore(settings) {
     const source = settings && typeof settings === 'object' ? settings : {};
     const keys = [
         'story_string',
@@ -262,13 +262,13 @@ function getContextPromptCore(settings, maxChars = 1200) {
             continue;
         }
         core[key] = typeof source[key] === 'string'
-            ? truncateText(source[key], maxChars)
+            ? cleanText(source[key])
             : safeClone(source[key], source[key]);
     }
     return core;
 }
 
-function getInstructPromptCore(settings, maxChars = 1200) {
+function getInstructPromptCore(settings) {
     const source = settings && typeof settings === 'object' ? settings : {};
     const keys = [
         'input_sequence',
@@ -293,13 +293,13 @@ function getInstructPromptCore(settings, maxChars = 1200) {
             continue;
         }
         core[key] = typeof source[key] === 'string'
-            ? truncateText(source[key], maxChars)
+            ? cleanText(source[key])
             : safeClone(source[key], source[key]);
     }
     return core;
 }
 
-function getReasoningPromptCore(settings, maxChars = 1200) {
+function getReasoningPromptCore(settings) {
     const source = settings && typeof settings === 'object' ? settings : {};
     const keys = ['prefix', 'suffix', 'separator', 'max_additions', 'name', 'enabled'];
     const core = {};
@@ -308,7 +308,7 @@ function getReasoningPromptCore(settings, maxChars = 1200) {
             continue;
         }
         core[key] = typeof source[key] === 'string'
-            ? truncateText(source[key], maxChars)
+            ? cleanText(source[key])
             : safeClone(source[key], source[key]);
     }
     return core;
@@ -358,7 +358,7 @@ function getPresetPromptLayout(completionPresetSettings) {
     return normalizePromptLayout(source?.extensions?.luker?.prompt_layout);
 }
 
-function getPromptCatalog(completionPresetSettings, maxChars = 1200) {
+function getPromptCatalog(completionPresetSettings) {
     const source = completionPresetSettings && typeof completionPresetSettings === 'object'
         ? completionPresetSettings
         : {};
@@ -374,7 +374,7 @@ function getPromptCatalog(completionPresetSettings, maxChars = 1200) {
             identifier,
             name: String(prompt.name || ''),
             role: normalizeLayoutRole(prompt.role || 'system'),
-            content: truncateText(prompt.content || '', maxChars),
+            content: cleanText(prompt.content || ''),
             marker: Boolean(prompt.marker),
             systemPrompt: Boolean(prompt.system_prompt),
         };
@@ -385,7 +385,6 @@ function getPromptCatalog(completionPresetSettings, maxChars = 1200) {
 
 function getActivePromptPresetEnvelope({
     includeCharacterCard = true,
-    maxBlockChars = 1200,
     api = main_api,
     promptPresetName = '',
     completionPresetName = '',
@@ -394,7 +393,6 @@ function getActivePromptPresetEnvelope({
     syspromptPresetName = '',
     reasoningPresetName = '',
 } = {}) {
-    const maxChars = Math.max(120, Number(maxBlockChars) || 1200);
     const completionApi = normalizePresetApi(api);
     const requestedCompletionPreset = String(promptPresetName || completionPresetName || '').trim();
     const completionPreset = getPresetSnapshot(completionApi, requestedCompletionPreset);
@@ -405,10 +403,10 @@ function getActivePromptPresetEnvelope({
 
     const fields = getCharacterCardFields({ chid: this_chid }) || {};
     const character = characters?.[this_chid];
-    const syspromptRaw = truncateText(substituteParams(power_user?.sysprompt?.content || ''), maxChars);
-    const postHistoryRaw = truncateText(substituteParams(power_user?.sysprompt?.post_history || ''), maxChars);
-    const cardSystem = truncateText(fields?.system || '', maxChars);
-    const cardPostHistory = truncateText(fields?.jailbreak || '', maxChars);
+    const syspromptRaw = cleanText(substituteParams(power_user?.sysprompt?.content || ''));
+    const postHistoryRaw = cleanText(substituteParams(power_user?.sysprompt?.post_history || ''));
+    const cardSystem = cleanText(fields?.system || '');
+    const cardPostHistory = cleanText(fields?.jailbreak || '');
 
     const syspromptEnabled = Boolean(power_user?.sysprompt?.enabled);
     const activeSystemPrompt = syspromptEnabled ? (cardSystem || syspromptRaw) : '';
@@ -437,25 +435,25 @@ function getActivePromptPresetEnvelope({
                 cardSystemPrompt: cardSystem,
                 cardPostHistory,
             },
-            context: getContextPromptCore(contextPreset.settings, maxChars),
-            instruct: getInstructPromptCore(instructPreset.settings, maxChars),
-            reasoning: getReasoningPromptCore(reasoningPreset.settings, maxChars),
-            completion: getCompletionPromptCore(completionApi, completionPreset.settings, maxChars),
+            context: getContextPromptCore(contextPreset.settings),
+            instruct: getInstructPromptCore(instructPreset.settings),
+            reasoning: getReasoningPromptCore(reasoningPreset.settings),
+            completion: getCompletionPromptCore(completionApi, completionPreset.settings),
         },
         promptLayout,
-        promptCatalog: getPromptCatalog(completionPreset.settings, maxChars),
+        promptCatalog: getPromptCatalog(completionPreset.settings),
     };
 
     if (includeCharacterCard) {
         envelope.characterCard = {
             name: String(character?.name || ''),
-            description: truncateText(fields?.description || '', maxChars),
-            personality: truncateText(fields?.personality || '', maxChars),
-            persona: truncateText(fields?.persona || '', maxChars),
-            scenario: truncateText(fields?.scenario || '', maxChars),
-            mesExamples: truncateText(fields?.mesExamples || '', maxChars),
-            creatorNotes: truncateText(fields?.creatorNotes || '', maxChars),
-            charDepthPrompt: truncateText(fields?.charDepthPrompt || '', maxChars),
+            description: cleanText(fields?.description || ''),
+            personality: cleanText(fields?.personality || ''),
+            persona: cleanText(fields?.persona || ''),
+            scenario: cleanText(fields?.scenario || ''),
+            mesExamples: cleanText(fields?.mesExamples || ''),
+            creatorNotes: cleanText(fields?.creatorNotes || ''),
+            charDepthPrompt: cleanText(fields?.charDepthPrompt || ''),
         };
     }
 
@@ -617,7 +615,7 @@ function resolveLayoutEntryText(entry, env) {
         return env.taskUserText;
     }
     if (source === 'envelope_json') {
-        return formatPromptPresetEnvelope(env.envelope, { maxChars: env.envelopeMaxChars });
+        return formatPromptPresetEnvelope(env.envelope);
     }
     if (source === 'envelope_field') {
         const value = getValueByPath(env.envelope, entry.path);
@@ -643,74 +641,11 @@ function resolveLayoutEntryText(entry, env) {
     return '';
 }
 
-function compactEnvelopeForPrompt(envelope, maxChars = 3200) {
-    const targetChars = Math.max(1000, Number(maxChars) || 3200);
-    const compact = safeClone(envelope, {});
-    const size = () => JSON.stringify(compact).length;
-
-    if (size() <= targetChars) {
-        return compact;
-    }
-
-    if (compact.characterCard && typeof compact.characterCard === 'object') {
-        compact.characterCard.description = truncateText(compact.characterCard.description, 360);
-        compact.characterCard.personality = truncateText(compact.characterCard.personality, 240);
-        compact.characterCard.scenario = truncateText(compact.characterCard.scenario, 240);
-        compact.characterCard.creatorNotes = truncateText(compact.characterCard.creatorNotes, 220);
-        compact.characterCard.charDepthPrompt = truncateText(compact.characterCard.charDepthPrompt, 220);
-    }
-
-    if (size() <= targetChars) {
-        return compact;
-    }
-
-    if (compact.promptCore?.completion?.prompts) {
-        compact.promptCore.completion.prompts = '[omitted: prompts too large]';
-    }
-    if (compact.promptCore?.completion?.prompt_order) {
-        compact.promptCore.completion.prompt_order = '[omitted: prompt_order too large]';
-    }
-
-    if (size() <= targetChars) {
-        return compact;
-    }
-
-    compact.truncated = true;
-    compact.promptCore = {
-        sysprompt: compact.promptCore?.sysprompt || {},
-        context: {
-            story_string: compact.promptCore?.context?.story_string || '',
-            chat_start: compact.promptCore?.context?.chat_start || '',
-            example_separator: compact.promptCore?.context?.example_separator || '',
-        },
-        instruct: {
-            enabled: compact.promptCore?.instruct?.enabled ?? false,
-            input_sequence: compact.promptCore?.instruct?.input_sequence || '',
-            output_sequence: compact.promptCore?.instruct?.output_sequence || '',
-            system_sequence: compact.promptCore?.instruct?.system_sequence || '',
-        },
-        reasoning: {
-            enabled: compact.promptCore?.reasoning?.enabled ?? false,
-            prefix: compact.promptCore?.reasoning?.prefix || '',
-            suffix: compact.promptCore?.reasoning?.suffix || '',
-            separator: compact.promptCore?.reasoning?.separator || '',
-        },
-        completion: {
-            use_sysprompt: compact.promptCore?.completion?.use_sysprompt ?? false,
-            new_chat_prompt: compact.promptCore?.completion?.new_chat_prompt || '',
-            continue_nudge_prompt: compact.promptCore?.completion?.continue_nudge_prompt || '',
-        },
-    };
-
-    return compact;
-}
-
-function formatPromptPresetEnvelope(envelope, { maxChars = 3200, label = 'LUKER_PRESET_ENVELOPE' } = {}) {
+function formatPromptPresetEnvelope(envelope, { label = 'LUKER_PRESET_ENVELOPE' } = {}) {
     const resolved = envelope && typeof envelope === 'object'
         ? envelope
         : getActivePromptPresetEnvelope();
-    const compact = compactEnvelopeForPrompt(resolved, maxChars);
-    return `[[${label}]]\n${JSON.stringify(compact)}`;
+    return `[[${label}]]\n${JSON.stringify(resolved)}`;
 }
 
 function getActivePromptLayout(options = {}) {
@@ -725,7 +660,6 @@ function buildPresetAwarePromptMessages({
     envelope = null,
     envelopeOptions = {},
     promptPresetName = '',
-    envelopeMaxChars = 3200,
 } = {}) {
     const normalizedMessages = normalizePromptMessages(messages);
     const resolvedEnvelopeOptions = envelopeOptions && typeof envelopeOptions === 'object'
@@ -760,23 +694,7 @@ function buildPresetAwarePromptMessages({
         return orderedMessages;
     }
 
-    // Fallback: no prompt order found.
-    const result = [];
-    const systemBlocks = [];
-    if (taskSystemText) {
-        systemBlocks.push(taskSystemText);
-    }
-    systemBlocks.push(formatPromptPresetEnvelope(resolvedEnvelope, { maxChars: envelopeMaxChars }));
-
-    if (systemBlocks.length > 0) {
-        result.push({ role: 'system', content: systemBlocks.join('\n\n') });
-    }
-    if (taskUserText) {
-        result.push({ role: 'user', content: taskUserText });
-    }
-    result.push(...normalizedMessages);
-
-    return result;
+    throw new Error('Prompt preset assembly failed: no valid prompt_order for plugin message construction.');
 }
 
 export function getContext() {
