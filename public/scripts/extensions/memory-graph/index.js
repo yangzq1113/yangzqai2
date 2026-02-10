@@ -173,6 +173,28 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
     'Prefer the smallest sufficient set; avoid selecting all candidates unless clearly necessary.',
 ].join('\n');
 
+const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
+    'Extract structured memory nodes from dialogue turns.',
+    'Use tool calls only. Do not return plain JSON text.',
+    'Call luker_rpg_extract_upsert once per node update. Never emit one huge array payload.',
+    'Call luker_rpg_extract_done after all upserts are emitted.',
+    'For events, include links to involved entities/locations/threads whenever possible.',
+    'Summary rule: summary must be concise and abstract. Never copy long raw dialogue into summary.',
+    'Write long evidence and quotes in content, not summary.',
+    'Put table-like attributes into "fields" object and align keys with schema table columns.',
+    'If evidence supports a field (state/goal/identity/status/etc), fill it explicitly instead of leaving blank.',
+    'Keyword focus: when available, fill retrieval keys in fields.keywords (array preferred) and fields.aliases (array preferred), including formal names, nicknames, aliases, and common references.',
+    'Title policy is strict: every node must have a short, stable, human-readable title that is logically self-consistent.',
+    'Do not use random or decorative titles. Keep title compact and functional.',
+    'If the node refers to an existing entity/event/thread/location/item, reuse the same title exactly for updates.',
+    'When creating a new node, choose a unique title within the same type based on canonical naming.',
+    'Naming guidance: character/faction/location/item nodes should use canonical names.',
+    'For event nodes, prefer sequence labels like "Summary 1", "Summary 2", "Summary 3" instead of forcing unique semantic titles.',
+    'Event title should act as a stable short id; put real meaning in summary/content/fields.',
+    'When updating an existing event, reuse exactly the same Summary label.',
+    'When creating a new event, choose the next available Summary number within event type to keep titles unique and predictable.',
+].join('\n');
+
 const defaultSettings = {
     enabled: false,
     updateEvery: 6,
@@ -192,6 +214,7 @@ const defaultSettings = {
     recallFinalizeSystemPrompt: DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT,
     extractApiPresetName: '',
     extractPresetName: '',
+    extractSystemPrompt: DEFAULT_EXTRACT_SYSTEM_PROMPT,
     extractResponseLength: 360,
     extractBatchTurns: 12,
     recentRawTurns: 5,
@@ -224,6 +247,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大轮数',
         'Extract batch turns': '写入批量轮数',
         'Tool-call retries': '工具调用重试次数',
+        'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回阶段2提示词（最终选择）',
         'Advanced Settings': '高级设置',
@@ -406,6 +430,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大輪數',
         'Extract batch turns': '寫入批次輪數',
         'Tool-call retries': '工具呼叫重試次數',
+        'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回階段2提示詞（最終選擇）',
         'Advanced Settings': '進階設定',
@@ -743,6 +768,7 @@ function ensureSettings() {
         0,
         Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : defaultSettings.recentRawTurns),
     );
+    extension_settings[MODULE_NAME].extractSystemPrompt = String(extension_settings[MODULE_NAME].extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallRouteSystemPrompt = String(extension_settings[MODULE_NAME].recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallFinalizeSystemPrompt = String(extension_settings[MODULE_NAME].recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
     delete extension_settings[MODULE_NAME].recallMaxSelection;
@@ -1922,17 +1948,7 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
         const promptPresetName = String(settings.extractPresetName || '').trim();
         const promptMessages = buildPresetAwareLLMMessages(context, settings, {
             api: requestApi,
-            systemPrompt: [
-                'Extract structured memory nodes from dialogue turns.',
-                'Use tool calls only. Do not return plain JSON text.',
-                'Call luker_rpg_extract_upsert once per node update. Never emit one huge array payload.',
-                'For events, include links to involved entities/locations/threads whenever possible.',
-                'Summary rule: summary must be concise and abstract. Never copy long raw dialogue into summary.',
-                'Write long evidence and quotes in content, not summary.',
-                'Put table-like attributes into "fields" object and align keys with schema table columns.',
-                'If evidence supports a field (state/goal/identity/status/etc), fill it explicitly instead of leaving blank.',
-                'Call luker_rpg_extract_done after all upserts are emitted.',
-            ].join('\n'),
+            systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
             userPrompt: JSON.stringify({
                 schema,
                 schema_field_targets: schema.map(item => ({
@@ -2808,26 +2824,32 @@ function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null,
     };
 }
 
-function hasTitleOrAliasHit(queryText, node) {
-    const normalizedQuery = normalizeText(queryText).toLowerCase();
-    if (!normalizedQuery) {
-        return false;
-    }
-    const title = normalizeText(node?.title || '').toLowerCase();
-    const aliases = []
-        .concat(Array.isArray(node?.metadata?.aliases) ? node.metadata.aliases : [])
-        .concat(Array.isArray(node?.metadata?.alias) ? node.metadata.alias : [])
-        .map(item => normalizeText(item).toLowerCase())
-        .filter(Boolean);
-    if (title && normalizedQuery.includes(title)) {
-        return true;
-    }
-    for (const alias of aliases) {
-        if (alias && normalizedQuery.includes(alias)) {
-            return true;
+function getNodeRecallKeywords(node) {
+    const values = [];
+    const pushValue = (value) => {
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                pushValue(item);
+            }
+            return;
         }
-    }
-    return false;
+        const text = String(value || '').trim();
+        if (!text) {
+            return;
+        }
+        for (const token of text.split(/[,，;；|]/g)) {
+            const normalized = normalizeText(token).toLowerCase();
+            if (normalized) {
+                values.push(normalized);
+            }
+        }
+    };
+    pushValue(node?.metadata?.keywords);
+    pushValue(node?.metadata?.keyword);
+    pushValue(node?.metadata?.aliases);
+    pushValue(node?.metadata?.alias);
+    pushValue(node?.metadata?.tags);
+    return Array.from(new Set(values));
 }
 
 function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = []) {
@@ -2873,9 +2895,11 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, 
         }
         const type = String(node.type || '').toLowerCase();
         const spec = schemaMap.get(type);
-        const keywordHit = hasQueryKeywordHit(query, spec?.keywords);
-        const titleHit = hasTitleOrAliasHit(query, node);
-        if (!keywordHit && !titleHit) {
+        const schemaKeywords = Array.isArray(spec?.keywords) ? spec.keywords : [];
+        const nodeKeywords = getNodeRecallKeywords(node);
+        const keywordHit = hasQueryKeywordHit(query, schemaKeywords)
+            || hasQueryKeywordHit(query, nodeKeywords);
+        if (!keywordHit) {
             continue;
         }
         pickedIds.add(nodeId);
@@ -5567,6 +5591,7 @@ async function openSchemaEditorPopup(context, settings, root) {
 }
 
 function buildAdvancedSettingsPopupHtml(popupId, settings) {
+    const extractPrompt = String(settings.extractSystemPrompt || defaultSettings.extractSystemPrompt || '');
     const routePrompt = String(settings.recallRouteSystemPrompt || defaultSettings.recallRouteSystemPrompt || '');
     const finalizePrompt = String(settings.recallFinalizeSystemPrompt || defaultSettings.recallFinalizeSystemPrompt || '');
     return `
@@ -5583,6 +5608,9 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     </label>
     <label>${escapeHtml(i18n('Extract batch turns'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="2" step="1" value="${Math.max(2, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
+    </label>
+    <label>${escapeHtml(i18n('Extract Table Fill Prompt'))}
+        <textarea id="${popupId}_extract_system_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(extractPrompt)}</textarea>
     </label>
     <label>${escapeHtml(i18n('Recall Stage 1 Prompt (Route/Drill)'))}
         <textarea id="${popupId}_recall_route_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(routePrompt)}</textarea>
@@ -5622,6 +5650,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
     const recallIterationsValue = Number(popupRoot.find(`#${popupId}_recall_iterations`).val());
     const toolRetriesValue = Number(popupRoot.find(`#${popupId}_tool_retries`).val());
     const extractBatchTurnsValue = Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val());
+    const extractSystemPromptValue = String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim();
     const recallRoutePromptValue = String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim();
     const recallFinalizePromptValue = String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim();
 
@@ -5641,6 +5670,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         2,
         Math.floor(Number.isFinite(extractBatchTurnsValue) ? extractBatchTurnsValue : defaultSettings.extractBatchTurns),
     );
+    settings.extractSystemPrompt = extractSystemPromptValue || DEFAULT_EXTRACT_SYSTEM_PROMPT;
     settings.recallRouteSystemPrompt = recallRoutePromptValue || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
     settings.recallFinalizeSystemPrompt = recallFinalizePromptValue || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
 
