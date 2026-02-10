@@ -632,7 +632,7 @@ function resetSelectedGroup() {
  * @param {boolean} force Force the saving on integrity error
  * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
  */
-async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
+async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttempt = 0) {
     const group = groups.find(x => x.id == groupId);
     if (!group) {
         console.warn('Group not found', groupId);
@@ -696,32 +696,31 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
         });
     }
 
+    if (response?.ok) {
+        const payload = typeof response.json === 'function'
+            ? await response.json().catch(() => null)
+            : null;
+        const nextIntegrity = typeof payload?.integrity === 'string' ? payload.integrity.trim() : '';
+        if (nextIntegrity) {
+            chat_metadata.integrity = nextIntegrity;
+        }
+    }
+
     if (!response.ok) {
-        const errorData = await response.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
+        const isConflict = !force && response.status === 409;
+        if (isConflict && retryAttempt === 0) {
+            await getGroupChat(groupId, false);
+            await saveGroupChat(groupId, shouldSaveGroup, force, retryAttempt + 1);
+            return;
+        }
+
+        if (!isConflict) {
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
             console.error('Group chat could not be saved', response);
             return;
         }
-
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
-
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
-
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            window.location.reload();
-            return;
-        }
-
-        await saveGroupChat(groupId, shouldSaveGroup, true);
+        toastr.error(t`Group chat changed on server. Reloaded once and save still failed.`, t`Group Chat could not be saved`);
+        return;
     }
 
     seedChatMetadataSnapshot(target, chat_metadata);
@@ -814,6 +813,7 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                                 id: chatId,
                                 operations,
                                 chat_metadata: messages?.[0]?.chat_metadata || {},
+                                integrity: messages?.[0]?.chat_metadata?.integrity,
                             }),
                         });
 

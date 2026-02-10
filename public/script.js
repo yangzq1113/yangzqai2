@@ -7707,6 +7707,7 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
                     avatar_url: newAvatar,
                     operations,
                     chat_metadata: currentChat?.[0]?.chat_metadata || {},
+                    integrity: currentChat?.[0]?.chat_metadata?.integrity,
                 }),
                 cache: 'no-cache',
             });
@@ -8107,13 +8108,29 @@ export async function deleteChatState(namespace, options = {}) {
     }
 }
 
+function applyIntegrityFromWritePayload(payload) {
+    const nextIntegrity = typeof payload?.integrity === 'string' ? payload.integrity.trim() : '';
+    if (!nextIntegrity) {
+        return;
+    }
+    chat_metadata.integrity = nextIntegrity;
+}
+
+async function shouldRetryChatWriteOnConflict(response, retryCount = 0) {
+    if (!response || response.status !== 409 || retryCount > 0) {
+        return false;
+    }
+    await reloadCurrentChat();
+    return true;
+}
+
 /**
  * Appends new chat messages to server-side chat storage.
  * Falls back to legacy full-save callers when this returns false.
  * @param {ChatMessage[]} messages Messages to append.
  * @returns {Promise<boolean>} True on successful append.
  */
-export async function appendChatMessages(messages) {
+export async function appendChatMessages(messages, retryCount = 0) {
     if (!Array.isArray(messages) || messages.length === 0) {
         return true;
     }
@@ -8139,9 +8156,15 @@ export async function appendChatMessages(messages) {
             });
 
             if (response.ok) {
+                const payload = await response.json().catch(() => null);
+                applyIntegrityFromWritePayload(payload);
                 rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
+                return true;
             }
-            return response.ok;
+            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+                return await appendChatMessages(messages, retryCount + 1);
+            }
+            return false;
         }
 
         const fileName = characters[this_chid]?.chat;
@@ -8167,9 +8190,15 @@ export async function appendChatMessages(messages) {
         });
 
         if (response.ok) {
+            const payload = await response.json().catch(() => null);
+            applyIntegrityFromWritePayload(payload);
             rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
+            return true;
         }
-        return response.ok;
+        if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+            return await appendChatMessages(messages, retryCount + 1);
+        }
+        return false;
     } catch (error) {
         console.warn('Incremental chat append failed', error);
         return false;
@@ -8182,7 +8211,7 @@ export async function appendChatMessages(messages) {
  * @param {object[]|object} operations Patch operations (single op or op array).
  * @returns {Promise<boolean>} True on successful patch.
  */
-export async function patchChatMessages(operations) {
+export async function patchChatMessages(operations, retryCount = 0) {
     const normalizedOperations = Array.isArray(operations)
         ? operations
         : (operations && typeof operations === 'object' ? [operations] : []);
@@ -8212,9 +8241,15 @@ export async function patchChatMessages(operations) {
             });
 
             if (response.ok) {
+                const payload = await response.json().catch(() => null);
+                applyIntegrityFromWritePayload(payload);
                 rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
+                return true;
             }
-            return response.ok;
+            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+                return await patchChatMessages(normalizedOperations, retryCount + 1);
+            }
+            return false;
         }
 
         const fileName = characters[this_chid]?.chat;
@@ -8240,9 +8275,15 @@ export async function patchChatMessages(operations) {
         });
 
         if (response.ok) {
+            const payload = await response.json().catch(() => null);
+            applyIntegrityFromWritePayload(payload);
             rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
+            return true;
         }
-        return response.ok;
+        if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+            return await patchChatMessages(normalizedOperations, retryCount + 1);
+        }
+        return false;
     } catch (error) {
         console.warn('Incremental chat patch failed', error);
         return false;
@@ -8255,7 +8296,7 @@ export async function patchChatMessages(operations) {
  * @param {object} [withMetadata] Optional metadata patch to merge before save.
  * @returns {Promise<boolean>} True on successful metadata save.
  */
-export async function saveChatMetadata(withMetadata = undefined) {
+export async function saveChatMetadata(withMetadata = undefined, retryCount = 0) {
     try {
         const metadata = {
             ...chat_metadata,
@@ -8289,8 +8330,14 @@ export async function saveChatMetadata(withMetadata = undefined) {
             });
 
             if (response.ok) {
+                const payload = await response.json().catch(() => null);
+                applyIntegrityFromWritePayload(payload);
+                metadata.integrity = chat_metadata.integrity;
                 rememberChatMetadataSnapshot(target, metadata);
                 return true;
+            }
+            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+                return await saveChatMetadata(withMetadata, retryCount + 1);
             }
         } else {
             const charName = characters[this_chid]?.name;
@@ -8311,8 +8358,14 @@ export async function saveChatMetadata(withMetadata = undefined) {
             });
 
             if (response.ok) {
+                const payload = await response.json().catch(() => null);
+                applyIntegrityFromWritePayload(payload);
+                metadata.integrity = chat_metadata.integrity;
                 rememberChatMetadataSnapshot(target, metadata);
                 return true;
+            }
+            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+                return await saveChatMetadata(withMetadata, retryCount + 1);
             }
         }
 
@@ -8333,7 +8386,7 @@ export async function saveChatMetadata(withMetadata = undefined) {
  *
  * @returns {Promise<void>}
  */
-export async function saveChat({ chatName, withMetadata, mesId, force = false } = {}) {
+export async function saveChat({ chatName, withMetadata, mesId, force = false, _retryAttempt = 0 } = {}) {
     if (selected_group) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
@@ -8401,30 +8454,16 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false } 
                 });
 
                 if (patchResult.ok) {
+                    const payload = await patchResult.json().catch(() => null);
+                    applyIntegrityFromWritePayload(payload);
+                    metadata.integrity = chat_metadata.integrity;
                     rememberChatMessageSnapshot(target, trimmedChat);
                     rememberChatMetadataSnapshot(target, metadata);
                     return;
                 }
 
-                const patchErrorData = await patchResult.json().catch(() => null);
-                const patchIntegrityError = patchErrorData?.error === 'integrity' && !force;
-                if (patchIntegrityError) {
-                    const popupResult = await Popup.show.input(
-                        t`ERROR: Chat integrity check failed while saving the file.`,
-                        t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-                          <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-                        '',
-                        { okButton: 'OK', cancelButton: false },
-                    );
-
-                    const forceSaveConfirmed = popupResult === 'OVERWRITE';
-                    if (!forceSaveConfirmed) {
-                        console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-                        window.location.reload();
-                        return;
-                    }
-
-                    await saveChat({ chatName, withMetadata, mesId, force: true });
+                if (!force && await shouldRetryChatWriteOnConflict(patchResult, _retryAttempt)) {
+                    await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
                     return;
                 }
             } else {
@@ -8450,34 +8489,20 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false } 
         });
 
         if (result.ok) {
+            const payload = await result.json().catch(() => null);
+            applyIntegrityFromWritePayload(payload);
+            metadata.integrity = chat_metadata.integrity;
             rememberChatMessageSnapshot(target, trimmedChat);
             rememberChatMetadataSnapshot(target, metadata);
             return;
         }
 
-        const errorData = await result.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
-            throw new Error(result.statusText);
-        }
-
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
-
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
-
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            window.location.reload();
+        if (!force && await shouldRetryChatWriteOnConflict(result, _retryAttempt)) {
+            await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
             return;
         }
 
-        await saveChat({ chatName, withMetadata, mesId, force: true });
+        throw new Error(result.statusText);
     } catch (error) {
         console.error(error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);

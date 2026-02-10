@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import process from 'node:process';
+import { randomUUID } from 'node:crypto';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -19,7 +20,6 @@ import {
     tryWriteFileSync,
     tryReadFileSync,
     tryDeleteFile,
-    readFirstLine,
 } from '../util.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
@@ -30,6 +30,7 @@ const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'bo
 export const CHAT_BACKUPS_PREFIX = 'chat_';
 const CHAT_STATE_FILE_PREFIX = '.luker-state.';
 const CHAT_STATE_FILE_SUFFIX = '.json';
+const CHAT_SYNC_NAMESPACE = 'chat_sync';
 
 /**
  * Saves a chat to the backups directory.
@@ -309,31 +310,124 @@ function importRisuChat(userName, characterName, jsonData) {
     return chat.map(obj => JSON.stringify(obj)).join('\n');
 }
 
+function readChatHeaderIntegrity(filePath) {
+    if (!fs.existsSync(filePath)) {
+        return '';
+    }
+
+    const firstLine = tryReadFileSync(filePath)?.split('\n')[0] ?? '';
+    const header = tryParse(firstLine);
+    const integrity = typeof header?.chat_metadata?.integrity === 'string'
+        ? header.chat_metadata.integrity.trim()
+        : '';
+    return integrity;
+}
+
+function getChatSyncSidecarPath(chatFilePath) {
+    return getChatStateSidecarPath(chatFilePath, CHAT_SYNC_NAMESPACE);
+}
+
+function readChatSyncState(chatFilePath) {
+    const sidecarPath = getChatSyncSidecarPath(chatFilePath);
+    if (!sidecarPath || !fs.existsSync(sidecarPath)) {
+        return {};
+    }
+
+    const parsed = tryParse(tryReadFileSync(sidecarPath) ?? '');
+    if (!_.isObjectLike(parsed) || Array.isArray(parsed)) {
+        return {};
+    }
+    return parsed;
+}
+
+function writeChatSyncState(chatFilePath, state) {
+    const sidecarPath = getChatSyncSidecarPath(chatFilePath);
+    if (!sidecarPath) {
+        return;
+    }
+
+    fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
+    tryWriteFileSync(sidecarPath, JSON.stringify(state));
+}
+
+function getCurrentChatIntegrity(chatFilePath) {
+    const syncState = readChatSyncState(chatFilePath);
+    const stateIntegrity = typeof syncState.integrity === 'string' ? syncState.integrity.trim() : '';
+    if (stateIntegrity) {
+        return stateIntegrity;
+    }
+
+    const headerIntegrity = readChatHeaderIntegrity(chatFilePath);
+    if (headerIntegrity) {
+        writeChatSyncState(chatFilePath, { integrity: headerIntegrity, updated_at: Date.now() });
+    }
+    return headerIntegrity;
+}
+
+function rotateChatIntegrity(chatFilePath) {
+    const integrity = randomUUID();
+    writeChatSyncState(chatFilePath, { integrity, updated_at: Date.now() });
+    return integrity;
+}
+
+function applyIntegrityToMetadata(metadata, integrity) {
+    const base = _.isObjectLike(metadata) && !Array.isArray(metadata) ? { ...metadata } : {};
+    if (integrity) {
+        base.integrity = integrity;
+    }
+    return base;
+}
+
+function attachCurrentIntegrityToChatData(chatData, chatFilePath) {
+    if (!Array.isArray(chatData) || chatData.length === 0) {
+        return chatData;
+    }
+
+    const header = chatData[0];
+    if (!_.isObjectLike(header) || !Object.hasOwn(header, 'chat_metadata')) {
+        return chatData;
+    }
+
+    const currentIntegrity = getCurrentChatIntegrity(chatFilePath);
+    if (!currentIntegrity) {
+        return chatData;
+    }
+
+    header.chat_metadata = applyIntegrityToMetadata(header.chat_metadata, currentIntegrity);
+    return chatData;
+}
+
 /**
  * Checks if the chat being saved has the same integrity as the one being loaded.
- * @param {string} filePath Path to the chat file
- * @param {string} integritySlug Integrity slug
- * @returns {Promise<boolean>} Whether the chat is intact
+ * @param {string} filePath Path to the chat file.
+ * @param {string} integritySlug Integrity slug from client.
+ * @returns {Promise<boolean>} Whether the integrity matches.
  */
 async function checkChatIntegrity(filePath, integritySlug) {
-    // If the chat file doesn't exist, assume it's intact
     if (!fs.existsSync(filePath)) {
         return true;
     }
 
-    // Parse the first line of the chat file as JSON
-    const firstLine = await readFirstLine(filePath);
-    const jsonData = tryParse(firstLine);
-    const chatIntegrity = jsonData?.chat_metadata?.integrity;
-
-    // If the chat has no integrity metadata, assume it's intact
-    if (!chatIntegrity) {
-        console.debug(`File "${filePath}" does not have integrity metadata matching "${integritySlug}". The integrity validation has been skipped.`);
+    const expectedIntegrity = String(integritySlug || '').trim();
+    if (!expectedIntegrity) {
         return true;
     }
 
-    // Check if the integrity matches
-    return chatIntegrity === integritySlug;
+    const currentIntegrity = getCurrentChatIntegrity(filePath);
+    if (!currentIntegrity) {
+        return true;
+    }
+
+    return currentIntegrity === expectedIntegrity;
+}
+
+function createIntegrityMismatchError(filePath, expectedIntegrity) {
+    const error = new IntegrityMismatchError(
+        `Chat integrity check failed for "${filePath}". The expected integrity slug was "${expectedIntegrity}".`,
+    );
+    error.currentIntegrity = getCurrentChatIntegrity(filePath);
+    error.expectedIntegrity = String(expectedIntegrity || '');
+    return error;
 }
 
 /**
@@ -425,6 +519,14 @@ class IntegrityMismatchError extends Error {
         }
         this.date = new Date();
     }
+}
+
+function sendIntegrityConflict(response, error) {
+    console.error(error.message);
+    return response.status(409).send({
+        error: 'integrity',
+        current_integrity: typeof error?.currentIntegrity === 'string' ? error.currentIntegrity : '',
+    });
 }
 
 /**
@@ -758,13 +860,13 @@ function getLastChatMessage(filePath) {
  */
 export async function appendMessagesToChatFile({ filePath, messages, chatMetadata = {}, integritySlug, force = false }) {
     if (!Array.isArray(messages) || messages.length === 0) {
-        return { appended: 0, created: false };
+        return { appended: 0, created: false, integrity: getCurrentChatIntegrity(filePath) };
     }
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
     if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
-        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+        throw createIntegrityMismatchError(filePath, integritySlug);
     }
 
     const serializedMessages = messages.map(message => JSON.stringify(message)).join('\n');
@@ -773,10 +875,12 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
     const hasContent = fileExists && fileStats && fileStats.size > 0;
 
     if (!hasContent) {
-        const header = JSON.stringify(createChatHeader(chatMetadata));
+        const nextIntegrity = randomUUID();
+        const header = JSON.stringify(createChatHeader(applyIntegrityToMetadata(chatMetadata, nextIntegrity)));
         const initialData = `${header}\n${serializedMessages}`;
         tryWriteFileSync(filePath, initialData);
-        return { appended: messages.length, created: true };
+        writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
+        return { appended: messages.length, created: true, integrity: nextIntegrity };
     }
 
     const dedupedMessages = messages.slice();
@@ -791,12 +895,18 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
     }
 
     if (dedupedMessages.length === 0) {
-        return { appended: 0, created: false, skipped: messages.length };
+        return { appended: 0, created: false, skipped: messages.length, integrity: getCurrentChatIntegrity(filePath) };
     }
 
     const dedupedSerializedMessages = dedupedMessages.map(message => JSON.stringify(message)).join('\n');
     fs.appendFileSync(filePath, `\n${dedupedSerializedMessages}`, 'utf8');
-    return { appended: dedupedMessages.length, created: false, skipped: messages.length - dedupedMessages.length };
+    const nextIntegrity = rotateChatIntegrity(filePath);
+    return {
+        appended: dedupedMessages.length,
+        created: false,
+        skipped: messages.length - dedupedMessages.length,
+        integrity: nextIntegrity,
+    };
 }
 
 /**
@@ -903,7 +1013,7 @@ export async function patchChatMessagesInFile({ filePath, operations, chatMetada
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
     if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
-        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+        throw createIntegrityMismatchError(filePath, integritySlug);
     }
 
     /** @type {object[]} */
@@ -973,11 +1083,14 @@ export async function patchChatMessagesInFile({ filePath, operations, chatMetada
         throw new Error(`Unsupported patch operation: ${op}`);
     }
 
+    const nextIntegrity = randomUUID();
     const header = chatData[0];
+    header.chat_metadata = applyIntegrityToMetadata(header.chat_metadata, nextIntegrity);
     const serialized = [header, ...messages].map(entry => JSON.stringify(entry)).join('\n');
     tryWriteFileSync(filePath, serialized);
+    writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
 
-    return { applied, total_messages: messages.length };
+    return { applied, total_messages: messages.length, integrity: nextIntegrity };
 }
 
 /**
@@ -994,7 +1107,7 @@ export async function updateChatMetadataInFile({ filePath, chatMetadata = {}, in
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
     if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
-        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+        throw createIntegrityMismatchError(filePath, integritySlug);
     }
 
     /** @type {object[]} */
@@ -1014,14 +1127,18 @@ export async function updateChatMetadataInFile({ filePath, chatMetadata = {}, in
         ...(_.isObjectLike(chatData[0].chat_metadata) ? chatData[0].chat_metadata : {}),
         ...(_.isObjectLike(chatMetadata) ? chatMetadata : {}),
     };
+    const nextIntegrity = randomUUID();
+    chatData[0].chat_metadata = applyIntegrityToMetadata(chatData[0].chat_metadata, nextIntegrity);
 
     const serialized = chatData.map(entry => JSON.stringify(entry)).join('\n');
     tryWriteFileSync(filePath, serialized);
+    writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
 
     return {
         updated: true,
         total_messages: Math.max(chatData.length - 1, 0),
         created,
+        integrity: nextIntegrity,
     };
 }
 
@@ -1039,7 +1156,7 @@ export async function patchChatMetadataInFile({ filePath, operations = [], integ
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
     if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
-        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+        throw createIntegrityMismatchError(filePath, integritySlug);
     }
 
     /** @type {object[]} */
@@ -1059,15 +1176,18 @@ export async function patchChatMetadataInFile({ filePath, operations = [], integ
         ? chatData[0].chat_metadata
         : {};
     const result = applyChatStatePatch(currentMetadata, operations);
-    chatData[0].chat_metadata = result.state;
+    const nextIntegrity = randomUUID();
+    chatData[0].chat_metadata = applyIntegrityToMetadata(result.state, nextIntegrity);
 
     const serialized = chatData.map(entry => JSON.stringify(entry)).join('\n');
     tryWriteFileSync(filePath, serialized);
+    writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
 
     return {
         applied: result.applied,
         total_messages: Math.max(chatData.length - 1, 0),
         created,
+        integrity: nextIntegrity,
     };
 }
 
@@ -1121,18 +1241,30 @@ function getChatDataDelta(chatFilePath, fromIndex = 0, limit = 0) {
  * @param {string} handle The users handle, passed to getBackupFunction.
  * @param {string} cardName Passed to backupChat.
  * @param {string} backupDirectory Passed to backupChat.
+ * @returns {Promise<string>} The new chat integrity value.
  */
 export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory) {
-    const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
+    if (!Array.isArray(chatData) || chatData.length === 0) {
+        throw new Error('Cannot save empty chat payload.');
+    }
 
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
     const chatIntegritySlug = doIntegrityCheck ? chatData?.[0]?.chat_metadata?.integrity : undefined;
 
     if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
-        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
+        throw createIntegrityMismatchError(filePath, chatIntegritySlug);
     }
+
+    const nextIntegrity = randomUUID();
+    const header = _.isObjectLike(chatData[0]) ? chatData[0] : createChatHeader({});
+    header.chat_metadata = applyIntegrityToMetadata(header.chat_metadata, nextIntegrity);
+    chatData[0] = header;
+    const jsonlData = chatData.map(m => JSON.stringify(m)).join('\n');
+
     tryWriteFileSync(filePath, jsonlData);
+    writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
     getBackupFunction(handle)(backupDirectory, cardName, jsonlData);
+    return nextIntegrity;
 }
 
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
@@ -1144,15 +1276,14 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
 
         if (Array.isArray(chatData)) {
-            await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
-            return response.send({ ok: true });
+            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
+            return response.send({ ok: true, integrity });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1186,8 +1317,7 @@ router.post('/append', validateAvatarUrlMiddleware, async function (request, res
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1223,8 +1353,7 @@ router.post('/patch', validateAvatarUrlMiddleware, async function (request, resp
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1257,8 +1386,7 @@ router.post('/meta', validateAvatarUrlMiddleware, async function (request, respo
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1295,8 +1423,7 @@ router.post('/meta/patch', validateAvatarUrlMiddleware, async function (request,
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1320,7 +1447,7 @@ export function getChatData(chatFilePath) {
         console.warn(`File not found: ${chatFilePath}. The chat does not exist or is empty.`);
     }
 
-    return chatData;
+    return attachCurrentIntegrityToChatData(chatData, chatFilePath);
 }
 
 router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
@@ -1785,16 +1912,15 @@ router.post('/group/save', async function (request, response) {
         const chatData = request.body.chat;
 
         if (Array.isArray(chatData)) {
-            await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
-            return response.send({ ok: true });
+            const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
+            return response.send({ ok: true, integrity });
         }
         else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1831,8 +1957,7 @@ router.post('/group/append', async function (request, response) {
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1871,8 +1996,7 @@ router.post('/group/patch', async function (request, response) {
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1904,8 +2028,7 @@ router.post('/group/meta', async function (request, response) {
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
@@ -1941,8 +2064,7 @@ router.post('/group/meta/patch', async function (request, response) {
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
-            console.error(error.message);
-            return response.status(400).send({ error: 'integrity' });
+            return sendIntegrityConflict(response, error);
         }
         console.error(error);
         return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
