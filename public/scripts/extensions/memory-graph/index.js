@@ -4753,6 +4753,20 @@ function ensureStyles() {
     text-align: left;
 }
 
+.luker-rpg-schema-popup .menu_button,
+.luker-rpg-schema-popup .menu_button_small,
+.luker-rpg-memory-graph-popup .menu_button,
+.luker-rpg-memory-graph-popup .menu_button_small,
+.luker-rpg-memory-advanced-popup .menu_button,
+.luker-rpg-memory-advanced-popup .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    display: inline-flex;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
 .luker-rpg-schema-popup .luker-schema-topbar {
     display: flex;
     justify-content: space-between;
@@ -5004,6 +5018,27 @@ function ensureStyles() {
     min-width: min(980px, 92vw);
 }
 
+.luker-rpg-memory-advanced-popup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+    text-align: left;
+}
+
+.luker-rpg-memory-advanced-popup label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.luker-rpg-memory-advanced-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 .luker-rpg-memory-node-form-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -5051,6 +5086,9 @@ function ensureStyles() {
         align-items: stretch;
     }
     .luker-rpg-schema-popup .luker-schema-footer-actions {
+        justify-content: flex-start;
+    }
+    .luker-rpg-memory-advanced-actions {
         justify-content: flex-start;
     }
 }
@@ -5349,7 +5387,7 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     const routePrompt = String(settings.recallRouteSystemPrompt || defaultSettings.recallRouteSystemPrompt || '');
     const finalizePrompt = String(settings.recallFinalizeSystemPrompt || defaultSettings.recallFinalizeSystemPrompt || '');
     return `
-<div id="${popupId}" class="flex-container flexFlowColumn">
+<div id="${popupId}" class="luker-rpg-memory-advanced-popup">
     <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
     <label>${escapeHtml(i18n('Exclude latest N turns from memory injection'))}
         <input id="${popupId}_recent_raw_turns" class="text_pole" type="number" min="0" step="1" value="${Number(settings.recentRawTurns || defaultSettings.recentRawTurns)}" />
@@ -5372,7 +5410,7 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Recall Stage 2 Prompt (Finalize)'))}
         <textarea id="${popupId}_recall_finalize_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(finalizePrompt)}</textarea>
     </label>
-    <div class="flex-container justifyContentFlexEnd">
+    <div class="luker-rpg-memory-advanced-actions">
         <div id="${popupId}_reset_advanced" class="menu_button">${escapeHtml(i18n('Reset Advanced Settings'))}</div>
     </div>
 </div>`;
