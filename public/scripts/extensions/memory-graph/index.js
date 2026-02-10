@@ -157,6 +157,22 @@ const defaultNodeTypeSchema = [
     },
 ];
 
+const DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT = [
+    'You are a memory recall planner.',
+    'Step 1 decides whether current candidate graph is enough.',
+    'Return action="finalize" if you can pick final nodes now.',
+    'Return action="drill" only if you need deeper local expansion.',
+    'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
+    'Use edge_summary to reason about relations and continuity.',
+].join('\n');
+
+const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
+    'You are finalizing memory recall node selection after optional drill expansion.',
+    'Select both storyline continuity and required semantic support nodes.',
+    'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
+    'Prefer the smallest sufficient set; avoid selecting all candidates unless clearly necessary.',
+].join('\n');
+
 const defaultSettings = {
     enabled: false,
     updateEvery: 6,
@@ -172,10 +188,8 @@ const defaultSettings = {
     recallResponseLength: 260,
     toolCallRetryMax: 2,
     recallMaxIterations: 3,
-    recallMaxSelection: 8,
-    recallRootCandidates: 24,
-    recallExpandedCandidates: 48,
-    recallNeighborLimit: 24,
+    recallRouteSystemPrompt: DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
+    recallFinalizeSystemPrompt: DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT,
     extractApiPresetName: '',
     extractPresetName: '',
     extractResponseLength: 360,
@@ -209,11 +223,9 @@ function registerLocaleData() {
         'Exclude latest N turns from memory injection': '记忆注入排除最近 N 轮',
         'Recall max iterations': '召回最大轮数',
         'Extract batch turns': '写入批量轮数',
-        'Recall max selection (0 = unlimited)': '召回最大选择数（0=不限制）',
-        'Recall root candidates': '召回根候选上限',
-        'Recall expanded candidates': '召回扩展候选上限',
-        'Recall neighbor limit': '召回邻接扩展预算',
         'Tool-call retries': '工具调用重试次数',
+        'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
+        'Recall Stage 2 Prompt (Finalize)': '召回阶段2提示词（最终选择）',
         'Advanced Settings': '高级设置',
         'Open Advanced Settings': '打开高级设置',
         'Save Advanced Settings': '保存高级设置',
@@ -393,11 +405,9 @@ function registerLocaleData() {
         'Exclude latest N turns from memory injection': '記憶注入排除最近 N 輪',
         'Recall max iterations': '召回最大輪數',
         'Extract batch turns': '寫入批次輪數',
-        'Recall max selection (0 = unlimited)': '召回最大選取數（0=不限）',
-        'Recall root candidates': '召回根候選上限',
-        'Recall expanded candidates': '召回擴展候選上限',
-        'Recall neighbor limit': '召回鄰接擴展預算',
         'Tool-call retries': '工具呼叫重試次數',
+        'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
+        'Recall Stage 2 Prompt (Finalize)': '召回階段2提示詞（最終選擇）',
         'Advanced Settings': '進階設定',
         'Open Advanced Settings': '打開進階設定',
         'Save Advanced Settings': '儲存進階設定',
@@ -723,30 +733,8 @@ function ensureSettings() {
         2,
         Math.min(6, Math.floor(Number(extension_settings[MODULE_NAME].recallMaxIterations) || defaultSettings.recallMaxIterations)),
     );
-    extension_settings[MODULE_NAME].recallMaxSelection = Math.max(
-        0,
-        Math.floor(Number(extension_settings[MODULE_NAME].recallMaxSelection)),
-    );
-    if (!Number.isFinite(extension_settings[MODULE_NAME].recallMaxSelection)) {
-        extension_settings[MODULE_NAME].recallMaxSelection = defaultSettings.recallMaxSelection;
-    }
-    const recallRootCandidatesRaw = Number(extension_settings[MODULE_NAME].recallRootCandidates);
-    const recallExpandedCandidatesRaw = Number(extension_settings[MODULE_NAME].recallExpandedCandidates);
-    const recallNeighborLimitRaw = Number(extension_settings[MODULE_NAME].recallNeighborLimit);
     const extractBatchTurnsRaw = Number(extension_settings[MODULE_NAME].extractBatchTurns);
     const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
-    extension_settings[MODULE_NAME].recallRootCandidates = Math.max(
-        1,
-        Math.floor(Number.isFinite(recallRootCandidatesRaw) ? recallRootCandidatesRaw : defaultSettings.recallRootCandidates),
-    );
-    extension_settings[MODULE_NAME].recallExpandedCandidates = Math.max(
-        1,
-        Math.floor(Number.isFinite(recallExpandedCandidatesRaw) ? recallExpandedCandidatesRaw : defaultSettings.recallExpandedCandidates),
-    );
-    extension_settings[MODULE_NAME].recallNeighborLimit = Math.max(
-        1,
-        Math.floor(Number.isFinite(recallNeighborLimitRaw) ? recallNeighborLimitRaw : defaultSettings.recallNeighborLimit),
-    );
     extension_settings[MODULE_NAME].extractBatchTurns = Math.max(
         2,
         Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : defaultSettings.extractBatchTurns),
@@ -755,20 +743,17 @@ function ensureSettings() {
         0,
         Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : defaultSettings.recentRawTurns),
     );
+    extension_settings[MODULE_NAME].recallRouteSystemPrompt = String(extension_settings[MODULE_NAME].recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
+    extension_settings[MODULE_NAME].recallFinalizeSystemPrompt = String(extension_settings[MODULE_NAME].recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
+    delete extension_settings[MODULE_NAME].recallMaxSelection;
+    delete extension_settings[MODULE_NAME].recallRootCandidates;
+    delete extension_settings[MODULE_NAME].recallExpandedCandidates;
+    delete extension_settings[MODULE_NAME].recallNeighborLimit;
     extension_settings[MODULE_NAME].nodeTypeSchema = normalizeNodeTypeSchema(extension_settings[MODULE_NAME].nodeTypeSchema);
 }
 
 function getSettings() {
     return extension_settings[MODULE_NAME];
-}
-
-function getRecallSelectionLimit(settings) {
-    const fallback = Math.max(0, Math.floor(Number(defaultSettings.recallMaxSelection) || 0));
-    const raw = Number(settings?.recallMaxSelection);
-    if (!Number.isFinite(raw)) {
-        return fallback;
-    }
-    return Math.max(0, Math.floor(raw));
 }
 
 function escapeHtml(value) {
@@ -2846,7 +2831,6 @@ function hasTitleOrAliasHit(queryText, node) {
 }
 
 function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) {
-    const maxItems = Math.max(1, Number(settings.recallRootCandidates || 24));
     const query = normalizeText(queryBundle?.fullText || '');
     const rollups = listNodesByLevel(store, LEVEL.ROLLUP)
         .filter(node => node.id !== store.rollupRootId && !node.archived)
@@ -2860,12 +2844,12 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) 
     const turns = store.turnOrder.map(id => store.nodes[id]).filter(Boolean).filter(node => !node.archived);
     const schemaMap = getNodeTypeSchemaMap(settings);
     const merged = [
-        ...getSortedNodesByRecency(rollups).slice(0, 8),
+        ...getSortedNodesByRecency(rollups),
         ...canon,
-        ...getSortedNodesByRecency(arcs).slice(0, 10),
-        ...getSortedNodesByRecency(episodes).slice(0, 10),
-        ...getSortedNodesByRecency(semantic).slice(0, 24),
-        ...getSortedNodesByRecency(turns).slice(0, 8),
+        ...getSortedNodesByRecency(arcs),
+        ...getSortedNodesByRecency(episodes),
+        ...getSortedNodesByRecency(semantic),
+        ...getSortedNodesByRecency(turns),
     ];
 
     const uniqueNodes = [];
@@ -2902,17 +2886,11 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) 
         picked.push(node);
     }
     for (const node of optionalRows) {
-        if (picked.length >= maxItems && mandatoryRows.length <= maxItems) {
-            break;
-        }
         if (!node?.id || pickedIds.has(node.id)) {
             continue;
         }
         pickedIds.add(node.id);
         picked.push(node);
-        if (picked.length >= maxItems && mandatoryRows.length <= maxItems) {
-            break;
-        }
     }
     return picked;
 }
@@ -2926,8 +2904,7 @@ function normalizeEdgeTypeList(rawTypes) {
 }
 
 async function chooseRecallRoute(context, settings, recallState) {
-    const selectionLimit = getRecallSelectionLimit(settings);
-    const maxSelection = selectionLimit > 0 ? Math.max(2, selectionLimit) : 0;
+    const routeSystemPrompt = String(settings?.recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
     const alwaysInjectIds = Array.isArray(recallState?.alwaysInjectIds) ? recallState.alwaysInjectIds : [];
     const candidateSet = new Set((recallState.candidates || []).map(node => String(node?.id || '')).filter(Boolean));
     const candidateRows = (recallState.candidates || []).map(node => {
@@ -2945,14 +2922,7 @@ async function chooseRecallRoute(context, settings, recallState) {
     });
     try {
         const parsed = await runFunctionCallTask(context, settings, {
-            systemPrompt: [
-                'You are a memory recall agent.',
-                'Step 1 decides whether current candidate graph is enough.',
-                'Return action="finalize" if you can pick final nodes now.',
-                'Return action="drill" only if you need deeper local expansion.',
-                'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
-                'Use edge_summary to reason about relations and continuity.',
-            ].join('\n'),
+            systemPrompt: routeSystemPrompt,
             userPrompt: JSON.stringify({
                 query_bundle: recallState.queryBundle,
                 query: recallState.query,
@@ -2966,11 +2936,6 @@ async function chooseRecallRoute(context, settings, recallState) {
                     compression_mode: String(item?.compression?.mode || 'none'),
                 })),
                 constraints: {
-                    max_selection: maxSelection,
-                    zero_means_unlimited: true,
-                    max_expand_requests: 4,
-                    max_expand_depth: 2,
-                    max_expand_budget_nodes: Math.max(8, Number(settings.recallNeighborLimit || 24)),
                     recent_turn_window: Math.max(3, Number(settings.recentRawTurns || 5)),
                     injection_exclude_recent_turns: Math.max(0, Number(settings.recentRawTurns || 5)),
                 },
@@ -2999,7 +2964,6 @@ async function chooseRecallRoute(context, settings, recallState) {
                                     items: { type: 'string' },
                                 },
                                 depth: { type: 'integer' },
-                                budget_nodes: { type: 'integer' },
                                 include_children: { type: 'boolean' },
                             },
                             required: ['seed_node_id'],
@@ -3025,8 +2989,7 @@ async function chooseRecallRoute(context, settings, recallState) {
                 ? parsed.expand_plan.map(item => ({
                     seed_node_id: String(item?.seed_node_id || '').trim(),
                     relation_types: normalizeEdgeTypeList(item?.relation_types),
-                    depth: Math.max(1, Math.min(2, Number(item?.depth) || 1)),
-                    budget_nodes: Math.max(4, Math.min(120, Number(item?.budget_nodes) || Number(settings.recallNeighborLimit || 24))),
+                    depth: Math.max(1, Math.floor(Number(item?.depth) || 1)),
                     include_children: item?.include_children !== false,
                 })).filter(item => item.seed_node_id && candidateSet.has(item.seed_node_id))
                 : [],
@@ -3039,9 +3002,7 @@ async function chooseRecallRoute(context, settings, recallState) {
         console.warn(`[${MODULE_NAME}] recall route failed`, error);
         return {
             action: 'finalize',
-            selected_node_ids: (selectionLimit > 0
-                ? recallState.candidates.slice(0, maxSelection)
-                : recallState.candidates).map(node => node.id),
+            selected_node_ids: recallState.candidates.map(node => node.id),
             expand_plan: [],
             referenced_always_inject_ids: [],
             reason: 'Fallback route used.',
@@ -3058,11 +3019,10 @@ function addCandidate(candidateMap, node) {
     }
 }
 
-function expandRouteCandidates(store, route, rootCandidates, settings) {
+function expandRouteCandidates(store, route, rootCandidates) {
     const candidateMap = new Map();
     const expandPlan = Array.isArray(route?.expand_plan) ? route.expand_plan : [];
     const edges = Array.isArray(store?.edges) ? store.edges : [];
-    const expandedCap = Math.max(1, Number(settings.recallExpandedCandidates || 48));
 
     for (const node of rootCandidates) {
         addCandidate(candidateMap, node);
@@ -3074,22 +3034,17 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
         }
         const relationTypes = normalizeEdgeTypeList(request?.relation_types);
         const relationSet = relationTypes.length > 0 ? new Set(relationTypes) : null;
-        const depth = Math.max(1, Math.min(2, Number(request?.depth) || 1));
-        const budget = Math.max(4, Math.min(120, Number(request?.budget_nodes) || Number(settings.recallNeighborLimit || 24)));
+        const depth = Math.max(1, Math.floor(Number(request?.depth) || 1));
         const includeChildren = request?.include_children !== false;
         const seen = new Set([seedId]);
         let frontier = [seedId];
-        let used = 0;
         addCandidate(candidateMap, store.nodes[seedId]);
         for (let hop = 0; hop < depth; hop++) {
-            if (frontier.length === 0 || used >= budget) {
+            if (frontier.length === 0) {
                 break;
             }
             const next = [];
             for (const currentId of frontier) {
-                if (used >= budget) {
-                    break;
-                }
                 const currentNode = store.nodes[currentId];
                 if (!currentNode || currentNode.archived) {
                     continue;
@@ -3102,14 +3057,7 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
                         seen.add(child.id);
                         addCandidate(candidateMap, child);
                         next.push(child.id);
-                        used += 1;
-                        if (used >= budget) {
-                            break;
-                        }
                     }
-                }
-                if (used >= budget) {
-                    break;
                 }
                 for (const edge of edges) {
                     if (!edge) {
@@ -3137,25 +3085,17 @@ function expandRouteCandidates(store, route, rootCandidates, settings) {
                     seen.add(neighborId);
                     addCandidate(candidateMap, neighbor);
                     next.push(neighborId);
-                    used += 1;
-                    if (used >= budget) {
-                        break;
-                    }
                 }
             }
             frontier = next;
         }
     }
 
-    const expanded = Array.from(candidateMap.values())
-        .slice(0, expandedCap);
-
-    return expanded;
+    return Array.from(candidateMap.values());
 }
 
 async function chooseFocusNodes(context, settings, recallState) {
-    const selectionLimit = getRecallSelectionLimit(settings);
-    const maxSelection = selectionLimit > 0 ? Math.max(2, selectionLimit) : 0;
+    const finalizeSystemPrompt = String(settings?.recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
     const alwaysInjectIds = Array.isArray(recallState?.alwaysInjectIds) ? recallState.alwaysInjectIds : [];
     const candidateSet = new Set((recallState.candidates || []).map(node => String(node?.id || '')).filter(Boolean));
     const detailRows = (recallState.candidates || []).map(node => {
@@ -3172,11 +3112,7 @@ async function chooseFocusNodes(context, settings, recallState) {
     });
     try {
         const parsed = await runFunctionCallTask(context, settings, {
-            systemPrompt: [
-                'You are finalizing memory recall node selection after optional drill expansion.',
-                'Select both storyline continuity and required semantic support nodes.',
-                'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
-            ].join('\n'),
+            systemPrompt: finalizeSystemPrompt,
             userPrompt: JSON.stringify({
                 query_bundle: recallState.queryBundle,
                 query: recallState.query,
@@ -3184,8 +3120,6 @@ async function chooseFocusNodes(context, settings, recallState) {
                 always_inject_ids: alwaysInjectIds,
                 prior_plan: recallState.route || {},
                 constraints: {
-                    max_selection: maxSelection,
-                    zero_means_unlimited: true,
                     include_non_event_nodes: true,
                     require_event_continuity: true,
                     recent_turn_window: Math.max(3, Number(settings.recentRawTurns || 5)),
@@ -3222,9 +3156,7 @@ async function chooseFocusNodes(context, settings, recallState) {
     } catch (error) {
         console.warn(`[${MODULE_NAME}] recall select failed`, error);
         return {
-            selected_node_ids: (selectionLimit > 0
-                ? recallState.candidates.slice(0, maxSelection)
-                : recallState.candidates).map(node => node.id),
+            selected_node_ids: recallState.candidates.map(node => node.id),
             reason: 'Fallback selection used.',
         };
     }
@@ -3242,8 +3174,7 @@ function collectAlwaysInjectNodes(store, settings) {
     return listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => !node.archived)
         .filter(node => alwaysTypes.includes(String(node.type || '').toLowerCase()))
-        .sort(compareNodesByRecency)
-        .slice(0, 6);
+        .sort(compareNodesByRecency);
 }
 
 function getNodeTurnRange(node) {
@@ -3399,75 +3330,6 @@ function getTableCellValueFromNode(node, columnName) {
         return toDisplayScalar(deepHit);
     }
     return String(node?.metadata?.[key] ?? '');
-}
-
-function getRecallBucketKey(node) {
-    if (!node) {
-        return 'unknown';
-    }
-    if (node.level === LEVEL.SEMANTIC) {
-        return `semantic:${String(node.type || 'semantic').trim().toLowerCase()}`;
-    }
-    return `timeline:${String(node.level || 'unknown').trim().toLowerCase()}`;
-}
-
-function applySelectionCapWithCoverage(nodes, maxSelection) {
-    const limit = Math.max(0, Number(maxSelection || 0));
-    if (limit <= 0) {
-        return {
-            selected: Array.isArray(nodes) ? nodes.slice() : [],
-            dropped: [],
-        };
-    }
-    if (!Array.isArray(nodes) || nodes.length <= limit) {
-        return {
-            selected: Array.isArray(nodes) ? nodes.slice() : [],
-            dropped: [],
-        };
-    }
-
-    const selected = [];
-    const dropped = [];
-    const usedIds = new Set();
-    const coveredBuckets = new Set();
-
-    for (const node of nodes) {
-        if (!node?.id || usedIds.has(node.id)) {
-            continue;
-        }
-        const bucket = getRecallBucketKey(node);
-        if (coveredBuckets.has(bucket)) {
-            continue;
-        }
-        selected.push(node);
-        usedIds.add(node.id);
-        coveredBuckets.add(bucket);
-        if (selected.length >= limit) {
-            break;
-        }
-    }
-
-    if (selected.length < limit) {
-        for (const node of nodes) {
-            if (!node?.id || usedIds.has(node.id)) {
-                continue;
-            }
-            selected.push(node);
-            usedIds.add(node.id);
-            if (selected.length >= limit) {
-                break;
-            }
-        }
-    }
-
-    for (const node of nodes) {
-        if (!node?.id || usedIds.has(node.id)) {
-            continue;
-        }
-        dropped.push(node);
-    }
-
-    return { selected, dropped };
 }
 
 function buildFocusTablesText(nodes, settings) {
@@ -3678,7 +3540,7 @@ async function runLLMDrivenRecall(context, store, payload) {
 
     let expandedCandidates = rootCandidates.slice();
     if (selectedIds.length === 0 && route.action === 'drill' && maxIterations >= 2) {
-        expandedCandidates = expandRouteCandidates(store, route, rootCandidates, settings);
+        expandedCandidates = expandRouteCandidates(store, route, rootCandidates);
         trace.push({
             step: 'expand_from_plan',
             expanded_candidates: expandedCandidates.map(node => node.id),
@@ -3748,17 +3610,7 @@ async function runLLMDrivenRecall(context, store, payload) {
         selectedNodeSeen.add(node.id);
         dedupedSelectedNodes.push(node);
     }
-    const selectionCap = getRecallSelectionLimit(settings);
-    const cappedSelection = applySelectionCapWithCoverage(dedupedSelectedNodes, selectionCap);
-    const selectedNodes = cappedSelection.selected;
-    if (cappedSelection.dropped.length > 0) {
-        trace.push({
-            step: 'selection_cap_applied',
-            cap: selectionCap,
-            selected_node_ids: selectedNodes.map(node => node.id),
-            dropped_node_ids: cappedSelection.dropped.map(node => node.id),
-        });
-    }
+    const selectedNodes = dedupedSelectedNodes;
     const mergedNodes = [];
     const seenNodeIds = new Set();
     for (const node of [...selectedNodes, ...alwaysInjectNodes]) {
@@ -3779,6 +3631,9 @@ async function runLLMDrivenRecall(context, store, payload) {
     const excludeTurns = Math.max(0, Number(settings.recentRawTurns || 5));
     const excludedNodeIds = [];
     const filteredNodes = mergedNodes.filter((node) => {
+        if (alwaysInjectSet.has(String(node?.id || ''))) {
+            return true;
+        }
         const excluded = isNodeInRecentExcludeWindow(node, latestTurnIndex, excludeTurns);
         if (excluded && node?.id) {
             excludedNodeIds.push(node.id);
@@ -5692,6 +5547,8 @@ async function openSchemaEditorPopup(context, settings, root) {
 }
 
 function buildAdvancedSettingsPopupHtml(popupId, settings) {
+    const routePrompt = String(settings.recallRouteSystemPrompt || defaultSettings.recallRouteSystemPrompt || '');
+    const finalizePrompt = String(settings.recallFinalizeSystemPrompt || defaultSettings.recallFinalizeSystemPrompt || '');
     return `
 <div id="${popupId}" class="flex-container flexFlowColumn">
     <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
@@ -5701,23 +5558,17 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Recall max iterations'))}
         <input id="${popupId}_recall_iterations" class="text_pole" type="number" min="2" max="6" step="1" value="${Number(settings.recallMaxIterations || defaultSettings.recallMaxIterations)}" />
     </label>
-    <label>${escapeHtml(i18n('Recall max selection (0 = unlimited)'))}
-        <input id="${popupId}_recall_max_selection" class="text_pole" type="number" min="0" step="1" value="${Number(getRecallSelectionLimit(settings))}" />
-    </label>
-    <label>${escapeHtml(i18n('Recall root candidates'))}
-        <input id="${popupId}_recall_root_candidates" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.recallRootCandidates || defaultSettings.recallRootCandidates))}" />
-    </label>
-    <label>${escapeHtml(i18n('Recall expanded candidates'))}
-        <input id="${popupId}_recall_expanded_candidates" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.recallExpandedCandidates || defaultSettings.recallExpandedCandidates))}" />
-    </label>
-    <label>${escapeHtml(i18n('Recall neighbor limit'))}
-        <input id="${popupId}_recall_neighbor_limit" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.recallNeighborLimit || defaultSettings.recallNeighborLimit))}" />
-    </label>
     <label>${escapeHtml(i18n('Tool-call retries'))}
         <input id="${popupId}_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Number(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))}" />
     </label>
     <label>${escapeHtml(i18n('Extract batch turns'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="2" step="1" value="${Math.max(2, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall Stage 1 Prompt (Route/Drill)'))}
+        <textarea id="${popupId}_recall_route_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(routePrompt)}</textarea>
+    </label>
+    <label>${escapeHtml(i18n('Recall Stage 2 Prompt (Finalize)'))}
+        <textarea id="${popupId}_recall_finalize_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(finalizePrompt)}</textarea>
     </label>
 </div>`;
 }
@@ -5749,12 +5600,10 @@ async function openAdvancedSettingsPopup(context, settings, root) {
 
     const recentRawTurnsValue = Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val());
     const recallIterationsValue = Number(popupRoot.find(`#${popupId}_recall_iterations`).val());
-    const recallMaxSelectionValue = Number(popupRoot.find(`#${popupId}_recall_max_selection`).val());
-    const recallRootCandidatesValue = Number(popupRoot.find(`#${popupId}_recall_root_candidates`).val());
-    const recallExpandedCandidatesValue = Number(popupRoot.find(`#${popupId}_recall_expanded_candidates`).val());
-    const recallNeighborLimitValue = Number(popupRoot.find(`#${popupId}_recall_neighbor_limit`).val());
     const toolRetriesValue = Number(popupRoot.find(`#${popupId}_tool_retries`).val());
     const extractBatchTurnsValue = Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val());
+    const recallRoutePromptValue = String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim();
+    const recallFinalizePromptValue = String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim();
 
     settings.recentRawTurns = Math.max(
         0,
@@ -5764,22 +5613,6 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         2,
         Math.min(6, Math.floor(Number.isFinite(recallIterationsValue) ? recallIterationsValue : defaultSettings.recallMaxIterations)),
     );
-    settings.recallMaxSelection = Math.max(
-        0,
-        Math.floor(Number.isFinite(recallMaxSelectionValue) ? recallMaxSelectionValue : defaultSettings.recallMaxSelection),
-    );
-    settings.recallRootCandidates = Math.max(
-        1,
-        Math.floor(Number.isFinite(recallRootCandidatesValue) ? recallRootCandidatesValue : defaultSettings.recallRootCandidates),
-    );
-    settings.recallExpandedCandidates = Math.max(
-        1,
-        Math.floor(Number.isFinite(recallExpandedCandidatesValue) ? recallExpandedCandidatesValue : defaultSettings.recallExpandedCandidates),
-    );
-    settings.recallNeighborLimit = Math.max(
-        1,
-        Math.floor(Number.isFinite(recallNeighborLimitValue) ? recallNeighborLimitValue : defaultSettings.recallNeighborLimit),
-    );
     settings.toolCallRetryMax = Math.max(
         0,
         Math.min(10, Math.floor(Number.isFinite(toolRetriesValue) ? toolRetriesValue : defaultSettings.toolCallRetryMax)),
@@ -5788,6 +5621,8 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         2,
         Math.floor(Number.isFinite(extractBatchTurnsValue) ? extractBatchTurnsValue : defaultSettings.extractBatchTurns),
     );
+    settings.recallRouteSystemPrompt = recallRoutePromptValue || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
+    settings.recallFinalizeSystemPrompt = recallFinalizePromptValue || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
 
     saveSettingsDebounced();
     notifySuccess(i18n('Advanced settings saved.'));
