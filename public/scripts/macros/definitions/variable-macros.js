@@ -5,7 +5,7 @@ import { MacroRegistry, MacroCategory, MacroValueType } from '../engine/MacroReg
  * variables (e.g. {{setvar}}, {{getvar}}, {{incvar}}, etc.).
  */
 export function registerVariableMacros() {
-    const ctx = SillyTavern.getContext();
+    const ctx = Luker.getContext();
 
     // {{setvar::name::value}} -> '' (side-effect on local variable)
     MacroRegistry.registerMacro('setvar', {

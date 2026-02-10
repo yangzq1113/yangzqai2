@@ -11,11 +11,11 @@ export class WebLlmVectorProvider {
      * @throws {Error} If WebLLM is not available or not up-to-date
      */
     #checkWebLlm() {
-        if (!Object.hasOwn(SillyTavern, 'llm')) {
+        if (!Object.hasOwn(Luker, 'llm')) {
             throw new Error('WebLLM is not available', { cause: 'webllm-not-available' });
         }
 
-        if (typeof SillyTavern.llm.generateEmbedding !== 'function') {
+        if (typeof Luker.llm.generateEmbedding !== 'function') {
             throw new Error('WebLLM is not updated', { cause: 'webllm-not-updated' });
         }
     }
@@ -28,7 +28,7 @@ export class WebLlmVectorProvider {
     #initEngine(modelId) {
         this.#checkWebLlm();
         if (!this.#engine) {
-            this.#engine = SillyTavern.llm.getEngine();
+            this.#engine = Luker.llm.getEngine();
         }
 
         return this.#engine.loadModel(modelId);
@@ -40,7 +40,7 @@ export class WebLlmVectorProvider {
      */
     getModels() {
         this.#checkWebLlm();
-        return SillyTavern.llm.getEmbeddingModels();
+        return Luker.llm.getEmbeddingModels();
     }
 
     /**

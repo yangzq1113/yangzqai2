@@ -1,5 +1,5 @@
 import { getRequestHeaders, substituteParams } from '../../../script.js';
-import { saveTtsProviderSettings, sanitizeId } from './index.js';
+import { isSystemVoiceAlias, saveTtsProviderSettings, sanitizeId } from './index.js';
 
 export { OpenAITtsProvider };
 
@@ -152,7 +152,7 @@ class OpenAITtsProvider {
         $('#openai-character-instructions').empty();
 
         for (const char of currentCharacters) {
-            if (char === 'SillyTavern System' || char === '[Default Voice]') continue;
+            if (isSystemVoiceAlias(char) || char === '[Default Voice]') continue;
 
             const sanitizedName = sanitizeId(char);
             const savedInstructions = this.settings.characterInstructions?.[char] || '';

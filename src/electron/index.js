@@ -21,7 +21,7 @@ const cliArguments = yargs(process.argv)
 /** @type {string} The URL to load in the window. */
 let appUrl;
 
-function createSillyTavernWindow() {
+function createLukerWindow() {
     if (!appUrl) {
         console.error('The server has not started yet.');
         return;
@@ -36,7 +36,7 @@ function startServer() {
     return new Promise((_resolve, _reject) => {
         serverEvents.addListener(EVENT_NAMES.SERVER_STARTED, ({ url }) => {
             appUrl = url.toString();
-            createSillyTavernWindow();
+            createLukerWindow();
         });
         const sillyTavernRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
         process.chdir(sillyTavernRoot);
@@ -48,7 +48,7 @@ function startServer() {
 app.whenReady().then(() => {
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
-            createSillyTavernWindow();
+            createLukerWindow();
         }
     });
 

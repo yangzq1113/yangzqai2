@@ -169,11 +169,17 @@ declare global {
     var ePub;
     var quickReplyApi: QuickReplyApi;
 
-    var SillyTavern: {
+    var Luker: {
         getContext(): typeof getContext;
         llm: any;
         libs: typeof libs;
     };
+
+    /** @deprecated Use Luker instead. */
+    var st: typeof Luker;
+
+    /** @deprecated Use Luker instead. */
+    var SillyTavern: typeof Luker;
 
     // Jquery plugins
     interface JQuery {

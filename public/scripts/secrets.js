@@ -186,7 +186,7 @@ const getLabel = () => moment().format('L LT');
  * @returns {string|null} The secret key corresponding to the selected API, or null if no key is found.
  */
 export function resolveSecretKey() {
-    const { mainApi, chatCompletionSettings, textCompletionSettings } = SillyTavern.getContext();
+    const { mainApi, chatCompletionSettings, textCompletionSettings } = Luker.getContext();
     const chatCompletionSource = chatCompletionSettings.chat_completion_source;
     const textCompletionType = textCompletionSettings.type;
 
@@ -277,7 +277,7 @@ async function viewSecrets() {
     });
 
     if (response.status == 403) {
-        await Popup.show.text(t`Forbidden`, t`To view your API keys here, set the value of allowKeysExposure to true in config.yaml file and restart the SillyTavern server.`);
+        await Popup.show.text(t`Forbidden`, t`To view your API keys here, set the value of allowKeysExposure to true in config.yaml file and restart the Luker server.`);
         return;
     }
 

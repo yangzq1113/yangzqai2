@@ -2,7 +2,7 @@
 <html>
 
 <head>
-    <title>SillyTavern</title>
+    <title>Luker</title>
     <base href="/">
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, viewport-fit=cover, initial-scale=1, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
@@ -177,11 +177,6 @@
                                         </strong>
 
                                         <div class="flex-container gap3px">
-                                            <label for="bind_preset_to_connection" class="margin0 menu_button menu_button_icon" title="Bind presets to API connections" data-i18n="[title]Bind presets to API connections">
-                                                <input id="bind_preset_to_connection" type="checkbox" class="displayNone" />
-                                                <i class="fa-fw fa-solid fa-link toggleOn"></i>
-                                                <i class="fa-fw fa-solid fa-link-slash toggleOff"></i>
-                                            </label>
                                             <div id="import_oai_preset" class="margin0 menu_button menu_button_icon" title="Import preset" data-i18n="[title]Import preset">
                                                 <i class="fa-fw fa-solid fa-file-import"></i>
                                             </div>
@@ -7118,6 +7113,12 @@
                                         <span data-i18n="prompt_manager_forbid_overrides">Forbid Overrides</span>
                                     </label>
                                 </div>
+                                <div id="completion_prompt_manager_plugin_extra_block">
+                                    <label class="checkbox_label" for="completion_prompt_manager_popup_entry_form_plugin_extra" title="Exclude this prompt from plugin preset request assembly.">
+                                        <input type="checkbox" id="completion_prompt_manager_popup_entry_form_plugin_extra" name="plugin_extra" />
+                                        <span>Extra Prompt (Plugin Excluded)</span>
+                                    </label>
+                                </div>
                             </div>
                             <div id="completion_prompt_manager_popup_entry_source_block">
                                 <b data-i18n="Source:">Source:</b>
@@ -7238,15 +7239,15 @@
 
         <div id="onboarding_template" class="template_element">
             <div class="onboarding">
-                <h3 data-i18n="Welcome to SillyTavern!">Welcome to SillyTavern!</h3>
+                <h3 data-i18n="Welcome to Luker!">Welcome to Luker!</h3>
                 <div id="onboarding-UI-language-block" class="flex-container alignItemsBaseline">
                     <span data-i18n="UI Language">Language:</span>
                     <select id="onboarding_ui_language_select" class="flex1 margin0">
                         <option value="en">English</option>
                     </select>
                 </div>
-                <b data-i18n="SillyTavern is aimed at advanced users.">
-                    SillyTavern is aimed at advanced users.
+                <b data-i18n="Luker is aimed at advanced users.">
+                    Luker is aimed at advanced users.
                 </b>
                 <ul class="justifyLeft marginTopBot5">
                     <li><span data-i18n="welcome_message_part_1">Read the</span> <a href="https://docs.sillytavern.app/" target="_blank" data-i18n="welcome_message_part_2">Official Documentation</a><span data-i18n="welcome_message_part_3">.</span></li>

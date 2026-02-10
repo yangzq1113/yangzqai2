@@ -1903,7 +1903,7 @@ jQuery(async () => {
         e.preventDefault();
         e.stopPropagation();
 
-        if (Object.hasOwn(SillyTavern, 'llm')) {
+        if (Object.hasOwn(Luker, 'llm')) {
             toastr.info('WebLLM is already installed');
             return;
         }

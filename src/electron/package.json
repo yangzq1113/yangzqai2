@@ -1,7 +1,7 @@
 {
   "name": "sillytavern-electron",
   "version": "1.0.0",
-  "description": "Electron server for SillyTavern",
+  "description": "Electron server for Luker",
   "license": "AGPL-3.0",
   "author": "",
   "type": "module",

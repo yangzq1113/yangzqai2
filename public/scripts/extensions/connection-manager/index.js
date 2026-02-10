@@ -32,8 +32,7 @@ const ALLOW_EMPTY = [
 
 const CC_COMMANDS = [
     'api',
-    'preset',
-    // Do not fix; CC needs to set the API twice because it could be overridden by the preset
+    // Keep duplicated API application for legacy command sequencing consistency.
     'api',
     'api-url',
     'model',
@@ -481,6 +480,24 @@ async function renderDetailsContent(detailsContent) {
         if (extension_settings.connectionManager[key] === undefined) {
             extension_settings.connectionManager[key] = DEFAULT_SETTINGS[key];
         }
+    }
+
+    // Luker: fully decouple CC API profiles from chat-completion prompt presets.
+    // Existing CC profiles might still carry legacy `preset`; strip it once at startup.
+    let migrated = false;
+    if (Array.isArray(extension_settings.connectionManager.profiles)) {
+        for (const profile of extension_settings.connectionManager.profiles) {
+            if (!profile || typeof profile !== 'object') {
+                continue;
+            }
+            if (profile.mode === 'cc' && Object.hasOwn(profile, 'preset')) {
+                delete profile.preset;
+                migrated = true;
+            }
+        }
+    }
+    if (migrated) {
+        saveSettingsDebounced();
     }
 
     const container = document.getElementById('rm_api_block');
