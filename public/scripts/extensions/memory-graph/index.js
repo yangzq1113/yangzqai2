@@ -5453,26 +5453,18 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
+    root.find('#luker_rpg_memory_update_every').off('change input').on('change input', function () {
+        const nextValue = Math.max(1, Math.floor(Number(jQuery(this).val()) || defaultSettings.updateEvery));
+        settings.updateEvery = nextValue;
+        jQuery(this).val(String(nextValue));
+        saveSettingsDebounced();
+    });
+
     root.find('#luker_rpg_memory_open_schema_editor').off('click').on('click', async function () {
         await openSchemaEditorPopup(context, settings, root);
     });
     root.find('#luker_rpg_memory_open_advanced').off('click').on('click', async function () {
         await openAdvancedSettingsPopup(context, settings, root);
-    });
-
-    root.find('#luker_rpg_memory_save').off('click').on('click', function () {
-        try {
-            settings.updateEvery = Math.max(1, Number(root.find('#luker_rpg_memory_update_every').val()) || defaultSettings.updateEvery);
-            settings.lorebookProjectionEnabled = Boolean(root.find('#luker_rpg_memory_projection_enabled').prop('checked'));
-            updateSchemaSummary(root, settings.nodeTypeSchema);
-
-            saveSettingsDebounced();
-            notifySuccess(i18n('Memory settings saved.'));
-            updateUiStatus(i18n('Saved memory settings.'));
-        } catch (error) {
-            notifyError(i18nFormat('Invalid schema settings: ${0}', error?.message || error));
-            updateUiStatus(i18n('Memory settings save failed.'));
-        }
     });
 
     root.find('#luker_rpg_memory_view_graph').off('click').on('click', async function () {
@@ -5644,7 +5636,6 @@ function ensureUi() {
             </div>
 
             <div class="flex-container">
-                <div id="luker_rpg_memory_save" class="menu_button">${escapeHtml(i18n('Save Settings'))}</div>
                 <div id="luker_rpg_memory_view_graph" class="menu_button">${escapeHtml(i18n('View Graph'))}</div>
                 <div id="luker_rpg_memory_rebuild" class="menu_button">${escapeHtml(i18n('Rebuild From Chat'))}</div>
                 <div id="luker_rpg_memory_reset" class="menu_button">${escapeHtml(i18n('Reset Current Chat'))}</div>
