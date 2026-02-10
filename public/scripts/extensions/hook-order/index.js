@@ -281,6 +281,12 @@ function ensureUi() {
     if (!jQuery(`#${STYLE_ID}`).length) {
         jQuery('head').append(`
 <style id="${STYLE_ID}">
+#${UI_BLOCK_ID} .menu_button,
+#${UI_BLOCK_ID} .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+}
 #${UI_BLOCK_ID} .luker_hook_order_card {
     border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.45));
     border-radius: 8px;
@@ -304,7 +310,8 @@ function ensureUi() {
     margin: 6px 0;
 }
 #${UI_BLOCK_ID} .luker_hook_order_plugin {
-    word-break: break-all;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 #${UI_BLOCK_ID} .luker_hook_order_controls {
     display: flex;

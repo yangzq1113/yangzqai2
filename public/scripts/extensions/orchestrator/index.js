@@ -2842,6 +2842,12 @@ function ensureUi() {
     if (!jQuery(`#${ORCH_STYLE_ID}`).length) {
         jQuery('head').append(`
 <style id="${ORCH_STYLE_ID}">
+#${UI_BLOCK_ID} .menu_button,
+#${UI_BLOCK_ID} .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+}
 #${UI_BLOCK_ID} .luker_orch_board {
     border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.5));
     border-radius: 10px;

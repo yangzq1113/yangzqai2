@@ -5152,6 +5152,12 @@ function ensureStyles() {
 
     jQuery('head').append(`
 <style id="${STYLE_ID}">
+#${UI_BLOCK_ID} .menu_button,
+#${UI_BLOCK_ID} .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+}
 #${UI_BLOCK_ID} #luker_rpg_memory_schema_summary {
     display: block;
     margin: 4px 0 8px;
