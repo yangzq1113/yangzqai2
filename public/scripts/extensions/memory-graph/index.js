@@ -370,7 +370,7 @@ function registerLocaleData() {
         'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
         'Selected node: ${0}. Tip: click an edge to edit relation.': '已选择节点：${0}。提示：点击边可编辑关系。',
         'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
-        'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}': '已选择边 #${0}：${1} -> ${2} [${3}] weight=${4}',
+        'Selected edge #${0}: ${1} -> ${2} [${3}]': '已选择边 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '检测到聊天变更。记忆图会在下次生成时重新同步。',
     });
     addLocaleData('zh-tw', {
@@ -546,7 +546,7 @@ function registerLocaleData() {
         'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
         'Selected node: ${0}. Tip: click an edge to edit relation.': '已選擇節點：${0}。提示：點擊邊可編輯關係。',
         'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
-        'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}': '已選擇邊 #${0}：${1} -> ${2} [${3}] weight=${4}',
+        'Selected edge #${0}: ${1} -> ${2} [${3}]': '已選擇邊 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '偵測到聊天變更。記憶圖會在下次生成時重新同步。',
     });
 }
@@ -1385,7 +1385,6 @@ function addEdge(store, from, to, type = 'related') {
     const now = Date.now();
     const found = store.edges.find(edge => edge.from === from && edge.to === to && edge.type === type);
     if (found) {
-        found.weight = Number(found.weight || 0) + 1;
         found.updatedAt = now;
         return;
     }
@@ -1394,7 +1393,6 @@ function addEdge(store, from, to, type = 'related') {
         from,
         to,
         type,
-        weight: 1,
         updatedAt: now,
     });
 }
@@ -4029,8 +4027,8 @@ function renderGraphInspectorHtml(store) {
     <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Recent Edges'))}</h4>
     <div class="luker-rpg-memory-graph-table-wrap">
     <table class="table" style="font-size:12px; margin-top:6px;">
-        <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Weight'))}</th><th>${escapeHtml(i18n('Updated'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
-        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge.weight || 1)}</td><td>${Number(edge.updatedAt || 0)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">${escapeHtml(i18n('Edit'))}</div></td></tr>`).join('')}</tbody>
+        <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Updated'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge.updatedAt || 0)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">${escapeHtml(i18n('Edit'))}</div></td></tr>`).join('')}</tbody>
     </table>
     </div>
     <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Last Projection'))}</h4>
@@ -4377,7 +4375,6 @@ function buildGraphCytoscapeElements(store) {
                     source: `node:${String(item.edge.from)}`,
                     target: `node:${String(item.edge.to)}`,
                     type: String(item.edge?.type || 'related'),
-                    weight: Math.max(0.01, Number(item.edge?.weight || 1)),
                 },
             }))
         : [];
@@ -4425,7 +4422,6 @@ function renderEdgeFormEditorHtml(store, editorId, edge = {}, edgeIndex = -1) {
     const from = String(edge?.from || '').trim();
     const to = String(edge?.to || '').trim();
     const type = String(edge?.type || 'related').trim() || 'related';
-    const weight = Math.max(0.01, Number(edge?.weight || 1));
 
     return `
 <div id="${editorId}" class="flex-container flexFlowColumn">
@@ -4439,9 +4435,6 @@ function renderEdgeFormEditorHtml(store, editorId, edge = {}, edgeIndex = -1) {
         </label>
         <label>${escapeHtml(i18n('Type'))}
             <select data-field="type" class="text_pole">${getEdgeTypeOptionsHtml(store, type)}</select>
-        </label>
-        <label>${escapeHtml(i18n('Weight'))}
-            <input data-field="weight" class="text_pole" type="number" min="0.01" step="0.01" value="${weight}" />
         </label>
     </div>
 </div>`;
@@ -4560,7 +4553,7 @@ async function openGraphInspectorPopup(context) {
                             'target-arrow-shape': 'triangle',
                             'target-arrow-color': '#8e95a0',
                             'line-color': '#8e95a0',
-                            width: 'mapData(weight, 0.01, 5, 1, 5)',
+                            width: 2,
                             color: '#d3d9e2',
                             'text-outline-width': 2,
                             'text-outline-color': '#20242b',
@@ -4659,12 +4652,11 @@ async function openGraphInspectorPopup(context) {
                     return;
                 }
                 updateSelectionText(i18nFormat(
-                    'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}',
+                    'Selected edge #${0}: ${1} -> ${2} [${3}]',
                     edgeIndex,
                     edge.from,
                     edge.to,
                     edge.type,
-                    Number(edge.weight || 1),
                 ));
             });
             cy.on('tap', (event) => {
@@ -4714,12 +4706,11 @@ async function openGraphInspectorPopup(context) {
         if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
             const edge = latest.edges[selectedEdgeIndex];
             updateSelectionText(i18nFormat(
-                'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}',
+                'Selected edge #${0}: ${1} -> ${2} [${3}]',
                 selectedEdgeIndex,
                 edge.from,
                 edge.to,
                 edge.type,
-                Number(edge.weight || 1),
             ));
         } else {
             updateSelectionText('');
@@ -4740,7 +4731,7 @@ async function openGraphInspectorPopup(context) {
         const editorHtml = renderEdgeFormEditorHtml(
             latest,
             editorId,
-            sourceEdge || { from: '', to: '', type: 'related', weight: 1 },
+            sourceEdge || { from: '', to: '', type: 'related' },
             isEdit ? edgeIndex : -1,
         );
         const result = await context.callGenericPopup(
@@ -4767,7 +4758,6 @@ async function openGraphInspectorPopup(context) {
             const from = String(editorRoot.find('[data-field="from"]').val() || '').trim();
             const to = String(editorRoot.find('[data-field="to"]').val() || '').trim();
             const type = String(editorRoot.find('[data-field="type"]').val() || 'related').trim() || 'related';
-            const weight = Math.max(0.01, Number(editorRoot.find('[data-field="weight"]').val()) || 1);
 
             if (!from || !to) {
                 throw new Error(i18n('From/To node is required'));
@@ -4783,7 +4773,6 @@ async function openGraphInspectorPopup(context) {
                 from,
                 to,
                 type,
-                weight,
                 updatedAt: Date.now(),
             };
 
