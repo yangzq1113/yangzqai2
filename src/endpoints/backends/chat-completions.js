@@ -177,9 +177,10 @@ function resolveLukerPromptMessages(requestBody) {
     const stateId = typeof delta.state_id === 'string' ? delta.state_id.trim() : '';
     const baseRevision = Number(delta.base_revision);
     const prefixLength = Number(delta.prefix_length);
-    const suffixMessages = Array.isArray(delta.messages) ? delta.messages : null;
+    const suffixLength = Number.isInteger(Number(delta.suffix_length)) ? Number(delta.suffix_length) : 0;
+    const middleMessages = Array.isArray(delta.messages) ? delta.messages : null;
 
-    if (!stateId || !Number.isInteger(baseRevision) || !Number.isInteger(prefixLength) || !Array.isArray(suffixMessages)) {
+    if (!stateId || !Number.isInteger(baseRevision) || !Number.isInteger(prefixLength) || !Number.isInteger(suffixLength) || !Array.isArray(middleMessages)) {
         return {
             ok: false,
             statusCode: 400,
@@ -221,9 +222,20 @@ function resolveLukerPromptMessages(requestBody) {
         };
     }
 
+    if (suffixLength < 0 || (prefixLength + suffixLength) > state.messages.length) {
+        return {
+            ok: false,
+            statusCode: 400,
+            stateId,
+            messagesSnapshot: null,
+            message: 'Prompt delta suffix_length is out of bounds.',
+        };
+    }
+
     const reconstructedMessages = structuredClone([
         ...state.messages.slice(0, prefixLength),
-        ...suffixMessages,
+        ...middleMessages,
+        ...(suffixLength > 0 ? state.messages.slice(state.messages.length - suffixLength) : []),
     ]);
     requestBody.messages = reconstructedMessages;
 

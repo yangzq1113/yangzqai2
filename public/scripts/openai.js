@@ -206,23 +206,8 @@ export const chat_completion_sources = {
     SILICONFLOW: 'siliconflow',
 };
 
-const lukerPromptDeltaUnsupportedSources = new Set([
-    chat_completion_sources.CLAUDE,
-    chat_completion_sources.AI21,
-    chat_completion_sources.MAKERSUITE,
-    chat_completion_sources.VERTEXAI,
-    chat_completion_sources.MISTRALAI,
-    chat_completion_sources.COHERE,
-    chat_completion_sources.DEEPSEEK,
-    chat_completion_sources.AIMLAPI,
-    chat_completion_sources.XAI,
-    chat_completion_sources.CHUTES,
-    chat_completion_sources.ELECTRONHUB,
-    chat_completion_sources.AZURE_OPENAI,
-]);
-
 function isLukerPromptDeltaSupported(source) {
-    return !lukerPromptDeltaUnsupportedSources.has(source);
+    return typeof source === 'string' && source.trim().length > 0;
 }
 
 const lukerServerPersistenceUnsupportedSources = new Set([
@@ -266,6 +251,24 @@ function getCommonMessagePrefixLength(previousMessages, currentMessages) {
     }
 
     return index;
+}
+
+function getCommonMessageSuffixLength(previousMessages, currentMessages, prefixLength = 0) {
+    const previousLength = previousMessages.length;
+    const currentLength = currentMessages.length;
+    const maxSuffixLength = Math.min(previousLength, currentLength) - prefixLength;
+    let suffixLength = 0;
+
+    while (suffixLength < maxSuffixLength) {
+        const previousIndex = previousLength - 1 - suffixLength;
+        const currentIndex = currentLength - 1 - suffixLength;
+        if (JSON.stringify(previousMessages[previousIndex]) !== JSON.stringify(currentMessages[currentIndex])) {
+            break;
+        }
+        suffixLength++;
+    }
+
+    return suffixLength;
 }
 
 function upsertPromptDeltaState(key, revision, messages) {
@@ -314,7 +317,11 @@ function buildPromptDeltaRequest(generateData, model) {
     }
 
     const prefixLength = getCommonMessagePrefixLength(previousState.messages, promptMessages);
-    const shouldSendDelta = prefixLength >= 2 && prefixLength <= previousState.messages.length;
+    const suffixLength = getCommonMessageSuffixLength(previousState.messages, promptMessages, prefixLength);
+    const unchangedMessages = prefixLength + suffixLength;
+    const shouldSendDelta = unchangedMessages >= 2
+        && prefixLength <= previousState.messages.length
+        && suffixLength <= previousState.messages.length;
 
     if (!shouldSendDelta) {
         fullRequestBody.luker_prompt_state_id = stateKey;
@@ -332,7 +339,8 @@ function buildPromptDeltaRequest(generateData, model) {
         state_id: stateKey,
         base_revision: previousState.revision,
         prefix_length: prefixLength,
-        messages: promptMessages.slice(prefixLength),
+        suffix_length: suffixLength,
+        messages: promptMessages.slice(prefixLength, promptMessages.length - suffixLength),
     };
     delete deltaBody.messages;
 
