@@ -15,6 +15,15 @@ English | [German](readme-de_de.md) | [中文](readme-zh_cn.md) | [繁體中文]
 
 ---
 
+## Luker Fork Notes
+
+Luker is a fork of SillyTavern focused on cleaner API design and stronger extension capabilities.
+
+- Incremental chat persistence APIs (`append` / `patch` / `meta/patch` / `state/patch`).
+- Backend-owned generation job recovery for reconnect scenarios.
+- Built-in `Orchestrator` and `Memory` plugins.
+- API migration guide: [`../docs/luker-api-migration.md`](../docs/luker-api-migration.md)
+
 SillyTavern provides a single unified interface for many LLM APIs (KoboldAI/CPP, Horde, NovelAI, Ooba, Tabby, OpenAI, OpenRouter, Claude, Mistral and more), a mobile-friendly layout, Visual Novel Mode, Automatic1111 & ComfyUI API image generation integration, TTS, WorldInfo (lorebooks), customizable UI, auto-translate, more prompt options than you'd ever want or need, and endless growth potential via third-party extensions.
 
 We have a [Documentation website](https://docs.sillytavern.app/) to answer most of your questions and help you get started.

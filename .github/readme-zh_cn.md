@@ -18,6 +18,15 @@
 
 ---
 
+## Luker 分支说明
+
+Luker 是 SillyTavern 的一个 fork，重点在于更优雅的 API 设计与更强的扩展能力。
+
+- 增量聊天存储接口（`append` / `patch` / `meta/patch` / `state/patch`）。
+- 后端托管的生成任务恢复能力（前端断连后可恢复）。
+- 内置 `Orchestrator` 与 `Memory` 插件。
+- API 迁移文档：[`../docs/luker-api-migration.md`](../docs/luker-api-migration.md)
+
 SillyTavern 为众多 LLM API（KoboldAI/CPP、Horde、NovelAI、Ooba、Tabby、OpenAI、OpenRouter、Claude、Mistral 等）提供统一界面，拥有移动设备友好的布局、视觉小说模式、Automatic1111 & ComfyUI API 图像生成集成、TTS、世界书（lorebooks）、可自定义的 UI、自动翻译、超乎您想象的丰富 Prompt 选项，以及通过第三方扩展实现的无限增长潜力。
 
 我们有一个[文档网站](https://docs.sillytavern.app/)来回答您的大部分问题并帮助您入门。

@@ -18,6 +18,15 @@
 
 ---
 
+## Luker 分支說明
+
+Luker 是 SillyTavern 的一個 fork，重點在更優雅的 API 設計與更強的擴充能力。
+
+- 增量聊天儲存 API（`append` / `patch` / `meta/patch` / `state/patch`）。
+- 後端託管的生成任務恢復能力（前端斷線後可恢復）。
+- 內建 `Orchestrator` 與 `Memory` 外掛。
+- API 遷移文件：[`../docs/luker-api-migration.md`](../docs/luker-api-migration.md)
+
 SillyTavern 提供一個統一的前端介面，整合多種大型語言模型的 API（包括：KoboldAI/CPP、Horde、NovelAI、Ooba、Tabby、OpenAI、OpenRouter、Claude、Mistral 等）。同時具備對行動裝置友善的佈局、視覺小說模式（Visual Novel Mode）、Automatic1111 與 ComfyUI 的影像生成 API 整合、TTS（語音合成）、世界資訊（Lorebook）、可自訂 UI、自動翻譯功能，以及強大的提示詞（prompt）設定選項和無限的第三方擴充潛力。
 
 我們擁有一個 [官方文件網站](https://docs.sillytavern.app/) 可以幫助解答絕大多數的使用問題，並幫助您順利入門。

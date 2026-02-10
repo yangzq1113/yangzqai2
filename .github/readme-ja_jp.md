@@ -18,6 +18,15 @@
 
 ---
 
+## Luker フォークの追加内容
+
+Luker は SillyTavern のフォークで、API 設計の改善と拡張性の強化に重点を置いています。
+
+- 増分保存 API（`append` / `patch` / `meta/patch` / `state/patch`）。
+- フロント再接続時のための、バックエンド側生成ジョブ復旧。
+- 組み込みプラグイン：`Orchestrator` と `Memory`。
+- API 移行ガイド：[`../docs/luker-api-migration.md`](../docs/luker-api-migration.md)
+
 SillyTavernは、多くのLLM API（KoboldAI/CPP、Horde、NovelAI、Ooba、Tabby、OpenAI、OpenRouter、Claude、Mistralなど）に対応した統一インターフェース、モバイルフレンドリーなレイアウト、ビジュアルノベルモード、Automatic1111 & ComfyUI API画像生成連携、TTS、WorldInfo（伝承本）、カスタマイズ可能なUI、自動翻訳、必要以上に豊富なプロンプトオプション、そしてサードパーティ製拡張機能による無限の成長可能性を提供します。
 
 私たちは[ドキュメントウェブサイト](https://docs.sillytavern.app/)を用意しており、ほとんどの質問に答え、入門の手助けをします。
