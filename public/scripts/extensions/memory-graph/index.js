@@ -176,7 +176,10 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Call luker_rpg_extract_upsert once per node update. Never emit one huge array payload.',
     'Call luker_rpg_extract_done after all upserts are emitted.',
     'For events, include links to involved entities/locations/threads whenever possible.',
-    'Summary rule: summary must be concise and abstract. Never copy long raw dialogue into summary.',
+    'Summary rule is strict: summary must be compact abstraction, not raw text copy.',
+    'Length guide for summary: target 80-150 Chinese characters (soft limit). If critical context would be lost, allow slight overflow.',
+    'Never paste long dialogue, narration, or quotes into summary.',
+    'If information is large, split into multiple node upserts instead of writing one oversized summary.',
     'Write long evidence and quotes in content, not summary.',
     'Put table-like attributes into "fields" object and align keys with schema table columns.',
     'If evidence supports a field (state/goal/identity/status/etc), fill it explicitly instead of leaving blank.',
@@ -245,8 +248,10 @@ function registerLocaleData() {
         'Advanced Settings': '高级设置',
         'Open Advanced Settings': '打开高级设置',
         'Save Advanced Settings': '保存高级设置',
+        'Reset Advanced Settings': '重置高级设置',
         'Advanced settings saved.': '高级设置已保存。',
         'Saved advanced settings.': '已保存高级设置。',
+        'Advanced settings reset to defaults in editor.': '高级设置已在编辑器中重置为默认值。',
         'Update every N messages': '每 N 条消息更新',
         'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆表类型、抽取提示与压缩策略。',
@@ -425,8 +430,10 @@ function registerLocaleData() {
         'Advanced Settings': '進階設定',
         'Open Advanced Settings': '打開進階設定',
         'Save Advanced Settings': '儲存進階設定',
+        'Reset Advanced Settings': '重置進階設定',
         'Advanced settings saved.': '進階設定已儲存。',
         'Saved advanced settings.': '已儲存進階設定。',
+        'Advanced settings reset to defaults in editor.': '進階設定已在編輯器中重設為預設值。',
         'Update every N messages': '每 N 條訊息更新',
         'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶表類型、抽取提示與壓縮策略。',
@@ -5365,12 +5372,27 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Recall Stage 2 Prompt (Finalize)'))}
         <textarea id="${popupId}_recall_finalize_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(finalizePrompt)}</textarea>
     </label>
+    <div class="flex-container justifyContentFlexEnd">
+        <div id="${popupId}_reset_advanced" class="menu_button">${escapeHtml(i18n('Reset Advanced Settings'))}</div>
+    </div>
 </div>`;
 }
 
 async function openAdvancedSettingsPopup(context, settings, root) {
     const popupId = `luker_rpg_memory_advanced_popup_${Date.now()}`;
     const html = buildAdvancedSettingsPopupHtml(popupId, settings);
+    const applyValuesToPopup = (popupRoot, source) => {
+        if (!popupRoot?.length) {
+            return;
+        }
+        popupRoot.find(`#${popupId}_recent_raw_turns`).val(String(Math.max(0, Number(source.recentRawTurns ?? defaultSettings.recentRawTurns))));
+        popupRoot.find(`#${popupId}_recall_iterations`).val(String(Math.max(2, Math.min(6, Number(source.recallMaxIterations ?? defaultSettings.recallMaxIterations)))));
+        popupRoot.find(`#${popupId}_tool_retries`).val(String(Math.max(0, Math.min(10, Number(source.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))));
+        popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(2, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
+        popupRoot.find(`#${popupId}_extract_system_prompt`).val(String(source.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT));
+        popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
+        popupRoot.find(`#${popupId}_recall_finalize_prompt`).val(String(source.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT));
+    };
     const readAdvancedValues = () => {
         const popupRoot = jQuery(`#${popupId}`);
         if (!popupRoot.length) {
@@ -5397,6 +5419,13 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             wide: true,
             large: false,
             allowVerticalScrolling: true,
+            onOpen: () => {
+                const popupRoot = jQuery(`#${popupId}`);
+                popupRoot.find(`#${popupId}_reset_advanced`).off('click').on('click', () => {
+                    applyValuesToPopup(popupRoot, defaultSettings);
+                    notifySuccess(i18n('Advanced settings reset to defaults in editor.'));
+                });
+            },
             onClosing: () => {
                 capturedValues = readAdvancedValues();
                 return true;
