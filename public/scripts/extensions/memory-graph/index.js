@@ -13,17 +13,17 @@ const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 
 const LEVEL = {
-    TURN: 'turn',
     SEMANTIC: 'semantic',
 };
 const COMPRESSION_SUMMARY_SOFT_LIMIT = 150;
+const EXTRACT_SUMMARY_SOFT_TARGET = 300;
 
 const defaultNodeTypeSchema = [
     {
         id: 'event',
         label: 'Event',
         tableName: 'event_table',
-        tableColumns: ['title', 'turn_range', 'summary', 'details', 'participants', 'locations', 'threads', 'status'],
+        tableColumns: ['title', 'seq_range', 'summary', 'participants', 'locations', 'threads', 'status'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Critical plot events, turning points, commitments, betrayals, and irreversible outcomes.',
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
@@ -42,7 +42,7 @@ const defaultNodeTypeSchema = [
         id: 'thread',
         label: 'Thread',
         tableName: 'thread_table',
-        tableColumns: ['title', 'summary', 'status', 'related_events', 'last_update_turn'],
+        tableColumns: ['title', 'summary', 'status', 'related_events', 'last_update_seq'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Unresolved clues, foreshadowing, quests, promises, and long-term hooks.',
         keywords: ['quest', 'clue', 'mystery', 'promise', 'goal', 'thread'],
@@ -61,7 +61,7 @@ const defaultNodeTypeSchema = [
         id: 'character_sheet',
         label: 'Character Sheet',
         tableName: 'character_table',
-        tableColumns: ['name', 'identity', 'state', 'goal', 'relationship', 'inventory', 'secret', 'last_update_turn'],
+        tableColumns: ['name', 'identity', 'state', 'goal', 'relationship', 'inventory', 'secret', 'last_update_seq'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: identity/status/goal/inventory/relationships/secrets.',
         keywords: ['character', 'status', 'relationship', 'inventory', 'goal', 'secret'],
@@ -80,7 +80,7 @@ const defaultNodeTypeSchema = [
         id: 'location_state',
         label: 'Location State',
         tableName: 'location_table',
-        tableColumns: ['name', 'controller', 'danger', 'resource', 'state', 'last_event', 'last_update_turn'],
+        tableColumns: ['name', 'controller', 'danger', 'resource', 'state', 'last_event', 'last_update_seq'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Location status, ownership/control, danger level, and environmental/resource changes. Prefer structured JSON-like content.',
         keywords: ['location', 'control', 'danger', 'resource', 'region', 'base'],
@@ -99,7 +99,7 @@ const defaultNodeTypeSchema = [
         id: 'faction_state',
         label: 'Faction State',
         tableName: 'faction_table',
-        tableColumns: ['name', 'goal', 'alliance', 'hostility', 'leverage', 'state', 'last_update_turn'],
+        tableColumns: ['name', 'goal', 'alliance', 'hostility', 'leverage', 'state', 'last_update_seq'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Faction goals, alliances, hostility shifts, leverage, and conflict escalation.',
         keywords: ['faction', 'alliance', 'hostility', 'politics', 'power'],
@@ -118,7 +118,7 @@ const defaultNodeTypeSchema = [
         id: 'item_state',
         label: 'Item State',
         tableName: 'item_table',
-        tableColumns: ['name', 'owner', 'state', 'effect', 'constraint', 'last_update_turn'],
+        tableColumns: ['name', 'owner', 'state', 'effect', 'constraint', 'last_update_seq'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Key item ownership, condition, unlock state, seals, and usage constraints.',
         keywords: ['artifact', 'item', 'key', 'weapon', 'relic'],
@@ -171,7 +171,7 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
 ].join('\n');
 
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
-    'Extract structured memory nodes from dialogue turns.',
+    'Extract structured memory nodes from dialogue messages.',
     'Use tool calls only. Do not return plain JSON text.',
     'Call luker_rpg_extract_upsert once per node update. Never emit one huge array payload.',
     'Call luker_rpg_extract_done after all upserts are emitted.',
@@ -179,10 +179,9 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Hard rule: return at least 2 tool calls in one response: >=1 luker_rpg_extract_upsert + 1 luker_rpg_extract_done (done must be last).',
     'For events, include links to involved entities/locations/threads whenever possible.',
     'Summary rule is strict: summary must be compact abstraction, not raw text copy.',
-    'Length guide for summary: target 80-150 Chinese characters (soft limit). If critical context would be lost, allow slight overflow.',
+    `Length guide for summary: target around ${EXTRACT_SUMMARY_SOFT_TARGET} Chinese characters (soft limit). If critical context would be lost, allow slight overflow.`,
     'Never paste long dialogue, narration, or quotes into summary.',
     'If information is large, split into multiple node upserts instead of writing one oversized summary.',
-    'Write long evidence and quotes in content, not summary.',
     'Put table-like attributes into "fields" object and align keys with schema table columns.',
     'If evidence supports a field (state/goal/identity/status/etc), fill it explicitly instead of leaving blank.',
     'Keyword focus: when available, fill retrieval keys in fields.keywords (array preferred) and fields.aliases (array preferred), including formal names, nicknames, aliases, and common references.',
@@ -192,7 +191,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'When creating a new node, choose a unique title within the same type based on canonical naming.',
     'Naming guidance: character/faction/location/item nodes should use canonical names.',
     'For event nodes, prefer sequence labels like "Summary 1", "Summary 2", "Summary 3" instead of forcing unique semantic titles.',
-    'Event title should act as a stable short id; put real meaning in summary/content/fields.',
+    'Event title should act as a stable short id; put real meaning in summary/fields.',
     'When updating an existing event, reuse exactly the same Summary label.',
     'When creating a new event, choose the next available Summary number within event type to keep titles unique and predictable.',
 ].join('\n');
@@ -240,9 +239,9 @@ function registerLocaleData() {
         'Extract API preset (Connection profile, empty = current)': '写入 API 预设（连接配置，留空=当前）',
         'Extract preset (params + prompt, empty = current)': '写入预设（参数+提示词，留空=当前）',
         'Project recall output to chat lorebook before WI scan': '在世界书扫描前将召回结果投影到聊天 Lorebook',
-        'Exclude latest N turns from memory injection': '记忆注入排除最近 N 轮',
+        'Exclude latest N messages from memory injection': '记忆注入排除最近 N 条消息',
         'Recall max iterations': '召回最大轮数',
-        'Extract batch turns': '写入批量轮数',
+        'Extract batch messages': '写入批量消息数',
         'Tool-call retries': '工具调用重试次数',
         'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
@@ -285,8 +284,8 @@ function registerLocaleData() {
         '(unset)': '（未设置）',
         '(new)': '（新建）',
         'Memory Graph': '记忆图',
-        'Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}': '节点：${0} | 边：${1} | 回合：${2} | 源消息：${3}',
-        'turn=${0}, semantic=${1}': 'turn=${0}, semantic=${1}',
+        'Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}': '节点：${0} | 边：${1} | 消息：${2} | 源消息：${3}',
+        'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步数：${0} | 层快照：${1}',
         'Visual graph ready. Click an edge to select it for editing.': '可视化图已就绪。点击边可选择并编辑。',
         'Fit View': '适配视图',
@@ -302,7 +301,7 @@ function registerLocaleData() {
         'Title': '标题',
         'Summary': '摘要',
         'Children': '子节点',
-        'TurnRange': '回合范围',
+        'SeqRange': '序列范围',
         'Actions': '操作',
         'Recent Edges': '最近边',
         'From': '起点',
@@ -316,13 +315,11 @@ function registerLocaleData() {
         'Form editor for one node. Parent/child relationships and graph persistence are applied automatically.': '单节点表单编辑器。父子关系和图持久化会自动处理。',
         'Node ID': '节点 ID',
         'Parent Node': '父节点',
-        'Turn Index': '回合索引',
-        'From Turn': '起始回合',
-        'To Turn': '结束回合',
-        'Count': '计数',
+        'Sequence': '序号',
+        'From Sequence': '起始序号',
+        'To Sequence': '结束序号',
         'Finalized': '已定稿',
         'Archived': '已归档',
-        'Content': '内容',
         'Links (comma separated node ids)': '链接（逗号分隔节点 ID）',
         'Metadata (one key=value per line)': '元数据（每行一个 key=value）',
         'Edge ${0}: configure relation between two nodes.': '边 ${0}：配置两个节点之间的关系。',
@@ -365,7 +362,7 @@ function registerLocaleData() {
         'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
         'Recall ready. query="${0}" selected=${1}': '召回就绪。query="${0}" selected=${1}',
         'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
-        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}',
+        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}',
         'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定义节点表、抽取提示和压缩策略。这会控制记忆图存储内容及其随时间压缩方式。',
         'Hierarchical Compression': '分层压缩',
@@ -422,9 +419,9 @@ function registerLocaleData() {
         'Extract API preset (Connection profile, empty = current)': '寫入 API 預設（連線設定，留空=目前）',
         'Extract preset (params + prompt, empty = current)': '寫入預設（參數+提示詞，留空=目前）',
         'Project recall output to chat lorebook before WI scan': '在世界書掃描前將召回結果投影到聊天 Lorebook',
-        'Exclude latest N turns from memory injection': '記憶注入排除最近 N 輪',
+        'Exclude latest N messages from memory injection': '記憶注入排除最近 N 條訊息',
         'Recall max iterations': '召回最大輪數',
-        'Extract batch turns': '寫入批次輪數',
+        'Extract batch messages': '寫入批次訊息數',
         'Tool-call retries': '工具呼叫重試次數',
         'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
@@ -467,8 +464,8 @@ function registerLocaleData() {
         '(unset)': '（未設定）',
         '(new)': '（新建）',
         'Memory Graph': '記憶圖',
-        'Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}': '節點：${0} | 邊：${1} | 回合：${2} | 來源訊息：${3}',
-        'turn=${0}, semantic=${1}': 'turn=${0}, semantic=${1}',
+        'Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}': '節點：${0} | 邊：${1} | 訊息：${2} | 來源訊息：${3}',
+        'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步數：${0} | 層快照：${1}',
         'Visual graph ready. Click an edge to select it for editing.': '視覺化圖已就緒。點擊邊可選取並編輯。',
         'Fit View': '適配視圖',
@@ -484,7 +481,7 @@ function registerLocaleData() {
         'Title': '標題',
         'Summary': '摘要',
         'Children': '子節點',
-        'TurnRange': '回合範圍',
+        'SeqRange': '序列範圍',
         'Actions': '操作',
         'Recent Edges': '最近邊',
         'From': '起點',
@@ -498,13 +495,11 @@ function registerLocaleData() {
         'Form editor for one node. Parent/child relationships and graph persistence are applied automatically.': '單節點表單編輯器。父子關係與圖持久化會自動處理。',
         'Node ID': '節點 ID',
         'Parent Node': '父節點',
-        'Turn Index': '回合索引',
-        'From Turn': '起始回合',
-        'To Turn': '結束回合',
-        'Count': '計數',
+        'Sequence': '序號',
+        'From Sequence': '起始序號',
+        'To Sequence': '結束序號',
         'Finalized': '已定稿',
         'Archived': '已封存',
-        'Content': '內容',
         'Links (comma separated node ids)': '連結（以逗號分隔節點 ID）',
         'Metadata (one key=value per line)': '中繼資料（每行一個 key=value）',
         'Edge ${0}: configure relation between two nodes.': '邊 ${0}：設定兩個節點之間的關係。',
@@ -547,7 +542,7 @@ function registerLocaleData() {
         'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
         'Recall ready. query="${0}" selected=${1}': '召回就緒。query="${0}" selected=${1}',
         'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
-        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}',
+        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}',
         'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定義節點資料表、抽取提示與壓縮策略。這會控制記憶圖儲存內容及其隨時間壓縮方式。',
         'Hierarchical Compression': '分層壓縮',
@@ -677,7 +672,7 @@ function normalizeNodeTypeSchema(schema) {
             tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
             tableColumns: Array.isArray(item.tableColumns)
                 ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
-                : ['title', 'summary', 'content'],
+                : ['title', 'summary'],
             level: String(item.level || LEVEL.SEMANTIC),
             extractHint: String(item.extractHint || '').trim(),
             keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
@@ -1064,15 +1059,15 @@ async function deleteMemoryStoreByTarget(context, target) {
 
 function createEmptyStore() {
     return {
-        version: 2,
+        version: 3,
         nodeSeq: 0,
+        seqCounter: 0,
         nodes: {},
         edges: [],
-        turnOrder: [],
-        turnsSinceUpdate: 0,
-        totalTurns: 0,
-        lastExtractedTurn: -1,
+        pendingMessages: [],
+        messagesSinceUpdate: 0,
         lastRecallTrace: [],
+        lastRecallProjection: null,
         layerSnapshots: [],
         sourceMessageCount: 0,
         sourceDigest: '',
@@ -1084,7 +1079,7 @@ function pruneUnsupportedLevels(store) {
     if (!store || typeof store !== 'object' || !store.nodes || typeof store.nodes !== 'object') {
         return;
     }
-    const allowed = new Set([LEVEL.TURN, LEVEL.SEMANTIC]);
+    const allowed = new Set([LEVEL.SEMANTIC]);
     const removedIds = new Set();
 
     for (const [id, node] of Object.entries(store.nodes)) {
@@ -1117,11 +1112,6 @@ function pruneUnsupportedLevels(store) {
         }
     }
 
-    if (Array.isArray(store.turnOrder)) {
-        store.turnOrder = store.turnOrder.filter(nodeId => !removedIds.has(String(nodeId || '')));
-    } else {
-        store.turnOrder = [];
-    }
     if (Array.isArray(store.edges)) {
         store.edges = store.edges.filter(edge => !removedIds.has(String(edge?.from || '')) && !removedIds.has(String(edge?.to || '')));
     } else {
@@ -1129,44 +1119,140 @@ function pruneUnsupportedLevels(store) {
     }
 }
 
+function normalizeLegacyNodeForStore(node, fallbackSeq = 0) {
+    if (!node || typeof node !== 'object') {
+        return null;
+    }
+    const level = String(node.level || LEVEL.SEMANTIC);
+    if (level !== LEVEL.SEMANTIC) {
+        return null;
+    }
+    const seqFrom = Number.isFinite(Number(node.seqFrom))
+        ? Number(node.seqFrom)
+        : Number.isFinite(Number(node.fromTurn))
+            ? Number(node.fromTurn)
+            : Number.isFinite(Number(node.turnIndex))
+                ? Number(node.turnIndex)
+                : fallbackSeq;
+    const seqTo = Number.isFinite(Number(node.seqTo))
+        ? Number(node.seqTo)
+        : Number.isFinite(Number(node.toTurn))
+            ? Number(node.toTurn)
+            : Number.isFinite(Number(node.turnIndex))
+                ? Number(node.turnIndex)
+                : seqFrom;
+    const minSeq = Math.min(seqFrom, seqTo);
+    const maxSeq = Math.max(seqFrom, seqTo);
+    const summary = normalizeText(node.summary || node.content || '');
+    return {
+        id: String(node.id || ''),
+        type: String(node.type || 'semantic'),
+        level: LEVEL.SEMANTIC,
+        title: normalizeText(node.title || ''),
+        summary,
+        seqFrom: Number.isFinite(minSeq) ? minSeq : fallbackSeq,
+        seqTo: Number.isFinite(maxSeq) ? maxSeq : (Number.isFinite(minSeq) ? minSeq : fallbackSeq),
+        metadata: node.metadata && typeof node.metadata === 'object' ? node.metadata : {},
+        childrenIds: Array.isArray(node.childrenIds) ? node.childrenIds.map(id => String(id || '').trim()).filter(Boolean) : [],
+        links: Array.isArray(node.links) ? node.links.map(id => String(id || '').trim()).filter(Boolean) : [],
+        parentId: String(node.parentId || '').trim(),
+        archived: Boolean(node.archived),
+        finalized: Boolean(node.finalized),
+        count: Math.max(1, Number(node.count || 1)),
+        createdAt: Number(node.createdAt || Date.now()),
+        updatedAt: Number(node.updatedAt || node.createdAt || Date.now()),
+    };
+}
+
 function migrateLegacyStoreIfNeeded(store) {
     if (!store || typeof store !== 'object') {
         return createEmptyStore();
     }
-    if (store.version === 2 && store.nodes && typeof store.nodes === 'object') {
-        if (!Array.isArray(store.layerSnapshots)) {
-            store.layerSnapshots = [];
-        }
-        delete store.activeArcId;
-        delete store.activeEpisodeId;
-        delete store.canonId;
-        delete store.rollupRootId;
-        delete store.lastCanonSnapshotKey;
-        if (!Number.isFinite(Number(store.sourceMessageCount))) {
-            store.sourceMessageCount = 0;
-        }
-        if (typeof store.sourceDigest !== 'string') {
-            store.sourceDigest = '';
-        }
-        pruneUnsupportedLevels(store);
-        return store;
-    }
-
     const migrated = createEmptyStore();
-    const turns = Array.isArray(store.turns) ? store.turns : [];
-    for (const turn of turns) {
-        const pseudoTurn = {
-            is_user: Boolean(turn?.is_user),
-            name: String(turn?.name || ''),
-            mes: String(turn?.mes || ''),
-            send_date: String(turn?.send_date || ''),
-        };
-        ingestTurnNode(migrated, pseudoTurn);
+    migrated.nodeSeq = Math.max(0, Number(store.nodeSeq || 0));
+    migrated.seqCounter = Math.max(0, Number(store.seqCounter || 0));
+    migrated.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
+    migrated.sourceDigest = String(store.sourceDigest || '');
+    migrated.updatedAt = Number(store.updatedAt || Date.now());
+    migrated.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
+    migrated.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? store.lastRecallProjection
+        : null;
+
+    if (Array.isArray(store.layerSnapshots)) {
+        migrated.layerSnapshots = store.layerSnapshots
+            .filter(item => item && typeof item === 'object')
+            .map((item) => ({
+                ...item,
+                level: String(item.level || LEVEL.SEMANTIC) === LEVEL.SEMANTIC ? LEVEL.SEMANTIC : LEVEL.SEMANTIC,
+                from_seq: Number(item.from_seq ?? item.from_turn ?? -1),
+                to_seq: Number(item.to_seq ?? item.to_turn ?? -1),
+            }))
+            .filter(item => item.level === LEVEL.SEMANTIC);
     }
 
-    migrated.layerSnapshots = Array.isArray(store.layerSnapshots) ? store.layerSnapshots : [];
-    pruneUnsupportedLevels(migrated);
+    let fallbackSeq = 0;
+    if (store.nodes && typeof store.nodes === 'object') {
+        for (const [id, rawNode] of Object.entries(store.nodes)) {
+            const normalized = normalizeLegacyNodeForStore(rawNode, fallbackSeq);
+            fallbackSeq += 1;
+            if (!normalized) {
+                continue;
+            }
+            const nodeId = String(id || normalized.id || '').trim();
+            if (!nodeId) {
+                continue;
+            }
+            migrated.nodes[nodeId] = {
+                ...normalized,
+                id: nodeId,
+                title: normalizeText(normalized.title || nodeId),
+            };
+            migrated.seqCounter = Math.max(migrated.seqCounter, Number(normalized.seqTo || normalized.seqFrom || 0));
+            const extractedNodeSeq = Number(String(nodeId).replace(/^n_/, ''));
+            if (Number.isFinite(extractedNodeSeq)) {
+                migrated.nodeSeq = Math.max(migrated.nodeSeq, extractedNodeSeq);
+            }
+        }
+    }
 
+    const validNodeIds = new Set(Object.keys(migrated.nodes));
+    for (const node of Object.values(migrated.nodes)) {
+        node.childrenIds = (Array.isArray(node.childrenIds) ? node.childrenIds : []).filter(id => validNodeIds.has(id));
+        node.links = (Array.isArray(node.links) ? node.links : []).filter(id => validNodeIds.has(id));
+        if (node.parentId && !validNodeIds.has(node.parentId)) {
+            node.parentId = '';
+        }
+    }
+
+    migrated.edges = Array.isArray(store.edges)
+        ? store.edges
+            .filter(edge => edge && typeof edge === 'object')
+            .map(edge => ({
+                from: String(edge.from || '').trim(),
+                to: String(edge.to || '').trim(),
+                type: normalizeText(edge.type || 'related') || 'related',
+                updatedAt: Number(edge.updatedAt || Date.now()),
+            }))
+            .filter(edge => edge.from && edge.to && edge.from !== edge.to && validNodeIds.has(edge.from) && validNodeIds.has(edge.to))
+        : [];
+
+    migrated.pendingMessages = Array.isArray(store.pendingMessages)
+        ? store.pendingMessages
+            .filter(item => item && typeof item === 'object')
+            .map(item => ({
+                seq: Number.isFinite(Number(item.seq)) ? Number(item.seq) : ++migrated.seqCounter,
+                is_user: Boolean(item.is_user),
+                name: String(item.name || ''),
+                mes: String(item.mes || ''),
+                send_date: String(item.send_date || ''),
+            }))
+            .filter(item => normalizeText(item.mes))
+        : [];
+
+    const legacyMessagesSinceUpdate = Number(store.messagesSinceUpdate ?? store.turnsSinceUpdate ?? 0);
+    migrated.messagesSinceUpdate = Math.max(0, Math.floor(Number.isFinite(legacyMessagesSinceUpdate) ? legacyMessagesSinceUpdate : 0));
+    pruneUnsupportedLevels(migrated);
     return migrated;
 }
 
@@ -1292,7 +1378,6 @@ function getStructuredNodeFields(node) {
     mergeObject(node?.metadata);
     mergeObject(tryParseJsonObject(node?.metadata?.fields));
     mergeObject(tryParseJsonObject(node?.metadata?.data));
-    mergeObject(tryParseJsonObject(node?.content));
     mergeObject(tryParseJsonObject(node?.summary));
     return fields;
 }
@@ -1446,20 +1531,33 @@ function nextNodeId(store) {
 function createNode(store, node) {
     const id = nextNodeId(store);
     const now = Date.now();
+    const seqFromRaw = Number.isFinite(Number(node.seqFrom))
+        ? Number(node.seqFrom)
+        : Number.isFinite(Number(node.seq))
+            ? Number(node.seq)
+            : Number.isFinite(Number(node.seqTo))
+                ? Number(node.seqTo)
+                : Number(store.seqCounter || 0);
+    const seqToRaw = Number.isFinite(Number(node.seqTo))
+        ? Number(node.seqTo)
+        : Number.isFinite(Number(node.seq))
+            ? Number(node.seq)
+            : seqFromRaw;
+    const seqFrom = Math.min(seqFromRaw, seqToRaw);
+    const seqTo = Math.max(seqFromRaw, seqToRaw);
+    store.seqCounter = Math.max(Number(store.seqCounter || 0), Number.isFinite(seqTo) ? seqTo : 0);
     store.nodes[id] = {
         id,
         type: String(node.type || 'unknown'),
         level: String(node.level || LEVEL.SEMANTIC),
         title: normalizeText(node.title || id),
         summary: normalizeText(node.summary || ''),
-        content: normalizeText(node.content || ''),
         parentId: node.parentId ? String(node.parentId) : '',
         childrenIds: [],
         links: [],
         metadata: node.metadata && typeof node.metadata === 'object' ? node.metadata : {},
-        turnIndex: Number.isFinite(Number(node.turnIndex)) ? Number(node.turnIndex) : undefined,
-        fromTurn: Number.isFinite(Number(node.fromTurn)) ? Number(node.fromTurn) : undefined,
-        toTurn: Number.isFinite(Number(node.toTurn)) ? Number(node.toTurn) : undefined,
+        seqFrom: Number.isFinite(seqFrom) ? seqFrom : undefined,
+        seqTo: Number.isFinite(seqTo) ? seqTo : undefined,
         finalized: Boolean(node.finalized),
         archived: Boolean(node.archived),
         count: Number(node.count || 1),
@@ -1538,8 +1636,8 @@ function saveLayerSnapshot(store, level, node, extra = {}) {
         node_id: String(node?.id || ''),
         title: String(node?.title || ''),
         summary: String(node?.summary || ''),
-        from_turn: Number(node?.fromTurn ?? node?.turnIndex ?? -1),
-        to_turn: Number(node?.toTurn ?? node?.turnIndex ?? -1),
+        from_seq: Number(node?.seqFrom ?? node?.seqTo ?? -1),
+        to_seq: Number(node?.seqTo ?? node?.seqFrom ?? -1),
         ...extra,
     });
 
@@ -1561,47 +1659,33 @@ function getChildren(store, nodeId) {
     return node.childrenIds.map(id => store.nodes[id]).filter(child => Boolean(child) && !child.archived);
 }
 
-function ingestTurnNode(store, message) {
+function appendPendingMessageFrame(store, message) {
     const settings = getSettings();
     const text = normalizeText(message?.mes || '');
     if (!text) {
         return null;
     }
-
-    const turnNode = createNode(store, {
-        type: 'turn',
-        level: LEVEL.TURN,
-        title: `Turn ${store.totalTurns + 1}`,
-        summary: '',
-        content: text,
-        turnIndex: store.totalTurns,
-        fromTurn: store.totalTurns,
-        toTurn: store.totalTurns,
-        metadata: {
-            is_user: Boolean(message?.is_user),
-            name: String(message?.name || ''),
-            send_date: String(message?.send_date || ''),
-        },
-    });
-
-    store.turnOrder.push(turnNode.id);
-    store.totalTurns += 1;
-    store.turnsSinceUpdate += 1;
-
-    if (store.turnOrder.length > Number(settings.maxTurns || 900)) {
-        const overflow = store.turnOrder.length - Number(settings.maxTurns || 900);
-        const removed = store.turnOrder.splice(0, overflow);
-        for (const nodeId of removed) {
-            const node = store.nodes[nodeId];
-            if (node) {
-                node.archived = true;
-                node.updatedAt = Date.now();
-            }
-        }
+    const nextSeq = Number(store.seqCounter || 0) + 1;
+    const frame = {
+        seq: nextSeq,
+        is_user: Boolean(message?.is_user),
+        name: String(message?.name || ''),
+        mes: text,
+        send_date: String(message?.send_date || ''),
+    };
+    store.seqCounter = nextSeq;
+    if (!Array.isArray(store.pendingMessages)) {
+        store.pendingMessages = [];
+    }
+    store.pendingMessages.push(frame);
+    store.messagesSinceUpdate = Math.max(0, Number(store.messagesSinceUpdate || 0)) + 1;
+    if (store.pendingMessages.length > Number(settings.maxTurns || 900)) {
+        const overflow = store.pendingMessages.length - Number(settings.maxTurns || 900);
+        store.pendingMessages.splice(0, overflow);
     }
 
     store.updatedAt = Date.now();
-    return turnNode;
+    return frame;
 }
 
 function dropNode(store, nodeId, recursive = true) {
@@ -1622,20 +1706,16 @@ function dropNode(store, nodeId, recursive = true) {
     }
 
     delete store.nodes[nodeId];
-    store.turnOrder = store.turnOrder.filter(id => id !== nodeId);
     store.edges = store.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId);
 }
 
-function archiveNode(store, nodeId, { detachFromTurnOrder = false } = {}) {
+function archiveNode(store, nodeId) {
     const node = store.nodes[nodeId];
     if (!node) {
         return;
     }
     node.archived = true;
     node.updatedAt = Date.now();
-    if (detachFromTurnOrder && Array.isArray(store.turnOrder)) {
-        store.turnOrder = store.turnOrder.filter(id => id !== nodeId);
-    }
 }
 
 function summarizeTextHeuristic(lines) {
@@ -1918,9 +1998,40 @@ async function runFunctionCallTask(context, settings, {
     });
 }
 
-async function extractNodesWithLLM(context, settings, schema, turnNodes) {
-    const lines = turnNodes.map(node => `[${node.title}] ${node.content}`);
-    if (lines.length === 0) {
+function buildEvidenceSeqRange(item, batch) {
+    const seqs = Array.isArray(item?.evidence_seqs)
+        ? item.evidence_seqs.map(value => Number(value)).filter(Number.isFinite)
+        : [];
+    if (seqs.length > 0) {
+        return { seqFrom: Math.min(...seqs), seqTo: Math.max(...seqs) };
+    }
+    const fromRaw = Number(item?.evidence_seq_range?.from_seq);
+    const toRaw = Number(item?.evidence_seq_range?.to_seq);
+    if (Number.isFinite(fromRaw) || Number.isFinite(toRaw)) {
+        const from = Number.isFinite(fromRaw) ? fromRaw : toRaw;
+        const to = Number.isFinite(toRaw) ? toRaw : fromRaw;
+        return { seqFrom: Math.min(from, to), seqTo: Math.max(from, to) };
+    }
+    const fallbackFrom = Number(batch?.[0]?.seq);
+    const fallbackTo = Number(batch?.[batch.length - 1]?.seq);
+    if (Number.isFinite(fallbackFrom) || Number.isFinite(fallbackTo)) {
+        const from = Number.isFinite(fallbackFrom) ? fallbackFrom : fallbackTo;
+        const to = Number.isFinite(fallbackTo) ? fallbackTo : fallbackFrom;
+        return { seqFrom: Math.min(from, to), seqTo: Math.max(from, to) };
+    }
+    return { seqFrom: 0, seqTo: 0 };
+}
+
+async function extractNodesWithLLM(context, settings, schema, messageBatch) {
+    const messages = (Array.isArray(messageBatch) ? messageBatch : [])
+        .map(item => ({
+            seq: Number(item?.seq || 0),
+            role: item?.is_user ? 'user' : 'assistant',
+            name: String(item?.name || ''),
+            text: String(item?.mes || ''),
+        }))
+        .filter(item => normalizeText(item.text));
+    if (messages.length === 0) {
         return [];
     }
 
@@ -1938,7 +2049,7 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
                     table_name: String(item?.tableName || ''),
                     fields: Array.isArray(item?.tableColumns) ? item.tableColumns : [],
                 })),
-                turns: lines,
+                messages,
             }),
             includeCharacterCard: true,
             promptPresetName,
@@ -1955,14 +2066,21 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
                             type: { type: 'string' },
                             title: { type: 'string' },
                             summary: { type: 'string' },
-                            content: { type: 'string' },
                             fields: {
                                 type: 'object',
                                 additionalProperties: true,
                             },
-                            evidence_turn_titles: {
+                            evidence_seqs: {
                                 type: 'array',
-                                items: { type: 'string' },
+                                items: { type: 'integer' },
+                            },
+                            evidence_seq_range: {
+                                type: 'object',
+                                properties: {
+                                    from_seq: { type: 'integer' },
+                                    to_seq: { type: 'integer' },
+                                },
+                                additionalProperties: false,
                             },
                             links: {
                                 type: 'array',
@@ -1972,7 +2090,6 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
                                         target_type: { type: 'string' },
                                         target_title: { type: 'string' },
                                         target_summary: { type: 'string' },
-                                        target_content: { type: 'string' },
                                         relation: { type: 'string' },
                                         direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                                     },
@@ -2054,14 +2171,6 @@ async function extractNodesWithLLM(context, settings, schema, turnNodes) {
     return [];
 }
 
-function findTurnNodeByTitle(store, title) {
-    const normalized = normalizeText(title).toLowerCase();
-    if (!normalized) {
-        return null;
-    }
-    return Object.values(store.nodes).find(node => node.level === LEVEL.TURN && node.title.toLowerCase() === normalized) || null;
-}
-
 function upsertSemanticNode(store, item) {
     const type = String(item.type || 'semantic').toLowerCase();
     const title = normalizeText(item.title || 'Untitled');
@@ -2078,21 +2187,18 @@ function upsertSemanticNode(store, item) {
             level: LEVEL.SEMANTIC,
             title,
             summary: normalizeText(item.summary || ''),
-            content: normalizeText(item.content || item.summary || ''),
             finalized: true,
             metadata: {
                 semantic_depth: 0,
                 semantic_rollup: false,
                 ...(item?.fields && typeof item.fields === 'object' ? item.fields : {}),
             },
-            turnIndex: Number.isFinite(Number(item.turnIndex)) ? Number(item.turnIndex) : undefined,
-            fromTurn: Number.isFinite(Number(item.turnIndex)) ? Number(item.turnIndex) : undefined,
-            toTurn: Number.isFinite(Number(item.turnIndex)) ? Number(item.turnIndex) : undefined,
+            seqFrom: Number.isFinite(Number(item.seqFrom)) ? Number(item.seqFrom) : undefined,
+            seqTo: Number.isFinite(Number(item.seqTo)) ? Number(item.seqTo) : undefined,
         });
         saveLayerSnapshot(store, LEVEL.SEMANTIC, target, { action: 'create' });
     } else {
         target.summary = normalizeText(item.summary || target.summary || '');
-        target.content = normalizeText(item.content || target.content || '');
         target.count = Number(target.count || 1) + 1;
         if (!target.metadata || typeof target.metadata !== 'object') {
             target.metadata = {};
@@ -2106,23 +2212,22 @@ function upsertSemanticNode(store, item) {
         if (item?.fields && typeof item.fields === 'object') {
             Object.assign(target.metadata, item.fields);
         }
-        if (Number.isFinite(Number(item.turnIndex))) {
-            target.toTurn = Number(item.turnIndex);
-            target.fromTurn = Number.isFinite(Number(target.fromTurn)) ? Math.min(Number(target.fromTurn), Number(item.turnIndex)) : Number(item.turnIndex);
+        if (Number.isFinite(Number(item.seqFrom)) || Number.isFinite(Number(item.seqTo))) {
+            const inputFrom = Number.isFinite(Number(item.seqFrom)) ? Number(item.seqFrom) : Number(item.seqTo);
+            const inputTo = Number.isFinite(Number(item.seqTo)) ? Number(item.seqTo) : Number(item.seqFrom);
+            const currentFrom = Number.isFinite(Number(target.seqFrom)) ? Number(target.seqFrom) : inputFrom;
+            const currentTo = Number.isFinite(Number(target.seqTo)) ? Number(target.seqTo) : inputTo;
+            target.seqFrom = Math.min(currentFrom, inputFrom);
+            target.seqTo = Math.max(currentTo, inputTo);
         }
         target.updatedAt = Date.now();
         saveLayerSnapshot(store, LEVEL.SEMANTIC, target, { action: 'update' });
     }
 
-    if (item.turnNodeId && store.nodes[item.turnNodeId]) {
-        addEdge(store, target.id, item.turnNodeId, 'evidence');
-        addEdge(store, item.turnNodeId, target.id, 'mentions');
-    }
-
     return target;
 }
 
-function applyExtractedLinks(store, sourceNode, rawLinks, defaultTurnIndex) {
+function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqFrom: 0, seqTo: 0 }) {
     if (!sourceNode || !Array.isArray(rawLinks) || rawLinks.length === 0) {
         return;
     }
@@ -2137,8 +2242,8 @@ function applyExtractedLinks(store, sourceNode, rawLinks, defaultTurnIndex) {
             type: String(link?.target_type || 'entity').toLowerCase(),
             title: targetTitle,
             summary: normalizeText(link?.target_summary || ''),
-            content: normalizeText(link?.target_content || link?.target_summary || ''),
-            turnIndex: Number.isFinite(Number(defaultTurnIndex)) ? Number(defaultTurnIndex) : undefined,
+            seqFrom: Number.isFinite(Number(defaultSeqRange?.seqFrom)) ? Number(defaultSeqRange.seqFrom) : undefined,
+            seqTo: Number.isFinite(Number(defaultSeqRange?.seqTo)) ? Number(defaultSeqRange.seqTo) : undefined,
         });
         if (!targetNode) {
             continue;
@@ -2198,8 +2303,8 @@ function collectSemanticRootsByDepth(store, type, depth) {
         .filter(node => Number(node?.metadata?.semantic_depth ?? 0) === Number(depth))
         .filter(node => !String(node.parentId || '').trim())
         .sort((a, b) => {
-            const aTo = Number(a.toTurn ?? a.turnIndex ?? a.createdAt ?? 0);
-            const bTo = Number(b.toTurn ?? b.turnIndex ?? b.createdAt ?? 0);
+            const aTo = Number(a.seqTo ?? a.seqFrom ?? a.createdAt ?? 0);
+            const bTo = Number(b.seqTo ?? b.seqFrom ?? b.createdAt ?? 0);
             return aTo - bTo;
         });
 }
@@ -2224,7 +2329,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 break;
             }
 
-            const lines = group.map(node => `${node.title}: ${node.summary || node.content}`);
+            const lines = group.map(node => `${node.title}: ${node.summary}`);
             const instruction = buildCompressionSummaryInstruction(
                 config.summarizeInstruction
                 || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
@@ -2239,7 +2344,6 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 level: LEVEL.SEMANTIC,
                 title: `${String(config.label || type || 'Semantic')} Summary L${depth + 1} #${Date.now()}`,
                 summary,
-                content: summary,
                 finalized: true,
                 archived: false,
                 metadata: {
@@ -2248,8 +2352,8 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                     semantic_source_type: type,
                     merged_node_ids: group.map(node => node.id),
                 },
-                fromTurn: Math.min(...group.map(node => Number(node.fromTurn ?? node.toTurn ?? 0))),
-                toTurn: Math.max(...group.map(node => Number(node.toTurn ?? node.fromTurn ?? 0))),
+                seqFrom: Math.min(...group.map(node => Number(node.seqFrom ?? node.seqTo ?? 0))),
+                seqTo: Math.max(...group.map(node => Number(node.seqTo ?? node.seqFrom ?? 0))),
             });
 
             for (const child of group) {
@@ -2301,54 +2405,53 @@ async function runCompressionLoop(context, store, settings) {
 
 async function runExtractionForStore(context, store) {
     const settings = getSettings();
-    if (store.turnsSinceUpdate < Number(settings.updateEvery || 1)) {
+    if (store.messagesSinceUpdate < Number(settings.updateEvery || 1)) {
         return;
     }
 
-    const turnNodes = store.turnOrder
-        .map(id => store.nodes[id])
-        .filter(Boolean)
-        .filter(node => node.level === LEVEL.TURN)
-        .filter(node => Number(node.turnIndex || 0) > Number(store.lastExtractedTurn || -1));
-
-    if (turnNodes.length === 0) {
-        store.turnsSinceUpdate = 0;
+    const pendingQueue = Array.isArray(store.pendingMessages) ? store.pendingMessages.slice() : [];
+    if (pendingQueue.length === 0) {
+        store.messagesSinceUpdate = 0;
         return;
     }
+    store.pendingMessages = [];
 
     const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
     const batchSize = Math.max(2, Number(settings.extractBatchTurns || settings.updateEvery || 1));
-    for (let offset = 0; offset < turnNodes.length; offset += batchSize) {
-        const batch = turnNodes.slice(offset, offset + batchSize);
+    const failedQueue = [];
+    for (let offset = 0; offset < pendingQueue.length; offset += batchSize) {
+        const batch = pendingQueue.slice(offset, offset + batchSize);
         const upserts = await extractNodesWithLLM(context, settings, schema, batch);
+        if (upserts.length === 0) {
+            failedQueue.push(...batch);
+            continue;
+        }
         for (const item of upserts) {
             const title = normalizeText(item?.title || '');
             if (!title) {
                 continue;
             }
-            const evidenceTitle = Array.isArray(item?.evidence_turn_titles) ? item.evidence_turn_titles[0] : '';
-            const evidenceNode = evidenceTitle ? findTurnNodeByTitle(store, evidenceTitle) : null;
+            const evidence = buildEvidenceSeqRange(item, batch);
             const targetNode = upsertSemanticNode(store, {
                 type: String(item?.type || 'semantic').toLowerCase(),
                 title,
                 summary: normalizeText(item?.summary || ''),
-                content: normalizeText(item?.content || item?.summary || ''),
                 fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
-                turnIndex: Number.isFinite(Number(evidenceNode?.turnIndex)) ? Number(evidenceNode?.turnIndex) : Number(batch[batch.length - 1]?.turnIndex || 0),
-                turnNodeId: evidenceNode?.id,
+                seqFrom: evidence.seqFrom,
+                seqTo: evidence.seqTo,
             });
             if (targetNode) {
                 applyExtractedLinks(
                     store,
                     targetNode,
                     Array.isArray(item?.links) ? item.links : [],
-                    Number.isFinite(Number(evidenceNode?.turnIndex)) ? Number(evidenceNode?.turnIndex) : Number(batch[batch.length - 1]?.turnIndex || 0),
+                    evidence,
                 );
             }
         }
-        store.lastExtractedTurn = Math.max(...batch.map(node => Number(node.turnIndex || 0)));
     }
-    store.turnsSinceUpdate = 0;
+    store.pendingMessages = failedQueue;
+    store.messagesSinceUpdate = failedQueue.length;
 
     await runCompressionLoop(context, store, settings);
     store.updatedAt = Date.now();
@@ -2360,10 +2463,10 @@ function formatNodeBrief(node, extra = {}) {
         level: node.level,
         type: node.type,
         title: node.title,
-        summary: String(node.summary || node.content || ''),
+        summary: String(node.summary || ''),
         child_count: Array.isArray(node.childrenIds) ? node.childrenIds.length : 0,
-        to_turn: node.toTurn ?? node.turnIndex ?? null,
-        from_turn: node.fromTurn ?? node.turnIndex ?? null,
+        to_seq: node.seqTo ?? node.seqFrom ?? null,
+        from_seq: node.seqFrom ?? node.seqTo ?? null,
         ...extra,
     };
 }
@@ -2375,11 +2478,10 @@ function formatNodeDetail(node, extra = {}) {
         type: node.type,
         title: node.title,
         summary: String(node.summary || ''),
-        content: String(node.content || ''),
         metadata: node.metadata || {},
         children: Array.isArray(node.childrenIds) ? node.childrenIds : [],
-        from_turn: node.fromTurn ?? node.turnIndex ?? null,
-        to_turn: node.toTurn ?? node.turnIndex ?? null,
+        from_seq: node.seqFrom ?? node.seqTo ?? null,
+        to_seq: node.seqTo ?? node.seqFrom ?? null,
         ...extra,
     };
 }
@@ -2411,10 +2513,10 @@ function extractWorldInfoHints(payload) {
 }
 
 function compareNodesByRecency(a, b) {
-    const aTurn = Number(a?.toTurn ?? a?.turnIndex ?? -1);
-    const bTurn = Number(b?.toTurn ?? b?.turnIndex ?? -1);
-    if (aTurn !== bTurn) {
-        return bTurn - aTurn;
+    const aSeq = Number(a?.seqTo ?? a?.seqFrom ?? -1);
+    const bSeq = Number(b?.seqTo ?? b?.seqFrom ?? -1);
+    if (aSeq !== bSeq) {
+        return bSeq - aSeq;
     }
     const aUpdated = Number(a?.updatedAt ?? a?.createdAt ?? 0);
     const bUpdated = Number(b?.updatedAt ?? b?.createdAt ?? 0);
@@ -2668,9 +2770,6 @@ async function chooseRecallRoute(context, settings, recallState) {
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
             fields: node?.metadata && typeof node.metadata === 'object' ? node.metadata : {},
         });
-        if (exposure !== 'high_only') {
-            row.content = String(node?.content || '');
-        }
         return row;
     });
     try {
@@ -2689,8 +2788,8 @@ async function chooseRecallRoute(context, settings, recallState) {
                     compression_mode: String(item?.compression?.mode || 'none'),
                 })),
                 constraints: {
-                    recent_turn_window: Math.max(3, Number(settings.recentRawTurns || 5)),
-                    injection_exclude_recent_turns: Math.max(0, Number(settings.recentRawTurns || 5)),
+                    recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
+                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
                 },
             }),
             apiPresetName: settings.recallApiPresetName || '',
@@ -2864,9 +2963,6 @@ async function chooseFocusNodes(context, settings, recallState) {
             edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 12 }),
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
         });
-        if (exposure === 'high_only') {
-            delete row.content;
-        }
         return row;
     });
     try {
@@ -2881,8 +2977,8 @@ async function chooseFocusNodes(context, settings, recallState) {
                 constraints: {
                     include_non_event_nodes: true,
                     require_event_continuity: true,
-                    recent_turn_window: Math.max(3, Number(settings.recentRawTurns || 5)),
-                    injection_exclude_recent_turns: Math.max(0, Number(settings.recentRawTurns || 5)),
+                    recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
+                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
                     min_event_nodes_if_available: 2,
                 },
             }),
@@ -2922,13 +3018,13 @@ async function chooseFocusNodes(context, settings, recallState) {
 }
 
 function compareNodesByTimeline(a, b) {
-    const aFrom = Number(a?.fromTurn ?? a?.turnIndex ?? Number.MAX_SAFE_INTEGER);
-    const bFrom = Number(b?.fromTurn ?? b?.turnIndex ?? Number.MAX_SAFE_INTEGER);
+    const aFrom = Number(a?.seqFrom ?? a?.seqTo ?? Number.MAX_SAFE_INTEGER);
+    const bFrom = Number(b?.seqFrom ?? b?.seqTo ?? Number.MAX_SAFE_INTEGER);
     if (aFrom !== bFrom) {
         return aFrom - bFrom;
     }
-    const aTo = Number(a?.toTurn ?? a?.turnIndex ?? Number.MAX_SAFE_INTEGER);
-    const bTo = Number(b?.toTurn ?? b?.turnIndex ?? Number.MAX_SAFE_INTEGER);
+    const aTo = Number(a?.seqTo ?? a?.seqFrom ?? Number.MAX_SAFE_INTEGER);
+    const bTo = Number(b?.seqTo ?? b?.seqFrom ?? Number.MAX_SAFE_INTEGER);
     if (aTo !== bTo) {
         return aTo - bTo;
     }
@@ -3014,46 +3110,50 @@ function collectAlwaysInjectNodes(store, settings) {
     return picked.sort(compareNodesByTimeline);
 }
 
-function getNodeTurnRange(node) {
-    if (Number.isFinite(Number(node?.fromTurn)) || Number.isFinite(Number(node?.toTurn))) {
-        const from = Number.isFinite(Number(node?.fromTurn)) ? Number(node.fromTurn) : Number(node?.toTurn ?? 0);
-        const to = Number.isFinite(Number(node?.toTurn)) ? Number(node.toTurn) : Number(node?.fromTurn ?? 0);
+function getNodeSeqRange(node) {
+    if (Number.isFinite(Number(node?.seqFrom)) || Number.isFinite(Number(node?.seqTo))) {
+        const from = Number.isFinite(Number(node?.seqFrom)) ? Number(node.seqFrom) : Number(node?.seqTo ?? 0);
+        const to = Number.isFinite(Number(node?.seqTo)) ? Number(node.seqTo) : Number(node?.seqFrom ?? 0);
         return `${from}~${to}`;
-    }
-    if (Number.isFinite(Number(node?.turnIndex))) {
-        return `${Number(node.turnIndex)}`;
     }
     return '';
 }
 
-function getLatestTurnIndex(store) {
-    const turns = Array.isArray(store?.turnOrder) ? store.turnOrder : [];
-    if (turns.length === 0) {
+function getLatestSeqIndex(store) {
+    const queue = Array.isArray(store?.pendingMessages) ? store.pendingMessages : [];
+    if (queue.length > 0) {
+        const maxPending = Math.max(...queue.map(item => Number(item?.seq || -1)));
+        if (Number.isFinite(maxPending)) {
+            return maxPending;
+        }
+    }
+    const semanticNodes = Object.values(store?.nodes || {})
+        .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC);
+    if (semanticNodes.length === 0) {
         return -1;
     }
-    const lastNode = store.nodes?.[turns[turns.length - 1]];
-    const idx = Number(lastNode?.turnIndex ?? lastNode?.toTurn ?? -1);
-    return Number.isFinite(idx) ? idx : -1;
+    const maxSeq = Math.max(...semanticNodes.map(node => Number(node?.seqTo ?? node?.seqFrom ?? -1)));
+    return Number.isFinite(maxSeq) ? maxSeq : -1;
 }
 
-function isNodeInRecentExcludeWindow(node, latestTurnIndex, excludeTurns) {
-    const windowSize = Math.max(0, Number(excludeTurns || 0));
-    if (windowSize <= 0 || latestTurnIndex < 0 || !node) {
+function isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages) {
+    const windowSize = Math.max(0, Number(excludeMessages || 0));
+    if (windowSize <= 0 || latestSeqIndex < 0 || !node) {
         return false;
     }
-    let fromTurn = Number(node?.fromTurn ?? node?.turnIndex ?? NaN);
-    let toTurn = Number(node?.toTurn ?? node?.turnIndex ?? NaN);
-    if (!Number.isFinite(fromTurn) && !Number.isFinite(toTurn)) {
+    let fromSeq = Number(node?.seqFrom ?? node?.seqTo ?? NaN);
+    let toSeq = Number(node?.seqTo ?? node?.seqFrom ?? NaN);
+    if (!Number.isFinite(fromSeq) && !Number.isFinite(toSeq)) {
         return false;
     }
-    if (!Number.isFinite(fromTurn)) {
-        fromTurn = toTurn;
+    if (!Number.isFinite(fromSeq)) {
+        fromSeq = toSeq;
     }
-    if (!Number.isFinite(toTurn)) {
-        toTurn = fromTurn;
+    if (!Number.isFinite(toSeq)) {
+        toSeq = fromSeq;
     }
-    const cutoff = latestTurnIndex - windowSize + 1;
-    return Number.isFinite(cutoff) && toTurn >= cutoff;
+    const cutoff = latestSeqIndex - windowSize + 1;
+    return Number.isFinite(cutoff) && toSeq >= cutoff;
 }
 
 function toMarkdownTable(headers, rows) {
@@ -3083,31 +3183,26 @@ function getTableCellValueFromNode(node, columnName) {
     if (key === 'type') {
         return String(node.type || '');
     }
-    if (key === 'turn_range') {
-        return getNodeTurnRange(node);
+    if (key === 'seq_range' || key === 'turn_range') {
+        return getNodeSeqRange(node);
     }
     if (key === 'summary') {
         return normalizeText(node.summary || '');
     }
-    if (key === 'details' || key === 'content') {
+    if (key === 'details') {
         if (structured[key] !== undefined) {
             return toDisplayScalar(structured[key]);
         }
-        if (structured.details !== undefined && key === 'content') {
-            return toDisplayScalar(structured.details);
-        }
-        return String(node.content || '');
+        return '';
     }
-    if (key === 'last_update_turn') {
-        return String(node.toTurn ?? node.turnIndex ?? '');
+    if (key === 'last_update_seq' || key === 'last_update_turn') {
+        return String(node.seqTo ?? node.seqFrom ?? '');
     }
     if (structured[key] !== undefined) {
         return toDisplayScalar(structured[key]);
     }
-    const parsedContent = tryParseJsonObject(node?.content);
     const parsedSummary = tryParseJsonObject(node?.summary);
     const deepHit = findValueByKeyDeep(node?.metadata, key)
-        ?? findValueByKeyDeep(parsedContent, key)
         ?? findValueByKeyDeep(parsedSummary, key);
     if (deepHit !== undefined) {
         return toDisplayScalar(deepHit);
@@ -3124,9 +3219,6 @@ function buildFocusTablesText(nodes, settings, options = {}) {
         if (!node) {
             continue;
         }
-        if (node.level === LEVEL.TURN) {
-            continue;
-        }
         const bucket = node.level === LEVEL.SEMANTIC
             ? `semantic:${String(node.type || 'semantic')}`
             : `timeline:${String(node.level || 'unknown')}`;
@@ -3138,11 +3230,11 @@ function buildFocusTablesText(nodes, settings, options = {}) {
 
     const blocks = [];
     for (const [bucket, bucketNodes] of byBucket.entries()) {
-        let headers = ['title', 'type', 'turn_range', 'summary'];
+        let headers = ['title', 'type', 'seq_range', 'summary'];
         let rows = bucketNodes.map(node => [
             String(node.title || ''),
             String(node.type || ''),
-            getNodeTurnRange(node),
+            getNodeSeqRange(node),
             normalizeText(node.summary || ''),
         ]);
         let bucketTitle = `${tablePrefix} ${bucket}`;
@@ -3403,21 +3495,21 @@ async function runLLMDrivenRecall(context, store, payload) {
         });
     }
 
-    const latestTurnIndex = getLatestTurnIndex(store);
-    const excludeTurns = Math.max(0, Number(settings.recentRawTurns || 5));
+    const latestSeqIndex = getLatestSeqIndex(store);
+    const excludeMessages = Math.max(0, Number(settings.recentRawTurns || 5));
     const excludedNodeIds = [];
     const filteredSelectedNodes = selectedNodes.filter((node) => {
-        const excluded = isNodeInRecentExcludeWindow(node, latestTurnIndex, excludeTurns);
+        const excluded = isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages);
         if (excluded && node?.id) {
             excludedNodeIds.push(node.id);
         }
         return !excluded;
     }).sort(compareNodesByTimeline);
-    if (excludeTurns > 0 && excludedNodeIds.length > 0) {
+    if (excludeMessages > 0 && excludedNodeIds.length > 0) {
         trace.push({
             step: 'exclude_recent_window',
-            exclude_turns: excludeTurns,
-            latest_turn: latestTurnIndex,
+            exclude_messages: excludeMessages,
+            latest_seq: latestSeqIndex,
             excluded_node_ids: excludedNodeIds,
         });
     }
@@ -3440,11 +3532,11 @@ async function rebuildStoreFromCurrentChat(context) {
 
     const rebuilt = createEmptyStore();
     for (const message of getPlayableChatMessages(context)) {
-        ingestTurnNode(rebuilt, message);
+        appendPendingMessageFrame(rebuilt, message);
     }
     updateStoreSourceState(rebuilt, context);
-    if (rebuilt.turnOrder.length > 0) {
-        rebuilt.turnsSinceUpdate = Math.max(Number(settings.updateEvery || 1), Number(rebuilt.turnsSinceUpdate || 0));
+    if (rebuilt.pendingMessages.length > 0) {
+        rebuilt.messagesSinceUpdate = Math.max(Number(settings.updateEvery || 1), Number(rebuilt.messagesSinceUpdate || 0));
         await runExtractionForStore(context, rebuilt);
     }
     rebuilt.updatedAt = Date.now();
@@ -3465,6 +3557,11 @@ async function ensureStoreSyncedWithChat(context, { force = false } = {}) {
         return store;
     }
     if (!force && !hasStoreSourceMismatch(store, context)) {
+        if (Array.isArray(store.pendingMessages) && store.pendingMessages.length > 0) {
+            await runExtractionForStore(context, store);
+            const chatKey = getChatKey(context, { allowFallback: true });
+            await persistMemoryStoreByChatKey(context, chatKey, store);
+        }
         return store;
     }
     return await rebuildStoreFromCurrentChat(context);
@@ -3559,7 +3656,7 @@ async function captureMessage(messageId) {
     if (!store) {
         return;
     }
-    ingestTurnNode(store, {
+    appendPendingMessageFrame(store, {
         is_user: Boolean(message.is_user),
         name: String(message.name || ''),
         mes: String(message.mes || ''),
@@ -3594,14 +3691,13 @@ function scheduleExtraction(context) {
 function getStoreStats(store) {
     const nodes = Object.values(store.nodes || {});
     const levelCount = {
-        turn: nodes.filter(n => n.level === LEVEL.TURN).length,
         semantic: nodes.filter(n => n.level === LEVEL.SEMANTIC).length,
     };
 
     return {
         nodeCount: nodes.length,
         edgeCount: Array.isArray(store.edges) ? store.edges.length : 0,
-        turnCount: store.turnOrder?.length || 0,
+        messageCount: Number(store.seqCounter || 0),
         sourceMessageCount: Number(store.sourceMessageCount || 0),
         levelCount,
         lastRecallSteps: Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace.length : 0,
@@ -3629,7 +3725,7 @@ function renderGraphInspectorHtml(store) {
 <td>${String(node.title || '').replace(/</g, '&lt;')}</td>
 <td>${String(node.summary || '').replace(/</g, '&lt;')}</td>
 <td>${Array.isArray(node.childrenIds) ? node.childrenIds.length : 0}</td>
-<td>${node.fromTurn ?? ''}~${node.toTurn ?? node.turnIndex ?? ''}</td>
+<td>${node.seqFrom ?? ''}~${node.seqTo ?? ''}</td>
 <td>
     <div class="flex-container">
         <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('View'))}</div>
@@ -3641,8 +3737,8 @@ function renderGraphInspectorHtml(store) {
     return `
 <div class="flex-container flexFlowColumn luker-rpg-memory-graph-popup-inner">
     <h3 class="margin0">${escapeHtml(i18n('Memory Graph'))}</h3>
-    <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}', stats.nodeCount, stats.edgeCount, stats.turnCount, stats.sourceMessageCount))}</div>
-    <div>${escapeHtml(i18nFormat('turn=${0}, semantic=${1}', stats.levelCount.turn, stats.levelCount.semantic))}</div>
+    <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
+    <div>${escapeHtml(i18nFormat('semantic=${0}', stats.levelCount.semantic))}</div>
     <div>${escapeHtml(i18nFormat('Last recall steps: ${0} | Layer snapshots: ${1}', stats.lastRecallSteps, stats.layerSnapshots))}</div>
     <div class="luker-rpg-memory-graph-canvas-wrap">
         <div class="luker-rpg-memory-graph-cy"></div>
@@ -3659,7 +3755,7 @@ function renderGraphInspectorHtml(store) {
     </div>
     <div class="luker-rpg-memory-graph-table-wrap">
     <table class="table" style="font-size:12px; margin-top:8px;">
-        <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Level'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Children'))}</th><th>${escapeHtml(i18n('TurnRange'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+        <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Level'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Children'))}</th><th>${escapeHtml(i18n('SeqRange'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
         <tbody>${rows}</tbody>
     </table>
     </div>
@@ -3754,7 +3850,7 @@ function decodeMetadataFromLines(text) {
 }
 
 function getNodeTypeOptionsHtml(settings, store, currentType = '') {
-    const candidates = new Set(['turn']);
+    const candidates = new Set();
     for (const entry of normalizeNodeTypeSchema(settings.nodeTypeSchema)) {
         candidates.add(String(entry.id || '').trim());
     }
@@ -3794,10 +3890,8 @@ function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
 }
 
 function renderNodeFormEditorHtml(node, store, settings, editorId) {
-    const levelOptions = [
-        LEVEL.TURN,
-        LEVEL.SEMANTIC,
-    ].map(level => `<option value="${level}"${String(node.level || '') === level ? ' selected' : ''}>${level}</option>`).join('');
+    const levelOptions = [LEVEL.SEMANTIC]
+        .map(level => `<option value="${level}"${String(node.level || '') === level ? ' selected' : ''}>${level}</option>`).join('');
 
     return `
 <div id="${editorId}" class="flex-container flexFlowColumn luker-rpg-memory-node-form">
@@ -3815,17 +3909,11 @@ function renderNodeFormEditorHtml(node, store, settings, editorId) {
         <label>${escapeHtml(i18n('Level'))}
             <select data-field="level" class="text_pole">${levelOptions}</select>
         </label>
-        <label>${escapeHtml(i18n('Turn Index'))}
-            <input data-field="turnIndex" class="text_pole" type="number" step="1" value="${escapeHtml(node.turnIndex ?? '')}" />
+        <label>${escapeHtml(i18n('From Sequence'))}
+            <input data-field="seqFrom" class="text_pole" type="number" step="1" value="${escapeHtml(node.seqFrom ?? '')}" />
         </label>
-        <label>${escapeHtml(i18n('From Turn'))}
-            <input data-field="fromTurn" class="text_pole" type="number" step="1" value="${escapeHtml(node.fromTurn ?? '')}" />
-        </label>
-        <label>${escapeHtml(i18n('To Turn'))}
-            <input data-field="toTurn" class="text_pole" type="number" step="1" value="${escapeHtml(node.toTurn ?? '')}" />
-        </label>
-        <label>${escapeHtml(i18n('Count'))}
-            <input data-field="count" class="text_pole" type="number" min="1" step="1" value="${escapeHtml(node.count ?? 1)}" />
+        <label>${escapeHtml(i18n('To Sequence'))}
+            <input data-field="seqTo" class="text_pole" type="number" step="1" value="${escapeHtml(node.seqTo ?? '')}" />
         </label>
     </div>
     <div class="luker-rpg-memory-node-form-flags">
@@ -3837,9 +3925,6 @@ function renderNodeFormEditorHtml(node, store, settings, editorId) {
     </label>
     <label>${escapeHtml(i18n('Summary'))}
         <textarea data-field="summary" class="text_pole textarea_compact" rows="3">${escapeHtml(node.summary || '')}</textarea>
-    </label>
-    <label>${escapeHtml(i18n('Content'))}
-        <textarea data-field="content" class="text_pole textarea_compact" rows="7">${escapeHtml(node.content || '')}</textarea>
     </label>
     <label>${escapeHtml(i18n('Links (comma separated node ids)'))}
         <input data-field="links" class="text_pole" type="text" value="${escapeHtml(joinCommaList(node.links || []))}" />
@@ -3916,7 +4001,6 @@ function buildGraphCytoscapeElements(store) {
     const scopedNodeIds = new Set(scopedNodes.map(node => String(node.id || '')));
     const levelOrderMap = {
         [LEVEL.SEMANTIC]: 0,
-        [LEVEL.TURN]: 1,
     };
     const scopedNodeList = [...scopedNodeIds]
         .map(id => store.nodes[id])
@@ -3947,8 +4031,8 @@ function buildGraphCytoscapeElements(store) {
         const levelNodes = (nodesByLevel.get(level) || [])
             .slice()
             .sort((a, b) => {
-                const at = Number(a.toTurn ?? a.fromTurn ?? a.turnIndex ?? a.createdAt ?? 0);
-                const bt = Number(b.toTurn ?? b.fromTurn ?? b.turnIndex ?? b.createdAt ?? 0);
+                const at = Number(a.seqTo ?? a.seqFrom ?? a.createdAt ?? 0);
+                const bt = Number(b.seqTo ?? b.seqFrom ?? b.createdAt ?? 0);
                 if (at !== bt) {
                     return at - bt;
                 }
@@ -4163,7 +4247,6 @@ async function openGraphInspectorPopup(context) {
                         },
                     },
                     { selector: 'node[level = "semantic"]', style: { 'background-color': '#3c9b7b' } },
-                    { selector: 'node[level = "turn"]', style: { 'background-color': '#626b7b', 'font-size': 9 } },
                     { selector: 'node[archived = true]', style: { opacity: 0.45 } },
                     {
                         selector: 'edge',
@@ -4483,11 +4566,9 @@ async function openGraphInspectorPopup(context) {
             target.level = String(editorRoot.find('[data-field="level"]').val() || target.level || LEVEL.SEMANTIC).trim() || LEVEL.SEMANTIC;
             target.title = normalizeText(editorRoot.find('[data-field="title"]').val() || target.title || nodeId);
             target.summary = normalizeText(editorRoot.find('[data-field="summary"]').val() || '');
-            target.content = normalizeText(editorRoot.find('[data-field="content"]').val() || '');
-            target.turnIndex = parseOptionalNumber(editorRoot.find('[data-field="turnIndex"]').val());
-            target.fromTurn = parseOptionalNumber(editorRoot.find('[data-field="fromTurn"]').val());
-            target.toTurn = parseOptionalNumber(editorRoot.find('[data-field="toTurn"]').val());
-            target.count = Math.max(1, Number(editorRoot.find('[data-field="count"]').val()) || Number(target.count || 1));
+            target.seqFrom = parseOptionalNumber(editorRoot.find('[data-field="seqFrom"]').val());
+            target.seqTo = parseOptionalNumber(editorRoot.find('[data-field="seqTo"]').val());
+            target.count = Math.max(1, Number(target.count || 1));
             target.finalized = Boolean(editorRoot.find('[data-field="finalized"]').prop('checked'));
             target.archived = Boolean(editorRoot.find('[data-field="archived"]').prop('checked'));
             target.links = splitCommaList(editorRoot.find('[data-field="links"]').val());
@@ -4704,10 +4785,10 @@ function refreshUiStats() {
 
     root.find('#luker_rpg_memory_stats').text(
         i18nFormat(
-            'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}',
+            'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}',
             stats.nodeCount,
             stats.edgeCount,
-            stats.turnCount,
+            stats.messageCount,
             stats.sourceMessageCount,
             stats.levelCount.semantic,
             stats.layerSnapshots,
@@ -4734,7 +4815,7 @@ function getSchemaTypeTemplate(index = 1) {
         id: `custom_${index}`,
         label: `Custom Type ${index}`,
         tableName: `custom_table_${index}`,
-        tableColumns: ['title', 'summary', 'content'],
+        tableColumns: ['title', 'summary'],
         level: LEVEL.SEMANTIC,
         extractHint: '',
         keywords: [],
@@ -5422,7 +5503,7 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     return `
 <div id="${popupId}" class="luker-rpg-memory-advanced-popup">
     <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
-    <label>${escapeHtml(i18n('Exclude latest N turns from memory injection'))}
+    <label>${escapeHtml(i18n('Exclude latest N messages from memory injection'))}
         <input id="${popupId}_recent_raw_turns" class="text_pole" type="number" min="0" step="1" value="${Number(settings.recentRawTurns || defaultSettings.recentRawTurns)}" />
     </label>
     <label>${escapeHtml(i18n('Recall max iterations'))}
@@ -5431,7 +5512,7 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Tool-call retries'))}
         <input id="${popupId}_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Number(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))}" />
     </label>
-    <label>${escapeHtml(i18n('Extract batch turns'))}
+    <label>${escapeHtml(i18n('Extract batch messages'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="2" step="1" value="${Math.max(2, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
     </label>
     <label>${escapeHtml(i18n('Extract Table Fill Prompt'))}
