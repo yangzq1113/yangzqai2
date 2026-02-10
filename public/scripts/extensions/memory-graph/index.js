@@ -1,5 +1,6 @@
 import { CONNECT_API_MAP, saveSettingsDebounced, buildObjectPatchOperations } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
+import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
 import { newWorldInfoEntryTemplate } from '../../world-info.js';
 
@@ -186,6 +187,369 @@ const defaultSettings = {
     nodeTypeSchema: defaultNodeTypeSchema,
     maxLayerSnapshots: 800,
 };
+
+function i18n(text) {
+    return translate(String(text || ''));
+}
+
+function i18nFormat(key, ...values) {
+    return i18n(key).replace(/\$\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+}
+
+function registerLocaleData() {
+    addLocaleData('zh-cn', {
+        'Memory': '记忆',
+        'Enabled': '启用',
+        'Enable recall injection': '启用记忆召回注入',
+        'Recall API preset (Connection profile, empty = current)': '召回 API 预设（连接配置，留空=当前）',
+        'Recall preset (params + prompt, empty = current)': '召回预设（参数+提示词，留空=当前）',
+        'Extract API preset (Connection profile, empty = current)': '写入 API 预设（连接配置，留空=当前）',
+        'Extract preset (params + prompt, empty = current)': '写入预设（参数+提示词，留空=当前）',
+        'Project recall output to chat lorebook before WI scan': '在世界书扫描前将召回结果投影到聊天 Lorebook',
+        'Exclude latest N turns from memory injection': '记忆注入排除最近 N 轮',
+        'Recall max iterations': '召回最大轮数',
+        'Extract batch turns': '写入批量轮数',
+        'Recall max selection (0 = unlimited)': '召回最大选择数（0=不限制）',
+        'Tool-call retries': '工具调用重试次数',
+        'Update every N messages': '每 N 条消息更新',
+        'Turns / Episode': '每 Episode 回合数',
+        'Episodes / Arc': '每 Arc 的 Episode 数',
+        'Arcs / Canon': '每 Canon 的 Arc 数',
+        'Rollup fan-in (N->1)': 'Rollup 扇入（N->1）',
+        'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
+        'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆表类型、抽取提示与压缩策略。',
+        'Open Schema Editor': '打开 Schema 编辑器',
+        'Save Settings': '保存设置',
+        'View Graph': '查看图',
+        'Rebuild From Chat': '从聊天重建',
+        'Reset Current Chat': '重置当前聊天',
+        'Export Current Chat Graph': '导出当前聊天图',
+        'Import Current Chat Graph': '导入当前聊天图',
+        'Recall debug query': '召回调试查询',
+        'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遗迹发生了什么？',
+        'Run Recall Debug': '运行召回调试',
+        'No active chat selected.': '未选择有效聊天。',
+        'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
+        'Import': '导入',
+        'Cancel': '取消',
+        'Delete': '删除',
+        'Memory graph imported for current chat.': '当前聊天记忆图已导入。',
+        'Imported memory graph JSON.': '已导入记忆图 JSON。',
+        'Memory graph import failed.': '记忆图导入失败。',
+        'Import failed: ${0}': '导入失败：${0}',
+        'Types: ${0} | Always Inject: ${1} | Hierarchical: ${2}': '类型：${0} | 常驻注入：${1} | 分层压缩：${2}',
+        '(Current preset)': '（当前预设）',
+        '(Current API config)': '（当前 API 配置）',
+        '(missing)': '（缺失）',
+        '(none)': '（无）',
+        '(select node)': '（选择节点）',
+        '(unset)': '（未设置）',
+        '(new)': '（新建）',
+        'Memory Graph': '记忆图',
+        'Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}': '节点：${0} | 边：${1} | 回合：${2} | 源消息：${3}',
+        'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}': 'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}',
+        'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步数：${0} | 层快照：${1}',
+        'Visual graph ready. Click an edge to select it for editing.': '可视化图已就绪。点击边可选择并编辑。',
+        'Fit View': '适配视图',
+        'Re-layout': '重新布局',
+        'Add Edge': '新增边',
+        'Edit Selected Edge': '编辑所选边',
+        'Delete Selected Edge': '删除所选边',
+        'Advanced JSON View': '高级 JSON 查看',
+        'Advanced JSON Edit': '高级 JSON 编辑',
+        'ID': 'ID',
+        'Level': '层级',
+        'Type': '类型',
+        'Title': '标题',
+        'Summary': '摘要',
+        'Children': '子节点',
+        'TurnRange': '回合范围',
+        'Actions': '操作',
+        'Recent Edges': '最近边',
+        'From': '起点',
+        'To': '终点',
+        'Weight': '权重',
+        'Updated': '更新时间',
+        'Edit': '编辑',
+        'Last Projection': '最近投影',
+        'View': '查看',
+        'Form Edit': '表单编辑',
+        'Form editor for one node. Parent/child relationships and graph persistence are applied automatically.': '单节点表单编辑器。父子关系和图持久化会自动处理。',
+        'Node ID': '节点 ID',
+        'Parent Node': '父节点',
+        'Turn Index': '回合索引',
+        'From Turn': '起始回合',
+        'To Turn': '结束回合',
+        'Count': '计数',
+        'Finalized': '已定稿',
+        'Archived': '已归档',
+        'Content': '内容',
+        'Links (comma separated node ids)': '链接（逗号分隔节点 ID）',
+        'Metadata (one key=value per line)': '元数据（每行一个 key=value）',
+        'Edge ${0}: configure relation between two nodes.': '边 ${0}：配置两个节点之间的关系。',
+        'From Node': '起点节点',
+        'To Node': '终点节点',
+        'Edge not found: #${0}': '未找到边：#${0}',
+        'Apply Edge': '应用边',
+        'Create Edge': '创建边',
+        'Edge form not found': '未找到边表单',
+        'From/To node is required': '起点/终点节点必填',
+        'From/To node does not exist': '起点/终点节点不存在',
+        'From and To cannot be the same node': '起点和终点不能是同一节点',
+        'Edge updated (#${0})': '边已更新（#${0}）',
+        'Updated edge #${0}.': '已更新边 #${0}。',
+        'Edge created.': '边已创建。',
+        'Created edge #${0}.': '已创建边 #${0}。',
+        'Edge edit failed: ${0}': '边编辑失败：${0}',
+        'Node not found: ${0}': '未找到节点：${0}',
+        'Apply Node': '应用节点',
+        'Node form not found': '未找到节点表单',
+        'Parent node does not exist: ${0}': '父节点不存在：${0}',
+        'Parent node cannot be itself': '父节点不能是自身',
+        'Parent selection would create a cycle': '当前父节点选择会产生环',
+        'Updated node ${0}.': '已更新节点 ${0}。',
+        'Node updated: ${0}': '节点已更新：${0}',
+        'Node edit failed: ${0}': '节点编辑失败：${0}',
+        'Fitted graph view.': '图视图已适配。',
+        'Graph re-layout completed.': '图重新布局完成。',
+        'No edge selected. Click an edge in graph first.': '未选择边。请先在图中点击一条边。',
+        'Delete edge #${0}: ${1} -> ${2} [${3}]?': '删除边 #${0}：${1} -> ${2} [${3}]？',
+        'Deleted edge #${0}.': '已删除边 #${0}。',
+        'Deleted selected edge.': '已删除所选边。',
+        'Advanced: edit full memory graph JSON for current chat.': '高级：编辑当前聊天的完整记忆图 JSON。',
+        'Apply Graph': '应用图',
+        'Applied raw graph JSON edit.': '已应用原始图 JSON 编辑。',
+        'Memory graph JSON updated.': '记忆图 JSON 已更新。',
+        'Graph edit failed: ${0}': '图编辑失败：${0}',
+        'Memory disabled, runtime lorebook projection cleared.': '记忆已禁用，已清理运行时 Lorebook 投影。',
+        'Lorebook projection disabled.': 'Lorebook 投影已禁用。',
+        'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
+        'Recall ready. query="${0}" selected=${1}': '召回就绪。query="${0}" selected=${1}',
+        'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
+        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}',
+        'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
+        'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定义节点表、抽取提示和压缩策略。这会控制记忆图存储内容及其随时间压缩方式。',
+        'Hierarchical Compression': '分层压缩',
+        'Latest Snapshot': '最新快照',
+        'Always Inject': '常驻注入',
+        'Current type count: ${0}': '当前类型数量：${0}',
+        'Add Type': '新增类型',
+        'Load Recommended Schema': '加载推荐 Schema',
+        'table: ${0}': '表：${0}',
+        'mode: ${0}': '模式：${0}',
+        'always inject': '常驻注入',
+        'Type ID': '类型 ID',
+        'Label': '标签',
+        'Table Name': '表名',
+        'Table Columns (comma separated)': '表列（逗号分隔）',
+        'Keywords (comma separated)': '关键词（逗号分隔）',
+        'Extract Hint': '抽取提示',
+        'Compression Mode': '压缩模式',
+        'none': 'none',
+        'latest_only': 'latest_only',
+        'hierarchical': 'hierarchical',
+        'Keep Latest': '保留最新',
+        'Threshold': '阈值',
+        'Fan-In': '扇入',
+        'Max Depth': '最大深度',
+        'Keep Recent Leaves': '保留最近叶子',
+        'Summarize Instruction': '摘要指令',
+        'Duplicate Type': '复制类型',
+        'Remove Type': '删除类型',
+        'Apply Schema': '应用 Schema',
+        'Memory schema updated.': '记忆 Schema 已更新。',
+        'Applied memory schema from popup editor.': '已应用弹窗编辑器中的记忆 Schema。',
+        'Saved memory settings.': '记忆设置已保存。',
+        'Invalid schema settings: ${0}': 'Schema 设置无效：${0}',
+        'Memory settings save failed.': '记忆设置保存失败。',
+        'Memory graph rebuilt from current chat.': '已从当前聊天重建记忆图。',
+        'Rebuilt memory graph and compression from chat.': '已从聊天重建记忆图并完成压缩。',
+        'Current chat memory graph reset.': '已重置当前聊天记忆图。',
+        'Reset memory graph for current chat.': '已重置当前聊天的记忆图。',
+        'Recall injected via fallback after WI scan. Requested WI rescan for this generation.': '通过 WI 扫描后回退流程注入了召回内容，并请求本次生成重新扫描 WI。',
+        'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
+        'Selected node: ${0}. Tip: click an edge to edit relation.': '已选择节点：${0}。提示：点击边可编辑关系。',
+        'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
+        'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}': '已选择边 #${0}：${1} -> ${2} [${3}] weight=${4}',
+        'Chat mutation detected. Memory graph will re-sync on next generation.': '检测到聊天变更。记忆图会在下次生成时重新同步。',
+    });
+    addLocaleData('zh-tw', {
+        'Memory': '記憶',
+        'Enabled': '啟用',
+        'Enable recall injection': '啟用記憶召回注入',
+        'Recall API preset (Connection profile, empty = current)': '召回 API 預設（連線設定，留空=目前）',
+        'Recall preset (params + prompt, empty = current)': '召回預設（參數+提示詞，留空=目前）',
+        'Extract API preset (Connection profile, empty = current)': '寫入 API 預設（連線設定，留空=目前）',
+        'Extract preset (params + prompt, empty = current)': '寫入預設（參數+提示詞，留空=目前）',
+        'Project recall output to chat lorebook before WI scan': '在世界書掃描前將召回結果投影到聊天 Lorebook',
+        'Exclude latest N turns from memory injection': '記憶注入排除最近 N 輪',
+        'Recall max iterations': '召回最大輪數',
+        'Extract batch turns': '寫入批次輪數',
+        'Recall max selection (0 = unlimited)': '召回最大選取數（0=不限）',
+        'Tool-call retries': '工具呼叫重試次數',
+        'Update every N messages': '每 N 條訊息更新',
+        'Turns / Episode': '每 Episode 回合數',
+        'Episodes / Arc': '每 Arc 的 Episode 數',
+        'Arcs / Canon': '每 Canon 的 Arc 數',
+        'Rollup fan-in (N->1)': 'Rollup 扇入（N->1）',
+        'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
+        'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶表類型、抽取提示與壓縮策略。',
+        'Open Schema Editor': '開啟 Schema 編輯器',
+        'Save Settings': '儲存設定',
+        'View Graph': '查看圖譜',
+        'Rebuild From Chat': '從聊天重建',
+        'Reset Current Chat': '重設目前聊天',
+        'Export Current Chat Graph': '匯出目前聊天圖',
+        'Import Current Chat Graph': '匯入目前聊天圖',
+        'Recall debug query': '召回除錯查詢',
+        'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遺跡發生了什麼？',
+        'Run Recall Debug': '執行召回除錯',
+        'No active chat selected.': '未選擇有效聊天。',
+        'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
+        'Import': '匯入',
+        'Cancel': '取消',
+        'Delete': '刪除',
+        'Memory graph imported for current chat.': '目前聊天記憶圖已匯入。',
+        'Imported memory graph JSON.': '已匯入記憶圖 JSON。',
+        'Memory graph import failed.': '記憶圖匯入失敗。',
+        'Import failed: ${0}': '匯入失敗：${0}',
+        'Types: ${0} | Always Inject: ${1} | Hierarchical: ${2}': '類型：${0} | 常駐注入：${1} | 分層壓縮：${2}',
+        '(Current preset)': '（目前預設）',
+        '(Current API config)': '（目前 API 設定）',
+        '(missing)': '（缺失）',
+        '(none)': '（無）',
+        '(select node)': '（選擇節點）',
+        '(unset)': '（未設定）',
+        '(new)': '（新建）',
+        'Memory Graph': '記憶圖',
+        'Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}': '節點：${0} | 邊：${1} | 回合：${2} | 來源訊息：${3}',
+        'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}': 'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}',
+        'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步數：${0} | 層快照：${1}',
+        'Visual graph ready. Click an edge to select it for editing.': '視覺化圖已就緒。點擊邊可選取並編輯。',
+        'Fit View': '適配視圖',
+        'Re-layout': '重新佈局',
+        'Add Edge': '新增邊',
+        'Edit Selected Edge': '編輯所選邊',
+        'Delete Selected Edge': '刪除所選邊',
+        'Advanced JSON View': '進階 JSON 檢視',
+        'Advanced JSON Edit': '進階 JSON 編輯',
+        'ID': 'ID',
+        'Level': '層級',
+        'Type': '類型',
+        'Title': '標題',
+        'Summary': '摘要',
+        'Children': '子節點',
+        'TurnRange': '回合範圍',
+        'Actions': '操作',
+        'Recent Edges': '最近邊',
+        'From': '起點',
+        'To': '終點',
+        'Weight': '權重',
+        'Updated': '更新時間',
+        'Edit': '編輯',
+        'Last Projection': '最近投影',
+        'View': '查看',
+        'Form Edit': '表單編輯',
+        'Form editor for one node. Parent/child relationships and graph persistence are applied automatically.': '單節點表單編輯器。父子關係與圖持久化會自動處理。',
+        'Node ID': '節點 ID',
+        'Parent Node': '父節點',
+        'Turn Index': '回合索引',
+        'From Turn': '起始回合',
+        'To Turn': '結束回合',
+        'Count': '計數',
+        'Finalized': '已定稿',
+        'Archived': '已封存',
+        'Content': '內容',
+        'Links (comma separated node ids)': '連結（以逗號分隔節點 ID）',
+        'Metadata (one key=value per line)': '中繼資料（每行一個 key=value）',
+        'Edge ${0}: configure relation between two nodes.': '邊 ${0}：設定兩個節點之間的關係。',
+        'From Node': '起點節點',
+        'To Node': '終點節點',
+        'Edge not found: #${0}': '找不到邊：#${0}',
+        'Apply Edge': '套用邊',
+        'Create Edge': '建立邊',
+        'Edge form not found': '找不到邊表單',
+        'From/To node is required': '起點/終點節點為必填',
+        'From/To node does not exist': '起點/終點節點不存在',
+        'From and To cannot be the same node': '起點與終點不能是同一節點',
+        'Edge updated (#${0})': '邊已更新（#${0}）',
+        'Updated edge #${0}.': '已更新邊 #${0}。',
+        'Edge created.': '邊已建立。',
+        'Created edge #${0}.': '已建立邊 #${0}。',
+        'Edge edit failed: ${0}': '邊編輯失敗：${0}',
+        'Node not found: ${0}': '找不到節點：${0}',
+        'Apply Node': '套用節點',
+        'Node form not found': '找不到節點表單',
+        'Parent node does not exist: ${0}': '父節點不存在：${0}',
+        'Parent node cannot be itself': '父節點不能是自己',
+        'Parent selection would create a cycle': '目前父節點選擇會形成循環',
+        'Updated node ${0}.': '已更新節點 ${0}。',
+        'Node updated: ${0}': '節點已更新：${0}',
+        'Node edit failed: ${0}': '節點編輯失敗：${0}',
+        'Fitted graph view.': '圖視圖已適配。',
+        'Graph re-layout completed.': '圖重新佈局完成。',
+        'No edge selected. Click an edge in graph first.': '未選擇邊。請先在圖中點擊一條邊。',
+        'Delete edge #${0}: ${1} -> ${2} [${3}]?': '刪除邊 #${0}：${1} -> ${2} [${3}]？',
+        'Deleted edge #${0}.': '已刪除邊 #${0}。',
+        'Deleted selected edge.': '已刪除所選邊。',
+        'Advanced: edit full memory graph JSON for current chat.': '進階：編輯目前聊天的完整記憶圖 JSON。',
+        'Apply Graph': '套用圖',
+        'Applied raw graph JSON edit.': '已套用原始圖 JSON 編輯。',
+        'Memory graph JSON updated.': '記憶圖 JSON 已更新。',
+        'Graph edit failed: ${0}': '圖編輯失敗：${0}',
+        'Memory disabled, runtime lorebook projection cleared.': '記憶已停用，已清理執行期 Lorebook 投影。',
+        'Lorebook projection disabled.': 'Lorebook 投影已停用。',
+        'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
+        'Recall ready. query="${0}" selected=${1}': '召回就緒。query="${0}" selected=${1}',
+        'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
+        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}',
+        'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
+        'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定義節點資料表、抽取提示與壓縮策略。這會控制記憶圖儲存內容及其隨時間壓縮方式。',
+        'Hierarchical Compression': '分層壓縮',
+        'Latest Snapshot': '最新快照',
+        'Always Inject': '常駐注入',
+        'Current type count: ${0}': '目前類型數量：${0}',
+        'Add Type': '新增類型',
+        'Load Recommended Schema': '載入推薦 Schema',
+        'table: ${0}': '表：${0}',
+        'mode: ${0}': '模式：${0}',
+        'always inject': '常駐注入',
+        'Type ID': '類型 ID',
+        'Label': '標籤',
+        'Table Name': '表名',
+        'Table Columns (comma separated)': '表欄位（逗號分隔）',
+        'Keywords (comma separated)': '關鍵字（逗號分隔）',
+        'Extract Hint': '抽取提示',
+        'Compression Mode': '壓縮模式',
+        'none': 'none',
+        'latest_only': 'latest_only',
+        'hierarchical': 'hierarchical',
+        'Keep Latest': '保留最新',
+        'Threshold': '閾值',
+        'Fan-In': '扇入',
+        'Max Depth': '最大深度',
+        'Keep Recent Leaves': '保留最近葉節點',
+        'Summarize Instruction': '摘要指令',
+        'Duplicate Type': '複製類型',
+        'Remove Type': '移除類型',
+        'Apply Schema': '套用 Schema',
+        'Memory schema updated.': '記憶 Schema 已更新。',
+        'Applied memory schema from popup editor.': '已套用彈窗編輯器中的記憶 Schema。',
+        'Saved memory settings.': '記憶設定已儲存。',
+        'Invalid schema settings: ${0}': 'Schema 設定無效：${0}',
+        'Memory settings save failed.': '記憶設定儲存失敗。',
+        'Memory graph rebuilt from current chat.': '已從目前聊天重建記憶圖。',
+        'Rebuilt memory graph and compression from chat.': '已從聊天重建記憶圖並完成壓縮。',
+        'Current chat memory graph reset.': '已重設目前聊天記憶圖。',
+        'Reset memory graph for current chat.': '已重設目前聊天記憶圖。',
+        'Recall injected via fallback after WI scan. Requested WI rescan for this generation.': '透過 WI 掃描後回退流程注入了召回內容，並要求本次生成重新掃描 WI。',
+        'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
+        'Selected node: ${0}. Tip: click an edge to edit relation.': '已選擇節點：${0}。提示：點擊邊可編輯關係。',
+        'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
+        'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}': '已選擇邊 #${0}：${1} -> ${2} [${3}] weight=${4}',
+        'Chat mutation detected. Memory graph will re-sync on next generation.': '偵測到聊天變更。記憶圖會在下次生成時重新同步。',
+    });
+}
 
 const CHAT_MODEL_SETTING_BY_SOURCE = {
     [chat_completion_sources.OPENAI]: 'openai_model',
@@ -386,12 +750,12 @@ function getOpenAIPresetNames(context) {
 function renderOpenAIPresetOptions(context, selectedName = '') {
     const selected = String(selectedName || '').trim();
     const names = getOpenAIPresetNames(context);
-    const options = ['<option value="">(Current preset)</option>'];
+    const options = [`<option value="">${escapeHtml(i18n('(Current preset)'))}</option>`];
     for (const name of names) {
         options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
     }
     if (selected && !names.includes(selected)) {
-        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (missing)</option>`);
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
     }
     return options.join('');
 }
@@ -411,12 +775,12 @@ function getConnectionProfiles() {
 function renderConnectionProfileOptions(selectedName = '') {
     const selected = String(selectedName || '').trim();
     const names = getConnectionProfiles().map(profile => profile.name);
-    const options = ['<option value="">(Current API config)</option>'];
+    const options = [`<option value="">${escapeHtml(i18n('(Current API config)'))}</option>`];
     for (const name of names) {
         options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
     }
     if (selected && !names.includes(selected)) {
-        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (missing)</option>`);
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
     }
     return options.join('');
 }
@@ -3480,18 +3844,18 @@ async function injectMemoryPrompts(context, payload) {
     }
     if (!settings.enabled) {
         await clearRuntimeLorebookProjection(context, settings);
-        updateUiStatus('Memory disabled, runtime lorebook projection cleared.');
+        updateUiStatus(i18n('Memory disabled, runtime lorebook projection cleared.'));
         return false;
     }
     if (!settings.lorebookProjectionEnabled) {
         await clearRuntimeLorebookProjection(context, settings);
-        updateUiStatus('Lorebook projection disabled.');
+        updateUiStatus(i18n('Lorebook projection disabled.'));
         return false;
     }
 
     const store = await ensureStoreSyncedWithChat(context);
     if (!store) {
-        updateUiStatus('Memory store unavailable for current chat.');
+        updateUiStatus(i18n('Memory store unavailable for current chat.'));
         return false;
     }
 
@@ -3510,7 +3874,7 @@ async function injectMemoryPrompts(context, payload) {
     };
     const chatKey = getChatKey(context, { allowFallback: true });
     await persistMemoryStoreByChatKey(context, chatKey, store);
-    updateUiStatus(`Recall ready. query="${query.slice(0, 90)}" selected=${selectedNodes.length}`);
+    updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query.slice(0, 90), selectedNodes.length));
     return true;
 }
 
@@ -3523,7 +3887,11 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world
         return Boolean(injected);
     } catch (error) {
         console.error(`[${MODULE_NAME}] Recall injection failed during ${trigger}`, error);
-        updateUiStatus(`Recall injection failed (${trigger}): ${String(error?.message || error).slice(0, 180)}`);
+        updateUiStatus(i18nFormat(
+            'Recall injection failed (${0}): ${1}',
+            trigger,
+            String(error?.message || error).slice(0, 180),
+        ));
         return false;
     }
 }
@@ -3627,45 +3995,45 @@ function renderGraphInspectorHtml(store) {
 <td>${node.fromTurn ?? ''}~${node.toTurn ?? node.turnIndex ?? ''}</td>
 <td>
     <div class="flex-container">
-        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}">View</div>
-        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${escapeHtml(node.id)}">Form Edit</div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('View'))}</div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('Form Edit'))}</div>
     </div>
 </td>
 </tr>`).join('');
 
     return `
 <div class="flex-container flexFlowColumn luker-rpg-memory-graph-popup-inner">
-    <h3 class="margin0">Memory Graph</h3>
-    <div>Nodes: ${stats.nodeCount} | Edges: ${stats.edgeCount} | Turns: ${stats.turnCount} | Source messages: ${stats.sourceMessageCount}</div>
-    <div>canon=${stats.levelCount.canon}, rollup=${stats.levelCount.rollup}, arc=${stats.levelCount.arc}, episode=${stats.levelCount.episode}, turn=${stats.levelCount.turn}, semantic=${stats.levelCount.semantic}</div>
-    <div>Last recall steps: ${stats.lastRecallSteps} | Layer snapshots: ${stats.layerSnapshots}</div>
+    <h3 class="margin0">${escapeHtml(i18n('Memory Graph'))}</h3>
+    <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}', stats.nodeCount, stats.edgeCount, stats.turnCount, stats.sourceMessageCount))}</div>
+    <div>${escapeHtml(i18nFormat('canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}', stats.levelCount.canon, stats.levelCount.rollup, stats.levelCount.arc, stats.levelCount.episode, stats.levelCount.turn, stats.levelCount.semantic))}</div>
+    <div>${escapeHtml(i18nFormat('Last recall steps: ${0} | Layer snapshots: ${1}', stats.lastRecallSteps, stats.layerSnapshots))}</div>
     <div class="luker-rpg-memory-graph-canvas-wrap">
         <div class="luker-rpg-memory-graph-cy"></div>
     </div>
-    <small class="luker-rpg-memory-graph-selection">Visual graph ready. Click an edge to select it for editing.</small>
+    <small class="luker-rpg-memory-graph-selection">${escapeHtml(i18n('Visual graph ready. Click an edge to select it for editing.'))}</small>
     <div class="flex-container luker-rpg-memory-graph-toolbar">
-        <div class="menu_button luker-rpg-memory-graph-fit">Fit View</div>
-        <div class="menu_button luker-rpg-memory-graph-relayout">Re-layout</div>
-        <div class="menu_button luker-rpg-memory-edge-add">Add Edge</div>
-        <div class="menu_button luker-rpg-memory-edge-edit">Edit Selected Edge</div>
-        <div class="menu_button luker-rpg-memory-edge-delete">Delete Selected Edge</div>
-        <div class="menu_button luker-rpg-memory-graph-raw-view">Advanced JSON View</div>
-        <div class="menu_button luker-rpg-memory-graph-raw-edit">Advanced JSON Edit</div>
+        <div class="menu_button luker-rpg-memory-graph-fit">${escapeHtml(i18n('Fit View'))}</div>
+        <div class="menu_button luker-rpg-memory-graph-relayout">${escapeHtml(i18n('Re-layout'))}</div>
+        <div class="menu_button luker-rpg-memory-edge-add">${escapeHtml(i18n('Add Edge'))}</div>
+        <div class="menu_button luker-rpg-memory-edge-edit">${escapeHtml(i18n('Edit Selected Edge'))}</div>
+        <div class="menu_button luker-rpg-memory-edge-delete">${escapeHtml(i18n('Delete Selected Edge'))}</div>
+        <div class="menu_button luker-rpg-memory-graph-raw-view">${escapeHtml(i18n('Advanced JSON View'))}</div>
+        <div class="menu_button luker-rpg-memory-graph-raw-edit">${escapeHtml(i18n('Advanced JSON Edit'))}</div>
     </div>
     <div class="luker-rpg-memory-graph-table-wrap">
     <table class="table" style="font-size:12px; margin-top:8px;">
-        <thead><tr><th>ID</th><th>Level</th><th>Type</th><th>Title</th><th>Summary</th><th>Children</th><th>TurnRange</th><th>Actions</th></tr></thead>
+        <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Level'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Children'))}</th><th>${escapeHtml(i18n('TurnRange'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
         <tbody>${rows}</tbody>
     </table>
     </div>
-    <h4 class="margin0" style="margin-top:10px;">Recent Edges</h4>
+    <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Recent Edges'))}</h4>
     <div class="luker-rpg-memory-graph-table-wrap">
     <table class="table" style="font-size:12px; margin-top:6px;">
-        <thead><tr><th>From</th><th>To</th><th>Type</th><th>Weight</th><th>Updated</th><th>Actions</th></tr></thead>
-        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge.weight || 1)}</td><td>${Number(edge.updatedAt || 0)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">Edit</div></td></tr>`).join('')}</tbody>
+        <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Weight'))}</th><th>${escapeHtml(i18n('Updated'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge.weight || 1)}</td><td>${Number(edge.updatedAt || 0)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">${escapeHtml(i18n('Edit'))}</div></td></tr>`).join('')}</tbody>
     </table>
     </div>
-    <h4 class="margin0" style="margin-top:10px;">Last Projection</h4>
+    <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Last Projection'))}</h4>
     <pre style="white-space:pre-wrap; max-height:260px; overflow:auto;">${JSON.stringify(store.lastRecallProjection || {}, null, 2).replace(/</g, '&lt;')}</pre>
 </div>`;
 }
@@ -3772,7 +4140,7 @@ function getNodeTypeOptionsHtml(settings, store, currentType = '') {
 
 function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
     const selected = String(selectedParentId || '').trim();
-    const options = ['<option value="">(none)</option>'];
+    const options = [`<option value="">${escapeHtml(i18n('(none)'))}</option>`];
     const nodes = Object.values(store.nodes || {})
         .filter(node => node && String(node.id || '') !== String(selfId || ''))
         .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
@@ -3783,7 +4151,7 @@ function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
         options.push(`<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
     }
     if (selected && !nodes.find(node => String(node.id || '') === selected)) {
-        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (missing)</option>`);
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
     }
     return options.join('');
 }
@@ -3800,50 +4168,50 @@ function renderNodeFormEditorHtml(node, store, settings, editorId) {
 
     return `
 <div id="${editorId}" class="flex-container flexFlowColumn luker-rpg-memory-node-form">
-    <small style="opacity:0.85">Form editor for one node. Parent/child relationships and graph persistence are applied automatically.</small>
+    <small style="opacity:0.85">${escapeHtml(i18n('Form editor for one node. Parent/child relationships and graph persistence are applied automatically.'))}</small>
     <div class="luker-rpg-memory-node-form-grid">
-        <label>Node ID
+        <label>${escapeHtml(i18n('Node ID'))}
             <input data-field="id" class="text_pole" type="text" value="${escapeHtml(node.id)}" readonly />
         </label>
-        <label>Parent Node
+        <label>${escapeHtml(i18n('Parent Node'))}
             <select data-field="parentId" class="text_pole">${getNodeParentOptionsHtml(store, node.id, node.parentId || '')}</select>
         </label>
-        <label>Type
+        <label>${escapeHtml(i18n('Type'))}
             <select data-field="type" class="text_pole">${getNodeTypeOptionsHtml(settings, store, node.type || '')}</select>
         </label>
-        <label>Level
+        <label>${escapeHtml(i18n('Level'))}
             <select data-field="level" class="text_pole">${levelOptions}</select>
         </label>
-        <label>Turn Index
+        <label>${escapeHtml(i18n('Turn Index'))}
             <input data-field="turnIndex" class="text_pole" type="number" step="1" value="${escapeHtml(node.turnIndex ?? '')}" />
         </label>
-        <label>From Turn
+        <label>${escapeHtml(i18n('From Turn'))}
             <input data-field="fromTurn" class="text_pole" type="number" step="1" value="${escapeHtml(node.fromTurn ?? '')}" />
         </label>
-        <label>To Turn
+        <label>${escapeHtml(i18n('To Turn'))}
             <input data-field="toTurn" class="text_pole" type="number" step="1" value="${escapeHtml(node.toTurn ?? '')}" />
         </label>
-        <label>Count
+        <label>${escapeHtml(i18n('Count'))}
             <input data-field="count" class="text_pole" type="number" min="1" step="1" value="${escapeHtml(node.count ?? 1)}" />
         </label>
     </div>
     <div class="luker-rpg-memory-node-form-flags">
-        <label class="checkbox_label"><input data-field="finalized" type="checkbox" ${node.finalized ? 'checked' : ''} /> Finalized</label>
-        <label class="checkbox_label"><input data-field="archived" type="checkbox" ${node.archived ? 'checked' : ''} /> Archived</label>
+        <label class="checkbox_label"><input data-field="finalized" type="checkbox" ${node.finalized ? 'checked' : ''} /> ${escapeHtml(i18n('Finalized'))}</label>
+        <label class="checkbox_label"><input data-field="archived" type="checkbox" ${node.archived ? 'checked' : ''} /> ${escapeHtml(i18n('Archived'))}</label>
     </div>
-    <label>Title
+    <label>${escapeHtml(i18n('Title'))}
         <input data-field="title" class="text_pole" type="text" value="${escapeHtml(node.title || '')}" />
     </label>
-    <label>Summary
+    <label>${escapeHtml(i18n('Summary'))}
         <textarea data-field="summary" class="text_pole textarea_compact" rows="3">${escapeHtml(node.summary || '')}</textarea>
     </label>
-    <label>Content
+    <label>${escapeHtml(i18n('Content'))}
         <textarea data-field="content" class="text_pole textarea_compact" rows="7">${escapeHtml(node.content || '')}</textarea>
     </label>
-    <label>Links (comma separated node ids)
+    <label>${escapeHtml(i18n('Links (comma separated node ids)'))}
         <input data-field="links" class="text_pole" type="text" value="${escapeHtml(joinCommaList(node.links || []))}" />
     </label>
-    <label>Metadata (one key=value per line)
+    <label>${escapeHtml(i18n('Metadata (one key=value per line)'))}
         <textarea data-field="metadataLines" class="text_pole textarea_compact" rows="6">${escapeHtml(encodeMetadataAsLines(node.metadata || {}))}</textarea>
     </label>
 </div>`;
@@ -4019,7 +4387,7 @@ function buildGraphCytoscapeElements(store) {
 
 function getEdgeNodeOptionsHtml(store, selectedNodeId = '') {
     const selected = String(selectedNodeId || '').trim();
-    const options = ['<option value="">(select node)</option>'];
+    const options = [`<option value="">${escapeHtml(i18n('(select node)'))}</option>`];
     const nodes = Object.values(store.nodes || {})
         .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
     for (const node of nodes) {
@@ -4031,7 +4399,7 @@ function getEdgeNodeOptionsHtml(store, selectedNodeId = '') {
         options.push(`<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
     }
     if (selected && !nodes.find(node => String(node.id || '') === selected)) {
-        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} (missing)</option>`);
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
     }
     return options.join('');
 }
@@ -4061,18 +4429,18 @@ function renderEdgeFormEditorHtml(store, editorId, edge = {}, edgeIndex = -1) {
 
     return `
 <div id="${editorId}" class="flex-container flexFlowColumn">
-    <small style="opacity:0.85">Edge ${edgeIndex >= 0 ? `#${edgeIndex}` : '(new)'}: configure relation between two nodes.</small>
+    <small style="opacity:0.85">${escapeHtml(i18nFormat('Edge ${0}: configure relation between two nodes.', edgeIndex >= 0 ? `#${edgeIndex}` : i18n('(new)')))}</small>
     <div class="luker-rpg-memory-edge-form-grid">
-        <label>From Node
+        <label>${escapeHtml(i18n('From Node'))}
             <select data-field="from" class="text_pole">${getEdgeNodeOptionsHtml(store, from)}</select>
         </label>
-        <label>To Node
+        <label>${escapeHtml(i18n('To Node'))}
             <select data-field="to" class="text_pole">${getEdgeNodeOptionsHtml(store, to)}</select>
         </label>
-        <label>Type
+        <label>${escapeHtml(i18n('Type'))}
             <select data-field="type" class="text_pole">${getEdgeTypeOptionsHtml(store, type)}</select>
         </label>
-        <label>Weight
+        <label>${escapeHtml(i18n('Weight'))}
             <input data-field="weight" class="text_pole" type="number" min="0.01" step="0.01" value="${weight}" />
         </label>
     </div>
@@ -4084,7 +4452,7 @@ async function openGraphInspectorPopup(context) {
     const chatKey = getChatKey(context);
     const store = getMemoryStore(context);
     if (!store) {
-        notifyError('No active chat selected.');
+        notifyError(i18n('No active chat selected.'));
         return;
     }
 
@@ -4106,7 +4474,7 @@ async function openGraphInspectorPopup(context) {
 
     const getStore = () => memoryStoreCache.get(chatKey) || store;
     const getPopupRoot = () => jQuery(selector);
-    const getDefaultSelectionText = () => 'Visual graph ready. Click an edge to select it for editing.';
+    const getDefaultSelectionText = () => i18n('Visual graph ready. Click an edge to select it for editing.');
     const updateSelectionText = (text = '') => {
         const popupRoot = getPopupRoot();
         if (!popupRoot.length) {
@@ -4277,7 +4645,7 @@ async function openGraphInspectorPopup(context) {
 
             cy.on('tap', 'node', (event) => {
                 const nodeId = String(event.target.data('nodeId') || '');
-                updateSelectionText(`Selected node: ${nodeId}. Tip: click an edge to edit relation.`);
+                updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
             });
             cy.on('tap', 'edge', (event) => {
                 const edgeIndex = Number(event.target.data('edgeIndex'));
@@ -4287,10 +4655,17 @@ async function openGraphInspectorPopup(context) {
                 selectedEdgeIndex = edgeIndex;
                 const edge = latest.edges?.[edgeIndex];
                 if (!edge) {
-                    updateSelectionText(`Selected edge index ${edgeIndex} (missing).`);
+                    updateSelectionText(i18nFormat('Selected edge index ${0} (missing).', edgeIndex));
                     return;
                 }
-                updateSelectionText(`Selected edge #${edgeIndex}: ${edge.from} -> ${edge.to} [${edge.type}] weight=${Number(edge.weight || 1)}`);
+                updateSelectionText(i18nFormat(
+                    'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}',
+                    edgeIndex,
+                    edge.from,
+                    edge.to,
+                    edge.type,
+                    Number(edge.weight || 1),
+                ));
             });
             cy.on('tap', (event) => {
                 if (event.target !== cy) {
@@ -4301,7 +4676,7 @@ async function openGraphInspectorPopup(context) {
             });
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Cytoscape mount failed`, error);
-            updateSelectionText('Visual graph unavailable: failed to load Cytoscape.');
+            updateSelectionText(i18n('Visual graph unavailable: failed to load Cytoscape.'));
             return false;
         }
         return true;
@@ -4338,7 +4713,14 @@ async function openGraphInspectorPopup(context) {
         await mountGraphWithRetry();
         if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
             const edge = latest.edges[selectedEdgeIndex];
-            updateSelectionText(`Selected edge #${selectedEdgeIndex}: ${edge.from} -> ${edge.to} [${edge.type}] weight=${Number(edge.weight || 1)}`);
+            updateSelectionText(i18nFormat(
+                'Selected edge #${0}: ${1} -> ${2} [${3}] weight=${4}',
+                selectedEdgeIndex,
+                edge.from,
+                edge.to,
+                edge.type,
+                Number(edge.weight || 1),
+            ));
         } else {
             updateSelectionText('');
         }
@@ -4351,7 +4733,7 @@ async function openGraphInspectorPopup(context) {
         const isEdit = Number.isInteger(edgeIndex) && edgeIndex >= 0;
         const sourceEdge = isEdit ? latest.edges?.[edgeIndex] : null;
         if (isEdit && !sourceEdge) {
-            notifyError(`Edge not found: #${edgeIndex}`);
+            notifyError(i18nFormat('Edge not found: #${0}', edgeIndex));
             return;
         }
         const editorId = `luker_rpg_memory_edge_editor_${Date.now()}`;
@@ -4365,7 +4747,13 @@ async function openGraphInspectorPopup(context) {
             editorHtml,
             context.POPUP_TYPE.CONFIRM,
             '',
-            { okButton: isEdit ? 'Apply Edge' : 'Create Edge', cancelButton: 'Cancel', wide: true, large: false, allowVerticalScrolling: true },
+            {
+                okButton: isEdit ? i18n('Apply Edge') : i18n('Create Edge'),
+                cancelButton: i18n('Cancel'),
+                wide: true,
+                large: false,
+                allowVerticalScrolling: true,
+            },
         );
         if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
@@ -4374,7 +4762,7 @@ async function openGraphInspectorPopup(context) {
         try {
             const editorRoot = jQuery(`#${editorId}`);
             if (!editorRoot.length) {
-                throw new Error('Edge form not found');
+                throw new Error(i18n('Edge form not found'));
             }
             const from = String(editorRoot.find('[data-field="from"]').val() || '').trim();
             const to = String(editorRoot.find('[data-field="to"]').val() || '').trim();
@@ -4382,13 +4770,13 @@ async function openGraphInspectorPopup(context) {
             const weight = Math.max(0.01, Number(editorRoot.find('[data-field="weight"]').val()) || 1);
 
             if (!from || !to) {
-                throw new Error('From/To node is required');
+                throw new Error(i18n('From/To node is required'));
             }
             if (!latest.nodes[from] || !latest.nodes[to]) {
-                throw new Error('From/To node does not exist');
+                throw new Error(i18n('From/To node does not exist'));
             }
             if (from === to) {
-                throw new Error('From and To cannot be the same node');
+                throw new Error(i18n('From and To cannot be the same node'));
             }
 
             const next = {
@@ -4402,15 +4790,23 @@ async function openGraphInspectorPopup(context) {
             if (isEdit) {
                 latest.edges[edgeIndex] = next;
                 selectedEdgeIndex = edgeIndex;
-                await persistLatest(latest, `Edge updated (#${edgeIndex})`, `Updated edge #${edgeIndex}.`);
+                await persistLatest(
+                    latest,
+                    i18nFormat('Edge updated (#${0})', edgeIndex),
+                    i18nFormat('Updated edge #${0}.', edgeIndex),
+                );
             } else {
                 latest.edges.push(next);
                 selectedEdgeIndex = latest.edges.length - 1;
-                await persistLatest(latest, 'Edge created.', `Created edge #${selectedEdgeIndex}.`);
+                await persistLatest(
+                    latest,
+                    i18n('Edge created.'),
+                    i18nFormat('Created edge #${0}.', selectedEdgeIndex),
+                );
             }
             await rerender();
         } catch (error) {
-            notifyError(`Edge edit failed: ${error?.message || error}`);
+            notifyError(i18nFormat('Edge edit failed: ${0}', error?.message || error));
         }
     };
 
@@ -4420,7 +4816,7 @@ async function openGraphInspectorPopup(context) {
         const latest = getStore();
         const node = latest?.nodes?.[nodeId];
         if (!node) {
-            notifyError(`Node not found: ${nodeId}`);
+            notifyError(i18nFormat('Node not found: ${0}', nodeId));
             return;
         }
         await context.callGenericPopup(
@@ -4436,7 +4832,7 @@ async function openGraphInspectorPopup(context) {
         const latest = getStore();
         const node = latest?.nodes?.[nodeId];
         if (!node) {
-            notifyError(`Node not found: ${nodeId}`);
+            notifyError(i18nFormat('Node not found: ${0}', nodeId));
             return;
         }
 
@@ -4447,7 +4843,7 @@ async function openGraphInspectorPopup(context) {
             editorHtml,
             context.POPUP_TYPE.CONFIRM,
             '',
-            { okButton: 'Apply Node', cancelButton: 'Cancel', wide: true, large: true, allowVerticalScrolling: true },
+            { okButton: i18n('Apply Node'), cancelButton: i18n('Cancel'), wide: true, large: true, allowVerticalScrolling: true },
         );
         if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
@@ -4456,17 +4852,17 @@ async function openGraphInspectorPopup(context) {
         try {
             const editorRoot = jQuery(`#${editorId}`);
             if (!editorRoot.length) {
-                throw new Error('Node form not found');
+                throw new Error(i18n('Node form not found'));
             }
             const parsedParentId = String(editorRoot.find('[data-field="parentId"]').val() || '').trim();
             if (parsedParentId && !latest.nodes[parsedParentId]) {
-                throw new Error(`Parent node does not exist: ${parsedParentId}`);
+                throw new Error(i18nFormat('Parent node does not exist: ${0}', parsedParentId));
             }
             if (parsedParentId === nodeId) {
-                throw new Error('Parent node cannot be itself');
+                throw new Error(i18n('Parent node cannot be itself'));
             }
             if (willCreateParentCycle(latest, nodeId, parsedParentId)) {
-                throw new Error('Parent selection would create a cycle');
+                throw new Error(i18n('Parent selection would create a cycle'));
             }
 
             const target = latest.nodes[nodeId];
@@ -4513,11 +4909,11 @@ async function openGraphInspectorPopup(context) {
             memoryStoreCache.set(chatKey, latest);
             await persistMemoryStoreByChatKey(context, chatKey, latest);
             refreshUiStats();
-            updateUiStatus(`Updated node ${nodeId}.`);
-            notifySuccess(`Node updated: ${nodeId}`);
+            updateUiStatus(i18nFormat('Updated node ${0}.', nodeId));
+            notifySuccess(i18nFormat('Node updated: ${0}', nodeId));
             await rerender();
         } catch (error) {
-            notifyError(`Node edit failed: ${error?.message || error}`);
+            notifyError(i18nFormat('Node edit failed: ${0}', error?.message || error));
         }
     });
 
@@ -4532,7 +4928,7 @@ async function openGraphInspectorPopup(context) {
         cy.resize();
         cy.fit(cy.elements(), 64);
         cy.center();
-        updateSelectionText('Fitted graph view.');
+        updateSelectionText(i18n('Fitted graph view.'));
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-relayout`, function () {
@@ -4540,12 +4936,12 @@ async function openGraphInspectorPopup(context) {
             return;
         }
         runLayout();
-        updateSelectionText('Graph re-layout completed.');
+        updateSelectionText(i18n('Graph re-layout completed.'));
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-edit`, async function () {
         if (!Number.isInteger(selectedEdgeIndex) || selectedEdgeIndex < 0) {
-            notifyError('No edge selected. Click an edge in graph first.');
+            notifyError(i18n('No edge selected. Click an edge in graph first.'));
             return;
         }
         await openEdgeEditor(selectedEdgeIndex);
@@ -4566,23 +4962,33 @@ async function openGraphInspectorPopup(context) {
             return;
         }
         if (!Number.isInteger(selectedEdgeIndex) || selectedEdgeIndex < 0 || !latest.edges?.[selectedEdgeIndex]) {
-            notifyError('No edge selected. Click an edge in graph first.');
+            notifyError(i18n('No edge selected. Click an edge in graph first.'));
             return;
         }
 
         const edge = latest.edges[selectedEdgeIndex];
         const confirm = await context.callGenericPopup(
-            `Delete edge #${selectedEdgeIndex}: ${escapeHtml(String(edge.from || ''))} -> ${escapeHtml(String(edge.to || ''))} [${escapeHtml(String(edge.type || ''))}]?`,
+            i18nFormat(
+                'Delete edge #${0}: ${1} -> ${2} [${3}]?',
+                selectedEdgeIndex,
+                escapeHtml(String(edge.from || '')),
+                escapeHtml(String(edge.to || '')),
+                escapeHtml(String(edge.type || '')),
+            ),
             context.POPUP_TYPE.CONFIRM,
             '',
-            { okButton: 'Delete', cancelButton: 'Cancel' },
+            { okButton: i18n('Delete'), cancelButton: i18n('Cancel') },
         );
         if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
         }
 
         latest.edges.splice(selectedEdgeIndex, 1);
-        await persistLatest(latest, `Deleted edge #${selectedEdgeIndex}.`, 'Deleted selected edge.');
+        await persistLatest(
+            latest,
+            i18nFormat('Deleted edge #${0}.', selectedEdgeIndex),
+            i18n('Deleted selected edge.'),
+        );
         selectedEdgeIndex = -1;
         await rerender();
     });
@@ -4609,7 +5015,7 @@ async function openGraphInspectorPopup(context) {
         const editorId = `luker_rpg_memory_graph_editor_${Date.now()}`;
         const editorHtml = `
 <div class="flex-container flexFlowColumn">
-    <small style="opacity:0.85">Advanced: edit full memory graph JSON for current chat.</small>
+    <small style="opacity:0.85">${escapeHtml(i18n('Advanced: edit full memory graph JSON for current chat.'))}</small>
     <textarea id="${editorId}" class="text_pole textarea_compact" style="min-height:68vh; font-family:monospace;">${escapeHtml(JSON.stringify(latest, null, 2))}</textarea>
 </div>`;
 
@@ -4617,7 +5023,7 @@ async function openGraphInspectorPopup(context) {
             editorHtml,
             context.POPUP_TYPE.CONFIRM,
             '',
-            { okButton: 'Apply Graph', cancelButton: 'Cancel', wide: true, large: true, allowVerticalScrolling: true },
+            { okButton: i18n('Apply Graph'), cancelButton: i18n('Cancel'), wide: true, large: true, allowVerticalScrolling: true },
         );
         if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
@@ -4632,12 +5038,12 @@ async function openGraphInspectorPopup(context) {
             memoryStoreCache.set(chatKey, migrated);
             await persistMemoryStoreByChatKey(context, chatKey, migrated);
             refreshUiStats();
-            updateUiStatus('Applied raw graph JSON edit.');
-            notifySuccess('Memory graph JSON updated.');
+            updateUiStatus(i18n('Applied raw graph JSON edit.'));
+            notifySuccess(i18n('Memory graph JSON updated.'));
             selectedEdgeIndex = -1;
             await rerender();
         } catch (error) {
-            notifyError(`Graph edit failed: ${error?.message || error}`);
+            notifyError(i18nFormat('Graph edit failed: ${0}', error?.message || error));
         }
     });
 
@@ -4687,7 +5093,19 @@ function refreshUiStats() {
     const stats = getStoreStats(store);
 
     root.find('#luker_rpg_memory_stats').text(
-        `nodes=${stats.nodeCount}, edges=${stats.edgeCount}, turns=${stats.turnCount}, source=${stats.sourceMessageCount}, canon=${stats.levelCount.canon}, rollup=${stats.levelCount.rollup}, arc=${stats.levelCount.arc}, episode=${stats.levelCount.episode}, semantic=${stats.levelCount.semantic}, snapshots=${stats.layerSnapshots}`,
+        i18nFormat(
+            'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}',
+            stats.nodeCount,
+            stats.edgeCount,
+            stats.turnCount,
+            stats.sourceMessageCount,
+            stats.levelCount.canon,
+            stats.levelCount.rollup,
+            stats.levelCount.arc,
+            stats.levelCount.episode,
+            stats.levelCount.semantic,
+            stats.layerSnapshots,
+        ),
     );
 }
 
@@ -5007,72 +5425,72 @@ function renderNodeTypeSchemaCard(spec, index) {
     <div class="luker-schema-card-header">
         <div>
             <div class="luker-schema-card-title">${escapeHtml(cardTitle)}</div>
-            <div class="luker-schema-card-sub">table: ${escapeHtml(tableName || '(unset)')}</div>
+            <div class="luker-schema-card-sub">${escapeHtml(i18nFormat('table: ${0}', tableName || i18n('(unset)')))}</div>
         </div>
         <div class="luker-schema-badges">
-            <span class="luker-schema-badge">mode: ${escapeHtml(mode)}</span>
-            ${spec.alwaysInject ? '<span class="luker-schema-badge">always inject</span>' : ''}
+            <span class="luker-schema-badge">${escapeHtml(i18nFormat('mode: ${0}', mode))}</span>
+            ${spec.alwaysInject ? `<span class="luker-schema-badge">${escapeHtml(i18n('always inject'))}</span>` : ''}
         </div>
     </div>
     <div class="luker-schema-grid-2">
-        <label>Type ID
+        <label>${escapeHtml(i18n('Type ID'))}
             <input data-field="id" class="text_pole" type="text" value="${escapeHtml(spec.id)}" />
         </label>
-        <label>Label
+        <label>${escapeHtml(i18n('Label'))}
             <input data-field="label" class="text_pole" type="text" value="${escapeHtml(spec.label)}" />
         </label>
     </div>
     <div class="luker-schema-grid-2">
-        <label>Table Name
+        <label>${escapeHtml(i18n('Table Name'))}
             <input data-field="tableName" class="text_pole" type="text" value="${escapeHtml(spec.tableName || spec.id)}" />
         </label>
-        <label class="luker-schema-checkbox">Always Inject
+        <label class="luker-schema-checkbox">${escapeHtml(i18n('Always Inject'))}
             <input data-field="alwaysInject" type="checkbox" ${spec.alwaysInject ? 'checked' : ''} />
         </label>
     </div>
-    <label>Table Columns (comma separated)
+    <label>${escapeHtml(i18n('Table Columns (comma separated)'))}
         <input data-field="tableColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.tableColumns))}" />
     </label>
-    <label>Keywords (comma separated)
+    <label>${escapeHtml(i18n('Keywords (comma separated)'))}
         <input data-field="keywords" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.keywords))}" />
     </label>
-    <label>Extract Hint
+    <label>${escapeHtml(i18n('Extract Hint'))}
         <textarea data-field="extractHint" class="text_pole textarea_compact" rows="2">${escapeHtml(spec.extractHint || '')}</textarea>
     </label>
     <div class="luker-schema-grid-2">
-        <label>Compression Mode
+        <label>${escapeHtml(i18n('Compression Mode'))}
             <select data-field="compression.mode" class="text_pole">
-                <option value="none"${mode === 'none' ? ' selected' : ''}>none</option>
-                <option value="latest_only"${mode === 'latest_only' ? ' selected' : ''}>latest_only</option>
-                <option value="hierarchical"${mode === 'hierarchical' ? ' selected' : ''}>hierarchical</option>
+                <option value="none"${mode === 'none' ? ' selected' : ''}>${escapeHtml(i18n('none'))}</option>
+                <option value="latest_only"${mode === 'latest_only' ? ' selected' : ''}>${escapeHtml(i18n('latest_only'))}</option>
+                <option value="hierarchical"${mode === 'hierarchical' ? ' selected' : ''}>${escapeHtml(i18n('hierarchical'))}</option>
             </select>
         </label>
-        <label class="luker-schema-compression-latest">Keep Latest
+        <label class="luker-schema-compression-latest">${escapeHtml(i18n('Keep Latest'))}
             <input data-field="compression.keepLatest" class="text_pole" type="number" min="1" step="1" value="${keepLatest}" />
         </label>
     </div>
     <div class="luker-schema-grid-2 luker-schema-compression-hier">
-        <label>Threshold
+        <label>${escapeHtml(i18n('Threshold'))}
             <input data-field="compression.threshold" class="text_pole" type="number" min="2" step="1" value="${threshold}" />
         </label>
-        <label>Fan-In
+        <label>${escapeHtml(i18n('Fan-In'))}
             <input data-field="compression.fanIn" class="text_pole" type="number" min="2" step="1" value="${fanIn}" />
         </label>
     </div>
     <div class="luker-schema-grid-2 luker-schema-compression-hier">
-        <label>Max Depth
+        <label>${escapeHtml(i18n('Max Depth'))}
             <input data-field="compression.maxDepth" class="text_pole" type="number" min="1" step="1" value="${maxDepth}" />
         </label>
-        <label>Keep Recent Leaves
+        <label>${escapeHtml(i18n('Keep Recent Leaves'))}
             <input data-field="compression.keepRecentLeaves" class="text_pole" type="number" min="0" step="1" value="${keepRecentLeaves}" />
         </label>
     </div>
-    <label class="luker-schema-compression-hier">Summarize Instruction
+    <label class="luker-schema-compression-hier">${escapeHtml(i18n('Summarize Instruction'))}
         <textarea data-field="compression.summarizeInstruction" class="text_pole textarea_compact" rows="2">${escapeHtml(summarizeInstruction)}</textarea>
     </label>
     <div class="luker-schema-actions">
-        <div class="menu_button luker-schema-action" data-action="duplicate">Duplicate Type</div>
-        <div class="menu_button luker-schema-action" data-action="remove">Remove Type</div>
+        <div class="menu_button luker-schema-action" data-action="duplicate">${escapeHtml(i18n('Duplicate Type'))}</div>
+        <div class="menu_button luker-schema-action" data-action="remove">${escapeHtml(i18n('Remove Type'))}</div>
     </div>
 </div>`;
 }
@@ -5132,9 +5550,12 @@ function updateSchemaSummary(root, schema) {
     const total = normalized.length;
     const alwaysInject = normalized.filter(item => item.alwaysInject).length;
     const hierarchical = normalized.filter(item => String(item?.compression?.mode || '') === 'hierarchical').length;
-    root.find('#luker_rpg_memory_schema_summary').text(
-        `Types: ${total} | Always Inject: ${alwaysInject} | Hierarchical: ${hierarchical}`,
-    );
+    root.find('#luker_rpg_memory_schema_summary').text(i18nFormat(
+        'Types: ${0} | Always Inject: ${1} | Hierarchical: ${2}',
+        total,
+        alwaysInject,
+        hierarchical,
+    ));
 }
 
 function buildSchemaEditorPopupHtml(popupId, schema) {
@@ -5144,21 +5565,21 @@ function buildSchemaEditorPopupHtml(popupId, schema) {
 <div id="${popupId}" class="luker-rpg-schema-popup flex-container flexFlowColumn">
     <div class="luker-schema-topbar">
         <div>
-            <div class="luker-schema-topbar-title">Memory Node Schema Editor</div>
-            <div class="luker-schema-topbar-note">Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.</div>
+            <div class="luker-schema-topbar-title">${escapeHtml(i18n('Memory Node Schema Editor'))}</div>
+            <div class="luker-schema-topbar-note">${escapeHtml(i18n('Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.'))}</div>
         </div>
         <div class="luker-schema-chip-row">
-            <span class="luker-schema-chip hier">Hierarchical Compression</span>
-            <span class="luker-schema-chip latest">Latest Snapshot</span>
-            <span class="luker-schema-chip inject">Always Inject</span>
+            <span class="luker-schema-chip hier">${escapeHtml(i18n('Hierarchical Compression'))}</span>
+            <span class="luker-schema-chip latest">${escapeHtml(i18n('Latest Snapshot'))}</span>
+            <span class="luker-schema-chip inject">${escapeHtml(i18n('Always Inject'))}</span>
         </div>
     </div>
     <div class="luker-schema-editor-list flex-container flexFlowColumn">${cardsHtml}</div>
     <div class="luker-schema-footer">
-        <div class="luker-schema-footer-note">Current type count: ${normalized.length}</div>
+        <div class="luker-schema-footer-note">${escapeHtml(i18nFormat('Current type count: ${0}', normalized.length))}</div>
         <div class="flex-container">
-            <div class="menu_button luker-schema-editor-add">Add Type</div>
-            <div class="menu_button luker-schema-editor-default">Load Recommended Schema</div>
+            <div class="menu_button luker-schema-editor-add">${escapeHtml(i18n('Add Type'))}</div>
+            <div class="menu_button luker-schema-editor-default">${escapeHtml(i18n('Load Recommended Schema'))}</div>
         </div>
     </div>
 </div>`;
@@ -5177,8 +5598,8 @@ async function openSchemaEditorPopup(context, settings, root) {
         context.POPUP_TYPE.CONFIRM,
         '',
         {
-            okButton: 'Apply Schema',
-            cancelButton: 'Cancel',
+            okButton: i18n('Apply Schema'),
+            cancelButton: i18n('Cancel'),
             wide: true,
             large: true,
             allowVerticalScrolling: true,
@@ -5254,8 +5675,8 @@ async function openSchemaEditorPopup(context, settings, root) {
         settings.nodeTypeSchema = readNodeTypeSchemaEditor(popupRoot, listSelector);
         saveSettingsDebounced();
         updateSchemaSummary(root, settings.nodeTypeSchema);
-        notifySuccess('Memory schema updated.');
-        updateUiStatus('Applied memory schema from popup editor.');
+        notifySuccess(i18n('Memory schema updated.'));
+        updateUiStatus(i18n('Applied memory schema from popup editor.'));
     } finally {
         jQuery(document).off(namespace);
     }
@@ -5364,11 +5785,11 @@ function bindUi() {
             updateSchemaSummary(root, settings.nodeTypeSchema);
 
             saveSettingsDebounced();
-            notifySuccess('Memory settings saved.');
-            updateUiStatus('Saved memory settings.');
+            notifySuccess(i18n('Memory settings saved.'));
+            updateUiStatus(i18n('Saved memory settings.'));
         } catch (error) {
-            notifyError(`Invalid schema settings: ${error?.message || error}`);
-            updateUiStatus('Memory settings save failed.');
+            notifyError(i18nFormat('Invalid schema settings: ${0}', error?.message || error));
+            updateUiStatus(i18n('Memory settings save failed.'));
         }
     });
 
@@ -5380,7 +5801,7 @@ function bindUi() {
         await ensureMemoryStoreLoaded(context);
         const store = getMemoryStore(context);
         if (!store) {
-            notifyError('No active chat selected.');
+            notifyError(i18n('No active chat selected.'));
             return;
         }
         const query = String(root.find('#luker_rpg_memory_debug_query').val() || '');
@@ -5412,14 +5833,14 @@ function bindUi() {
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
         const store = await ensureStoreSyncedWithChat(context, { force: true });
         if (!store) {
-            notifyError('No active chat selected.');
+            notifyError(i18n('No active chat selected.'));
             return;
         }
         await runCompressionLoop(context, store, settings);
         await persistMemoryStoreByChatKey(context, getChatKey(context), store);
         refreshUiStats();
-        notifySuccess('Memory graph rebuilt from current chat.');
-        updateUiStatus('Rebuilt memory graph and compression from chat.');
+        notifySuccess(i18n('Memory graph rebuilt from current chat.'));
+        updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
     });
 
     root.find('#luker_rpg_memory_reset').off('click').on('click', async function () {
@@ -5435,15 +5856,15 @@ function bindUi() {
         }
         await clearRuntimeLorebookProjection(context, settings);
         refreshUiStats();
-        notifySuccess('Current chat memory graph reset.');
-        updateUiStatus('Reset memory graph for current chat.');
+        notifySuccess(i18n('Current chat memory graph reset.'));
+        updateUiStatus(i18n('Reset memory graph for current chat.'));
     });
 
     root.find('#luker_rpg_memory_export').off('click').on('click', async function () {
         await ensureMemoryStoreLoaded(context);
         const store = getMemoryStore(context);
         if (!store) {
-            notifyError('No active chat selected.');
+            notifyError(i18n('No active chat selected.'));
             return;
         }
         await context.callGenericPopup(
@@ -5458,15 +5879,15 @@ function bindUi() {
         await ensureMemoryStoreLoaded(context);
         const store = getMemoryStore(context);
         if (!store) {
-            notifyError('No active chat selected.');
+            notifyError(i18n('No active chat selected.'));
             return;
         }
         const current = JSON.stringify(store, null, 2);
         const input = await context.callGenericPopup(
-            'Paste memory graph JSON for current chat.',
+            i18n('Paste memory graph JSON for current chat.'),
             context.POPUP_TYPE.INPUT,
             current,
-            { rows: 16, wide: true, large: true, okButton: 'Import', cancelButton: 'Cancel' },
+            { rows: 16, wide: true, large: true, okButton: i18n('Import'), cancelButton: i18n('Cancel') },
         );
 
         if (!input || typeof input !== 'string') {
@@ -5485,11 +5906,11 @@ function bindUi() {
             memoryStoreCache.set(chatKey, migrated);
             await persistMemoryStoreByChatKey(context, chatKey, migrated);
             refreshUiStats();
-            notifySuccess('Memory graph imported for current chat.');
-            updateUiStatus('Imported memory graph JSON.');
+            notifySuccess(i18n('Memory graph imported for current chat.'));
+            updateUiStatus(i18n('Imported memory graph JSON.'));
         } catch (error) {
-            notifyError(`Import failed: ${error?.message || error}`);
-            updateUiStatus('Memory graph import failed.');
+            notifyError(i18nFormat('Import failed: ${0}', error?.message || error));
+            updateUiStatus(i18n('Memory graph import failed.'));
         }
     });
 }
@@ -5511,69 +5932,69 @@ function ensureUi() {
 <div id="${UI_BLOCK_ID}" class="extension_container">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Memory</b>
+            <b>${escapeHtml(i18n('Memory'))}</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> Enabled</label>
-            <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> Enable recall injection</label>
-            <label for="luker_rpg_memory_recall_api_preset">Recall API preset (Connection profile, empty = current)</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
+            <label for="luker_rpg_memory_recall_api_preset">${escapeHtml(i18n('Recall API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_api_preset" class="text_pole"></select>
-            <label for="luker_rpg_memory_recall_preset">Recall preset (params + prompt, empty = current)</label>
+            <label for="luker_rpg_memory_recall_preset">${escapeHtml(i18n('Recall preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_preset" class="text_pole"></select>
-            <label for="luker_rpg_memory_extract_api_preset">Extract API preset (Connection profile, empty = current)</label>
+            <label for="luker_rpg_memory_extract_api_preset">${escapeHtml(i18n('Extract API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_api_preset" class="text_pole"></select>
-            <label for="luker_rpg_memory_extract_preset">Extract preset (params + prompt, empty = current)</label>
+            <label for="luker_rpg_memory_extract_preset">${escapeHtml(i18n('Extract preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_preset" class="text_pole"></select>
-            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> Project recall output to chat lorebook before WI scan</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook before WI scan'))}</label>
             <div class="flex-container">
-                <label style="flex:1">Exclude latest N turns from memory injection <input id="luker_rpg_memory_recent_raw_turns" class="text_pole" type="number" min="0" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Exclude latest N turns from memory injection'))} <input id="luker_rpg_memory_recent_raw_turns" class="text_pole" type="number" min="0" step="1" /></label>
             </div>
             <div class="flex-container">
-                <label style="flex:1">Recall max iterations <input id="luker_rpg_memory_recall_iterations" class="text_pole" type="number" min="2" max="6" step="1" /></label>
-                <label style="flex:1">Extract batch turns <input id="luker_rpg_memory_extract_batch_turns" class="text_pole" type="number" min="2" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Recall max iterations'))} <input id="luker_rpg_memory_recall_iterations" class="text_pole" type="number" min="2" max="6" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Extract batch turns'))} <input id="luker_rpg_memory_extract_batch_turns" class="text_pole" type="number" min="2" step="1" /></label>
             </div>
             <div class="flex-container">
-                <label style="flex:1">Recall max selection (0 = unlimited) <input id="luker_rpg_memory_recall_max_selection" class="text_pole" type="number" min="0" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Recall max selection (0 = unlimited)'))} <input id="luker_rpg_memory_recall_max_selection" class="text_pole" type="number" min="0" step="1" /></label>
             </div>
             <div class="flex-container">
-                <label style="flex:1">Tool-call retries <input id="luker_rpg_memory_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" /></label>
-            </div>
-
-            <div class="flex-container">
-                <label style="flex:1">Update every N messages <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
-                <label style="flex:1">Turns / Episode <input id="luker_rpg_memory_turns_episode" class="text_pole" type="number" min="2" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">Episodes / Arc <input id="luker_rpg_memory_episodes_arc" class="text_pole" type="number" min="2" step="1" /></label>
-                <label style="flex:1">Arcs / Canon <input id="luker_rpg_memory_arcs_canon" class="text_pole" type="number" min="1" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">Rollup fan-in (N->1) <input id="luker_rpg_memory_rollup_fanin" class="text_pole" type="number" min="2" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Tool-call retries'))} <input id="luker_rpg_memory_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" /></label>
             </div>
 
-            <label>Node Type Schema (Visual Editor)</label>
-            <small style="opacity:0.8">Configure memory table types, extraction hints, and compression strategy in a popup editor.</small>
+            <div class="flex-container">
+                <label style="flex:1">${escapeHtml(i18n('Update every N messages'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Turns / Episode'))} <input id="luker_rpg_memory_turns_episode" class="text_pole" type="number" min="2" step="1" /></label>
+            </div>
+            <div class="flex-container">
+                <label style="flex:1">${escapeHtml(i18n('Episodes / Arc'))} <input id="luker_rpg_memory_episodes_arc" class="text_pole" type="number" min="2" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Arcs / Canon'))} <input id="luker_rpg_memory_arcs_canon" class="text_pole" type="number" min="1" step="1" /></label>
+            </div>
+            <div class="flex-container">
+                <label style="flex:1">${escapeHtml(i18n('Rollup fan-in (N->1)'))} <input id="luker_rpg_memory_rollup_fanin" class="text_pole" type="number" min="2" step="1" /></label>
+            </div>
+
+            <label>${escapeHtml(i18n('Node Type Schema (Visual Editor)'))}</label>
+            <small style="opacity:0.8">${escapeHtml(i18n('Configure memory table types, extraction hints, and compression strategy in a popup editor.'))}</small>
             <small id="luker_rpg_memory_schema_summary" style="opacity:0.85"></small>
             <div class="flex-container">
-                <div id="luker_rpg_memory_open_schema_editor" class="menu_button">Open Schema Editor</div>
+                <div id="luker_rpg_memory_open_schema_editor" class="menu_button">${escapeHtml(i18n('Open Schema Editor'))}</div>
             </div>
 
             <div class="flex-container">
-                <div id="luker_rpg_memory_save" class="menu_button">Save Settings</div>
-                <div id="luker_rpg_memory_view_graph" class="menu_button">View Graph</div>
-                <div id="luker_rpg_memory_rebuild" class="menu_button">Rebuild From Chat</div>
-                <div id="luker_rpg_memory_reset" class="menu_button">Reset Current Chat</div>
+                <div id="luker_rpg_memory_save" class="menu_button">${escapeHtml(i18n('Save Settings'))}</div>
+                <div id="luker_rpg_memory_view_graph" class="menu_button">${escapeHtml(i18n('View Graph'))}</div>
+                <div id="luker_rpg_memory_rebuild" class="menu_button">${escapeHtml(i18n('Rebuild From Chat'))}</div>
+                <div id="luker_rpg_memory_reset" class="menu_button">${escapeHtml(i18n('Reset Current Chat'))}</div>
             </div>
             <div class="flex-container">
-                <div id="luker_rpg_memory_export" class="menu_button">Export Current Chat Graph</div>
-                <div id="luker_rpg_memory_import" class="menu_button">Import Current Chat Graph</div>
+                <div id="luker_rpg_memory_export" class="menu_button">${escapeHtml(i18n('Export Current Chat Graph'))}</div>
+                <div id="luker_rpg_memory_import" class="menu_button">${escapeHtml(i18n('Import Current Chat Graph'))}</div>
             </div>
 
-            <label for="luker_rpg_memory_debug_query">Recall debug query</label>
-            <input id="luker_rpg_memory_debug_query" class="text_pole" type="text" placeholder="e.g. what happened at the ruins with Mira?" />
+            <label for="luker_rpg_memory_debug_query">${escapeHtml(i18n('Recall debug query'))}</label>
+            <input id="luker_rpg_memory_debug_query" class="text_pole" type="text" placeholder="${escapeHtml(i18n('e.g. what happened at the ruins with Mira?'))}" />
             <div class="flex-container">
-                <div id="luker_rpg_memory_recall_debug" class="menu_button">Run Recall Debug</div>
+                <div id="luker_rpg_memory_recall_debug" class="menu_button">${escapeHtml(i18n('Run Recall Debug'))}</div>
             </div>
 
             <small id="luker_rpg_memory_stats" style="opacity:0.8"></small>
@@ -5588,6 +6009,7 @@ function ensureUi() {
 
 jQuery(() => {
     const context = getContext();
+    registerLocaleData();
     ensureSettings();
     saveSettingsDebounced();
     ensureUi();
@@ -5608,7 +6030,7 @@ jQuery(() => {
         const injected = await safeInjectMemoryPrompts(context, payload, 'after_world_info_scan_fallback');
         if (injected && payload && typeof payload === 'object') {
             payload.requestRescan = true;
-            updateUiStatus('Recall injected via fallback after WI scan. Requested WI rescan for this generation.');
+            updateUiStatus(i18n('Recall injected via fallback after WI scan. Requested WI rescan for this generation.'));
         }
     });
 
@@ -5623,7 +6045,7 @@ jQuery(() => {
         store.sourceMessageCount = -1;
         store.sourceDigest = '';
         store.updatedAt = Date.now();
-        updateUiStatus('Chat mutation detected. Memory graph will re-sync on next generation.');
+        updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
         refreshUiStats();
     };
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, markStoreDirtyFromMutation);

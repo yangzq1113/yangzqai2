@@ -1,5 +1,6 @@
 import { saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
+import { addLocaleData, translate } from '../../i18n.js';
 
 const MODULE_NAME = 'hook_order';
 const UI_BLOCK_ID = 'hook_order_settings';
@@ -16,6 +17,43 @@ const TARGET_EVENTS = [
 const defaultSettings = {
     orderByEvent: {},
 };
+
+function i18n(text) {
+    return translate(String(text || ''));
+}
+
+function registerLocaleData() {
+    addLocaleData('zh-cn', {
+        'Hook Order': 'Hook 顺序',
+        'Generation Context Ready': '生成上下文就绪',
+        'Before World Info Scan': '世界书扫描前',
+        'After World Info Scan': '世界书扫描后',
+        'World Info Finalized': '世界书最终完成',
+        'Before API Request': 'API 请求前',
+        'Up': '上移',
+        'Down': '下移',
+        'Reset To Detected Order': '重置为检测到的顺序',
+        'No extension listeners detected for this hook.': '该 Hook 未检测到扩展监听器。',
+        'Hook listener list refreshed.': 'Hook 监听器列表已刷新。',
+        'Core event ordering for extension listeners. Reorder plugins per hook.': '用于扩展监听器的核心事件顺序。可按 Hook 重排插件。',
+        'Refresh Detected List': '刷新检测列表',
+    });
+    addLocaleData('zh-tw', {
+        'Hook Order': 'Hook 順序',
+        'Generation Context Ready': '生成上下文就緒',
+        'Before World Info Scan': '世界書掃描前',
+        'After World Info Scan': '世界書掃描後',
+        'World Info Finalized': '世界書最終完成',
+        'Before API Request': 'API 請求前',
+        'Up': '上移',
+        'Down': '下移',
+        'Reset To Detected Order': '重設為偵測到的順序',
+        'No extension listeners detected for this hook.': '此 Hook 未偵測到擴充監聽器。',
+        'Hook listener list refreshed.': 'Hook 監聽器列表已刷新。',
+        'Core event ordering for extension listeners. Reorder plugins per hook.': '用於擴充監聽器的核心事件順序。可按 Hook 重排插件。',
+        'Refresh Detected List': '刷新偵測列表',
+    });
+}
 
 function notifySuccess(message) {
     if (typeof toastr !== 'undefined') {
@@ -167,20 +205,20 @@ function renderEventCard(context, eventDef) {
 <div class="luker_hook_order_row" data-event-name="${escapeHtml(eventName)}" data-plugin-id="${escapeHtml(pluginId)}">
     <div class="luker_hook_order_plugin">${escapeHtml(pluginId)}</div>
     <div class="luker_hook_order_controls">
-        <div class="menu_button" data-luker-action="move-up" ${index === 0 ? 'disabled' : ''}>Up</div>
-        <div class="menu_button" data-luker-action="move-down" ${index === plugins.length - 1 ? 'disabled' : ''}>Down</div>
+        <div class="menu_button" data-luker-action="move-up" ${index === 0 ? 'disabled' : ''}>${escapeHtml(i18n('Up'))}</div>
+        <div class="menu_button" data-luker-action="move-down" ${index === plugins.length - 1 ? 'disabled' : ''}>${escapeHtml(i18n('Down'))}</div>
     </div>
 </div>`)
             .join('')
-        : '<div class="luker_hook_order_empty">No extension listeners detected for this hook.</div>';
+        : `<div class="luker_hook_order_empty">${escapeHtml(i18n('No extension listeners detected for this hook.'))}</div>`;
 
     return `
 <div class="luker_hook_order_card" data-event-name="${escapeHtml(eventName)}">
-    <div class="luker_hook_order_title">${escapeHtml(eventDef.label)}</div>
+    <div class="luker_hook_order_title">${escapeHtml(i18n(eventDef.label))}</div>
     <small class="luker_hook_order_event">${escapeHtml(eventName)}</small>
     <div class="luker_hook_order_list">${rows}</div>
     <div class="flex-container">
-        <div class="menu_button" data-luker-action="reset-event" data-event-name="${escapeHtml(eventName)}">Reset To Detected Order</div>
+        <div class="menu_button" data-luker-action="reset-event" data-event-name="${escapeHtml(eventName)}">${escapeHtml(i18n('Reset To Detected Order'))}</div>
     </div>
 </div>`;
 }
@@ -229,7 +267,7 @@ function bindUi() {
 
         if (action === 'refresh') {
             bindUi();
-            notifySuccess('Hook listener list refreshed.');
+            notifySuccess(i18n('Hook listener list refreshed.'));
         }
     });
 }
@@ -284,14 +322,14 @@ function ensureUi() {
 <div id="${UI_BLOCK_ID}" class="extension_container">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Hook Order</b>
+            <b>${escapeHtml(i18n('Hook Order'))}</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <small style="opacity:0.85">Core event ordering for extension listeners. Reorder plugins per hook.</small>
+            <small style="opacity:0.85">${escapeHtml(i18n('Core event ordering for extension listeners. Reorder plugins per hook.'))}</small>
             <div id="luker_hook_order_list" class="flex-container flexFlowColumn flexNoGap"></div>
             <div class="flex-container">
-                <div class="menu_button" data-luker-action="refresh">Refresh Detected List</div>
+                <div class="menu_button" data-luker-action="refresh">${escapeHtml(i18n('Refresh Detected List'))}</div>
             </div>
         </div>
     </div>
@@ -303,6 +341,7 @@ function ensureUi() {
 
 jQuery(() => {
     const context = getContext();
+    registerLocaleData();
     ensureSettings();
     applyOrderConfig(context);
     saveSettingsDebounced();
