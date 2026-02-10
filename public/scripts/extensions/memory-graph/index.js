@@ -1671,7 +1671,7 @@ function buildPresetAwareLLMMessages(
     });
 }
 
-async function summarizeTextWithLLM(context, settings, instruction, lines, responseLength = 260) {
+async function summarizeTextWithLLM(context, settings, instruction, lines) {
     const joined = summarizeTextHeuristic(lines);
     if (!joined) {
         return '';
@@ -1685,7 +1685,6 @@ async function summarizeTextWithLLM(context, settings, instruction, lines, respo
             promptPresetName: settings.extractPresetName || '',
             functionName: 'luker_rpg_summary',
             functionDescription: 'Return compressed memory summary text.',
-            responseLength,
             parameters: {
                 type: 'object',
                 properties: {
@@ -1779,7 +1778,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
     parameters = {},
-    responseLength = 320,
+    responseLength = null,
     llmPresetName = '',
     apiSettingsOverride = null,
 } = {}) {
@@ -1809,7 +1808,9 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 tools,
                 toolChoice,
                 replaceTools: true,
-                responseLength: Number(responseLength || 320),
+                responseLength: Number.isFinite(Number(responseLength)) && Number(responseLength) > 0
+                    ? Number(responseLength)
+                    : null,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
             });
@@ -1870,7 +1871,7 @@ async function runFunctionCallTask(context, settings, {
     functionName = '',
     functionDescription = '',
     parameters = {},
-    responseLength = 320,
+    responseLength = null,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
@@ -1896,7 +1897,9 @@ async function runFunctionCallTask(context, settings, {
         functionName: fnName,
         functionDescription,
         parameters,
-        responseLength: Number(responseLength || 320),
+        responseLength: Number.isFinite(Number(responseLength)) && Number(responseLength) > 0
+            ? Number(responseLength)
+            : null,
         llmPresetName: String(promptPresetName || '').trim(),
         apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
     });
@@ -2186,7 +2189,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 config.summarizeInstruction
                 || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
             );
-            const summary = await summarizeTextWithLLM(context, settings, instruction, lines, 220);
+            const summary = await summarizeTextWithLLM(context, settings, instruction, lines);
             if (!summary) {
                 break;
             }
