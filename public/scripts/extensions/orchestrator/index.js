@@ -41,7 +41,6 @@ function getDefaultAiSuggestSystemPrompt() {
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
         'Call luker_orch_append_stage one stage per call.',
         'Call luker_orch_upsert_preset one preset per call.',
-        'Call luker_orch_set_notes if needed.',
         'Call luker_orch_finalize_profile at the end.',
     ].join('\n');
 }
@@ -109,6 +108,7 @@ function registerLocaleData() {
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成预设（参数+提示词，留空=当前）',
         'AI build system prompt': 'AI 生成系统提示词',
+        'Reset AI build prompt': '重置 AI 生成提示词',
         'Recent messages (N)': '最近消息数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Capsule injection position': '胶囊注入位置',
@@ -200,6 +200,7 @@ function registerLocaleData() {
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 构建未显式调用 finalize。已直接采用解析结果。',
+        'AI build did not call finalize explicitly.': 'AI 构建未显式调用 finalize。',
         'AI profile generation failed: ${0}': 'AI 配置生成失败：${0}',
         'Function output is invalid.': '函数输出无效。',
         'AI build did not provide any stage tool calls.': 'AI 构建未提供任何阶段工具调用。',
@@ -213,6 +214,7 @@ function registerLocaleData() {
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成預設（參數+提示詞，留空=目前）',
         'AI build system prompt': 'AI 生成系統提示詞',
+        'Reset AI build prompt': '重置 AI 生成提示詞',
         'Recent messages (N)': '最近訊息數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Capsule injection position': '膠囊注入位置',
@@ -303,6 +305,7 @@ function registerLocaleData() {
         '(Current API config)': '（目前 API 設定）',
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 建構未明確呼叫 finalize。已直接採用解析結果。',
+        'AI build did not call finalize explicitly.': 'AI 建構未明確呼叫 finalize。',
         'AI profile generation failed: ${0}': 'AI 設定生成失敗：${0}',
         'Function output is invalid.': '函式輸出無效。',
         'AI build did not provide any stage tool calls.': 'AI 建構未提供任何階段工具呼叫。',
@@ -830,12 +833,16 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     responseLength = 320,
     llmPresetName = '',
     apiSettingsOverride = null,
+    retriesOverride = null,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
     }
 
-    const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const retriesSource = retriesOverride === null || retriesOverride === undefined
+        ? Number(settings?.toolCallRetryMax)
+        : Number(retriesOverride);
+    const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -2043,7 +2050,6 @@ function isPresetUsed(editor, presetId) {
 function buildAiProfileFromToolCalls(toolCalls) {
     const draftStages = [];
     const draftPresets = {};
-    const notesParts = [];
     let finalizeCalled = false;
     let hasStageUpdate = false;
 
@@ -2097,13 +2103,6 @@ function buildAiProfileFromToolCalls(toolCalls) {
             };
             continue;
         }
-        if (fnName === 'luker_orch_set_notes') {
-            const text = String(args.notes || '').trim();
-            if (text) {
-                notesParts.push(text);
-            }
-            continue;
-        }
         if (fnName === 'luker_orch_finalize_profile') {
             finalizeCalled = true;
         }
@@ -2126,7 +2125,6 @@ function buildAiProfileFromToolCalls(toolCalls) {
     return {
         orchestrationSpec: sanitizeSpec({ stages: draftStages }),
         presetPatch,
-        notes: notesParts.join('\n\n').trim(),
         finalizeCalled,
         hasStageUpdate,
     };
@@ -2185,10 +2183,6 @@ async function runAiCharacterProfileBuild(context, settings) {
                     userPromptTemplate: `Use only: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
                     responseLength: 320,
                 },
-            },
-            notes: {
-                function: 'luker_orch_set_notes',
-                shape: { notes: 'string' },
             },
             finalize: {
                 function: 'luker_orch_finalize_profile',
@@ -2274,21 +2268,6 @@ async function runAiCharacterProfileBuild(context, settings) {
         {
             type: 'function',
             function: {
-                name: 'luker_orch_set_notes',
-                description: 'Set profile-level notes.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        notes: { type: 'string' },
-                    },
-                    required: ['notes'],
-                    additionalProperties: false,
-                },
-            },
-        },
-        {
-            type: 'function',
-            function: {
                 name: 'luker_orch_finalize_profile',
                 description: 'Finalize the incremental profile construction.',
                 parameters: {
@@ -2309,22 +2288,43 @@ async function runAiCharacterProfileBuild(context, settings) {
     );
 
     updateUiStatus(`Generating orchestration profile for ${characterCard.name}...`);
-    const toolCalls = await requestToolCallsWithRetry(settings, promptMessages, {
-        tools,
-        allowedNames,
-        responseLength: Number(settings.aiSuggestResponseLength || 600),
-        llmPresetName: suggestPresetName,
-        apiSettingsOverride,
-    });
-    const parsed = buildAiProfileFromToolCalls(toolCalls);
-    if (!parsed || typeof parsed !== 'object') {
-        throw new Error(i18n('Function output is invalid.'));
+    const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    let parsed = null;
+    let lastBuildError = null;
+    for (let attempt = 0; attempt <= semanticRetries; attempt++) {
+        const reminder = attempt > 0
+            ? [{
+                role: 'user',
+                content: 'Previous tool calls were incomplete. You MUST include at least one luker_orch_append_stage and one luker_orch_finalize_profile in this response. Return all required tool calls now.',
+            }]
+            : [];
+        const toolCalls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
+            tools,
+            allowedNames,
+            responseLength: Number(settings.aiSuggestResponseLength || 600),
+            llmPresetName: suggestPresetName,
+            apiSettingsOverride,
+            retriesOverride: 0,
+        });
+        const candidate = buildAiProfileFromToolCalls(toolCalls);
+        if (!candidate || typeof candidate !== 'object') {
+            lastBuildError = new Error(i18n('Function output is invalid.'));
+            continue;
+        }
+        if (!candidate.hasStageUpdate) {
+            lastBuildError = new Error(i18n('AI build did not provide any stage tool calls.'));
+            continue;
+        }
+        if (!candidate.finalizeCalled) {
+            lastBuildError = new Error(i18n('AI build did not call finalize explicitly.'));
+            continue;
+        }
+        parsed = candidate;
+        lastBuildError = null;
+        break;
     }
-    if (!parsed.hasStageUpdate) {
-        throw new Error(i18n('AI build did not provide any stage tool calls.'));
-    }
-    if (!parsed.finalizeCalled) {
-        notifyInfo(i18n('AI build did not call finalize explicitly. Parsed output was used anyway.'));
+    if (!parsed) {
+        throw lastBuildError || new Error(i18n('Function output is invalid.'));
     }
 
     validateAiBuildTemplateVariables(parsed.orchestrationSpec, parsed.presetPatch);
@@ -2339,9 +2339,6 @@ async function runAiCharacterProfileBuild(context, settings) {
     uiState.characterEditor.spec = toEditableSpec(suggestedSpec, mergedPresets);
     uiState.characterEditor.presets = toEditablePresetMap(mergedPresets);
     uiState.characterEditor.enabled = true;
-    uiState.characterEditor.notes = [
-        String(parsed.notes || '').trim(),
-    ].filter(Boolean).join('\n\n');
 
     const persisted = await persistCharacterEditor(context, settings, avatar, { forceEnabled: true });
     if (!persisted) {
@@ -2404,6 +2401,13 @@ function bindUi() {
     root.on('input.lukerOrch', '#luker_orch_ai_suggest_system_prompt', function () {
         settings.aiSuggestSystemPrompt = String(jQuery(this).val() || '');
         saveSettingsDebounced();
+    });
+
+    root.on('click.lukerOrch', '#luker_orch_reset_ai_prompt', function () {
+        settings.aiSuggestSystemPrompt = getDefaultAiSuggestSystemPrompt();
+        root.find('#luker_orch_ai_suggest_system_prompt').val(settings.aiSuggestSystemPrompt);
+        saveSettingsDebounced();
+        notifySuccess(i18n('Reset AI build prompt'));
     });
 
     root.on('change.lukerOrch', '#luker_orch_max_recent_messages', function () {
@@ -2834,6 +2838,9 @@ function ensureUi() {
             <select id="luker_orch_ai_suggest_preset" class="text_pole"></select>
             <label for="luker_orch_ai_suggest_system_prompt">${escapeHtml(i18n('AI build system prompt'))}</label>
             <textarea id="luker_orch_ai_suggest_system_prompt" class="text_pole textarea_compact" rows="6"></textarea>
+            <div class="flex-container">
+                <div id="luker_orch_reset_ai_prompt" class="menu_button menu_button_small">${escapeHtml(i18n('Reset AI build prompt'))}</div>
+            </div>
             <label for="luker_orch_max_recent_messages">${escapeHtml(i18n('Recent messages (N)'))}</label>
             <input id="luker_orch_max_recent_messages" class="text_pole" type="number" min="1" max="80" step="1" />
             <label for="luker_orch_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
