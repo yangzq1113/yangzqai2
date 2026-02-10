@@ -21,6 +21,33 @@ const ORCH_AI_QUALITY_AXES = {
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
 };
 
+function getDefaultAiSuggestSystemPrompt() {
+    return [
+        'You design RP multi-agent orchestration profiles for a specific character card.',
+        'Use tool calls only. Do not return plain JSON text.',
+        'Call multiple functions in one response to build the profile incrementally.',
+        'Keep stages concise, operational, and easy to run in a single request turn.',
+        'Only the LAST stage outputs are injected into the final generation context.',
+        'Therefore, design the last stage as PARALLEL multi-agent synthesis and put final actionable guidance there.',
+        'Node outputs are returned via function fields. Do NOT embed JSON blobs inside summary.',
+        'For last-stage nodes, use plain structured fields (summary, directives, risks, tags, patch_last_user).',
+        'Runtime will assemble the final injected XML from those structured fields.',
+        'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
+        'Do NOT repeat full character biography in every node prompt. Prefer compact behavior policy and decision criteria.',
+        'Each node must have a distinct role, concrete output focus, and minimal overlap.',
+        'Prefer practical distiller/director/critic style agents and add custom presets only when necessary.',
+        'Design for robust RP quality: user-intent understanding, character independence, anti-OOC, realism, and world autonomy.',
+        `Allowed template placeholders ONLY: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
+        'Do not invent any other placeholder names.',
+        'When designing prompts, encode checks and directives, not verbose restatements of the card.',
+        'Call luker_orch_append_stage one stage per call.',
+        'Call luker_orch_upsert_preset one preset per call.',
+        'Call luker_orch_set_coverage_axis one axis per call.',
+        'Call luker_orch_set_notes if needed.',
+        'Call luker_orch_finalize_profile at the end.',
+    ].join('\n');
+}
+
 const defaultSpec = {
     stages: [
         { id: 'distill', mode: 'serial', nodes: ['distiller'] },
@@ -66,6 +93,7 @@ const defaultSettings = {
     aiSuggestApiPresetName: '',
     aiSuggestPresetName: '',
     aiSuggestResponseLength: 600,
+    aiSuggestSystemPrompt: getDefaultAiSuggestSystemPrompt(),
 };
 
 function i18n(text) {
@@ -84,6 +112,7 @@ function registerLocaleData() {
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点预设（参数+提示词，留空=当前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成预设（参数+提示词，留空=当前）',
+        'AI build system prompt': 'AI 生成系统提示词',
         'Preset envelope max chars': '预设封装最大字符数',
         'Recent messages (N)': '最近消息数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
@@ -190,6 +219,7 @@ function registerLocaleData() {
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點預設（參數+提示詞，留空=目前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成預設（參數+提示詞，留空=目前）',
+        'AI build system prompt': 'AI 生成系統提示詞',
         'Preset envelope max chars': '預設封裝最大字元數',
         'Recent messages (N)': '最近訊息數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
@@ -471,6 +501,7 @@ function ensureSettings() {
     }
     delete extension_settings[MODULE_NAME].capsuleRenderFormat;
     extension_settings[MODULE_NAME].capsuleCustomInstruction = String(extension_settings[MODULE_NAME].capsuleCustomInstruction || '').trim();
+    extension_settings[MODULE_NAME].aiSuggestSystemPrompt = String(extension_settings[MODULE_NAME].aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
     delete extension_settings[MODULE_NAME].capsuleIncludeRawJson;
     extension_settings[MODULE_NAME].toolCallRetryMax = Math.max(
         0,
@@ -2205,30 +2236,7 @@ async function runAiCharacterProfileBuild(context, settings) {
 
     const currentSpec = sanitizeSpec(settings.orchestrationSpec);
     const currentPresets = serializeEditorPresetMap(settings.presets);
-    const suggestSystemPrompt = [
-        'You design RP multi-agent orchestration profiles for a specific character card.',
-        'Use tool calls only. Do not return plain JSON text.',
-        'Call multiple functions in one response to build the profile incrementally.',
-        'Keep stages concise, operational, and easy to run in a single request turn.',
-        'Only the LAST stage outputs are injected into the final generation context.',
-        'Therefore, design the last stage as PARALLEL multi-agent synthesis and put final actionable guidance there.',
-        'Node outputs are returned via function fields. Do NOT embed JSON blobs inside summary.',
-        'For last-stage nodes, use plain structured fields (summary, directives, risks, tags, patch_last_user).',
-        'Runtime will assemble the final injected XML from those structured fields.',
-        'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
-        'Do NOT repeat full character biography in every node prompt. Prefer compact behavior policy and decision criteria.',
-        'Each node must have a distinct role, concrete output focus, and minimal overlap.',
-        'Prefer practical distiller/director/critic style agents and add custom presets only when necessary.',
-        'Design for robust RP quality: user-intent understanding, character independence, anti-OOC, realism, and world autonomy.',
-        `Allowed template placeholders ONLY: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
-        'Do not invent any other placeholder names.',
-        'When designing prompts, encode checks and directives, not verbose restatements of the card.',
-        'Call luker_orch_append_stage one stage per call.',
-        'Call luker_orch_upsert_preset one preset per call.',
-        'Call luker_orch_set_coverage_axis one axis per call.',
-        'Call luker_orch_set_notes if needed.',
-        'Call luker_orch_finalize_profile at the end.',
-    ].join('\n');
+    const suggestSystemPrompt = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
     const suggestUserPrompt = JSON.stringify({
         character: characterCard,
         override_goal: String(uiState.aiGoal || ''),
@@ -2489,6 +2497,7 @@ function bindUi() {
     root.find('#luker_orch_llm_preset').val(String(settings.llmNodePresetName || ''));
     root.find('#luker_orch_ai_suggest_api_preset').val(String(settings.aiSuggestApiPresetName || ''));
     root.find('#luker_orch_ai_suggest_preset').val(String(settings.aiSuggestPresetName || ''));
+    root.find('#luker_orch_ai_suggest_system_prompt').val(String(settings.aiSuggestSystemPrompt || ''));
     root.find('#luker_orch_preset_envelope_chars').val(String(settings.promptEnvelopeMaxChars || 2800));
     root.find('#luker_orch_max_recent_messages').val(String(settings.maxRecentMessages || 14));
     root.find('#luker_orch_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
@@ -2524,6 +2533,11 @@ function bindUi() {
 
     root.on('change.lukerOrch', '#luker_orch_ai_suggest_preset', function () {
         settings.aiSuggestPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_ai_suggest_system_prompt', function () {
+        settings.aiSuggestSystemPrompt = String(jQuery(this).val() || '');
         saveSettingsDebounced();
     });
 
@@ -2960,6 +2974,8 @@ function ensureUi() {
             <select id="luker_orch_ai_suggest_api_preset" class="text_pole"></select>
             <label for="luker_orch_ai_suggest_preset">${escapeHtml(i18n('AI build preset (params + prompt, empty = current)'))}</label>
             <select id="luker_orch_ai_suggest_preset" class="text_pole"></select>
+            <label for="luker_orch_ai_suggest_system_prompt">${escapeHtml(i18n('AI build system prompt'))}</label>
+            <textarea id="luker_orch_ai_suggest_system_prompt" class="text_pole textarea_compact" rows="6"></textarea>
             <label for="luker_orch_preset_envelope_chars">${escapeHtml(i18n('Preset envelope max chars'))}</label>
             <input id="luker_orch_preset_envelope_chars" class="text_pole" type="number" min="1000" step="100" />
             <label for="luker_orch_max_recent_messages">${escapeHtml(i18n('Recent messages (N)'))}</label>
