@@ -379,6 +379,8 @@ function registerLocaleData() {
         'Current type count: ${0}': '当前类型数量：${0}',
         'Add Type': '新增类型',
         'Load Recommended Schema': '加载推荐 Schema',
+        'Reset to Default Schema': '重置为默认 Schema',
+        'Schema reset to default in editor.': '已在编辑器中重置为默认 Schema。',
         'table: ${0}': '表：${0}',
         'mode: ${0}': '模式：${0}',
         'always inject': '常驻注入',
@@ -562,6 +564,8 @@ function registerLocaleData() {
         'Current type count: ${0}': '目前類型數量：${0}',
         'Add Type': '新增類型',
         'Load Recommended Schema': '載入推薦 Schema',
+        'Reset to Default Schema': '重設為預設 Schema',
+        'Schema reset to default in editor.': '已在編輯器中重設為預設 Schema。',
         'table: ${0}': '表：${0}',
         'mode: ${0}': '模式：${0}',
         'always inject': '常駐注入',
@@ -5488,6 +5492,7 @@ function buildSchemaEditorPopupHtml(popupId, schema) {
         <div class="flex-container">
             <div class="menu_button luker-schema-editor-add">${escapeHtml(i18n('Add Type'))}</div>
             <div class="menu_button luker-schema-editor-default">${escapeHtml(i18n('Load Recommended Schema'))}</div>
+            <div class="menu_button luker-schema-editor-reset">${escapeHtml(i18n('Reset to Default Schema'))}</div>
         </div>
     </div>
 </div>`;
@@ -5538,6 +5543,10 @@ async function openSchemaEditorPopup(context, settings, root) {
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-default`, function () {
         rerender(normalizeNodeTypeSchema(structuredClone(defaultNodeTypeSchema)));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-reset`, function () {
+        rerender(normalizeNodeTypeSchema(structuredClone(defaultNodeTypeSchema)));
+        notifyInfo(i18n('Schema reset to default in editor.'));
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-action`, function () {
         const popupRoot = getPopupRoot();
