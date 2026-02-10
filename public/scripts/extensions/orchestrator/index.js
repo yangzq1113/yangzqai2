@@ -56,17 +56,14 @@ const defaultPresets = {
     distiller: {
         systemPrompt: 'You are a narrative distiller. Extract key story state and user intent.',
         userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
-        responseLength: 240,
     },
     director: {
         systemPrompt: 'You are a roleplay director. Produce concise tactical guidance for the next assistant reply.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
-        responseLength: 280,
     },
     critic: {
         systemPrompt: 'You are an RP critic. Flag OOC, pacing, and consistency risks.',
         userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
-        responseLength: 240,
     },
 };
 
@@ -74,7 +71,6 @@ const defaultSettings = {
     enabled: false,
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
-    llmNodeResponseLength: 280,
     toolCallRetryMax: 2,
     maxRecentMessages: 14,
     includeWorldInfoSummary: true,
@@ -87,7 +83,6 @@ const defaultSettings = {
     chatOverrides: {},
     aiSuggestApiPresetName: '',
     aiSuggestPresetName: '',
-    aiSuggestResponseLength: 600,
     aiSuggestSystemPrompt: getDefaultAiSuggestSystemPrompt(),
 };
 
@@ -164,7 +159,6 @@ function registerLocaleData() {
         'Delete': '删除',
         'Node ID': '节点 ID',
         'Preset': '预设',
-        'Response Length (optional)': '响应长度（可选）',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
         'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}',
         'Execution': '执行方式',
@@ -172,7 +166,6 @@ function registerLocaleData() {
         'Parallel': '并行',
         'Nodes run in parallel.': '节点并行执行。',
         'Nodes run in serial order.': '节点串行执行。',
-        'Response Length': '响应长度',
         'System Prompt': '系统提示词',
         'User Prompt Template': '用户提示词模板',
         'new_preset_id': 'new_preset_id',
@@ -269,7 +262,6 @@ function registerLocaleData() {
         'Delete': '刪除',
         'Node ID': '節點 ID',
         'Preset': '預設',
-        'Response Length (optional)': '回應長度（可選）',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
         'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}',
         'Execution': '執行方式',
@@ -277,7 +269,6 @@ function registerLocaleData() {
         'Parallel': '並行',
         'Nodes run in parallel.': '節點並行執行。',
         'Nodes run in serial order.': '節點串行執行。',
-        'Response Length': '回應長度',
         'System Prompt': '系統提示詞',
         'User Prompt Template': '使用者提示詞模板',
         'new_preset_id': 'new_preset_id',
@@ -398,7 +389,6 @@ function sanitizeSpec(spec) {
                         id: String(node.id || node.node || node.preset || '').trim(),
                         preset: String(node.preset || node.id || node.node || '').trim(),
                         userPromptTemplate: typeof node.userPromptTemplate === 'string' ? node.userPromptTemplate : undefined,
-                        responseLength: Number.isFinite(Number(node.responseLength)) ? Number(node.responseLength) : undefined,
                     };
                     if (!compact.id && compact.preset) {
                         compact.id = compact.preset;
@@ -437,9 +427,6 @@ function sanitizePresetMap(presets) {
         base[key] = {
             systemPrompt: String(value.systemPrompt || base[key]?.systemPrompt || '').trim(),
             userPromptTemplate: String(value.userPromptTemplate || base[key]?.userPromptTemplate || '').trim(),
-            responseLength: Number.isFinite(Number(value.responseLength)) && Number(value.responseLength) > 0
-                ? Number(value.responseLength)
-                : Number(base[key]?.responseLength || 260),
         };
     }
 
@@ -468,6 +455,8 @@ function ensureSettings() {
     // Drop legacy API selector fields. API routing now comes from connection profile only.
     delete extension_settings[MODULE_NAME].llmNodeApi;
     delete extension_settings[MODULE_NAME].aiSuggestApi;
+    delete extension_settings[MODULE_NAME].llmNodeResponseLength;
+    delete extension_settings[MODULE_NAME].aiSuggestResponseLength;
     delete extension_settings[MODULE_NAME].llmNodePromptPresetName;
     delete extension_settings[MODULE_NAME].aiSuggestPromptPresetName;
     delete extension_settings[MODULE_NAME].maxCapsuleChars;
@@ -634,7 +623,6 @@ function normalizeNodeSpec(node) {
             id: node,
             preset: node,
             userPromptTemplate: undefined,
-            responseLength: undefined,
         };
     }
 
@@ -644,7 +632,6 @@ function normalizeNodeSpec(node) {
         id: id || preset,
         preset,
         userPromptTemplate: typeof node?.userPromptTemplate === 'string' ? node.userPromptTemplate : undefined,
-        responseLength: Number.isFinite(Number(node?.responseLength)) ? Number(node.responseLength) : undefined,
     };
 }
 
@@ -780,7 +767,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
     parameters = {},
-    responseLength = 320,
     llmPresetName = '',
     apiSettingsOverride = null,
 } = {}) {
@@ -806,13 +792,15 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const requestOptions = {
                 tools,
                 toolChoice,
                 replaceTools: true,
-                responseLength: Number(responseLength || 320),
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+            };
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+                ...requestOptions,
             });
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
@@ -830,7 +818,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
 async function requestToolCallsWithRetry(settings, promptMessages, {
     tools = [],
     allowedNames = null,
-    responseLength = 320,
     llmPresetName = '',
     apiSettingsOverride = null,
     retriesOverride = null,
@@ -846,13 +833,15 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const requestOptions = {
                 tools,
                 toolChoice: 'auto',
                 replaceTools: true,
-                responseLength: Number(responseLength || 320),
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+            };
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+                ...requestOptions,
             });
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
@@ -948,17 +937,10 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         additionalProperties: true,
     };
 
-    const responseLength = Number.isFinite(Number(nodeSpec.responseLength))
-        ? Number(nodeSpec.responseLength)
-        : Number.isFinite(Number(preset.responseLength))
-            ? Number(preset.responseLength)
-            : Number(settings.llmNodeResponseLength || 260);
-
     const toolOutput = await requestToolCallWithRetry(settings, promptMessages, {
         functionName: 'luker_orch_node_output',
         functionDescription: `Orchestrator node output for '${nodeSpec.id}'.`,
         parameters: nodeOutputSchema,
-        responseLength,
         llmPresetName,
         apiSettingsOverride,
     });
@@ -1569,11 +1551,9 @@ function sanitizeIdentifierToken(value, fallback = '') {
 }
 
 function createPresetDraft(seed = {}) {
-    const responseLength = Number(seed.responseLength);
     return {
         systemPrompt: String(seed.systemPrompt || '').trim(),
         userPromptTemplate: String(seed.userPromptTemplate || '').trim(),
-        responseLength: Number.isFinite(responseLength) && responseLength > 0 ? responseLength : 260,
     };
 }
 
@@ -1604,9 +1584,6 @@ function toEditableSpec(spec, presets) {
                 return {
                     id: sanitizeIdentifierToken(normalizedNode.id || preset, `node_${nodeIndex + 1}`),
                     preset,
-                    responseLength: Number.isFinite(Number(normalizedNode.responseLength)) && Number(normalizedNode.responseLength) > 0
-                        ? Number(normalizedNode.responseLength)
-                        : '',
                     userPromptTemplate: String(normalizedNode.userPromptTemplate || ''),
                 };
             });
@@ -1618,7 +1595,6 @@ function toEditableSpec(spec, presets) {
                     : [{
                         id: defaultPreset,
                         preset: defaultPreset,
-                        responseLength: '',
                         userPromptTemplate: '',
                     }],
             };
@@ -1636,7 +1612,6 @@ function toEditableSpec(spec, presets) {
             nodes: [{
                 id: defaultPreset,
                 preset: defaultPreset,
-                responseLength: '',
                 userPromptTemplate: '',
             }],
         }],
@@ -1654,15 +1629,11 @@ function serializeEditorSpec(editorSpec) {
                     .map((node, nodeIndex) => {
                         const id = sanitizeIdentifierToken(node?.id, `node_${nodeIndex + 1}`);
                         const preset = sanitizeIdentifierToken(node?.preset, id);
-                        const responseLength = Number(node?.responseLength);
                         const userPromptTemplate = String(node?.userPromptTemplate || '').trim();
 
                         const serialized = { id, preset };
                         if (userPromptTemplate) {
                             serialized.userPromptTemplate = userPromptTemplate;
-                        }
-                        if (Number.isFinite(responseLength) && responseLength > 0) {
-                            serialized.responseLength = responseLength;
                         }
                         return serialized;
                     })
@@ -1691,9 +1662,6 @@ function buildPresetPatch(basePresets, editedPresets) {
         }
         if (String(preset.userPromptTemplate || '') !== String(base.userPromptTemplate || '')) {
             delta.userPromptTemplate = preset.userPromptTemplate;
-        }
-        if (Number(preset.responseLength || 0) !== Number(base.responseLength || 0)) {
-            delta.responseLength = Number(preset.responseLength || 0);
         }
 
         if (Object.keys(delta).length > 0) {
@@ -1785,7 +1753,6 @@ function createNewStage(editor) {
         nodes: [{
             id: defaultPreset,
             preset: defaultPreset,
-            responseLength: '',
             userPromptTemplate: '',
         }],
     };
@@ -1889,8 +1856,6 @@ function renderWorkflowBoard(scope, editor) {
     <select class="text_pole" data-luker-field="node-preset" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
         ${renderPresetOptions(editor.presets, node.preset)}
     </select>
-    <label>${escapeHtml(i18n('Response Length (optional)'))}</label>
-    <input class="text_pole" type="number" min="32" step="8" data-luker-field="node-response-length" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" value="${escapeHtml(node.responseLength)}" />
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
@@ -1934,8 +1899,6 @@ function renderPresetBoard(scope, editor) {
         <b>${escapeHtml(presetId)}</b>
         <div class="menu_button menu_button_small" data-luker-action="preset-delete" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(i18n('Delete'))}</div>
     </div>
-    <label>${escapeHtml(i18n('Response Length'))}</label>
-    <input class="text_pole" type="number" min="32" step="8" data-luker-field="preset-response-length" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}" value="${escapeHtml(preset.responseLength)}" />
     <label>${escapeHtml(i18n('System Prompt'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-field="preset-system-prompt" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(preset.systemPrompt)}</textarea>
     <label>${escapeHtml(i18n('User Prompt Template'))}</label>
@@ -2097,9 +2060,6 @@ function buildAiProfileFromToolCalls(toolCalls) {
             draftPresets[presetId] = {
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: String(args.userPromptTemplate || '').trim(),
-                responseLength: Number.isFinite(Number(args.responseLength)) && Number(args.responseLength) > 0
-                    ? Number(args.responseLength)
-                    : Number(defaultPresets[presetId]?.responseLength || 260),
             };
             continue;
         }
@@ -2116,9 +2076,6 @@ function buildAiProfileFromToolCalls(toolCalls) {
         presetPatch[presetId] = {
             systemPrompt: String(preset.systemPrompt || '').trim(),
             userPromptTemplate: String(preset.userPromptTemplate || '').trim(),
-            responseLength: Number.isFinite(Number(preset.responseLength)) && Number(preset.responseLength) > 0
-                ? Number(preset.responseLength)
-                : 260,
         };
     }
 
@@ -2171,7 +2128,7 @@ async function runAiCharacterProfileBuild(context, settings) {
                     stage: {
                         id: 'string',
                         mode: 'serial|parallel',
-                        nodes: [{ id: 'string', preset: 'string', userPromptTemplate: 'optional string', responseLength: 'optional number' }],
+                        nodes: [{ id: 'string', preset: 'string', userPromptTemplate: 'optional string' }],
                     },
                 },
             },
@@ -2181,7 +2138,6 @@ async function runAiCharacterProfileBuild(context, settings) {
                     preset_id: 'string',
                     systemPrompt: 'string',
                     userPromptTemplate: `Use only: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
-                    responseLength: 320,
                 },
             },
             finalize: {
@@ -2229,7 +2185,6 @@ async function runAiCharacterProfileBuild(context, settings) {
                                                     id: { type: 'string' },
                                                     preset: { type: 'string' },
                                                     userPromptTemplate: { type: 'string' },
-                                                    responseLength: { type: 'number' },
                                                 },
                                                 required: ['id', 'preset'],
                                                 additionalProperties: false,
@@ -2258,7 +2213,6 @@ async function runAiCharacterProfileBuild(context, settings) {
                         preset_id: { type: 'string' },
                         systemPrompt: { type: 'string' },
                         userPromptTemplate: { type: 'string' },
-                        responseLength: { type: 'number' },
                     },
                     required: ['preset_id', 'systemPrompt', 'userPromptTemplate'],
                     additionalProperties: false,
@@ -2301,7 +2255,6 @@ async function runAiCharacterProfileBuild(context, settings) {
         const toolCalls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
             tools,
             allowedNames,
-            responseLength: Number(settings.aiSuggestResponseLength || 600),
             llmPresetName: suggestPresetName,
             apiSettingsOverride,
             retriesOverride: 0,
@@ -2476,9 +2429,6 @@ function bindUi() {
                 node.id = String(jQuery(this).val() || '');
             } else if (field === 'node-preset') {
                 node.preset = sanitizeIdentifierToken(jQuery(this).val(), pickDefaultPreset(editor));
-            } else if (field === 'node-response-length') {
-                const value = String(jQuery(this).val() || '').trim();
-                node.responseLength = value ? Math.max(32, Number(value) || 0) : '';
             } else if (field === 'node-template') {
                 node.userPromptTemplate = String(jQuery(this).val() || '');
             }
@@ -2487,9 +2437,7 @@ function bindUi() {
 
         if (field.startsWith('preset-') && presetId && editor.presets[presetId]) {
             const preset = editor.presets[presetId];
-            if (field === 'preset-response-length') {
-                preset.responseLength = Math.max(32, Number(jQuery(this).val()) || 260);
-            } else if (field === 'preset-system-prompt') {
+            if (field === 'preset-system-prompt') {
                 preset.systemPrompt = String(jQuery(this).val() || '');
             } else if (field === 'preset-user-template') {
                 preset.userPromptTemplate = String(jQuery(this).val() || '');
@@ -2540,7 +2488,6 @@ function bindUi() {
             editor.spec.stages[stageIndex].nodes.push({
                 id: defaultPreset,
                 preset: defaultPreset,
-                responseLength: '',
                 userPromptTemplate: '',
             });
             renderDynamicPanels(root, context);
@@ -2558,7 +2505,6 @@ function bindUi() {
                 stage.nodes.push({
                     id: defaultPreset,
                     preset: defaultPreset,
-                    responseLength: '',
                     userPromptTemplate: '',
                 });
             }
