@@ -3221,7 +3221,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
                 const { done, value } = await reader.read();
                 if (done) return;
                 const rawData = value.data;
-                if (rawData === '[DONE]') return;
+                if (rawData === '[DONE]') {
+                    continue;
+                }
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
                 if (parsed?.luker && typeof parsed.luker === 'object') {

@@ -6,6 +6,14 @@ import express from 'express';
 
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { readAllChunks, extractFileFromZipBuffer, forwardFetchResponse } from '../util.js';
+import {
+    attachJobToRequest,
+    bindRequestCloseAbort,
+    completeGenerationJobFromPayload,
+    createGenerationJob,
+    failGenerationJob,
+    forwardStreamingWithGenerationJob,
+} from './backends/luker-generation.js';
 
 const API_NOVELAI = 'https://api.novelai.net';
 const TEXT_NOVELAI = 'https://text.novelai.net';
@@ -168,6 +176,12 @@ router.post('/status', async function (req, res) {
 router.post('/generate', async function (req, res) {
     if (!req.body) return res.sendStatus(400);
 
+    const requestedLukerGenerationOptions = req.body.luker_generation && typeof req.body.luker_generation === 'object'
+        ? req.body.luker_generation
+        : null;
+    const lukerGenerationJob = createGenerationJob(req, requestedLukerGenerationOptions);
+    attachJobToRequest(req, lukerGenerationJob);
+
     const api_key_novel = readSecret(req.user.directories, SECRET_KEYS.NOVEL);
 
     if (!api_key_novel) {
@@ -176,10 +190,9 @@ router.post('/generate', async function (req, res) {
     }
 
     const controller = new AbortController();
-    req.socket.removeAllListeners('close');
-    req.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(req, controller);
+
+    delete req.body.luker_generation;
 
     // Add customized bad words for Clio, Kayra, and Erato
     const badWordsList = getBadWordsList(req.body.model);
@@ -270,13 +283,19 @@ router.post('/generate', async function (req, res) {
         const response = await fetch(url, { method: 'POST', ...args });
 
         if (req.body.streaming) {
+            if (lukerGenerationJob) {
+                return await forwardStreamingWithGenerationJob(response, res, req, lukerGenerationJob, { modelName: req.body.model });
+            }
             // Pipe remote SSE stream to Express response
-            forwardFetchResponse(response, res);
+            return forwardFetchResponse(response, res);
         } else {
             if (!response.ok) {
                 const text = await response.text();
                 let message = text;
                 console.warn(`Novel API returned error: ${response.status} ${response.statusText} ${text}`);
+                if (lukerGenerationJob) {
+                    failGenerationJob(lukerGenerationJob, response.statusText || text || 'NovelAI request failed');
+                }
 
                 try {
                     const data = JSON.parse(text);
@@ -292,9 +311,15 @@ router.post('/generate', async function (req, res) {
             /** @type {any} */
             const data = await response.json();
             console.info('NovelAI Output', data?.output);
+            if (lukerGenerationJob) {
+                const persisted = await completeGenerationJobFromPayload(req, lukerGenerationJob, data, req.body.model);
+                res.setHeader('x-luker-generation-id', lukerGenerationJob.id);
+                res.setHeader('x-luker-server-persisted', persisted ? '1' : '0');
+            }
             return res.send(data);
         }
     } catch (error) {
+        failGenerationJob(lukerGenerationJob, error?.message || 'NovelAI request failed');
         return res.send({ error: true });
     }
 });

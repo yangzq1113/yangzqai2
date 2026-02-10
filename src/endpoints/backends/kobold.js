@@ -5,11 +5,25 @@ import fetch from 'node-fetch';
 import { forwardFetchResponse, delay } from '../../util.js';
 import { getOverrideHeaders, setAdditionalHeaders, setAdditionalHeadersByType } from '../../additional-headers.js';
 import { TEXTGEN_TYPES } from '../../constants.js';
+import {
+    attachJobToRequest,
+    bindRequestCloseAbort,
+    completeGenerationJobFromPayload,
+    createGenerationJob,
+    failGenerationJob,
+    forwardStreamingWithGenerationJob,
+} from './luker-generation.js';
 
 export const router = express.Router();
 
 router.post('/generate', async function (request, response_generate) {
     if (!request.body) return response_generate.sendStatus(400);
+
+    const requestedLukerGenerationOptions = request.body.luker_generation && typeof request.body.luker_generation === 'object'
+        ? request.body.luker_generation
+        : null;
+    const lukerGenerationJob = createGenerationJob(request, requestedLukerGenerationOptions);
+    attachJobToRequest(request, lukerGenerationJob);
 
     if (request.body.api_server.indexOf('localhost') != -1) {
         request.body.api_server = request.body.api_server.replace('localhost', '127.0.0.1');
@@ -17,25 +31,27 @@ router.post('/generate', async function (request, response_generate) {
 
     const request_prompt = request.body.prompt;
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', async function () {
-        if (request.body.can_abort && !response_generate.writableEnded) {
-            try {
-                console.info('Aborting Kobold generation...');
-                // send abort signal to koboldcpp
-                const abortResponse = await fetch(`${request.body.api_server}/extra/abort`, {
-                    method: 'POST',
-                });
+    bindRequestCloseAbort(request, controller, {
+        onAbortClose: async () => {
+            if (request.body.can_abort && !response_generate.writableEnded) {
+                try {
+                    console.info('Aborting Kobold generation...');
+                    // send abort signal to koboldcpp
+                    const abortResponse = await fetch(`${request.body.api_server}/extra/abort`, {
+                        method: 'POST',
+                    });
 
-                if (!abortResponse.ok) {
-                    console.error('Error sending abort request to Kobold:', abortResponse.status);
+                    if (!abortResponse.ok) {
+                        console.error('Error sending abort request to Kobold:', abortResponse.status);
+                    }
+                } catch (error) {
+                    console.error(error);
                 }
-            } catch (error) {
-                console.error(error);
             }
-        }
-        controller.abort();
+        },
     });
+
+    delete request.body.luker_generation;
 
     let this_settings = {
         prompt: request_prompt,
@@ -95,16 +111,22 @@ router.post('/generate', async function (request, response_generate) {
     for (let i = 0; i < MAX_RETRIES; i++) {
         try {
             const url = request.body.streaming ? `${request.body.api_server}/extra/generate/stream` : `${request.body.api_server}/v1/generate`;
-            const response = await fetch(url, { method: 'POST', ...args });
+            const fetchResponse = await fetch(url, { method: 'POST', ...args });
 
             if (request.body.streaming) {
+                if (lukerGenerationJob) {
+                    return await forwardStreamingWithGenerationJob(fetchResponse, response_generate, request, lukerGenerationJob, { modelName: request.body.model });
+                }
                 // Pipe remote SSE stream to Express response
-                forwardFetchResponse(response, response_generate);
+                forwardFetchResponse(fetchResponse, response_generate);
                 return;
             } else {
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.warn(`Kobold returned error: ${response.status} ${response.statusText} ${errorText}`);
+                if (!fetchResponse.ok) {
+                    const errorText = await fetchResponse.text();
+                    console.warn(`Kobold returned error: ${fetchResponse.status} ${fetchResponse.statusText} ${errorText}`);
+                    if (lukerGenerationJob) {
+                        failGenerationJob(lukerGenerationJob, fetchResponse.statusText || errorText || 'Kobold request failed');
+                    }
 
                     try {
                         const errorJson = JSON.parse(errorText);
@@ -115,8 +137,13 @@ router.post('/generate', async function (request, response_generate) {
                     }
                 }
 
-                const data = await response.json();
+                const data = await fetchResponse.json();
                 console.debug('Endpoint response:', data);
+                if (lukerGenerationJob) {
+                    const persisted = await completeGenerationJobFromPayload(request, lukerGenerationJob, data, request.body.model);
+                    response_generate.setHeader('x-luker-generation-id', lukerGenerationJob.id);
+                    response_generate.setHeader('x-luker-server-persisted', persisted ? '1' : '0');
+                }
                 return response_generate.send(data);
             }
         } catch (error) {
@@ -128,6 +155,9 @@ router.post('/generate', async function (request, response_generate) {
                     await delay(delayAmount);
                     break;
                 default:
+                    if (lukerGenerationJob) {
+                        failGenerationJob(lukerGenerationJob, error?.message || 'Kobold request failed');
+                    }
                     if ('status' in error) {
                         console.error('Status Code from Kobold:', error.status);
                     }
@@ -136,6 +166,9 @@ router.post('/generate', async function (request, response_generate) {
         }
     }
 
+    if (lukerGenerationJob) {
+        failGenerationJob(lukerGenerationJob, 'Max retries exceeded');
+    }
     console.error('Max retries exceeded. Giving up.');
     return response_generate.send({ error: true });
 });

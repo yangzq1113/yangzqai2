@@ -393,6 +393,83 @@ let lukerRecoveryPollBusy = false;
 let lukerRecoveryJobId = '';
 let lukerRecoveryChatId = '';
 const LUKER_RECOVERY_PREVIEW_ID = 'luker_generation_recovery_preview';
+const LUKER_SERVER_PERSISTENCE_APIS = new Set(['openai', 'textgenerationwebui', 'kobold', 'novel']);
+let lastLukerGenerationId = '';
+let lastLukerReplyPersistedByServer = false;
+
+function supportsLukerServerPersistence(api = main_api) {
+    return LUKER_SERVER_PERSISTENCE_APIS.has(api);
+}
+
+function resetLukerGenerationState(api = main_api) {
+    if (api === 'openai') {
+        return;
+    }
+    lastLukerGenerationId = '';
+    lastLukerReplyPersistedByServer = false;
+}
+
+function applyLukerGenerationMetaForApi(api = main_api, { generationId = '', persisted = undefined } = {}) {
+    if (api === 'openai') {
+        return;
+    }
+    if (typeof generationId === 'string' && generationId) {
+        lastLukerGenerationId = generationId;
+    }
+    if (typeof persisted === 'boolean') {
+        lastLukerReplyPersistedByServer = persisted;
+    }
+}
+
+function applyLukerGenerationMetaFromHeaders(api, response) {
+    if (!response || api === 'openai') {
+        return;
+    }
+    const generationId = response.headers.get('x-luker-generation-id');
+    const persistedHeader = response.headers.get('x-luker-server-persisted');
+    applyLukerGenerationMetaForApi(api, {
+        generationId,
+        persisted: persistedHeader === '1' ? true : persistedHeader === '0' ? false : undefined,
+    });
+}
+
+function getLastLukerGenerationIdForApi(api = main_api) {
+    if (api === 'openai') {
+        return getLastOpenAIGenerationId();
+    }
+    if (!supportsLukerServerPersistence(api)) {
+        return '';
+    }
+    return lastLukerGenerationId;
+}
+
+function isLastLukerReplyPersistedByServerForApi(api = main_api) {
+    if (api === 'openai') {
+        return isLastOpenAIReplyPersistedByServer();
+    }
+    if (!supportsLukerServerPersistence(api)) {
+        return false;
+    }
+    return lastLukerReplyPersistedByServer;
+}
+
+function buildLukerGenerationRequestOptions(type, api = main_api) {
+    if (type !== 'normal' || !supportsLukerServerPersistence(api)) {
+        return null;
+    }
+
+    const persistTarget = getLukerPersistTargetForCurrentChat();
+    if (!persistTarget) {
+        return null;
+    }
+
+    const generationId = uuidv4();
+    applyLukerGenerationMetaForApi(api, { generationId, persisted: false });
+    return {
+        job_id: generationId,
+        persist_target: persistTarget,
+    };
+}
 
 export function setChatServerState({ nextOlderIndex = 0, totalMessages = 0, hasMore = false } = {}) {
     chatServerState.nextOlderIndex = Math.max(0, Number(nextOlderIndex) || 0);
@@ -468,10 +545,6 @@ function renderLukerRecoveryPreview(text, status = 'running') {
 
 async function startLukerGenerationRecovery() {
     stopLukerGenerationRecovery();
-
-    if (main_api !== 'openai') {
-        return;
-    }
 
     const persistTarget = getLukerPersistTargetForCurrentChat();
     if (!persistTarget) {
@@ -3859,11 +3932,11 @@ class StreamingProcessor {
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
-        if (main_api === 'openai' && this.type === 'normal' && this.messageId >= 0 && chat[this.messageId]) {
+        if (this.type === 'normal' && this.messageId >= 0 && chat[this.messageId]) {
             chat[this.messageId].extra = chat[this.messageId].extra || {};
-            chat[this.messageId].extra.luker_generation_id = getLastOpenAIGenerationId() || chat[this.messageId].extra.luker_generation_id;
+            chat[this.messageId].extra.luker_generation_id = getLastLukerGenerationIdForApi() || chat[this.messageId].extra.luker_generation_id;
         }
-        const serverPersistedReply = main_api === 'openai' && isLastOpenAIReplyPersistedByServer();
+        const serverPersistedReply = isLastLukerReplyPersistedByServerForApi();
         const canUseIncrementalAppend = !isAborted
             && this.type === 'normal'
             && this.messageId >= 0
@@ -3877,7 +3950,7 @@ class StreamingProcessor {
             }
         } else {
             if (serverPersistedReply) {
-                console.debug('Skipping incremental append because backend already persisted generation', getLastOpenAIGenerationId());
+                console.debug('Skipping incremental append because backend already persisted generation', getLastLukerGenerationIdForApi());
             }
             await saveChatConditional();
         }
@@ -5846,11 +5919,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         console.debug('/api/chats/save called by /Generate');
-        if (main_api === 'openai' && type === 'normal' && chat.length > 0 && !chat[chat.length - 1]?.is_user) {
+        if (type === 'normal' && chat.length > 0 && !chat[chat.length - 1]?.is_user) {
             chat[chat.length - 1].extra = chat[chat.length - 1].extra || {};
-            chat[chat.length - 1].extra.luker_generation_id = getLastOpenAIGenerationId() || chat[chat.length - 1].extra.luker_generation_id;
+            chat[chat.length - 1].extra.luker_generation_id = getLastLukerGenerationIdForApi() || chat[chat.length - 1].extra.luker_generation_id;
         }
-        const serverPersistedReply = main_api === 'openai' && isLastOpenAIReplyPersistedByServer();
+        const serverPersistedReply = isLastLukerReplyPersistedByServerForApi();
         const canUseIncrementalAppend = !isImpersonate
             && type === 'normal'
             && chat.length > 0
@@ -5863,7 +5936,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             }
         } else {
             if (serverPersistedReply) {
-                console.debug('Skipping incremental append because backend already persisted generation', getLastOpenAIGenerationId());
+                console.debug('Skipping incremental append because backend already persisted generation', getLastLukerGenerationIdForApi());
             }
             await saveChatConditional();
         }
@@ -6388,13 +6461,21 @@ export async function sendGenerationRequest(type, data, options = {}) {
         return await generateHorde(data.prompt, data, abortController.signal, true);
     }
 
+    resetLukerGenerationState(main_api);
+    const lukerGenerationOptions = buildLukerGenerationRequestOptions(type, main_api);
+    const requestData = lukerGenerationOptions
+        ? { ...data, luker_generation: lukerGenerationOptions }
+        : data;
+
     const response = await fetch(getGenerateUrl(main_api), {
         method: 'POST',
         headers: getRequestHeaders(),
         cache: 'no-cache',
-        body: JSON.stringify(data),
+        body: JSON.stringify(requestData),
         signal: abortController.signal,
     });
+
+    applyLukerGenerationMetaFromHeaders(main_api, response);
 
     if (!response.ok) {
         throw await response.json();
@@ -6420,15 +6501,24 @@ export async function sendStreamingRequest(type, data, options = {}) {
     data = requestPayload.data;
     options = requestPayload.options || options;
 
+    const onLukerMeta = (meta) => applyLukerGenerationMetaForApi(main_api, meta);
+    if (main_api !== 'openai') {
+        resetLukerGenerationState(main_api);
+        const lukerGenerationOptions = buildLukerGenerationRequestOptions(type, main_api);
+        if (lukerGenerationOptions) {
+            data = { ...data, luker_generation: lukerGenerationOptions };
+        }
+    }
+
     switch (main_api) {
         case 'openai':
             return await sendOpenAIRequest(type, data.prompt, streamingProcessor.abortController.signal, options);
         case 'textgenerationwebui':
-            return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal);
+            return await generateTextGenWithStreaming(data, streamingProcessor.abortController.signal, { onLukerMeta });
         case 'novel':
-            return await generateNovelWithStreaming(data, streamingProcessor.abortController.signal);
+            return await generateNovelWithStreaming(data, streamingProcessor.abortController.signal, { onLukerMeta });
         case 'kobold':
-            return await generateKoboldWithStreaming(data, streamingProcessor.abortController.signal);
+            return await generateKoboldWithStreaming(data, streamingProcessor.abortController.signal, { onLukerMeta });
         default:
             throw new Error('Streaming is enabled, but the current API does not support streaming.');
     }

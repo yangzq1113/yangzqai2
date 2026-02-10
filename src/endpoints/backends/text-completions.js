@@ -1,4 +1,3 @@
-import { Readable } from 'node:stream';
 import fetch from 'node-fetch';
 import express from 'express';
 import _ from 'lodash';
@@ -16,6 +15,16 @@ import {
 import { forwardFetchResponse, trimV1, getConfigValue } from '../../util.js';
 import { setAdditionalHeaders } from '../../additional-headers.js';
 import { createHash } from 'node:crypto';
+import {
+    appendGenerationEvent,
+    attachJobToRequest,
+    bindRequestCloseAbort,
+    completeGenerationJobFromPayload,
+    completeGenerationJobFromText,
+    createGenerationJob,
+    failGenerationJob,
+    forwardStreamingWithGenerationJob,
+} from './luker-generation.js';
 
 export const router = express.Router();
 
@@ -26,43 +35,111 @@ export const router = express.Router();
  * @param {import('express').Response} response Express response
  * @returns {Promise<any>} Nothing valuable
  */
-async function parseOllamaStream(jsonStream, request, response) {
+async function parseOllamaStream(jsonStream, request, response, job = null) {
     try {
+        let statusCode = jsonStream.status;
+        if (statusCode === 401) {
+            statusCode = 400;
+        }
+        response.statusCode = statusCode;
+        response.statusMessage = jsonStream.statusText;
+        response.setHeader('content-type', 'text/event-stream; charset=utf-8');
+        if (job) {
+            response.setHeader('x-luker-generation-id', job.id);
+        }
+
+        let clientClosed = false;
+        response.socket?.on('close', () => {
+            clientClosed = true;
+        });
+
+        if (!jsonStream.ok) {
+            const errorText = await jsonStream.text().catch(() => '');
+            if (job) {
+                failGenerationJob(job, `${jsonStream.status} ${jsonStream.statusText}`.trim());
+            }
+            if (!clientClosed && !response.writableEnded) {
+                response.end(errorText || '');
+            }
+            return;
+        }
+
         if (!jsonStream.body) {
             throw new Error('No body in the response');
         }
 
         let partialData = '';
-        jsonStream.body.on('data', (data) => {
-            const chunk = data.toString();
+        for await (const data of jsonStream.body) {
+            const chunk = Buffer.from(data).toString('utf8');
             partialData += chunk;
-            while (true) {
+            const lines = partialData.split('\n');
+            partialData = lines.pop() || '';
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) {
+                    continue;
+                }
                 let json;
                 try {
-                    json = JSON.parse(partialData);
-                } catch (e) {
-                    break;
+                    json = JSON.parse(trimmed);
+                } catch {
+                    continue;
                 }
                 const text = json.response || '';
                 const thinking = json.thinking || '';
-                const chunk = { choices: [{ text, thinking }] };
-                response.write(`data: ${JSON.stringify(chunk)}\n\n`);
-                partialData = '';
+                const frameData = JSON.stringify({ choices: [{ text, thinking }] });
+                if (job) {
+                    appendGenerationEvent(job, frameData);
+                }
+                if (!clientClosed && !response.writableEnded) {
+                    response.write(`data: ${frameData}\n\n`);
+                }
             }
-        });
+        }
 
-        request.socket.on('close', function () {
-            if (jsonStream.body instanceof Readable) jsonStream.body.destroy();
-            response.end();
-        });
+        if (partialData.trim()) {
+            try {
+                const json = JSON.parse(partialData.trim());
+                const text = json.response || '';
+                const thinking = json.thinking || '';
+                const frameData = JSON.stringify({ choices: [{ text, thinking }] });
+                if (job) {
+                    appendGenerationEvent(job, frameData);
+                }
+                if (!clientClosed && !response.writableEnded) {
+                    response.write(`data: ${frameData}\n\n`);
+                }
+            } catch {
+                // ignore incomplete trailing chunk
+            }
+        }
 
-        jsonStream.body.on('end', () => {
-            console.info('Streaming request finished');
+        let persisted = false;
+        if (job) {
+            persisted = await completeGenerationJobFromText(request, job, job.text, request.body?.model);
+            const completionEvent = JSON.stringify({
+                luker: {
+                    generation_id: job.id,
+                    persisted,
+                    status: job.status,
+                },
+            });
+            appendGenerationEvent(job, completionEvent);
+            if (!clientClosed && !response.writableEnded) {
+                response.write(`data: ${completionEvent}\n\n`);
+            }
+        }
+
+        console.info('Streaming request finished');
+        if (!clientClosed && !response.writableEnded) {
             response.write('data: [DONE]\n\n');
             response.end();
-        });
+        }
     } catch (error) {
         console.error('Error forwarding streaming response:', error);
+        if (job) {
+            failGenerationJob(job, error?.message || 'Error forwarding streaming response');
+        }
         if (!response.headersSent) {
             return response.status(500).send({ error: true });
         } else {
@@ -273,6 +350,12 @@ router.post('/generate', async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     try {
+        const requestedLukerGenerationOptions = request.body.luker_generation && typeof request.body.luker_generation === 'object'
+            ? request.body.luker_generation
+            : null;
+        const lukerGenerationJob = createGenerationJob(request, requestedLukerGenerationOptions);
+        attachJobToRequest(request, lukerGenerationJob);
+
         if (request.body.api_server.indexOf('localhost') !== -1) {
             request.body.api_server = request.body.api_server.replace('localhost', '127.0.0.1');
         }
@@ -282,13 +365,12 @@ router.post('/generate', async function (request, response) {
         console.debug(request.body);
 
         const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', async function () {
-            if (request.body.api_type === TEXTGEN_TYPES.KOBOLDCPP && !response.writableEnded) {
-                await abortKoboldCppRequest(request, trimV1(baseUrl));
-            }
-
-            controller.abort();
+        bindRequestCloseAbort(request, controller, {
+            onAbortClose: async () => {
+                if (request.body.api_type === TEXTGEN_TYPES.KOBOLDCPP && !response.writableEnded) {
+                    await abortKoboldCppRequest(request, trimV1(baseUrl));
+                }
+            },
         });
 
         let url = trimV1(baseUrl);
@@ -322,6 +404,8 @@ router.post('/generate', async function (request, response) {
                 url += '/v1/chat/completions';
                 break;
         }
+
+        delete request.body.luker_generation;
 
         const args = {
             method: 'POST',
@@ -394,11 +478,14 @@ router.post('/generate', async function (request, response) {
 
         if (request.body.api_type === TEXTGEN_TYPES.OLLAMA && request.body.stream) {
             const stream = await fetch(url, args);
-            parseOllamaStream(stream, request, response);
+            return await parseOllamaStream(stream, request, response, lukerGenerationJob);
         } else if (request.body.stream) {
             const completionsStream = await fetch(url, args);
+            if (lukerGenerationJob) {
+                return await forwardStreamingWithGenerationJob(completionsStream, response, request, lukerGenerationJob, { modelName: request.body.model });
+            }
             // Pipe remote SSE stream to Express response
-            forwardFetchResponse(completionsStream, response);
+            return forwardFetchResponse(completionsStream, response);
         }
         else {
             const completionsReply = await fetch(url, args);
@@ -413,10 +500,18 @@ router.post('/generate', async function (request, response) {
                     data['choices'] = (data?.choices || []).map(choice => ({ text: choice?.message?.content || choice.text, logprobs: choice?.logprobs, index: choice?.index }));
                 }
 
+                if (lukerGenerationJob) {
+                    const persisted = await completeGenerationJobFromPayload(request, lukerGenerationJob, data, request.body.model);
+                    response.setHeader('x-luker-generation-id', lukerGenerationJob.id);
+                    response.setHeader('x-luker-server-persisted', persisted ? '1' : '0');
+                }
                 return response.send(data);
             } else {
                 const text = await completionsReply.text();
                 const errorBody = { error: true, status: completionsReply.status, response: text };
+                if (lukerGenerationJob) {
+                    failGenerationJob(lukerGenerationJob, completionsReply.statusText || text || 'Text completion request failed');
+                }
 
                 return !response.headersSent
                     ? response.send(errorBody)
@@ -428,6 +523,7 @@ router.post('/generate', async function (request, response) {
         const text = error?.error ?? error?.statusText ?? error?.message ?? 'Unknown error on /generate endpoint';
         let value = { error: true, status: status, response: text };
         console.error('Endpoint error:', error);
+        failGenerationJob(request.lukerGenerationJob, text);
 
         return !response.headersSent
             ? response.send(value)

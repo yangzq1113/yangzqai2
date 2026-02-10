@@ -226,13 +226,23 @@ function tryParseStreamingError(response, decoded) {
     }
 }
 
-export async function generateKoboldWithStreaming(generate_data, signal) {
+export async function generateKoboldWithStreaming(generate_data, signal, { onLukerMeta = null } = {}) {
     const response = await fetch('/api/backends/kobold/generate', {
         headers: getRequestHeaders(),
         body: JSON.stringify(generate_data),
         method: 'POST',
         signal: signal,
     });
+
+    const generationId = response.headers.get('x-luker-generation-id');
+    if (generationId && typeof onLukerMeta === 'function') {
+        onLukerMeta({ generationId });
+    }
+    const persistedHeader = response.headers.get('x-luker-server-persisted');
+    if ((persistedHeader === '0' || persistedHeader === '1') && typeof onLukerMeta === 'function') {
+        onLukerMeta({ persisted: persistedHeader === '1' });
+    }
+
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
@@ -246,8 +256,20 @@ export async function generateKoboldWithStreaming(generate_data, signal) {
         while (true) {
             const { done, value } = await reader.read();
             if (done) return;
+            if (value.data === '[DONE]') continue;
 
             const data = JSON.parse(value.data);
+            if (data?.luker && typeof data.luker === 'object') {
+                if (typeof onLukerMeta === 'function') {
+                    if (typeof data.luker.generation_id === 'string' && data.luker.generation_id) {
+                        onLukerMeta({ generationId: data.luker.generation_id });
+                    }
+                    if (typeof data.luker.persisted === 'boolean') {
+                        onLukerMeta({ persisted: data.luker.persisted });
+                    }
+                }
+                continue;
+            }
             if (data?.token) {
                 text += data.token;
             }

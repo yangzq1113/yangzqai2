@@ -1,9 +1,7 @@
 import process from 'node:process';
 import util from 'node:util';
-import path from 'node:path';
 import express from 'express';
 import fetch from 'node-fetch';
-import sanitize from 'sanitize-filename';
 import urlJoin from 'url-join';
 
 import {
@@ -62,7 +60,17 @@ import {
     getWebTokenizer,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
-import { appendMessagesToChatFile } from '../chats.js';
+import {
+    attachJobToRequest,
+    bindRequestCloseAbort,
+    completeGenerationJobFromPayload,
+    createGenerationJob,
+    failGenerationJob,
+    forwardStreamingWithGenerationJob,
+    getActiveGenerationJobsForRequest,
+    getGenerationJobForRequest,
+    getJobFromRequest,
+} from './luker-generation.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -228,374 +236,6 @@ function resolveLukerPromptMessages(requestBody) {
     };
 }
 
-const lukerGenerationJobs = new Map();
-const LUKER_GENERATION_JOB_MAX_ITEMS = 128;
-const LUKER_GENERATION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
-const LUKER_GENERATION_JOB_MAX_EVENTS = 8000;
-const LUKER_GENERATION_UNSUPPORTED_SOURCES = new Set([
-    CHAT_COMPLETION_SOURCES.CLAUDE,
-    CHAT_COMPLETION_SOURCES.AI21,
-    CHAT_COMPLETION_SOURCES.MAKERSUITE,
-    CHAT_COMPLETION_SOURCES.VERTEXAI,
-    CHAT_COMPLETION_SOURCES.MISTRALAI,
-    CHAT_COMPLETION_SOURCES.COHERE,
-    CHAT_COMPLETION_SOURCES.DEEPSEEK,
-    CHAT_COMPLETION_SOURCES.AIMLAPI,
-    CHAT_COMPLETION_SOURCES.XAI,
-    CHAT_COMPLETION_SOURCES.CHUTES,
-    CHAT_COMPLETION_SOURCES.ELECTRONHUB,
-    CHAT_COMPLETION_SOURCES.AZURE_OPENAI,
-]);
-
-function isLukerGenerationSupportedSource(source) {
-    const resolvedSource = String(source || CHAT_COMPLETION_SOURCES.OPENAI).trim().toLowerCase();
-    return !LUKER_GENERATION_UNSUPPORTED_SOURCES.has(resolvedSource);
-}
-
-function pruneLukerGenerationJobs() {
-    const now = Date.now();
-    for (const [key, job] of lukerGenerationJobs.entries()) {
-        const updatedAt = Number(job?.updatedAt || job?.createdAt || 0);
-        if (!updatedAt || (now - updatedAt) > LUKER_GENERATION_JOB_TTL_MS) {
-            lukerGenerationJobs.delete(key);
-        }
-    }
-
-    while (lukerGenerationJobs.size > LUKER_GENERATION_JOB_MAX_ITEMS) {
-        const oldestKey = lukerGenerationJobs.keys().next().value;
-        lukerGenerationJobs.delete(oldestKey);
-    }
-}
-
-function getLukerPersistChatKey(persistTarget) {
-    if (!persistTarget || typeof persistTarget !== 'object') {
-        return '';
-    }
-
-    if (persistTarget.kind === 'group') {
-        return `group:${String(persistTarget.id || '')}`;
-    }
-
-    const avatar = String(persistTarget.avatar_url || '');
-    const fileName = String(persistTarget.file_name || '');
-    if (!avatar || !fileName) {
-        return '';
-    }
-    return `char:${avatar}:${fileName}`;
-}
-
-function extractTextFromOpenAIMessageContent(content) {
-    if (typeof content === 'string') {
-        return content;
-    }
-
-    if (Array.isArray(content)) {
-        return content.map(part => {
-            if (typeof part === 'string') {
-                return part;
-            }
-            if (typeof part?.text === 'string') {
-                return part.text;
-            }
-            if (typeof part?.content === 'string') {
-                return part.content;
-            }
-            return '';
-        }).join('');
-    }
-
-    if (content && typeof content === 'object') {
-        if (typeof content.text === 'string') {
-            return content.text;
-        }
-        if (typeof content.content === 'string') {
-            return content.content;
-        }
-    }
-
-    return '';
-}
-
-function extractTextFromStreamingData(rawData) {
-    if (!rawData || rawData === '[DONE]') {
-        return '';
-    }
-
-    try {
-        const parsed = JSON.parse(rawData);
-        const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null;
-        if (!choice) {
-            return '';
-        }
-
-        if (typeof choice?.delta?.content === 'string') {
-            return choice.delta.content;
-        }
-
-        if (Array.isArray(choice?.delta?.content)) {
-            return extractTextFromOpenAIMessageContent(choice.delta.content);
-        }
-
-        if (typeof choice?.text === 'string') {
-            return choice.text;
-        }
-
-        if (typeof choice?.message?.content === 'string') {
-            return choice.message.content;
-        }
-
-        if (Array.isArray(choice?.message?.content)) {
-            return extractTextFromOpenAIMessageContent(choice.message.content);
-        }
-
-        return '';
-    } catch {
-        return '';
-    }
-}
-
-function extractTextFromFinalResponse(data) {
-    const choice = Array.isArray(data?.choices) ? data.choices[0] : null;
-
-    if (typeof choice?.message?.content === 'string') {
-        return choice.message.content;
-    }
-
-    if (Array.isArray(choice?.message?.content)) {
-        return extractTextFromOpenAIMessageContent(choice.message.content);
-    }
-
-    if (typeof choice?.text === 'string') {
-        return choice.text;
-    }
-
-    if (typeof data?.response === 'string') {
-        return data.response;
-    }
-
-    return '';
-}
-
-function createLukerGenerationJob(request, options) {
-    if (!options || typeof options !== 'object') {
-        return null;
-    }
-
-    const jobId = typeof options.job_id === 'string' && options.job_id.trim()
-        ? options.job_id.trim()
-        : '';
-    if (!jobId) {
-        return null;
-    }
-
-    const now = Date.now();
-    const persistTarget = options.persist_target && typeof options.persist_target === 'object'
-        ? options.persist_target
-        : null;
-    const chatKey = getLukerPersistChatKey(persistTarget);
-    const existing = lukerGenerationJobs.get(jobId);
-    const job = existing || {
-        id: jobId,
-        handle: request.user.profile.handle,
-        createdAt: now,
-        updatedAt: now,
-        status: 'running',
-        text: '',
-        events: [],
-        lastSeq: 0,
-        error: '',
-        persisted: false,
-        persistTarget,
-        chatKey,
-    };
-
-    job.status = 'running';
-    job.updatedAt = now;
-    job.error = '';
-    job.persistTarget = persistTarget;
-    job.chatKey = chatKey;
-    if (!Array.isArray(job.events)) {
-        job.events = [];
-    }
-
-    lukerGenerationJobs.set(jobId, job);
-    pruneLukerGenerationJobs();
-    return job;
-}
-
-function appendLukerGenerationEvent(job, rawData) {
-    if (!job) {
-        return;
-    }
-
-    const nextSeq = Number(job.lastSeq || 0) + 1;
-    job.lastSeq = nextSeq;
-    job.events.push({ seq: nextSeq, data: rawData, ts: Date.now() });
-    if (job.events.length > LUKER_GENERATION_JOB_MAX_EVENTS) {
-        job.events.splice(0, job.events.length - LUKER_GENERATION_JOB_MAX_EVENTS);
-    }
-    job.updatedAt = Date.now();
-
-    const deltaText = extractTextFromStreamingData(rawData);
-    if (deltaText) {
-        job.text += deltaText;
-    }
-}
-
-async function persistLukerGeneratedReply(request, persistTarget, text, generationId = '') {
-    if (!persistTarget || typeof persistTarget !== 'object') {
-        return false;
-    }
-
-    const finalText = String(text || '');
-    if (!finalText) {
-        return false;
-    }
-
-    const message = {
-        name: String(persistTarget.char_name || request.body.char_name || 'Assistant'),
-        is_user: false,
-        is_system: false,
-        send_date: new Date().toISOString(),
-        mes: finalText,
-        extra: {
-            api: 'openai',
-            model: request.body.model,
-            luker_server_persisted: true,
-            ...(generationId ? { luker_generation_id: generationId } : {}),
-        },
-    };
-
-    if (persistTarget.kind === 'group') {
-        const groupId = String(persistTarget.id || '');
-        if (!groupId) {
-            return false;
-        }
-
-        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${groupId}.jsonl`));
-        await appendMessagesToChatFile({
-            filePath: chatFilePath,
-            messages: [message],
-            chatMetadata: persistTarget.chat_metadata || {},
-            integritySlug: persistTarget.integrity,
-            force: Boolean(persistTarget.force),
-        });
-        return true;
-    }
-
-    if (persistTarget.kind === 'character') {
-        const avatar = String(persistTarget.avatar_url || '').replace('.png', '');
-        const fileName = String(persistTarget.file_name || '');
-        if (!avatar || !fileName) {
-            return false;
-        }
-
-        const chatFilePath = path.join(
-            request.user.directories.chats,
-            avatar,
-            sanitize(`${fileName}.jsonl`),
-        );
-        await appendMessagesToChatFile({
-            filePath: chatFilePath,
-            messages: [message],
-            chatMetadata: persistTarget.chat_metadata || {},
-            integritySlug: persistTarget.integrity,
-            force: Boolean(persistTarget.force),
-        });
-        return true;
-    }
-
-    return false;
-}
-
-async function forwardStreamingWithLukerJob(fetchResponse, response, request, job) {
-    let statusCode = fetchResponse.status;
-    if (statusCode === 401) {
-        statusCode = 400;
-    }
-
-    response.statusCode = statusCode;
-    response.statusMessage = fetchResponse.statusText;
-    response.setHeader('x-luker-generation-id', job.id);
-    const contentType = fetchResponse.headers.get('content-type');
-    if (contentType) {
-        response.setHeader('content-type', contentType);
-    }
-
-    let clientClosed = false;
-    response.socket?.on('close', () => {
-        clientClosed = true;
-    });
-
-    if (!fetchResponse.ok) {
-        if (fetchResponse.body) {
-            for await (const chunk of fetchResponse.body) {
-                if (!clientClosed && !response.writableEnded) {
-                    response.write(chunk);
-                }
-            }
-        }
-        if (!clientClosed && !response.writableEnded) {
-            response.end();
-        }
-        return;
-    }
-
-    let buffer = '';
-    if (fetchResponse.body) {
-        for await (const chunk of fetchResponse.body) {
-            const chunkText = Buffer.from(chunk).toString('utf8');
-            if (!clientClosed && !response.writableEnded) {
-                response.write(chunkText);
-            }
-
-            buffer += chunkText.replace(/\r\n/g, '\n');
-            let delimiterIndex = buffer.indexOf('\n\n');
-            while (delimiterIndex !== -1) {
-                const frame = buffer.slice(0, delimiterIndex);
-                buffer = buffer.slice(delimiterIndex + 2);
-                const dataLines = frame
-                    .split('\n')
-                    .map(line => line.trimEnd())
-                    .filter(line => line.startsWith('data:'))
-                    .map(line => line.slice(5).trimStart());
-                if (dataLines.length > 0) {
-                    appendLukerGenerationEvent(job, dataLines.join('\n'));
-                }
-                delimiterIndex = buffer.indexOf('\n\n');
-            }
-        }
-    }
-
-    if (buffer.trim()) {
-        const dataLines = buffer
-            .split('\n')
-            .map(line => line.trimEnd())
-            .filter(line => line.startsWith('data:'))
-            .map(line => line.slice(5).trimStart());
-        if (dataLines.length > 0) {
-            appendLukerGenerationEvent(job, dataLines.join('\n'));
-        }
-    }
-
-    job.status = 'completed';
-    job.updatedAt = Date.now();
-    job.finishedAt = Date.now();
-    job.persisted = await persistLukerGeneratedReply(request, job.persistTarget, job.text, job.id);
-    const completionEvent = JSON.stringify({
-        luker: {
-            generation_id: job.id,
-            persisted: Boolean(job.persisted),
-            status: job.status,
-        },
-    });
-    appendLukerGenerationEvent(job, completionEvent);
-    if (!clientClosed && !response.writableEnded) {
-        response.write(`data: ${completionEvent}\n\n`);
-        response.end();
-    }
-}
-
 /**
  * Checks if an OpenRouter model supports prompt cache writing.
  * Uses a cache to avoid repeated API calls.
@@ -689,6 +329,31 @@ function setJsonObjectFormat(bodyParams, messages, jsonSchema) {
     messages.push(message);
 }
 
+function setGenerationIdHeaderIfJob(request, response) {
+    const job = getJobFromRequest(request);
+    if (job && !response.headersSent) {
+        response.setHeader('x-luker-generation-id', job.id);
+    }
+    return job;
+}
+
+async function forwardStreamingResponseWithJob(request, response, fetchResponse) {
+    const job = setGenerationIdHeaderIfJob(request, response);
+    if (job) {
+        return await forwardStreamingWithGenerationJob(fetchResponse, response, request, job, { modelName: request.body?.model });
+    }
+    return forwardFetchResponse(fetchResponse, response);
+}
+
+async function finalizePayloadWithJob(request, response, payload) {
+    const job = setGenerationIdHeaderIfJob(request, response);
+    if (!job || response.headersSent) {
+        return;
+    }
+    const persisted = await completeGenerationJobFromPayload(request, job, payload, request.body?.model);
+    response.setHeader('x-luker-server-persisted', persisted ? '1' : '0');
+}
+
 /**
  * Sends a request to Claude API.
  * @param {express.Request} request Express request
@@ -706,10 +371,7 @@ async function sendClaudeRequest(request, response) {
 
     try {
         const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        bindRequestCloseAbort(request, controller);
         const additionalHeaders = {};
         const betaHeaders = ['output-128k-2025-02-19'];
         const useTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
@@ -850,7 +512,7 @@ async function sendClaudeRequest(request, response) {
 
         if (request.body.stream) {
             // Pipe remote SSE stream to Express response
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const generateResponseText = await generateResponse.text();
@@ -865,6 +527,7 @@ async function sendClaudeRequest(request, response) {
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
+            await finalizePayloadWithJob(request, response, reply);
             return response.send(reply);
         }
     } catch (error) {
@@ -1090,10 +753,7 @@ async function sendMakerSuiteRequest(request, response) {
 
     try {
         const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        bindRequestCloseAbort(request, controller);
 
         const apiVersion = getConfigValue('gemini.apiVersion', 'v1beta');
         const responseType = (stream ? 'streamGenerateContent' : 'generateContent');
@@ -1159,7 +819,7 @@ async function sendMakerSuiteRequest(request, response) {
         if (stream) {
             try {
                 // Pipe remote SSE stream to Express response
-                forwardFetchResponse(generateResponse, response);
+                await forwardStreamingResponseWithJob(request, response, generateResponse);
             } catch (error) {
                 console.error('Error forwarding streaming response:', error);
                 if (!response.headersSent) {
@@ -1201,6 +861,7 @@ async function sendMakerSuiteRequest(request, response) {
 
             // Wrap it back to OAI format (responseContent includes thought signatures in parts array)
             const reply = { choices: [{ 'message': { 'content': responseText } }], responseContent };
+            await finalizePayloadWithJob(request, response, reply);
             return response.send(reply);
         }
     } catch (error) {
@@ -1227,10 +888,7 @@ async function sendAI21Request(request, response) {
 
     const bodyParams = {};
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
     // Hack to support JSON schema
     if (request.body.json_schema) {
         bodyParams.response_format = {
@@ -1270,7 +928,7 @@ async function sendAI21Request(request, response) {
     try {
         const generateResponse = await fetch(API_AI21 + '/chat/completions', options);
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1280,10 +938,12 @@ async function sendAI21Request(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI21 response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with AI21 API: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'AI21 request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1309,10 +969,7 @@ async function sendMistralAIRequest(request, response) {
     try {
         const messages = convertMistralMessages(request.body.messages, getPromptNames(request));
         const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        bindRequestCloseAbort(request, controller);
 
         const requestBody = {
             'model': request.body.model,
@@ -1360,7 +1017,7 @@ async function sendMistralAIRequest(request, response) {
 
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1370,10 +1027,12 @@ async function sendMistralAIRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('MistralAI response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with MistralAI API: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'MistralAI request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1390,10 +1049,7 @@ async function sendMistralAIRequest(request, response) {
 async function sendCohereRequest(request, response) {
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.COHERE);
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
 
     if (!apiKey) {
         console.warn('Cohere API key is missing.');
@@ -1459,7 +1115,7 @@ async function sendCohereRequest(request, response) {
 
         if (request.body.stream) {
             const stream = await fetch(apiUrl, config);
-            forwardFetchResponse(stream, response);
+            await forwardStreamingResponseWithJob(request, response, stream);
         } else {
             const generateResponse = await fetch(apiUrl, config);
             if (!generateResponse.ok) {
@@ -1470,10 +1126,12 @@ async function sendCohereRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Cohere response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with Cohere API: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'Cohere request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1497,10 +1155,7 @@ async function sendDeepSeekRequest(request, response) {
     }
 
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
 
     try {
         let bodyParams = {};
@@ -1570,7 +1225,7 @@ async function sendDeepSeekRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1580,10 +1235,12 @@ async function sendDeepSeekRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('DeepSeek response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with DeepSeek API: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'DeepSeek request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1607,10 +1264,7 @@ async function sendXaiRequest(request, response) {
     }
 
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
 
     try {
         let bodyParams = {};
@@ -1687,7 +1341,7 @@ async function sendXaiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1697,10 +1351,12 @@ async function sendXaiRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('xAI response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with xAI API: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'xAI request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1724,10 +1380,7 @@ async function sendAimlapiRequest(request, response) {
     }
 
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
 
     try {
         let bodyParams = {};
@@ -1792,7 +1445,7 @@ async function sendAimlapiRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1802,10 +1455,12 @@ async function sendAimlapiRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('AI/ML API response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     } catch (error) {
         console.error('Error communicating with AI/ML API: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'AI/ML request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1829,10 +1484,7 @@ async function sendElectronHubRequest(request, response) {
     }
 
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
 
     try {
         let bodyParams = {};
@@ -1904,7 +1556,7 @@ async function sendElectronHubRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -1914,11 +1566,13 @@ async function sendElectronHubRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Electron Hub response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     }
     catch (error) {
         console.error('Error communicating with Electron Hub: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'Electron Hub request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1942,10 +1596,7 @@ async function sendChutesRequest(request, response) {
     }
 
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', function () {
-        controller.abort();
-    });
+    bindRequestCloseAbort(request, controller);
 
     try {
         let bodyParams = {};
@@ -2006,7 +1657,7 @@ async function sendChutesRequest(request, response) {
         const generateResponse = await fetch(apiUrl + '/chat/completions', config);
 
         if (request.body.stream) {
-            forwardFetchResponse(generateResponse, response);
+            await forwardStreamingResponseWithJob(request, response, generateResponse);
         } else {
             if (!generateResponse.ok) {
                 const errorText = await generateResponse.text();
@@ -2016,11 +1667,13 @@ async function sendChutesRequest(request, response) {
             }
             const generateResponseJson = await generateResponse.json();
             console.debug('Chutes response:', generateResponseJson);
+            await finalizePayloadWithJob(request, response, generateResponseJson);
             return response.send(generateResponseJson);
         }
     }
     catch (error) {
         console.error('Error communicating with Chutes: ', error);
+        failGenerationJob(getJobFromRequest(request), error?.message || 'Chutes request failed');
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -2083,8 +1736,7 @@ async function sendAzureOpenAIRequest(request, response) {
         : undefined;
 
     const controller = new AbortController();
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', () => controller.abort());
+    bindRequestCloseAbort(request, controller);
 
     const config = {
         method: 'POST',
@@ -2102,13 +1754,14 @@ async function sendAzureOpenAIRequest(request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {
-            return forwardFetchResponse(fetchResponse, response);
+            return await forwardStreamingResponseWithJob(request, response, fetchResponse);
         }
 
         if (fetchResponse.ok) {
             /** @type {any} */
             const json = await fetchResponse.json();
             console.debug('Azure OpenAI response:', json);
+            await finalizePayloadWithJob(request, response, json);
             return response.send(json);
         }
 
@@ -2132,9 +1785,8 @@ router.post('/jobs/status', async function (request, response) {
             return response.sendStatus(400);
         }
 
-        pruneLukerGenerationJobs();
-        const job = lukerGenerationJobs.get(jobId);
-        if (!job || job.handle !== request.user.profile.handle) {
+        const job = getGenerationJobForRequest(request, jobId);
+        if (!job) {
             return response.sendStatus(404);
         }
 
@@ -2163,9 +1815,8 @@ router.post('/jobs/events', async function (request, response) {
             return response.sendStatus(400);
         }
 
-        pruneLukerGenerationJobs();
-        const job = lukerGenerationJobs.get(jobId);
-        if (!job || job.handle !== request.user.profile.handle) {
+        const job = getGenerationJobForRequest(request, jobId);
+        if (!job) {
             return response.sendStatus(404);
         }
 
@@ -2190,25 +1841,7 @@ router.post('/jobs/events', async function (request, response) {
 
 router.post('/jobs/active', async function (request, response) {
     try {
-        const chatKey = getLukerPersistChatKey(request.body?.persist_target);
-        if (!chatKey) {
-            return response.send({ jobs: [] });
-        }
-
-        pruneLukerGenerationJobs();
-        const handle = request.user.profile.handle;
-        const jobs = Array.from(lukerGenerationJobs.values())
-            .filter(job => job.handle === handle && job.chatKey === chatKey && ['running', 'queued'].includes(job.status))
-            .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
-            .map(job => ({
-                id: job.id,
-                status: job.status,
-                text: job.text,
-                last_seq: job.lastSeq,
-                created_at: job.createdAt,
-                updated_at: job.updatedAt,
-            }));
-
+        const jobs = getActiveGenerationJobsForRequest(request, request.body?.persist_target);
         return response.send({ jobs });
     } catch (error) {
         console.error(error);
@@ -2611,10 +2244,8 @@ router.post('/generate', async function (request, response) {
         const requestedLukerGenerationOptions = request.body.luker_generation && typeof request.body.luker_generation === 'object'
             ? request.body.luker_generation
             : null;
-        const lukerGenerationOptions = isLukerGenerationSupportedSource(request.body.chat_completion_source)
-            ? requestedLukerGenerationOptions
-            : null;
-        const lukerGenerationJob = createLukerGenerationJob(request, lukerGenerationOptions);
+        const lukerGenerationJob = createGenerationJob(request, requestedLukerGenerationOptions);
+        attachJobToRequest(request, lukerGenerationJob);
 
         const postProcessingType = request.body.custom_prompt_post_processing;
         if (Array.isArray(request.body.messages) && postProcessingType) {
@@ -2925,12 +2556,7 @@ router.post('/generate', async function (request, response) {
             `${apiUrl}/chat/completions`;
 
         const controller = new AbortController();
-        if (!lukerGenerationJob) {
-            request.socket.removeAllListeners('close');
-            request.socket.on('close', function () {
-                controller.abort();
-            });
-        }
+        bindRequestCloseAbort(request, controller);
 
         if (!isTextCompletion && Array.isArray(request.body.tools) && request.body.tools.length > 0) {
             bodyParams['tools'] = request.body.tools;
@@ -3005,24 +2631,16 @@ router.post('/generate', async function (request, response) {
         if (request.body.stream) {
             console.info('Streaming request in progress');
             if (lukerGenerationJob) {
-                return await forwardStreamingWithLukerJob(fetchResponse, response, request, lukerGenerationJob);
+                return await forwardStreamingWithGenerationJob(fetchResponse, response, request, lukerGenerationJob);
             }
-            return forwardFetchResponse(fetchResponse, response);
+            return await forwardStreamingResponseWithJob(request, response, fetchResponse);
         }
 
         if (fetchResponse.ok) {
             /** @type {any} */
             const json = await fetchResponse.json();
             console.debug('Chat Completion response:', json);
-            if (lukerGenerationJob) {
-                const finalText = extractTextFromFinalResponse(json);
-                lukerGenerationJob.text = finalText;
-                lukerGenerationJob.status = 'completed';
-                lukerGenerationJob.updatedAt = Date.now();
-                lukerGenerationJob.finishedAt = Date.now();
-                lukerGenerationJob.persisted = await persistLukerGeneratedReply(request, lukerGenerationJob.persistTarget, finalText, lukerGenerationJob.id);
-                response.setHeader('x-luker-server-persisted', lukerGenerationJob.persisted ? '1' : '0');
-            }
+            await finalizePayloadWithJob(request, response, json);
             return response.send(json);
         } else {
             const responseText = await fetchResponse.text();
@@ -3032,10 +2650,7 @@ router.post('/generate', async function (request, response) {
             const quota_error = fetchResponse.status === 429 && errorData?.error?.type === 'insufficient_quota';
             console.error('Chat completion request error: ', message, responseText);
             if (lukerGenerationJob) {
-                lukerGenerationJob.status = 'failed';
-                lukerGenerationJob.error = message;
-                lukerGenerationJob.updatedAt = Date.now();
-                lukerGenerationJob.finishedAt = Date.now();
+                failGenerationJob(lukerGenerationJob, message);
             }
 
             if (!response.headersSent) {
@@ -3048,15 +2663,9 @@ router.post('/generate', async function (request, response) {
         }
     } catch (error) {
         console.error('Generation failed', error);
-        const failedJobId = String(request.body?.luker_generation?.job_id || '');
-        if (failedJobId) {
-            const job = lukerGenerationJobs.get(failedJobId);
-            if (job && job.handle === request.user.profile.handle) {
-                job.status = 'failed';
-                job.error = error?.message || 'Unknown error occurred';
-                job.updatedAt = Date.now();
-                job.finishedAt = Date.now();
-            }
+        const job = getJobFromRequest(request);
+        if (job) {
+            failGenerationJob(job, error?.message || 'Unknown error occurred');
         }
 
         const message = error.code === 'ECONNREFUSED'

@@ -1255,7 +1255,7 @@ function setSettingByName(setting, value, trigger) {
  * @returns {Promise<(function(): AsyncGenerator<{swipes: [], text: string, toolCalls: [], logprobs: {token: string, topLogprobs: Candidate[]}|null}, void, *>)|*>}
  * @throws {Error} - If the response status is not OK, or from within the generator
  */
-export async function generateTextGenWithStreaming(generate_data, signal) {
+export async function generateTextGenWithStreaming(generate_data, signal, { onLukerMeta = null } = {}) {
     generate_data.stream = true;
 
     const response = await fetch('/api/backends/text-completions/generate', {
@@ -1266,6 +1266,15 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         method: 'POST',
         signal: signal,
     });
+
+    const generationId = response.headers.get('x-luker-generation-id');
+    if (generationId && typeof onLukerMeta === 'function') {
+        onLukerMeta({ generationId });
+    }
+    const persistedHeader = response.headers.get('x-luker-server-persisted');
+    if ((persistedHeader === '0' || persistedHeader === '1') && typeof onLukerMeta === 'function') {
+        onLukerMeta({ persisted: persistedHeader === '1' });
+    }
 
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
@@ -1286,11 +1295,22 @@ export async function generateTextGenWithStreaming(generate_data, signal) {
         while (true) {
             const { done, value } = await reader.read();
             if (done) return;
-            if (value.data === '[DONE]') return;
+            if (value.data === '[DONE]') continue;
 
             tryParseStreamingError(response, value.data);
 
             let data = JSON.parse(value.data);
+            if (data?.luker && typeof data.luker === 'object') {
+                if (typeof onLukerMeta === 'function') {
+                    if (typeof data.luker.generation_id === 'string' && data.luker.generation_id) {
+                        onLukerMeta({ generationId: data.luker.generation_id });
+                    }
+                    if (typeof data.luker.persisted === 'boolean') {
+                        onLukerMeta({ persisted: data.luker.persisted });
+                    }
+                }
+                continue;
+            }
 
             if (data?.choices?.[0]?.index > 0) {
                 const swipeIndex = data.choices[0].index - 1;
