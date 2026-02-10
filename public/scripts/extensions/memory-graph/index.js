@@ -5254,7 +5254,7 @@ async function openSchemaEditorPopup(context, settings, root) {
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-reset`, function () {
         rerender(normalizeNodeTypeSchema(structuredClone(defaultNodeTypeSchema)));
-        notifyInfo(i18n('Schema reset to default in editor.'));
+        notifySuccess(i18n('Schema reset to default in editor.'));
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-action`, function () {
         const popupRoot = getPopupRoot();
