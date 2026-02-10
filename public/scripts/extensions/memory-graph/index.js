@@ -1,4 +1,4 @@
-import { CONNECT_API_MAP, saveSettingsDebounced, buildObjectPatchOperations } from '../../../script.js';
+import { CONNECT_API_MAP, saveSettings, saveSettingsDebounced, buildObjectPatchOperations } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
@@ -5217,6 +5217,22 @@ async function openSchemaEditorPopup(context, settings, root) {
     const selector = `#${popupId}`;
     const listSelector = '.luker-schema-editor-list';
 
+    const getPopupRoot = () => jQuery(selector);
+    const readCurrentSchema = () => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return null;
+        }
+        return readNodeTypeSchemaEditor(popupRoot, listSelector);
+    };
+    const rerender = (schema) => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        renderNodeTypeSchemaEditor(popupRoot, schema, listSelector);
+    };
+    let capturedSchema = null;
     const popupPromise = context.callGenericPopup(
         popupHtml,
         context.POPUP_TYPE.CONFIRM,
@@ -5227,17 +5243,12 @@ async function openSchemaEditorPopup(context, settings, root) {
             wide: true,
             large: true,
             allowVerticalScrolling: true,
+            onClosing: () => {
+                capturedSchema = readCurrentSchema();
+                return true;
+            },
         },
     );
-
-    const getPopupRoot = () => jQuery(selector);
-    const rerender = (schema) => {
-        const popupRoot = getPopupRoot();
-        if (!popupRoot.length) {
-            return;
-        }
-        renderNodeTypeSchemaEditor(popupRoot, schema, listSelector);
-    };
 
     jQuery(document).off(namespace);
     jQuery(document).on(`change${namespace}`, `${selector} [data-field="compression.mode"]`, function () {
@@ -5292,13 +5303,15 @@ async function openSchemaEditorPopup(context, settings, root) {
         if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
         }
-
-        const popupRoot = getPopupRoot();
-        if (!popupRoot.length) {
+        const nextSchema = Array.isArray(capturedSchema) && capturedSchema.length > 0
+            ? capturedSchema
+            : readCurrentSchema();
+        if (!Array.isArray(nextSchema) || nextSchema.length === 0) {
+            notifyError(i18n('Failed to read schema from editor.'));
             return;
         }
-        settings.nodeTypeSchema = readNodeTypeSchemaEditor(popupRoot, listSelector);
-        saveSettingsDebounced();
+        settings.nodeTypeSchema = nextSchema;
+        await saveSettings();
         updateSchemaSummary(root, settings.nodeTypeSchema);
         notifySuccess(i18n('Memory schema updated.'));
         updateUiStatus(i18n('Applied memory schema from popup editor.'));
@@ -5341,6 +5354,22 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
 async function openAdvancedSettingsPopup(context, settings, root) {
     const popupId = `luker_rpg_memory_advanced_popup_${Date.now()}`;
     const html = buildAdvancedSettingsPopupHtml(popupId, settings);
+    const readAdvancedValues = () => {
+        const popupRoot = jQuery(`#${popupId}`);
+        if (!popupRoot.length) {
+            return null;
+        }
+        return {
+            recentRawTurnsValue: Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val()),
+            recallIterationsValue: Number(popupRoot.find(`#${popupId}_recall_iterations`).val()),
+            toolRetriesValue: Number(popupRoot.find(`#${popupId}_tool_retries`).val()),
+            extractBatchTurnsValue: Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val()),
+            extractSystemPromptValue: String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim(),
+            recallRoutePromptValue: String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim(),
+            recallFinalizePromptValue: String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim(),
+        };
+    };
+    let capturedValues = null;
     const result = await context.callGenericPopup(
         html,
         context.POPUP_TYPE.CONFIRM,
@@ -5351,45 +5380,41 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             wide: true,
             large: false,
             allowVerticalScrolling: true,
+            onClosing: () => {
+                capturedValues = readAdvancedValues();
+                return true;
+            },
         },
     );
 
     if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
         return;
     }
-
-    const popupRoot = jQuery(`#${popupId}`);
-    if (!popupRoot.length) {
+    const values = capturedValues || readAdvancedValues();
+    if (!values) {
+        notifyError(i18n('Failed to read advanced settings.'));
         return;
     }
 
-    const recentRawTurnsValue = Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val());
-    const recallIterationsValue = Number(popupRoot.find(`#${popupId}_recall_iterations`).val());
-    const toolRetriesValue = Number(popupRoot.find(`#${popupId}_tool_retries`).val());
-    const extractBatchTurnsValue = Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val());
-    const extractSystemPromptValue = String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim();
-    const recallRoutePromptValue = String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim();
-    const recallFinalizePromptValue = String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim();
-
     settings.recentRawTurns = Math.max(
         0,
-        Math.floor(Number.isFinite(recentRawTurnsValue) ? recentRawTurnsValue : defaultSettings.recentRawTurns),
+        Math.floor(Number.isFinite(values.recentRawTurnsValue) ? values.recentRawTurnsValue : defaultSettings.recentRawTurns),
     );
     settings.recallMaxIterations = Math.max(
         2,
-        Math.min(6, Math.floor(Number.isFinite(recallIterationsValue) ? recallIterationsValue : defaultSettings.recallMaxIterations)),
+        Math.min(6, Math.floor(Number.isFinite(values.recallIterationsValue) ? values.recallIterationsValue : defaultSettings.recallMaxIterations)),
     );
     settings.toolCallRetryMax = Math.max(
         0,
-        Math.min(10, Math.floor(Number.isFinite(toolRetriesValue) ? toolRetriesValue : defaultSettings.toolCallRetryMax)),
+        Math.min(10, Math.floor(Number.isFinite(values.toolRetriesValue) ? values.toolRetriesValue : defaultSettings.toolCallRetryMax)),
     );
     settings.extractBatchTurns = Math.max(
         2,
-        Math.floor(Number.isFinite(extractBatchTurnsValue) ? extractBatchTurnsValue : defaultSettings.extractBatchTurns),
+        Math.floor(Number.isFinite(values.extractBatchTurnsValue) ? values.extractBatchTurnsValue : defaultSettings.extractBatchTurns),
     );
-    settings.extractSystemPrompt = extractSystemPromptValue || DEFAULT_EXTRACT_SYSTEM_PROMPT;
-    settings.recallRouteSystemPrompt = recallRoutePromptValue || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
-    settings.recallFinalizeSystemPrompt = recallFinalizePromptValue || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
+    settings.extractSystemPrompt = values.extractSystemPromptValue || DEFAULT_EXTRACT_SYSTEM_PROMPT;
+    settings.recallRouteSystemPrompt = values.recallRoutePromptValue || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
+    settings.recallFinalizeSystemPrompt = values.recallFinalizePromptValue || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
 
     saveSettingsDebounced();
     notifySuccess(i18n('Advanced settings saved.'));
