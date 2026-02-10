@@ -2179,9 +2179,12 @@ async function finalizeArcIfNeeded(context, store, settings) {
 
 async function updateCanonSummaryIfNeeded(context, store, settings, force = false) {
     const canon = ensureCanonNode(store);
-    const arcs = getChildren(store, canon.id).filter(node => node.level === LEVEL.ARC && node.finalized && !node.archived);
+    const keepArcs = Math.max(1, Number(settings.arcsPerCanon || 3));
+    const arcs = getChildren(store, canon.id)
+        .filter(node => node.level === LEVEL.ARC && node.finalized && !node.archived)
+        .sort((a, b) => Number(a.toTurn ?? a.createdAt ?? 0) - Number(b.toTurn ?? b.createdAt ?? 0));
 
-    if (!force && arcs.length < Number(settings.arcsPerCanon || 3)) {
+    if (!force && arcs.length < keepArcs) {
         return false;
     }
 
@@ -2189,11 +2192,12 @@ async function updateCanonSummaryIfNeeded(context, store, settings, force = fals
         return false;
     }
 
-    const lines = arcs.map(node => `${node.title}: ${node.summary || node.content}`);
+    const windowArcs = arcs.slice(Math.max(0, arcs.length - keepArcs));
+    const lines = windowArcs.map(node => `${node.title}: ${node.summary || node.content}`);
     const summary = await summarizeTextWithLLM(
         context,
         settings,
-        'Summarize these arcs into canonical long-term memory, preserving major world-state facts and enduring threads.',
+        'Summarize only the provided recent arc window into canonical memory, preserving major world-state facts and enduring threads.',
         lines,
         360,
     );
@@ -2203,13 +2207,13 @@ async function updateCanonSummaryIfNeeded(context, store, settings, force = fals
 
     canon.summary = summary;
     canon.content = summary;
+    canon.fromTurn = Math.min(...windowArcs.map(node => Number(node.fromTurn ?? node.toTurn ?? 0)));
+    canon.toTurn = Math.max(...windowArcs.map(node => Number(node.toTurn ?? node.fromTurn ?? 0)));
     canon.updatedAt = Date.now();
     saveLayerSnapshot(store, LEVEL.CANON, canon);
 
-    const keepArcs = Number(settings.arcsPerCanon || 3);
     if (arcs.length > keepArcs) {
-        const sorted = arcs.slice().sort((a, b) => Number(a.toTurn || 0) - Number(b.toTurn || 0));
-        const archived = sorted.slice(0, Math.max(0, sorted.length - keepArcs));
+        const archived = arcs.slice(0, Math.max(0, arcs.length - keepArcs));
         for (const arc of archived) {
             arc.archived = true;
             arc.updatedAt = Date.now();
