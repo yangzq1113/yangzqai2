@@ -13,10 +13,6 @@ const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 
 const LEVEL = {
-    CANON: 'canon',
-    ROLLUP: 'rollup',
-    ARC: 'arc',
-    EPISODE: 'episode',
     TURN: 'turn',
     SEMANTIC: 'semantic',
 };
@@ -197,13 +193,8 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
 
 const defaultSettings = {
     enabled: false,
-    updateEvery: 6,
+    updateEvery: 1,
     maxTurns: 900,
-    turnsPerEpisode: 10,
-    episodesPerArc: 4,
-    arcsPerCanon: 3,
-    rollupFanIn: 3,
-    keepRecentEpisodeTurns: 3,
     recallEnabled: true,
     recallApiPresetName: '',
     recallPresetName: '',
@@ -256,10 +247,6 @@ function registerLocaleData() {
         'Advanced settings saved.': '高级设置已保存。',
         'Saved advanced settings.': '已保存高级设置。',
         'Update every N messages': '每 N 条消息更新',
-        'Turns / Episode': '每 Episode 回合数',
-        'Episodes / Arc': '每 Arc 的 Episode 数',
-        'Arcs / Canon': '每 Canon 的 Arc 数',
-        'Rollup fan-in (N->1)': 'Rollup 扇入（N->1）',
         'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆表类型、抽取提示与压缩策略。',
         'Open Schema Editor': '打开 Schema 编辑器',
@@ -291,7 +278,7 @@ function registerLocaleData() {
         '(new)': '（新建）',
         'Memory Graph': '记忆图',
         'Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}': '节点：${0} | 边：${1} | 回合：${2} | 源消息：${3}',
-        'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}': 'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}',
+        'turn=${0}, semantic=${1}': 'turn=${0}, semantic=${1}',
         'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步数：${0} | 层快照：${1}',
         'Visual graph ready. Click an edge to select it for editing.': '可视化图已就绪。点击边可选择并编辑。',
         'Fit View': '适配视图',
@@ -370,7 +357,7 @@ function registerLocaleData() {
         'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
         'Recall ready. query="${0}" selected=${1}': '召回就绪。query="${0}" selected=${1}',
         'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
-        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}',
+        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}',
         'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定义节点表、抽取提示和压缩策略。这会控制记忆图存储内容及其随时间压缩方式。',
         'Hierarchical Compression': '分层压缩',
@@ -441,10 +428,6 @@ function registerLocaleData() {
         'Advanced settings saved.': '進階設定已儲存。',
         'Saved advanced settings.': '已儲存進階設定。',
         'Update every N messages': '每 N 條訊息更新',
-        'Turns / Episode': '每 Episode 回合數',
-        'Episodes / Arc': '每 Arc 的 Episode 數',
-        'Arcs / Canon': '每 Canon 的 Arc 數',
-        'Rollup fan-in (N->1)': 'Rollup 扇入（N->1）',
         'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶表類型、抽取提示與壓縮策略。',
         'Open Schema Editor': '開啟 Schema 編輯器',
@@ -476,7 +459,7 @@ function registerLocaleData() {
         '(new)': '（新建）',
         'Memory Graph': '記憶圖',
         'Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}': '節點：${0} | 邊：${1} | 回合：${2} | 來源訊息：${3}',
-        'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}': 'canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}',
+        'turn=${0}, semantic=${1}': 'turn=${0}, semantic=${1}',
         'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步數：${0} | 層快照：${1}',
         'Visual graph ready. Click an edge to select it for editing.': '視覺化圖已就緒。點擊邊可選取並編輯。',
         'Fit View': '適配視圖',
@@ -555,7 +538,7 @@ function registerLocaleData() {
         'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
         'Recall ready. query="${0}" selected=${1}': '召回就緒。query="${0}" selected=${1}',
         'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
-        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}',
+        'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}',
         'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定義節點資料表、抽取提示與壓縮策略。這會控制記憶圖儲存內容及其隨時間壓縮方式。',
         'Hierarchical Compression': '分層壓縮',
@@ -758,6 +741,10 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    extension_settings[MODULE_NAME].updateEvery = Math.max(
+        1,
+        Math.floor(Number(extension_settings[MODULE_NAME].updateEvery) || defaultSettings.updateEvery),
+    );
     extension_settings[MODULE_NAME].recallMaxIterations = Math.max(
         2,
         Math.min(6, Math.floor(Number(extension_settings[MODULE_NAME].recallMaxIterations) || defaultSettings.recallMaxIterations)),
@@ -779,6 +766,11 @@ function ensureSettings() {
     delete extension_settings[MODULE_NAME].recallRootCandidates;
     delete extension_settings[MODULE_NAME].recallExpandedCandidates;
     delete extension_settings[MODULE_NAME].recallNeighborLimit;
+    delete extension_settings[MODULE_NAME].turnsPerEpisode;
+    delete extension_settings[MODULE_NAME].episodesPerArc;
+    delete extension_settings[MODULE_NAME].arcsPerCanon;
+    delete extension_settings[MODULE_NAME].rollupFanIn;
+    delete extension_settings[MODULE_NAME].keepRecentEpisodeTurns;
     extension_settings[MODULE_NAME].nodeTypeSchema = normalizeNodeTypeSchema(extension_settings[MODULE_NAME].nodeTypeSchema);
 }
 
@@ -1071,11 +1063,6 @@ function createEmptyStore() {
         turnOrder: [],
         turnsSinceUpdate: 0,
         totalTurns: 0,
-        activeArcId: '',
-        activeEpisodeId: '',
-        canonId: '',
-        rollupRootId: '',
-        lastCanonSnapshotKey: '',
         lastExtractedTurn: -1,
         lastRecallTrace: [],
         layerSnapshots: [],
@@ -1083,6 +1070,55 @@ function createEmptyStore() {
         sourceDigest: '',
         updatedAt: Date.now(),
     };
+}
+
+function pruneUnsupportedLevels(store) {
+    if (!store || typeof store !== 'object' || !store.nodes || typeof store.nodes !== 'object') {
+        return;
+    }
+    const allowed = new Set([LEVEL.TURN, LEVEL.SEMANTIC]);
+    const removedIds = new Set();
+
+    for (const [id, node] of Object.entries(store.nodes)) {
+        const level = String(node?.level || '').trim();
+        if (!allowed.has(level)) {
+            removedIds.add(id);
+            delete store.nodes[id];
+        }
+    }
+    if (removedIds.size === 0) {
+        return;
+    }
+
+    for (const node of Object.values(store.nodes)) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        if (Array.isArray(node.childrenIds)) {
+            node.childrenIds = node.childrenIds.filter(childId => !removedIds.has(String(childId || '')));
+        } else {
+            node.childrenIds = [];
+        }
+        if (String(node.parentId || '') && removedIds.has(String(node.parentId || ''))) {
+            node.parentId = '';
+        }
+        if (Array.isArray(node.links)) {
+            node.links = node.links.filter(linkId => !removedIds.has(String(linkId || '')));
+        } else {
+            node.links = [];
+        }
+    }
+
+    if (Array.isArray(store.turnOrder)) {
+        store.turnOrder = store.turnOrder.filter(nodeId => !removedIds.has(String(nodeId || '')));
+    } else {
+        store.turnOrder = [];
+    }
+    if (Array.isArray(store.edges)) {
+        store.edges = store.edges.filter(edge => !removedIds.has(String(edge?.from || '')) && !removedIds.has(String(edge?.to || '')));
+    } else {
+        store.edges = [];
+    }
 }
 
 function migrateLegacyStoreIfNeeded(store) {
@@ -1093,18 +1129,18 @@ function migrateLegacyStoreIfNeeded(store) {
         if (!Array.isArray(store.layerSnapshots)) {
             store.layerSnapshots = [];
         }
-        if (typeof store.lastCanonSnapshotKey !== 'string') {
-            store.lastCanonSnapshotKey = '';
-        }
-        if (typeof store.rollupRootId !== 'string') {
-            store.rollupRootId = '';
-        }
+        delete store.activeArcId;
+        delete store.activeEpisodeId;
+        delete store.canonId;
+        delete store.rollupRootId;
+        delete store.lastCanonSnapshotKey;
         if (!Number.isFinite(Number(store.sourceMessageCount))) {
             store.sourceMessageCount = 0;
         }
         if (typeof store.sourceDigest !== 'string') {
             store.sourceDigest = '';
         }
+        pruneUnsupportedLevels(store);
         return store;
     }
 
@@ -1121,8 +1157,7 @@ function migrateLegacyStoreIfNeeded(store) {
     }
 
     migrated.layerSnapshots = Array.isArray(store.layerSnapshots) ? store.layerSnapshots : [];
-    migrated.lastCanonSnapshotKey = String(store.lastCanonSnapshotKey || '');
-    migrated.rollupRootId = String(store.rollupRootId || '');
+    pruneUnsupportedLevels(migrated);
 
     return migrated;
 }
@@ -1456,41 +1491,6 @@ function addEdge(store, from, to, type = 'related') {
     });
 }
 
-function ensureCanonNode(store) {
-    if (store.canonId && store.nodes[store.canonId]) {
-        return store.nodes[store.canonId];
-    }
-
-    const canon = createNode(store, {
-        type: 'canon',
-        level: LEVEL.CANON,
-        title: 'Canon',
-        summary: '',
-        content: '',
-        finalized: false,
-    });
-    store.canonId = canon.id;
-    return canon;
-}
-
-function ensureRollupRoot(store) {
-    if (store.rollupRootId && store.nodes[store.rollupRootId]) {
-        return store.nodes[store.rollupRootId];
-    }
-
-    const root = createNode(store, {
-        type: 'rollup_root',
-        level: LEVEL.ROLLUP,
-        title: 'Memory Rollup Root',
-        summary: '',
-        content: '',
-        finalized: true,
-        metadata: { depth: -1 },
-    });
-    store.rollupRootId = root.id;
-    return root;
-}
-
 function reparentNode(store, childId, parentId) {
     const child = store.nodes[childId];
     const parent = store.nodes[parentId];
@@ -1541,42 +1541,6 @@ function saveLayerSnapshot(store, level, node, extra = {}) {
     }
 }
 
-function ensureActiveArcNode(store) {
-    if (store.activeArcId && store.nodes[store.activeArcId] && !store.nodes[store.activeArcId].finalized) {
-        return store.nodes[store.activeArcId];
-    }
-
-    const canon = ensureCanonNode(store);
-    const arc = createNode(store, {
-        type: 'arc',
-        level: LEVEL.ARC,
-        title: `Arc ${listNodesByLevel(store, LEVEL.ARC).length + 1}`,
-        summary: '',
-        content: '',
-        parentId: canon.id,
-    });
-    store.activeArcId = arc.id;
-    return arc;
-}
-
-function ensureActiveEpisodeNode(store) {
-    if (store.activeEpisodeId && store.nodes[store.activeEpisodeId] && !store.nodes[store.activeEpisodeId].finalized) {
-        return store.nodes[store.activeEpisodeId];
-    }
-
-    const arc = ensureActiveArcNode(store);
-    const episode = createNode(store, {
-        type: 'episode',
-        level: LEVEL.EPISODE,
-        title: `Episode ${listNodesByLevel(store, LEVEL.EPISODE).length + 1}`,
-        summary: '',
-        content: '',
-        parentId: arc.id,
-    });
-    store.activeEpisodeId = episode.id;
-    return episode;
-}
-
 function listNodesByLevel(store, level) {
     return Object.values(store.nodes).filter(node => node.level === level);
 }
@@ -1596,14 +1560,12 @@ function ingestTurnNode(store, message) {
         return null;
     }
 
-    const episode = ensureActiveEpisodeNode(store);
     const turnNode = createNode(store, {
         type: 'turn',
         level: LEVEL.TURN,
         title: `Turn ${store.totalTurns + 1}`,
         summary: '',
         content: text,
-        parentId: episode.id,
         turnIndex: store.totalTurns,
         fromTurn: store.totalTurns,
         toTurn: store.totalTurns,
@@ -1654,16 +1616,6 @@ function dropNode(store, nodeId, recursive = true) {
     delete store.nodes[nodeId];
     store.turnOrder = store.turnOrder.filter(id => id !== nodeId);
     store.edges = store.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId);
-
-    if (store.activeEpisodeId === nodeId) {
-        store.activeEpisodeId = '';
-    }
-    if (store.activeArcId === nodeId) {
-        store.activeArcId = '';
-    }
-    if (store.canonId === nodeId) {
-        store.canonId = '';
-    }
 }
 
 function archiveNode(store, nodeId, { detachFromTurnOrder = false } = {}) {
@@ -2156,249 +2108,6 @@ function applyExtractedLinks(store, sourceNode, rawLinks, defaultTurnIndex) {
     }
 }
 
-async function finalizeEpisodeIfNeeded(context, store, settings) {
-    const episode = store.activeEpisodeId ? store.nodes[store.activeEpisodeId] : null;
-    if (!episode || episode.finalized) {
-        return false;
-    }
-
-    const turns = getChildren(store, episode.id).filter(node => node.level === LEVEL.TURN);
-    if (turns.length < Number(settings.turnsPerEpisode || 10)) {
-        return false;
-    }
-
-    const lines = turns.map(node => `${node.metadata?.is_user ? 'User' : (node.metadata?.name || 'Assistant')}: ${node.content}`);
-    const summary = await summarizeTextWithLLM(
-        context,
-        settings,
-        'Summarize this episode for long-term roleplay memory. Keep key facts, unresolved threads, and state changes.',
-        lines,
-        280,
-    );
-    if (!summary) {
-        return false;
-    }
-
-    episode.summary = summary;
-    episode.content = summary;
-    episode.fromTurn = turns.length > 0 ? Math.min(...turns.map(node => Number(node.turnIndex || 0))) : episode.fromTurn;
-    episode.toTurn = turns.length > 0 ? Math.max(...turns.map(node => Number(node.turnIndex || 0))) : episode.toTurn;
-    episode.finalized = true;
-    episode.updatedAt = Date.now();
-    saveLayerSnapshot(store, LEVEL.EPISODE, episode);
-    store.activeEpisodeId = '';
-
-    return true;
-}
-
-async function finalizeArcIfNeeded(context, store, settings) {
-    const arc = store.activeArcId ? store.nodes[store.activeArcId] : null;
-    if (!arc || arc.finalized) {
-        return false;
-    }
-
-    const episodes = getChildren(store, arc.id).filter(node => node.level === LEVEL.EPISODE && node.finalized);
-    if (episodes.length < Number(settings.episodesPerArc || 4)) {
-        return false;
-    }
-
-    const lines = episodes.map(node => `${node.title}: ${node.summary || node.content}`);
-    const summary = await summarizeTextWithLLM(
-        context,
-        settings,
-        'Summarize these episodes into one Arc memory. Focus on major trajectories, consequences, and unresolved hooks.',
-        lines,
-        320,
-    );
-    if (!summary) {
-        return false;
-    }
-
-    arc.summary = summary;
-    arc.content = summary;
-    arc.fromTurn = Math.min(...episodes.map(node => Number(node.fromTurn ?? node.toTurn ?? 0)));
-    arc.toTurn = Math.max(...episodes.map(node => Number(node.toTurn ?? node.fromTurn ?? 0)));
-    arc.finalized = true;
-    arc.updatedAt = Date.now();
-    saveLayerSnapshot(store, LEVEL.ARC, arc);
-    store.activeArcId = '';
-
-    return true;
-}
-
-async function updateCanonSummaryIfNeeded(context, store, settings, force = false) {
-    const canon = ensureCanonNode(store);
-    const keepArcs = Math.max(1, Number(settings.arcsPerCanon || 3));
-    const arcs = getChildren(store, canon.id)
-        .filter(node => node.level === LEVEL.ARC && node.finalized && !node.archived)
-        .sort((a, b) => Number(a.toTurn ?? a.createdAt ?? 0) - Number(b.toTurn ?? b.createdAt ?? 0));
-
-    if (!force && arcs.length < keepArcs) {
-        return false;
-    }
-
-    if (arcs.length === 0) {
-        return false;
-    }
-
-    const windowArcs = arcs.slice(Math.max(0, arcs.length - keepArcs));
-    const lines = windowArcs.map(node => `${node.title}: ${node.summary || node.content}`);
-    const summary = await summarizeTextWithLLM(
-        context,
-        settings,
-        'Summarize only the provided recent arc window into canonical memory, preserving major world-state facts and enduring threads.',
-        lines,
-        360,
-    );
-    if (!summary) {
-        return false;
-    }
-
-    canon.summary = summary;
-    canon.content = summary;
-    canon.fromTurn = Math.min(...windowArcs.map(node => Number(node.fromTurn ?? node.toTurn ?? 0)));
-    canon.toTurn = Math.max(...windowArcs.map(node => Number(node.toTurn ?? node.fromTurn ?? 0)));
-    canon.updatedAt = Date.now();
-    saveLayerSnapshot(store, LEVEL.CANON, canon);
-
-    if (arcs.length > keepArcs) {
-        const archived = arcs.slice(0, Math.max(0, arcs.length - keepArcs));
-        for (const arc of archived) {
-            arc.archived = true;
-            arc.updatedAt = Date.now();
-            compactArcDeepChildren(store, arc.id, Number(settings.keepRecentEpisodeTurns || 3));
-        }
-    }
-
-    snapshotCanonToRollup(store, settings);
-    return true;
-}
-
-function snapshotCanonToRollup(store, settings) {
-    const canon = ensureCanonNode(store);
-    const summary = normalizeText(canon.summary || canon.content || '');
-    if (!summary) {
-        return null;
-    }
-
-    const snapshotKey = `${hashTextFNV1a(summary)}::${Number(canon.toTurn ?? store.totalTurns)}`;
-    if (snapshotKey === String(store.lastCanonSnapshotKey || '')) {
-        return null;
-    }
-
-    const root = ensureRollupRoot(store);
-    const leaf = createNode(store, {
-        type: 'rollup',
-        level: LEVEL.ROLLUP,
-        title: `Rollup L0 #${listNodesByLevel(store, LEVEL.ROLLUP).length + 1}`,
-        summary,
-        content: summary,
-        finalized: true,
-        archived: false,
-        parentId: root.id,
-        fromTurn: Number(canon.fromTurn ?? 0),
-        toTurn: Number(canon.toTurn ?? store.totalTurns),
-        metadata: {
-            depth: 0,
-            source: 'canon_snapshot',
-        },
-    });
-    store.lastCanonSnapshotKey = snapshotKey;
-    saveLayerSnapshot(store, LEVEL.ROLLUP, leaf, { depth: 0, source: 'canon_snapshot' });
-    return leaf;
-}
-
-function getActiveRollupNodesByDepth(store, depth) {
-    return listNodesByLevel(store, LEVEL.ROLLUP)
-        .filter(node => Number(node?.metadata?.depth) === Number(depth) && !node.archived && node.id !== store.rollupRootId)
-        .sort((a, b) => Number(a.toTurn ?? a.createdAt ?? 0) - Number(b.toTurn ?? b.createdAt ?? 0));
-}
-
-async function compressRollupLayersIfNeeded(context, store, settings) {
-    const fanIn = Math.max(2, Number(settings.rollupFanIn || settings.arcsPerCanon || 3));
-    const root = ensureRollupRoot(store);
-    let depth = 0;
-    let guard = 0;
-    let changed = false;
-    let maxDepth = Math.max(0, ...listNodesByLevel(store, LEVEL.ROLLUP)
-        .map(node => Number(node?.metadata?.depth))
-        .filter(Number.isFinite));
-
-    while (guard < 80) {
-        guard += 1;
-        const candidates = getActiveRollupNodesByDepth(store, depth);
-        if (candidates.length < fanIn) {
-            depth += 1;
-            if (depth > maxDepth + 1) {
-                break;
-            }
-            continue;
-        }
-
-        const group = candidates.slice(0, fanIn);
-        const lines = group.map(node => `${node.title}: ${node.summary || node.content}`);
-        const summary = await summarizeTextWithLLM(
-            context,
-            settings,
-            `Compress rollup depth ${depth} into depth ${depth + 1}. Keep only critical long-term facts and unresolved threads.`,
-            lines,
-            320,
-        );
-        if (!summary) {
-            break;
-        }
-
-        const parent = createNode(store, {
-            type: 'rollup',
-            level: LEVEL.ROLLUP,
-            title: `Rollup L${depth + 1} #${Date.now()}`,
-            summary,
-            content: summary,
-            finalized: true,
-            parentId: root.id,
-            archived: false,
-            fromTurn: Math.min(...group.map(node => Number(node.fromTurn ?? node.toTurn ?? 0))),
-            toTurn: Math.max(...group.map(node => Number(node.toTurn ?? node.fromTurn ?? 0))),
-            metadata: {
-                depth: depth + 1,
-                source: 'rollup_merge',
-                merged_node_ids: group.map(node => node.id),
-            },
-        });
-
-        for (const node of group) {
-            node.archived = true;
-            node.updatedAt = Date.now();
-            reparentNode(store, node.id, parent.id);
-        }
-        maxDepth = Math.max(maxDepth, depth + 1);
-        saveLayerSnapshot(store, LEVEL.ROLLUP, parent, { depth: depth + 1, source: 'rollup_merge' });
-        changed = true;
-    }
-
-    return changed;
-}
-
-function compactArcDeepChildren(store, arcId, keepRecentEpisodeTurns = 3) {
-    const arc = store.nodes[arcId];
-    if (!arc) {
-        return;
-    }
-
-    const episodes = getChildren(store, arc.id).filter(node => node.level === LEVEL.EPISODE);
-    const sortedEpisodes = episodes.slice().sort((a, b) => Number(a.toTurn || 0) - Number(b.toTurn || 0));
-    const removable = sortedEpisodes.slice(0, Math.max(0, sortedEpisodes.length - keepRecentEpisodeTurns));
-
-    for (const episode of removable) {
-        const turns = getChildren(store, episode.id).filter(node => node.level === LEVEL.TURN);
-        for (const turn of turns) {
-            archiveNode(store, turn.id, { detachFromTurnOrder: true });
-        }
-        episode.childrenIds = episode.childrenIds.filter(childId => store.nodes[childId] && !store.nodes[childId].archived);
-        episode.updatedAt = Date.now();
-    }
-}
-
 function getSemanticNodesForType(store, type) {
     const targetType = String(type || '').toLowerCase();
     return listNodesByLevel(store, LEVEL.SEMANTIC)
@@ -2532,50 +2241,12 @@ async function compressSemanticTypesIfNeeded(context, store, settings) {
 }
 
 async function runCompressionLoop(context, store, settings) {
-    let changed = false;
-    let guard = 0;
-
-    while (guard < 12) {
-        guard += 1;
-        let stepChanged = false;
-
-        if (await finalizeEpisodeIfNeeded(context, store, settings)) {
-            stepChanged = true;
-        }
-
-        if (await finalizeArcIfNeeded(context, store, settings)) {
-            stepChanged = true;
-        }
-
-        if (await updateCanonSummaryIfNeeded(context, store, settings, false)) {
-            stepChanged = true;
-        }
-
-        if (!stepChanged) {
-            break;
-        }
-        changed = true;
-
-        ensureActiveArcNode(store);
-        ensureActiveEpisodeNode(store);
-    }
-
-    if (!changed) {
-        await updateCanonSummaryIfNeeded(context, store, settings, true);
-    }
-
-    if (await compressRollupLayersIfNeeded(context, store, settings)) {
-        changed = true;
-    }
-    if (await compressSemanticTypesIfNeeded(context, store, settings)) {
-        changed = true;
-    }
-    return changed;
+    return await compressSemanticTypesIfNeeded(context, store, settings);
 }
 
 async function runExtractionForStore(context, store) {
     const settings = getSettings();
-    if (store.turnsSinceUpdate < Number(settings.updateEvery || 6)) {
+    if (store.turnsSinceUpdate < Number(settings.updateEvery || 1)) {
         return;
     }
 
@@ -2591,7 +2262,7 @@ async function runExtractionForStore(context, store) {
     }
 
     const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
-    const batchSize = Math.max(2, Number(settings.extractBatchTurns || settings.updateEvery || 6));
+    const batchSize = Math.max(2, Number(settings.extractBatchTurns || settings.updateEvery || 1));
     for (let offset = 0; offset < turnNodes.length; offset += batchSize) {
         const batch = turnNodes.slice(offset, offset + batchSize);
         const upserts = await extractNodesWithLLM(context, settings, schema, batch);
@@ -3718,7 +3389,7 @@ async function rebuildStoreFromCurrentChat(context) {
     }
     updateStoreSourceState(rebuilt, context);
     if (rebuilt.turnOrder.length > 0) {
-        rebuilt.turnsSinceUpdate = Math.max(Number(settings.updateEvery || 6), Number(rebuilt.turnsSinceUpdate || 0));
+        rebuilt.turnsSinceUpdate = Math.max(Number(settings.updateEvery || 1), Number(rebuilt.turnsSinceUpdate || 0));
         await runExtractionForStore(context, rebuilt);
     }
     rebuilt.updatedAt = Date.now();
@@ -3868,10 +3539,6 @@ function scheduleExtraction(context) {
 function getStoreStats(store) {
     const nodes = Object.values(store.nodes || {});
     const levelCount = {
-        canon: nodes.filter(n => n.level === LEVEL.CANON).length,
-        rollup: nodes.filter(n => n.level === LEVEL.ROLLUP).length,
-        arc: nodes.filter(n => n.level === LEVEL.ARC).length,
-        episode: nodes.filter(n => n.level === LEVEL.EPISODE).length,
         turn: nodes.filter(n => n.level === LEVEL.TURN).length,
         semantic: nodes.filter(n => n.level === LEVEL.SEMANTIC).length,
     };
@@ -3920,7 +3587,7 @@ function renderGraphInspectorHtml(store) {
 <div class="flex-container flexFlowColumn luker-rpg-memory-graph-popup-inner">
     <h3 class="margin0">${escapeHtml(i18n('Memory Graph'))}</h3>
     <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Turns: ${2} | Source messages: ${3}', stats.nodeCount, stats.edgeCount, stats.turnCount, stats.sourceMessageCount))}</div>
-    <div>${escapeHtml(i18nFormat('canon=${0}, rollup=${1}, arc=${2}, episode=${3}, turn=${4}, semantic=${5}', stats.levelCount.canon, stats.levelCount.rollup, stats.levelCount.arc, stats.levelCount.episode, stats.levelCount.turn, stats.levelCount.semantic))}</div>
+    <div>${escapeHtml(i18nFormat('turn=${0}, semantic=${1}', stats.levelCount.turn, stats.levelCount.semantic))}</div>
     <div>${escapeHtml(i18nFormat('Last recall steps: ${0} | Layer snapshots: ${1}', stats.lastRecallSteps, stats.layerSnapshots))}</div>
     <div class="luker-rpg-memory-graph-canvas-wrap">
         <div class="luker-rpg-memory-graph-cy"></div>
@@ -4032,7 +3699,7 @@ function decodeMetadataFromLines(text) {
 }
 
 function getNodeTypeOptionsHtml(settings, store, currentType = '') {
-    const candidates = new Set(['canon', 'rollup_root', 'arc', 'episode', 'turn']);
+    const candidates = new Set(['turn']);
     for (const entry of normalizeNodeTypeSchema(settings.nodeTypeSchema)) {
         candidates.add(String(entry.id || '').trim());
     }
@@ -4073,10 +3740,6 @@ function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
 
 function renderNodeFormEditorHtml(node, store, settings, editorId) {
     const levelOptions = [
-        LEVEL.CANON,
-        LEVEL.ROLLUP,
-        LEVEL.ARC,
-        LEVEL.EPISODE,
         LEVEL.TURN,
         LEVEL.SEMANTIC,
     ].map(level => `<option value="${level}"${String(node.level || '') === level ? ' selected' : ''}>${level}</option>`).join('');
@@ -4196,20 +3859,9 @@ function buildGraphCytoscapeElements(store) {
     const maxVisualNodes = 450;
     const scopedNodes = sortedNodes.slice(-maxVisualNodes);
     const scopedNodeIds = new Set(scopedNodes.map(node => String(node.id || '')));
-    for (const rootId of [store.canonId, store.rollupRootId, store.activeArcId, store.activeEpisodeId]) {
-        const id = String(rootId || '').trim();
-        if (id && store.nodes[id]) {
-            scopedNodeIds.add(id);
-        }
-    }
-
     const levelOrderMap = {
-        [LEVEL.CANON]: 0,
-        [LEVEL.ROLLUP]: 1,
-        [LEVEL.ARC]: 2,
-        [LEVEL.EPISODE]: 3,
-        [LEVEL.SEMANTIC]: 4,
-        [LEVEL.TURN]: 5,
+        [LEVEL.SEMANTIC]: 0,
+        [LEVEL.TURN]: 1,
     };
     const scopedNodeList = [...scopedNodeIds]
         .map(id => store.nodes[id])
@@ -4455,10 +4107,7 @@ async function openGraphInspectorPopup(context) {
                             padding: '12px',
                         },
                     },
-                    { selector: 'node[level = "canon"]', style: { 'background-color': '#c77d2f' } },
-                    { selector: 'node[level = "rollup"]', style: { 'background-color': '#8a5db4' } },
-                    { selector: 'node[level = "arc"]', style: { 'background-color': '#3c9b7b' } },
-                    { selector: 'node[level = "episode"]', style: { 'background-color': '#2f8aa6' } },
+                    { selector: 'node[level = "semantic"]', style: { 'background-color': '#3c9b7b' } },
                     { selector: 'node[level = "turn"]', style: { 'background-color': '#626b7b', 'font-size': 9 } },
                     { selector: 'node[archived = true]', style: { opacity: 0.45 } },
                     {
@@ -5000,15 +4649,11 @@ function refreshUiStats() {
 
     root.find('#luker_rpg_memory_stats').text(
         i18nFormat(
-            'nodes=${0}, edges=${1}, turns=${2}, source=${3}, canon=${4}, rollup=${5}, arc=${6}, episode=${7}, semantic=${8}, snapshots=${9}',
+            'nodes=${0}, edges=${1}, turns=${2}, source=${3}, semantic=${4}, snapshots=${5}',
             stats.nodeCount,
             stats.edgeCount,
             stats.turnCount,
             stats.sourceMessageCount,
-            stats.levelCount.canon,
-            stats.levelCount.rollup,
-            stats.levelCount.arc,
-            stats.levelCount.episode,
             stats.levelCount.semantic,
             stats.layerSnapshots,
         ),
@@ -5709,10 +5354,6 @@ function bindUi() {
     root.find('#luker_rpg_memory_extract_preset').val(String(settings.extractPresetName || ''));
     root.find('#luker_rpg_memory_projection_enabled').prop('checked', Boolean(settings.lorebookProjectionEnabled));
     root.find('#luker_rpg_memory_update_every').val(String(settings.updateEvery));
-    root.find('#luker_rpg_memory_turns_episode').val(String(settings.turnsPerEpisode));
-    root.find('#luker_rpg_memory_episodes_arc').val(String(settings.episodesPerArc));
-    root.find('#luker_rpg_memory_arcs_canon').val(String(settings.arcsPerCanon));
-    root.find('#luker_rpg_memory_rollup_fanin').val(String(settings.rollupFanIn || 3));
     updateSchemaSummary(root, settings.nodeTypeSchema);
     refreshOpenAIPresetSelectors(root, context, settings);
 
@@ -5765,10 +5406,6 @@ function bindUi() {
     root.find('#luker_rpg_memory_save').off('click').on('click', function () {
         try {
             settings.updateEvery = Math.max(1, Number(root.find('#luker_rpg_memory_update_every').val()) || defaultSettings.updateEvery);
-            settings.turnsPerEpisode = Math.max(2, Number(root.find('#luker_rpg_memory_turns_episode').val()) || defaultSettings.turnsPerEpisode);
-            settings.episodesPerArc = Math.max(2, Number(root.find('#luker_rpg_memory_episodes_arc').val()) || defaultSettings.episodesPerArc);
-            settings.arcsPerCanon = Math.max(1, Number(root.find('#luker_rpg_memory_arcs_canon').val()) || defaultSettings.arcsPerCanon);
-            settings.rollupFanIn = Math.max(2, Number(root.find('#luker_rpg_memory_rollup_fanin').val()) || defaultSettings.rollupFanIn);
             settings.lorebookProjectionEnabled = Boolean(root.find('#luker_rpg_memory_projection_enabled').prop('checked'));
             updateSchemaSummary(root, settings.nodeTypeSchema);
 
@@ -5939,14 +5576,6 @@ function ensureUi() {
 
             <div class="flex-container">
                 <label style="flex:1">${escapeHtml(i18n('Update every N messages'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
-                <label style="flex:1">${escapeHtml(i18n('Turns / Episode'))} <input id="luker_rpg_memory_turns_episode" class="text_pole" type="number" min="2" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Episodes / Arc'))} <input id="luker_rpg_memory_episodes_arc" class="text_pole" type="number" min="2" step="1" /></label>
-                <label style="flex:1">${escapeHtml(i18n('Arcs / Canon'))} <input id="luker_rpg_memory_arcs_canon" class="text_pole" type="number" min="1" step="1" /></label>
-            </div>
-            <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Rollup fan-in (N->1)'))} <input id="luker_rpg_memory_rollup_fanin" class="text_pole" type="number" min="2" step="1" /></label>
             </div>
 
             <label>${escapeHtml(i18n('Node Type Schema (Visual Editor)'))}</label>
