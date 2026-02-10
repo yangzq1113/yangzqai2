@@ -16,6 +16,7 @@ const LEVEL = {
     TURN: 'turn',
     SEMANTIC: 'semantic',
 };
+const COMPRESSION_SUMMARY_SOFT_LIMIT = 150;
 
 const defaultNodeTypeSchema = [
     {
@@ -34,7 +35,7 @@ const defaultNodeTypeSchema = [
             maxDepth: 10,
             keepRecentLeaves: 6,
             keepLatest: 1,
-            summarizeInstruction: 'Compress event nodes into higher-level storyline milestones while preserving causality and unresolved hooks.',
+            summarizeInstruction: 'Compress event nodes into higher-level storyline milestones while preserving causality and unresolved hooks. Keep output concise, target within 150 Chinese characters (soft limit).',
         },
     },
     {
@@ -53,7 +54,7 @@ const defaultNodeTypeSchema = [
             maxDepth: 8,
             keepRecentLeaves: 4,
             keepLatest: 1,
-            summarizeInstruction: 'Compress thread nodes into concise quest/foreshadowing tracks with current status and blockers.',
+            summarizeInstruction: 'Compress thread nodes into concise quest/foreshadowing tracks with current status and blockers. Keep output concise, target within 150 Chinese characters (soft limit).',
         },
     },
     {
@@ -1635,6 +1636,17 @@ function summarizeTextHeuristic(lines) {
         .join('\n');
 }
 
+function buildCompressionSummaryInstruction(baseInstruction) {
+    const base = normalizeText(baseInstruction || '');
+    const fallback = 'Compress semantic nodes into concise higher-level memory while preserving key causality and unresolved hooks.';
+    const instruction = base || fallback;
+    return [
+        instruction,
+        `Length guide: target within ${COMPRESSION_SUMMARY_SOFT_LIMIT} Chinese characters (soft limit; slight overflow only if critical information would be lost).`,
+        'Avoid raw dialogue and excessive detail. Keep only durable plot signal.',
+    ].join('\n');
+}
+
 function buildPresetAwareLLMMessages(
     context,
     settings,
@@ -2170,9 +2182,11 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
             }
 
             const lines = group.map(node => `${node.title}: ${node.summary || node.content}`);
-            const instruction = config.summarizeInstruction
-                || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`;
-            const summary = await summarizeTextWithLLM(context, settings, instruction, lines, 320);
+            const instruction = buildCompressionSummaryInstruction(
+                config.summarizeInstruction
+                || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
+            );
+            const summary = await summarizeTextWithLLM(context, settings, instruction, lines, 220);
             if (!summary) {
                 break;
             }
