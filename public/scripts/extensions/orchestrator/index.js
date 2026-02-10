@@ -1,4 +1,4 @@
-import { CONNECT_API_MAP, extension_prompt_roles, extension_prompt_types, saveSettingsDebounced } from '../../../script.js';
+import { CONNECT_API_MAP, extension_prompt_roles, extension_prompt_types, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
@@ -41,7 +41,6 @@ function getDefaultAiSuggestSystemPrompt() {
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
         'Call luker_orch_append_stage one stage per call.',
         'Call luker_orch_upsert_preset one preset per call.',
-        'Call luker_orch_set_coverage_axis one axis per call.',
         'Call luker_orch_set_notes if needed.',
         'Call luker_orch_finalize_profile at the end.',
     ].join('\n');
@@ -84,7 +83,6 @@ const defaultSettings = {
     capsuleInjectDepth: 1,
     capsuleInjectRole: extension_prompt_roles.SYSTEM,
     capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
-    saveTarget: 'global',
     orchestrationSpec: defaultSpec,
     presets: defaultPresets,
     chatOverrides: {},
@@ -145,8 +143,8 @@ function registerLocaleData() {
         'AI build goal (optional)': 'AI 生成目标（可选）',
         'e.g. mystery thriller pacing, strict in-character tone': '例如：悬疑节奏、严格角色内表达',
         'Reload Current': '重载当前',
-        'Save Current': '保存当前',
-        'Save Target': '保存目标',
+        'Save To Global': '保存到全局',
+        'Save To Character Override': '保存到角色卡覆写',
         'Global profile': '全局配置',
         'Current character override': '当前角色卡覆写',
         'Clear Character Override': '清除角色卡覆写',
@@ -201,13 +199,11 @@ function registerLocaleData() {
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
-        'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 构建未显式调用 finalize。已使用解析结果继续。',
-        'AI build returned no coverage checklist. Profile saved, but quality coverage is not explicitly mapped.': 'AI 构建未返回覆盖清单。配置已保存，但质量覆盖未被显式映射。',
-        'AI build checklist has missing strategy entries: ${0}': 'AI 构建清单缺少策略条目：${0}',
-        'AI build checklist references unknown nodes/presets: ${0}': 'AI 构建清单引用了未知节点/预设：${0}',
+        'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 构建未显式调用 finalize。已直接采用解析结果。',
         'AI profile generation failed: ${0}': 'AI 配置生成失败：${0}',
         'Function output is invalid.': '函数输出无效。',
         'AI build did not provide any stage tool calls.': 'AI 构建未提供任何阶段工具调用。',
+        'Failed to persist character override.': '角色卡覆写写入失败。',
     });
     addLocaleData('zh-tw', {
         'Orchestrator': '多智能體編排',
@@ -251,8 +247,8 @@ function registerLocaleData() {
         'AI build goal (optional)': 'AI 生成目標（可選）',
         'e.g. mystery thriller pacing, strict in-character tone': '例如：懸疑節奏、嚴格角色內語氣',
         'Reload Current': '重新載入目前',
-        'Save Current': '儲存目前',
-        'Save Target': '儲存目標',
+        'Save To Global': '儲存到全域',
+        'Save To Character Override': '儲存到角色卡覆寫',
         'Current character override': '目前角色卡覆寫',
         'Clear Character Override': '清除角色卡覆寫',
         'AI Build Character Override': 'AI 生成角色卡覆寫',
@@ -306,13 +302,11 @@ function registerLocaleData() {
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 設定）',
         '(missing)': '（缺失）',
-        'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 建構未明確呼叫 finalize。已使用解析結果繼續。',
-        'AI build returned no coverage checklist. Profile saved, but quality coverage is not explicitly mapped.': 'AI 建構未回傳覆蓋清單。設定已儲存，但品質覆蓋未被明確映射。',
-        'AI build checklist has missing strategy entries: ${0}': 'AI 建構清單缺少策略項目：${0}',
-        'AI build checklist references unknown nodes/presets: ${0}': 'AI 建構清單引用了未知節點/預設：${0}',
+        'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 建構未明確呼叫 finalize。已直接採用解析結果。',
         'AI profile generation failed: ${0}': 'AI 設定生成失敗：${0}',
         'Function output is invalid.': '函式輸出無效。',
         'AI build did not provide any stage tool calls.': 'AI 建構未提供任何階段工具呼叫。',
+        'Failed to persist character override.': '角色卡覆寫寫入失敗。',
     });
 }
 
@@ -474,9 +468,7 @@ function ensureSettings() {
     delete extension_settings[MODULE_NAME].llmNodePromptPresetName;
     delete extension_settings[MODULE_NAME].aiSuggestPromptPresetName;
     delete extension_settings[MODULE_NAME].maxCapsuleChars;
-    if (!['global', 'character'].includes(String(extension_settings[MODULE_NAME].saveTarget || '').trim())) {
-        extension_settings[MODULE_NAME].saveTarget = 'global';
-    }
+    delete extension_settings[MODULE_NAME].saveTarget;
     {
         const value = Number(extension_settings[MODULE_NAME].capsuleInjectPosition);
         const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
@@ -706,55 +698,6 @@ function validateAiBuildTemplateVariables(spec, presetPatch) {
             `Invalid usage -> ${errors.join(' | ')}`,
         );
     }
-}
-
-function collectSpecNodeIds(spec) {
-    const safeSpec = sanitizeSpec(spec);
-    const ids = new Set();
-    const stages = Array.isArray(safeSpec?.stages) ? safeSpec.stages : [];
-    for (const stage of stages) {
-        const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
-        for (const rawNode of nodes) {
-            const node = normalizeNodeSpec(rawNode);
-            if (node?.id) {
-                ids.add(String(node.id));
-            }
-            if (node?.preset) {
-                ids.add(String(node.preset));
-            }
-        }
-    }
-    return ids;
-}
-
-function analyzeAiBuildCoverageChecklist(coverageChecklist, spec) {
-    const validNodeRefs = collectSpecNodeIds(spec);
-    const missing = [];
-    const invalidNodeRefs = [];
-    const normalized = {};
-
-    for (const axis of Object.keys(ORCH_AI_QUALITY_AXES)) {
-        const row = coverageChecklist?.[axis];
-        const isLegacyString = typeof row === 'string';
-        const node = String(isLegacyString ? '' : (row?.node || '')).trim();
-        const strategy = String(isLegacyString ? row : (row?.strategy || '')).trim();
-        normalized[axis] = { node, strategy };
-
-        if (!strategy) {
-            missing.push(axis);
-            continue;
-        }
-        if (node && !validNodeRefs.has(node)) {
-            invalidNodeRefs.push(`${axis}:${node}`);
-        }
-    }
-
-    return {
-        provided: Boolean(coverageChecklist && typeof coverageChecklist === 'object'),
-        missing,
-        invalidNodeRefs,
-        normalized,
-    };
 }
 
 function extractFunctionCallArguments(responseData, functionName) {
@@ -2038,16 +1981,6 @@ function renderDynamicPanels(root, context) {
             ? (isOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
             : i18n('Global profile (no character override for current card)'),
     );
-    const saveTarget = String(settings.saveTarget || 'global');
-    const saveTargetSelect = root.find('#luker_orch_save_target');
-    saveTargetSelect.val(saveTarget);
-    const charOption = saveTargetSelect.find('option[value="character"]');
-    charOption.prop('disabled', !activeAvatar);
-    if (!activeAvatar && saveTarget === 'character') {
-        settings.saveTarget = 'global';
-        saveSettingsDebounced();
-        saveTargetSelect.val('global');
-    }
     root.find('#luker_orch_effective_visual').html(renderEditorWorkspace(scope, editor, profileTitle));
     root.find('#luker_orch_clear_character_button').toggle(isCharacterScope);
     root.find('#luker_orch_ai_goal').val(String(uiState.aiGoal || ''));
@@ -2057,11 +1990,11 @@ function updateUiStatus(text) {
     jQuery('#luker_orch_status').text(String(text || ''));
 }
 
-function persistGlobalEditorFrom(settings, editor) {
+async function persistGlobalEditorFrom(settings, editor) {
     ensureEditorIntegrity(editor);
     settings.orchestrationSpec = serializeEditorSpec(editor.spec);
     settings.presets = serializeEditorPresetMap(editor.presets);
-    saveSettingsDebounced();
+    await saveSettings();
 }
 
 async function persistCharacterEditor(context, settings, avatar, {
@@ -2110,7 +2043,6 @@ function isPresetUsed(editor, presetId) {
 function buildAiProfileFromToolCalls(toolCalls) {
     const draftStages = [];
     const draftPresets = {};
-    const draftCoverage = {};
     const notesParts = [];
     let finalizeCalled = false;
     let hasStageUpdate = false;
@@ -2165,17 +2097,6 @@ function buildAiProfileFromToolCalls(toolCalls) {
             };
             continue;
         }
-        if (fnName === 'luker_orch_set_coverage_axis') {
-            const axis = String(args.axis || '').trim();
-            if (!axis || !Object.hasOwn(ORCH_AI_QUALITY_AXES, axis)) {
-                continue;
-            }
-            draftCoverage[axis] = {
-                node: String(args.node || '').trim(),
-                strategy: String(args.strategy || '').trim(),
-            };
-            continue;
-        }
         if (fnName === 'luker_orch_set_notes') {
             const text = String(args.notes || '').trim();
             if (text) {
@@ -2205,7 +2126,6 @@ function buildAiProfileFromToolCalls(toolCalls) {
     return {
         orchestrationSpec: sanitizeSpec({ stages: draftStages }),
         presetPatch,
-        coverageChecklist: draftCoverage,
         notes: notesParts.join('\n\n').trim(),
         finalizeCalled,
         hasStageUpdate,
@@ -2264,14 +2184,6 @@ async function runAiCharacterProfileBuild(context, settings) {
                     systemPrompt: 'string',
                     userPromptTemplate: `Use only: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
                     responseLength: 320,
-                },
-            },
-            coverage_axis: {
-                function: 'luker_orch_set_coverage_axis',
-                shape: {
-                    axis: Object.keys(ORCH_AI_QUALITY_AXES),
-                    node: 'node_or_preset_id',
-                    strategy: 'how this node enforces the quality axis',
                 },
             },
             notes: {
@@ -2362,23 +2274,6 @@ async function runAiCharacterProfileBuild(context, settings) {
         {
             type: 'function',
             function: {
-                name: 'luker_orch_set_coverage_axis',
-                description: 'Set one quality coverage axis mapping.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        axis: { type: 'string', enum: Object.keys(ORCH_AI_QUALITY_AXES) },
-                        node: { type: 'string' },
-                        strategy: { type: 'string' },
-                    },
-                    required: ['axis', 'strategy'],
-                    additionalProperties: false,
-                },
-            },
-        },
-        {
-            type: 'function',
-            function: {
                 name: 'luker_orch_set_notes',
                 description: 'Set profile-level notes.',
                 parameters: {
@@ -2433,17 +2328,6 @@ async function runAiCharacterProfileBuild(context, settings) {
     }
 
     validateAiBuildTemplateVariables(parsed.orchestrationSpec, parsed.presetPatch);
-    const coverageReport = analyzeAiBuildCoverageChecklist(parsed.coverageChecklist, parsed.orchestrationSpec);
-    if (!coverageReport.provided) {
-        notifyInfo(i18n('AI build returned no coverage checklist. Profile saved, but quality coverage is not explicitly mapped.'));
-    } else {
-        if (coverageReport.missing.length > 0) {
-            notifyInfo(i18nFormat('AI build checklist has missing strategy entries: ${0}', coverageReport.missing.join(', ')));
-        }
-        if (coverageReport.invalidNodeRefs.length > 0) {
-            notifyInfo(i18nFormat('AI build checklist references unknown nodes/presets: ${0}', coverageReport.invalidNodeRefs.join(', ')));
-        }
-    }
 
     const suggestedSpec = sanitizeSpec(parsed.orchestrationSpec);
     const suggestedPatch = parsed.presetPatch && typeof parsed.presetPatch === 'object' ? parsed.presetPatch : {};
@@ -2455,21 +2339,14 @@ async function runAiCharacterProfileBuild(context, settings) {
     uiState.characterEditor.spec = toEditableSpec(suggestedSpec, mergedPresets);
     uiState.characterEditor.presets = toEditablePresetMap(mergedPresets);
     uiState.characterEditor.enabled = true;
-    const checklistText = Object.entries(coverageReport.normalized || {})
-        .map(([axis, value]) => {
-            const node = String(value?.node || '').trim();
-            const strategy = String(value?.strategy || '').trim();
-            return { axis, node, strategy };
-        })
-        .filter(row => row.axis && row.strategy)
-        .map(row => row.node ? `${row.axis} -> [${row.node}] ${row.strategy}` : `${row.axis} -> ${row.strategy}`)
-        .join('\n');
     uiState.characterEditor.notes = [
         String(parsed.notes || '').trim(),
-        checklistText ? `Coverage Checklist\n${checklistText}` : '',
     ].filter(Boolean).join('\n\n');
 
-    await persistCharacterEditor(context, settings, avatar, { forceEnabled: true });
+    const persisted = await persistCharacterEditor(context, settings, avatar, { forceEnabled: true });
+    if (!persisted) {
+        throw new Error(i18n('Failed to persist character override.'));
+    }
 }
 
 function bindUi() {
@@ -2494,7 +2371,6 @@ function bindUi() {
     root.find('#luker_orch_capsule_depth').val(String(Number(settings.capsuleInjectDepth || 0)));
     root.find('#luker_orch_capsule_role').val(String(Number(settings.capsuleInjectRole)));
     root.find('#luker_orch_capsule_custom_instruction').val(String(settings.capsuleCustomInstruction || ''));
-    root.find('#luker_orch_save_target').val(String(settings.saveTarget || 'global'));
     refreshOpenAIPresetSelectors(root, context, settings);
     renderDynamicPanels(root, context);
 
@@ -2562,13 +2438,6 @@ function bindUi() {
     root.on('input.lukerOrch', '#luker_orch_capsule_custom_instruction', function () {
         settings.capsuleCustomInstruction = String(jQuery(this).val() || '').trim();
         saveSettingsDebounced();
-    });
-
-    root.on('change.lukerOrch', '#luker_orch_save_target', function () {
-        const value = String(jQuery(this).val() || '').trim();
-        settings.saveTarget = value === 'character' ? 'character' : 'global';
-        saveSettingsDebounced();
-        renderDynamicPanels(root, context);
     });
 
     root.on('input.lukerOrch', '#luker_orch_ai_goal', function () {
@@ -2760,35 +2629,40 @@ function bindUi() {
             return;
         }
 
-        if (action === 'save-current') {
+        if (action === 'save-global') {
             syncCharacterEditorWithActiveAvatar(context);
-            const activeAvatar = String(getCurrentAvatar(context) || '').trim();
             const sourceScope = getDisplayedScope(context, settings);
             const sourceEditor = getEditorByScope(sourceScope);
-            if (String(settings.saveTarget || 'global') === 'character') {
-                if (!activeAvatar) {
-                    notifyError(i18n('No character selected.'));
-                    return;
-                }
-                const ok = await persistCharacterEditor(context, settings, activeAvatar, {
-                    editor: sourceEditor,
-                    forceEnabled: sourceScope === 'character' ? null : true,
-                });
-                if (!ok) {
-                    notifyError(i18n('No character selected.'));
-                    return;
-                }
-                uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
-                ensureEditorIntegrity(uiState.characterEditor);
-                notifySuccess(i18n('Character orchestration override saved.'));
-                updateUiStatus(i18nFormat('Saved to character override: ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar)));
-            } else {
-                persistGlobalEditorFrom(settings, sourceEditor);
-                uiState.globalEditor = loadGlobalEditorState();
-                ensureEditorIntegrity(uiState.globalEditor);
-                notifySuccess(i18n('Global orchestration profile saved.'));
-                updateUiStatus(i18n('Saved to global profile.'));
+            await persistGlobalEditorFrom(settings, sourceEditor);
+            uiState.globalEditor = loadGlobalEditorState();
+            ensureEditorIntegrity(uiState.globalEditor);
+            notifySuccess(i18n('Global orchestration profile saved.'));
+            updateUiStatus(i18n('Saved to global profile.'));
+            renderDynamicPanels(root, context);
+            return;
+        }
+
+        if (action === 'save-character') {
+            syncCharacterEditorWithActiveAvatar(context);
+            const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+            if (!activeAvatar) {
+                notifyError(i18n('No character selected.'));
+                return;
             }
+            const sourceScope = getDisplayedScope(context, settings);
+            const sourceEditor = getEditorByScope(sourceScope);
+            const ok = await persistCharacterEditor(context, settings, activeAvatar, {
+                editor: sourceEditor,
+                forceEnabled: sourceScope === 'character' ? null : true,
+            });
+            if (!ok) {
+                notifyError(i18n('Failed to persist character override.'));
+                return;
+            }
+            uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
+            ensureEditorIntegrity(uiState.characterEditor);
+            notifySuccess(i18n('Character orchestration override saved.'));
+            updateUiStatus(i18nFormat('Saved to character override: ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar)));
             renderDynamicPanels(root, context);
             return;
         }
@@ -2996,12 +2870,8 @@ function ensureUi() {
                 <div id="luker_orch_effective_visual"></div>
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
-                    <div class="menu_button" data-luker-action="save-current">${escapeHtml(i18n('Save Current'))}</div>
-                    <label for="luker_orch_save_target" class="margin0">${escapeHtml(i18n('Save Target'))}</label>
-                    <select id="luker_orch_save_target" class="text_pole" style="max-width: 220px;">
-                        <option value="global">${escapeHtml(i18n('Global profile'))}</option>
-                        <option value="character">${escapeHtml(i18n('Current character override'))}</option>
-                    </select>
+                    <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
+                    <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
                     <div id="luker_orch_clear_character_button" class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Build Character Override'))}</div>
                 </div>
