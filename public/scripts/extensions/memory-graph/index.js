@@ -30,7 +30,7 @@ const defaultNodeTypeSchema = [
         level: LEVEL.SEMANTIC,
         extractHint: 'Critical plot events, turning points, commitments, betrayals, and irreversible outcomes.',
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
-        alwaysInject: false,
+        alwaysInject: true,
         compression: {
             mode: 'hierarchical',
             threshold: 9,
@@ -2830,26 +2830,14 @@ function hasTitleOrAliasHit(queryText, node) {
     return false;
 }
 
-function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) {
+function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = []) {
     const query = normalizeText(queryBundle?.fullText || '');
-    const rollups = listNodesByLevel(store, LEVEL.ROLLUP)
-        .filter(node => node.id !== store.rollupRootId && !node.archived)
-        .slice(0);
-    const canon = store.canonId && store.nodes[store.canonId] ? [store.nodes[store.canonId]] : [];
-    const arcs = listNodesByLevel(store, LEVEL.ARC).filter(node => !node.archived);
-    const episodes = listNodesByLevel(store, LEVEL.EPISODE).filter(node => !node.archived);
     const semantic = listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter(node => !node.archived)
-        .filter(node => !String(node.parentId || '').trim());
-    const turns = store.turnOrder.map(id => store.nodes[id]).filter(Boolean).filter(node => !node.archived);
+        .filter(node => !node.archived);
     const schemaMap = getNodeTypeSchemaMap(settings);
     const merged = [
-        ...getSortedNodesByRecency(rollups),
-        ...canon,
-        ...getSortedNodesByRecency(arcs),
-        ...getSortedNodesByRecency(episodes),
+        ...getSortedNodesByRecency(alwaysInjectNodes.filter(Boolean)),
         ...getSortedNodesByRecency(semantic),
-        ...getSortedNodesByRecency(turns),
     ];
 
     const uniqueNodes = [];
@@ -2862,36 +2850,38 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }) 
         uniqueNodes.push(node);
     }
 
-    const mandatoryRows = [];
-    const optionalRows = [];
+    const alwaysSet = new Set(alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean));
+    const picked = [];
+    const pickedIds = new Set();
+
     for (const node of uniqueNodes) {
+        const nodeId = String(node?.id || '');
+        if (!nodeId || pickedIds.has(nodeId)) {
+            continue;
+        }
+        if (!alwaysSet.has(nodeId)) {
+            continue;
+        }
+        pickedIds.add(nodeId);
+        picked.push(node);
+    }
+
+    for (const node of uniqueNodes) {
+        const nodeId = String(node?.id || '');
+        if (!nodeId || pickedIds.has(nodeId)) {
+            continue;
+        }
         const type = String(node.type || '').toLowerCase();
         const spec = schemaMap.get(type);
         const keywordHit = hasQueryKeywordHit(query, spec?.keywords);
         const titleHit = hasTitleOrAliasHit(query, node);
-        const mandatory = keywordHit || titleHit;
-        if (mandatory) {
-            mandatoryRows.push(node);
-        } else {
-            optionalRows.push(node);
-        }
-    }
-    const picked = [];
-    const pickedIds = new Set();
-    for (const node of mandatoryRows) {
-        if (!node?.id || pickedIds.has(node.id)) {
+        if (!keywordHit && !titleHit) {
             continue;
         }
-        pickedIds.add(node.id);
+        pickedIds.add(nodeId);
         picked.push(node);
     }
-    for (const node of optionalRows) {
-        if (!node?.id || pickedIds.has(node.id)) {
-            continue;
-        }
-        pickedIds.add(node.id);
-        picked.push(node);
-    }
+
     return picked;
 }
 
@@ -2907,6 +2897,15 @@ async function chooseRecallRoute(context, settings, recallState) {
     const routeSystemPrompt = String(settings?.recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
     const alwaysInjectIds = Array.isArray(recallState?.alwaysInjectIds) ? recallState.alwaysInjectIds : [];
     const candidateSet = new Set((recallState.candidates || []).map(node => String(node?.id || '')).filter(Boolean));
+    if (candidateSet.size === 0) {
+        return {
+            action: 'finalize',
+            selected_node_ids: [],
+            expand_plan: [],
+            referenced_always_inject_ids: [],
+            reason: 'No recall candidates.',
+        };
+    }
     const candidateRows = (recallState.candidates || []).map(node => {
         const exposure = getNodeRecallExposure(settings, node);
         const row = formatNodeBrief(node, {
@@ -3098,6 +3097,12 @@ async function chooseFocusNodes(context, settings, recallState) {
     const finalizeSystemPrompt = String(settings?.recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
     const alwaysInjectIds = Array.isArray(recallState?.alwaysInjectIds) ? recallState.alwaysInjectIds : [];
     const candidateSet = new Set((recallState.candidates || []).map(node => String(node?.id || '')).filter(Boolean));
+    if (candidateSet.size === 0) {
+        return {
+            selected_node_ids: [],
+            reason: 'No recall candidates.',
+        };
+    }
     const detailRows = (recallState.candidates || []).map(node => {
         const exposure = getNodeRecallExposure(settings, node);
         const row = formatNodeDetail(node, {
@@ -3162,19 +3167,97 @@ async function chooseFocusNodes(context, settings, recallState) {
     }
 }
 
+function compareNodesByTimeline(a, b) {
+    const aFrom = Number(a?.fromTurn ?? a?.turnIndex ?? Number.MAX_SAFE_INTEGER);
+    const bFrom = Number(b?.fromTurn ?? b?.turnIndex ?? Number.MAX_SAFE_INTEGER);
+    if (aFrom !== bFrom) {
+        return aFrom - bFrom;
+    }
+    const aTo = Number(a?.toTurn ?? a?.turnIndex ?? Number.MAX_SAFE_INTEGER);
+    const bTo = Number(b?.toTurn ?? b?.turnIndex ?? Number.MAX_SAFE_INTEGER);
+    if (aTo !== bTo) {
+        return aTo - bTo;
+    }
+    return Number(a?.createdAt ?? 0) - Number(b?.createdAt ?? 0);
+}
+
+function getActiveSemanticParentOfType(store, node, type) {
+    const parentId = String(node?.parentId || '').trim();
+    if (!parentId) {
+        return null;
+    }
+    const parent = store.nodes[parentId];
+    if (!parent || parent.archived) {
+        return null;
+    }
+    if (String(parent.type || '').toLowerCase() !== String(type || '').toLowerCase()) {
+        return null;
+    }
+    return parent;
+}
+
+function hasActiveSemanticChildOfType(store, node, type) {
+    if (!node || !Array.isArray(node.childrenIds) || node.childrenIds.length === 0) {
+        return false;
+    }
+    const targetType = String(type || '').toLowerCase();
+    for (const childId of node.childrenIds) {
+        const child = store.nodes[childId];
+        if (!child || child.archived) {
+            continue;
+        }
+        if (String(child.type || '').toLowerCase() === targetType) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function collectAlwaysInjectNodes(store, settings) {
-    const schemaMap = getNodeTypeSchemaMap(settings);
-    const alwaysTypes = Array.from(schemaMap.values())
+    const alwaysSpecs = normalizeNodeTypeSchema(settings.nodeTypeSchema)
         .filter(spec => spec?.alwaysInject)
-        .map(spec => String(spec.id || '').toLowerCase());
-    if (alwaysTypes.length === 0) {
+        .map(spec => ({
+            type: String(spec.id || '').toLowerCase(),
+            compression: getSemanticCompressionConfig(settings, String(spec.id || '').toLowerCase()),
+        }))
+        .filter(spec => spec.type);
+    if (alwaysSpecs.length === 0) {
         return [];
     }
 
-    return listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter(node => !node.archived)
-        .filter(node => alwaysTypes.includes(String(node.type || '').toLowerCase()))
-        .sort(compareNodesByRecency);
+    const picked = [];
+    const seen = new Set();
+    for (const spec of alwaysSpecs) {
+        const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+            .filter(node => !node.archived)
+            .filter(node => String(node.type || '').toLowerCase() === spec.type);
+        if (nodes.length === 0) {
+            continue;
+        }
+        const sortedTimeline = nodes.slice().sort(compareNodesByTimeline);
+        if (spec.compression.mode === 'hierarchical' || spec.compression.mode === 'latest_only') {
+            const leaves = sortedTimeline.filter(node => !hasActiveSemanticChildOfType(store, node, spec.type));
+            for (const leaf of leaves) {
+                const parent = getActiveSemanticParentOfType(store, leaf, spec.type);
+                const candidate = parent || leaf;
+                if (!candidate?.id || seen.has(candidate.id)) {
+                    continue;
+                }
+                seen.add(candidate.id);
+                picked.push(candidate);
+            }
+            continue;
+        }
+        for (const node of sortedTimeline) {
+            if (!node?.id || seen.has(node.id)) {
+                continue;
+            }
+            seen.add(node.id);
+            picked.push(node);
+        }
+    }
+
+    return picked.sort(compareNodesByTimeline);
 }
 
 function getNodeTurnRange(node) {
@@ -3234,60 +3317,6 @@ function toMarkdownTable(headers, rows) {
     return lines.join('\n');
 }
 
-function buildGlobalSpineText(store, settings) {
-    const rows = [];
-    const seen = new Set();
-    const latestTurnIndex = getLatestTurnIndex(store);
-    const excludeTurns = Math.max(0, Number(settings.recentRawTurns || 5));
-    const snapshots = Array.isArray(store.layerSnapshots) ? store.layerSnapshots.slice() : [];
-    snapshots.sort((a, b) => {
-        const aFrom = Number(a?.from_turn ?? -1);
-        const bFrom = Number(b?.from_turn ?? -1);
-        if (aFrom !== bFrom) {
-            return aFrom - bFrom;
-        }
-        const aTo = Number(a?.to_turn ?? -1);
-        const bTo = Number(b?.to_turn ?? -1);
-        if (aTo !== bTo) {
-            return aTo - bTo;
-        }
-        return Number(a?.at ?? 0) - Number(b?.at ?? 0);
-    });
-
-    for (const item of snapshots) {
-        if (!item || !['rollup', 'canon', 'arc', 'episode'].includes(String(item.level || ''))) {
-            continue;
-        }
-        if (isNodeInRecentExcludeWindow({
-            fromTurn: Number(item.from_turn ?? NaN),
-            toTurn: Number(item.to_turn ?? NaN),
-        }, latestTurnIndex, excludeTurns)) {
-            continue;
-        }
-        const summary = normalizeText(item.summary || '');
-        if (!summary) {
-            continue;
-        }
-        const dedupeKey = `${item.level}:${item.node_id}:${hashTextFNV1a(summary)}`;
-        if (seen.has(dedupeKey)) {
-            continue;
-        }
-        seen.add(dedupeKey);
-        rows.push([
-            String(item.level || ''),
-            String(item.title || ''),
-            `${Number(item.from_turn ?? -1)}~${Number(item.to_turn ?? -1)}`,
-            summary,
-        ]);
-    }
-
-    const table = toMarkdownTable(['level', 'title', 'turn_range', 'summary'], rows);
-    if (!table) {
-        return '';
-    }
-    return `[Table: Global Event Spine]\n${table}`;
-}
-
 function getTableCellValueFromNode(node, columnName) {
     const key = String(columnName || '').trim().toLowerCase();
     if (!key) {
@@ -3332,10 +3361,12 @@ function getTableCellValueFromNode(node, columnName) {
     return String(node?.metadata?.[key] ?? '');
 }
 
-function buildFocusTablesText(nodes, settings) {
+function buildFocusTablesText(nodes, settings, options = {}) {
     const byBucket = new Map();
+    const sourceNodes = Array.isArray(nodes) ? nodes : [];
+    const tablePrefix = String(options?.tablePrefix || 'Focus').trim() || 'Focus';
     const schemaMap = getNodeTypeSchemaMap(settings);
-    for (const node of nodes) {
+    for (const node of sourceNodes) {
         if (!node) {
             continue;
         }
@@ -3360,7 +3391,7 @@ function buildFocusTablesText(nodes, settings) {
             getNodeTurnRange(node),
             normalizeText(node.summary || ''),
         ]);
-        let bucketTitle = `Focus ${bucket}`;
+        let bucketTitle = `${tablePrefix} ${bucket}`;
 
         if (bucket.startsWith('semantic:')) {
             const semanticType = String(bucket.slice('semantic:'.length) || '').trim().toLowerCase();
@@ -3370,7 +3401,7 @@ function buildFocusTablesText(nodes, settings) {
                 headers = columns;
                 rows = bucketNodes.map(node => columns.map(column => getTableCellValueFromNode(node, column)));
             }
-            bucketTitle = `Focus ${spec?.tableName || semanticType || bucket}`;
+            bucketTitle = `${tablePrefix} ${spec?.tableName || semanticType || bucket}`;
         }
 
         const table = toMarkdownTable(headers, rows);
@@ -3451,7 +3482,7 @@ async function syncLorebookProjection(context, settings, blocks) {
     }
 
     const sections = [
-        ['GLOBAL_SPINE', String(blocks.globalSpine || '').trim()],
+        ['CORE_PACKET', String(blocks.corePacket || '').trim()],
         ['FOCUS_PACKET', String(blocks.focusPacket || '').trim()],
     ].filter(([, text]) => Boolean(text));
 
@@ -3502,15 +3533,15 @@ async function clearRuntimeLorebookProjection(context, settings) {
 async function runLLMDrivenRecall(context, store, payload) {
     const settings = getSettings();
     if (!settings.recallEnabled) {
-        return { selectedNodes: [], trace: [], query: '' };
+        return { selectedNodes: [], alwaysInjectNodes: [], trace: [], query: '' };
     }
 
     const queryBundle = getRecallQueryBundle(payload, context);
     const query = normalizeText(queryBundle.fullText || '');
-    const rootCandidates = collectRootCandidates(store, settings, queryBundle);
+    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings);
+    const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes);
     const maxIterations = Math.max(2, Math.min(6, Number(settings.recallMaxIterations || 3)));
     const trace = [];
-    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings);
     const alwaysInjectIds = alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean);
     const alwaysInjectSet = new Set(alwaysInjectIds);
 
@@ -3524,7 +3555,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     trace.push({
         step: 'plan_pass_1',
         route,
-        root_candidates: rootCandidates.map(node => node.id),
+        stage1_candidates: rootCandidates.map(node => node.id),
     });
     if (Array.isArray(route?.referenced_always_inject_ids) && route.referenced_always_inject_ids.length > 0) {
         trace.push({
@@ -3611,15 +3642,6 @@ async function runLLMDrivenRecall(context, store, payload) {
         dedupedSelectedNodes.push(node);
     }
     const selectedNodes = dedupedSelectedNodes;
-    const mergedNodes = [];
-    const seenNodeIds = new Set();
-    for (const node of [...selectedNodes, ...alwaysInjectNodes]) {
-        if (!node?.id || seenNodeIds.has(node.id)) {
-            continue;
-        }
-        seenNodeIds.add(node.id);
-        mergedNodes.push(node);
-    }
     if (alwaysInjectNodes.length > 0) {
         trace.push({
             step: 'always_inject',
@@ -3630,16 +3652,13 @@ async function runLLMDrivenRecall(context, store, payload) {
     const latestTurnIndex = getLatestTurnIndex(store);
     const excludeTurns = Math.max(0, Number(settings.recentRawTurns || 5));
     const excludedNodeIds = [];
-    const filteredNodes = mergedNodes.filter((node) => {
-        if (alwaysInjectSet.has(String(node?.id || ''))) {
-            return true;
-        }
+    const filteredSelectedNodes = selectedNodes.filter((node) => {
         const excluded = isNodeInRecentExcludeWindow(node, latestTurnIndex, excludeTurns);
         if (excluded && node?.id) {
             excludedNodeIds.push(node.id);
         }
         return !excluded;
-    });
+    }).sort(compareNodesByTimeline);
     if (excludeTurns > 0 && excludedNodeIds.length > 0) {
         trace.push({
             step: 'exclude_recent_window',
@@ -3650,7 +3669,8 @@ async function runLLMDrivenRecall(context, store, payload) {
     }
 
     return {
-        selectedNodes: filteredNodes,
+        selectedNodes: filteredSelectedNodes,
+        alwaysInjectNodes,
         query,
         trace,
     };
@@ -3726,13 +3746,13 @@ async function injectMemoryPrompts(context, payload) {
         return false;
     }
 
-    const { selectedNodes, trace, query } = await runLLMDrivenRecall(context, store, payload);
+    const { selectedNodes, alwaysInjectNodes, trace, query } = await runLLMDrivenRecall(context, store, payload);
     store.lastRecallTrace = trace;
     store.updatedAt = Date.now();
 
     const blocks = {
-        globalSpine: buildGlobalSpineText(store, settings),
-        focusPacket: buildFocusTablesText(selectedNodes, settings),
+        corePacket: buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }),
+        focusPacket: buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }),
     };
     await syncLorebookProjection(context, settings, blocks);
     store.lastRecallProjection = {
@@ -5742,10 +5762,11 @@ function bindUi() {
         const details = {
             query,
             selected_nodes: result.selectedNodes.map(formatNodeDetail),
+            always_inject_nodes: (result.alwaysInjectNodes || []).map(formatNodeDetail),
             trace: result.trace,
             preview: {
-                global_spine: buildGlobalSpineText(store, settings),
-                focus_packet: buildFocusTablesText(result.selectedNodes, settings),
+                core_packet: buildFocusTablesText(result.alwaysInjectNodes || [], settings, { tablePrefix: 'Core' }),
+                focus_packet: buildFocusTablesText(result.selectedNodes, settings, { tablePrefix: 'Recall' }),
             },
         };
 
