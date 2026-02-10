@@ -28,6 +28,8 @@ const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 
 const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'boolean');
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
+const CHAT_STATE_FILE_PREFIX = '.luker-state.';
+const CHAT_STATE_FILE_SUFFIX = '.json';
 
 /**
  * Saves a chat to the backups directory.
@@ -426,6 +428,692 @@ class IntegrityMismatchError extends Error {
 }
 
 /**
+ * Creates a chat header object.
+ * @param {object} [metadata] Chat metadata.
+ * @returns {object} Chat header.
+ */
+function createChatHeader(metadata = {}) {
+    return {
+        chat_metadata: metadata,
+        user_name: 'unused',
+        character_name: 'unused',
+    };
+}
+
+/**
+ * Ensures chat file name uses .jsonl extension.
+ * @param {string} fileName Raw file name.
+ * @returns {string} Sanitized file name with extension.
+ */
+function normalizeJsonlFileName(fileName) {
+    const raw = String(fileName || '').trim();
+    if (!raw) {
+        return '';
+    }
+    const withExt = path.extname(raw) ? raw : `${raw}.jsonl`;
+    return sanitize(withExt);
+}
+
+/**
+ * Resolves avatar directory name from avatar url.
+ * @param {string} avatarUrl Avatar url.
+ * @returns {string} Sanitized avatar directory name.
+ */
+function resolveAvatarDirectoryName(avatarUrl) {
+    return path.basename(String(avatarUrl || '').replace('.png', ''));
+}
+
+function normalizeChatStateNamespace(namespace) {
+    const raw = String(namespace || '').trim().toLowerCase();
+    if (!raw) {
+        return '';
+    }
+    return raw.replace(/[^a-z0-9._-]/g, '_').slice(0, 96);
+}
+
+/**
+ * Gets chat state sidecar path for a chat jsonl file path and namespace.
+ * @param {string} chatFilePath Chat jsonl file path.
+ * @param {string} namespace State namespace.
+ * @returns {string} Sidecar path.
+ */
+function getChatStateSidecarPath(chatFilePath, namespace) {
+    const parsed = path.parse(chatFilePath);
+    const safeNamespace = normalizeChatStateNamespace(namespace);
+    if (!safeNamespace) {
+        return '';
+    }
+    return path.join(parsed.dir, `${parsed.name}${CHAT_STATE_FILE_PREFIX}${safeNamespace}${CHAT_STATE_FILE_SUFFIX}`);
+}
+
+/**
+ * Gets all chat state sidecar paths bound to a chat file.
+ * @param {string} chatFilePath Chat jsonl file path.
+ * @returns {string[]} Sidecar file paths.
+ */
+function getAllChatStateSidecarPaths(chatFilePath) {
+    const parsed = path.parse(chatFilePath);
+    if (!fs.existsSync(parsed.dir)) {
+        return [];
+    }
+    const prefix = `${parsed.name}${CHAT_STATE_FILE_PREFIX}`;
+    const files = fs.readdirSync(parsed.dir, { withFileTypes: true });
+    return files
+        .filter(entry => entry.isFile())
+        .map(entry => entry.name)
+        .filter(fileName => fileName.startsWith(prefix) && fileName.endsWith(CHAT_STATE_FILE_SUFFIX))
+        .map(fileName => path.join(parsed.dir, fileName));
+}
+
+/**
+ * Renames all state sidecars from one chat base name to another.
+ * @param {string} sourceChatFilePath Source chat file path.
+ * @param {string} targetChatFilePath Target chat file path.
+ */
+function renameAllChatStateSidecars(sourceChatFilePath, targetChatFilePath) {
+    const sourceParsed = path.parse(sourceChatFilePath);
+    const targetParsed = path.parse(targetChatFilePath);
+    const sourcePrefix = `${sourceParsed.name}${CHAT_STATE_FILE_PREFIX}`;
+    const targetPrefix = `${targetParsed.name}${CHAT_STATE_FILE_PREFIX}`;
+    const sourceFiles = getAllChatStateSidecarPaths(sourceChatFilePath);
+    if (sourceFiles.length === 0) {
+        return;
+    }
+
+    for (const sourceFilePath of sourceFiles) {
+        const sourceName = path.basename(sourceFilePath);
+        const namespaceWithSuffix = sourceName.slice(sourcePrefix.length);
+        const targetName = `${targetPrefix}${namespaceWithSuffix}`;
+        const targetFilePath = path.join(targetParsed.dir, targetName);
+        if (fs.existsSync(targetFilePath)) {
+            throw new Error(`Chat state sidecar rename collision: ${targetFilePath}`);
+        }
+        fs.copyFileSync(sourceFilePath, targetFilePath);
+        fs.unlinkSync(sourceFilePath);
+    }
+}
+
+/**
+ * Deletes all state sidecars bound to a chat file.
+ * @param {string} chatFilePath Chat jsonl file path.
+ */
+function deleteAllChatStateSidecars(chatFilePath) {
+    const sidecars = getAllChatStateSidecarPaths(chatFilePath);
+    for (const sidecar of sidecars) {
+        tryDeleteFile(sidecar);
+    }
+}
+
+/**
+ * Resolves a chat jsonl file path from state target payload.
+ * @param {import('express').Request} request Express request.
+ * @param {object} target Target payload.
+ * @returns {string|null} Chat file path or null if invalid.
+ */
+function resolveChatFilePathForStateTarget(request, target) {
+    if (target?.is_group) {
+        const groupId = String(target?.id || '').trim();
+        if (!groupId) {
+            return null;
+        }
+        const safeGroupId = sanitize(groupId);
+        if (!safeGroupId) {
+            return null;
+        }
+        return path.join(request.user.directories.groupChats, `${safeGroupId}.jsonl`);
+    }
+
+    const avatarDir = resolveAvatarDirectoryName(target?.avatar_url);
+    const fileName = normalizeJsonlFileName(target?.file_name);
+    if (!avatarDir || !fileName) {
+        return null;
+    }
+
+    return path.join(request.user.directories.chats, avatarDir, fileName);
+}
+
+function isSafeStatePathSegment(segment) {
+    const token = String(segment || '');
+    if (!token) {
+        return false;
+    }
+    return !['__proto__', 'prototype', 'constructor'].includes(token);
+}
+
+function normalizeStatePath(pathValue) {
+    if (!Array.isArray(pathValue)) {
+        return null;
+    }
+    const normalized = [];
+    for (const segment of pathValue) {
+        const token = String(segment);
+        if (!isSafeStatePathSegment(token)) {
+            return null;
+        }
+        normalized.push(token);
+    }
+    return normalized;
+}
+
+function ensureStateParentObject(target, pathSegments) {
+    let cursor = target;
+    for (let i = 0; i < pathSegments.length; i++) {
+        const key = pathSegments[i];
+        if (!isSafeStatePathSegment(key)) {
+            throw new Error(`Unsafe state path segment: ${key}`);
+        }
+        if (!_.isObjectLike(cursor[key]) || Array.isArray(cursor[key])) {
+            cursor[key] = {};
+        }
+        cursor = cursor[key];
+    }
+    return cursor;
+}
+
+/**
+ * Applies patch operations to a chat state object.
+ * Supported ops: replace_root, set, merge, delete.
+ * @param {object} state Current state object.
+ * @param {object[]} operations Patch operations.
+ * @returns {{applied:number,state:object}}
+ */
+function applyChatStatePatch(state, operations) {
+    let root = _.isObjectLike(state) && !Array.isArray(state) ? state : {};
+    let applied = 0;
+
+    for (const rawOperation of operations) {
+        if (!_.isObjectLike(rawOperation)) {
+            throw new Error('State patch operation must be an object.');
+        }
+        const op = String(rawOperation.op || rawOperation.type || '').trim().toLowerCase();
+        if (!op) {
+            throw new Error('State patch operation is missing op/type.');
+        }
+
+        if (op === 'replace_root') {
+            if (!_.isObjectLike(rawOperation.value) || Array.isArray(rawOperation.value)) {
+                throw new Error('State replace_root operation requires object value.');
+            }
+            root = rawOperation.value;
+            applied++;
+            continue;
+        }
+
+        const pathSegments = normalizeStatePath(rawOperation.path);
+        if (!pathSegments) {
+            throw new Error('State patch operation path must be an array of safe segments.');
+        }
+
+        if (op === 'set') {
+            if (pathSegments.length === 0) {
+                if (!_.isObjectLike(rawOperation.value) || Array.isArray(rawOperation.value)) {
+                    throw new Error('State set operation with empty path requires object value.');
+                }
+                root = rawOperation.value;
+            } else {
+                const parent = ensureStateParentObject(root, pathSegments.slice(0, -1));
+                parent[pathSegments[pathSegments.length - 1]] = rawOperation.value;
+            }
+            applied++;
+            continue;
+        }
+
+        if (op === 'merge') {
+            if (!_.isObjectLike(rawOperation.value) || Array.isArray(rawOperation.value)) {
+                throw new Error('State merge operation requires object value.');
+            }
+            if (pathSegments.length === 0) {
+                root = {
+                    ...(_.isObjectLike(root) && !Array.isArray(root) ? root : {}),
+                    ...rawOperation.value,
+                };
+            } else {
+                const parent = ensureStateParentObject(root, pathSegments.slice(0, -1));
+                const key = pathSegments[pathSegments.length - 1];
+                const baseValue = _.isObjectLike(parent[key]) && !Array.isArray(parent[key]) ? parent[key] : {};
+                parent[key] = {
+                    ...baseValue,
+                    ...rawOperation.value,
+                };
+            }
+            applied++;
+            continue;
+        }
+
+        if (op === 'delete') {
+            if (pathSegments.length === 0) {
+                root = {};
+            } else {
+                let cursor = root;
+                let missing = false;
+                for (let i = 0; i < pathSegments.length - 1; i++) {
+                    const key = pathSegments[i];
+                    if (!_.isObjectLike(cursor[key]) || Array.isArray(cursor[key])) {
+                        missing = true;
+                        break;
+                    }
+                    cursor = cursor[key];
+                }
+                if (!missing) {
+                    delete cursor[pathSegments[pathSegments.length - 1]];
+                }
+            }
+            applied++;
+            continue;
+        }
+
+        throw new Error(`Unsupported state patch operation: ${op}`);
+    }
+
+    return { applied, state: root };
+}
+
+/**
+ * Reads the last non-header message from a JSONL chat file.
+ * @param {string} filePath Chat file path.
+ * @returns {object|null} Last chat message or null if unavailable.
+ */
+function getLastChatMessage(filePath) {
+    if (!fs.existsSync(filePath)) {
+        return null;
+    }
+
+    const raw = tryReadFileSync(filePath);
+    if (!raw) {
+        return null;
+    }
+
+    const lines = String(raw).split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]?.trim();
+        if (!line) {
+            continue;
+        }
+
+        const parsed = tryParse(line);
+        if (!parsed || typeof parsed !== 'object') {
+            continue;
+        }
+
+        if (Object.hasOwn(parsed, 'chat_metadata')) {
+            continue;
+        }
+
+        return parsed;
+    }
+
+    return null;
+}
+
+/**
+ * Appends messages to an existing chat file, or creates a new chat file with header.
+ * This path intentionally skips backup snapshots to keep append operations fast.
+ * @param {object} args Append options.
+ * @param {string} args.filePath Target chat file path.
+ * @param {object[]} args.messages Messages to append.
+ * @param {object} [args.chatMetadata] Metadata used only when creating a new file.
+ * @param {string} [args.integritySlug] Integrity slug to validate before appending.
+ * @param {boolean} [args.force] Skip integrity mismatch error if true.
+ * @returns {Promise<{appended:number, created:boolean}>}
+ */
+export async function appendMessagesToChatFile({ filePath, messages, chatMetadata = {}, integritySlug, force = false }) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return { appended: 0, created: false };
+    }
+
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
+        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+    }
+
+    const serializedMessages = messages.map(message => JSON.stringify(message)).join('\n');
+    const fileExists = fs.existsSync(filePath);
+    const fileStats = fileExists ? fs.statSync(filePath) : null;
+    const hasContent = fileExists && fileStats && fileStats.size > 0;
+
+    if (!hasContent) {
+        const header = JSON.stringify(createChatHeader(chatMetadata));
+        const initialData = `${header}\n${serializedMessages}`;
+        tryWriteFileSync(filePath, initialData);
+        return { appended: messages.length, created: true };
+    }
+
+    const dedupedMessages = messages.slice();
+    const lastStoredMessage = getLastChatMessage(filePath);
+    const lastGenerationId = String(lastStoredMessage?.extra?.luker_generation_id || '');
+    while (dedupedMessages.length > 0) {
+        const incomingGenerationId = String(dedupedMessages[0]?.extra?.luker_generation_id || '');
+        if (!lastGenerationId || !incomingGenerationId || incomingGenerationId !== lastGenerationId) {
+            break;
+        }
+        dedupedMessages.shift();
+    }
+
+    if (dedupedMessages.length === 0) {
+        return { appended: 0, created: false, skipped: messages.length };
+    }
+
+    const dedupedSerializedMessages = dedupedMessages.map(message => JSON.stringify(message)).join('\n');
+    fs.appendFileSync(filePath, `\n${dedupedSerializedMessages}`, 'utf8');
+    return { appended: dedupedMessages.length, created: false, skipped: messages.length - dedupedMessages.length };
+}
+
+/**
+ * Applies incremental patch operations to chat messages in a chat file.
+ * Supported operations:
+ * - insert / update / delete
+ * - insert_many / update_many / delete_range
+ * - batch (contains nested operations or patches)
+ * @param {object} args Patch options.
+ * @param {string} args.filePath Target chat file path.
+ * @param {object[]} args.operations Patch operations.
+ * @param {object} [args.chatMetadata] Optional metadata merge for header.
+ * @param {string} [args.integritySlug] Integrity slug to validate before patching.
+ * @param {boolean} [args.force] Skip integrity mismatch error if true.
+ * @returns {Promise<{applied:number,total_messages:number}>}
+ */
+function normalizeMessagePatchOperations(operations = []) {
+    const rootOperations = Array.isArray(operations)
+        ? operations
+        : (_.isObjectLike(operations) ? [operations] : []);
+    const queue = [...rootOperations];
+    const normalized = [];
+
+    while (queue.length > 0) {
+        const rawOperation = queue.shift();
+        if (!_.isObjectLike(rawOperation)) {
+            throw new Error('Patch operation must be an object.');
+        }
+
+        const op = String(rawOperation.op || rawOperation.type || '').trim().toLowerCase();
+        if (!op) {
+            throw new Error('Patch operation is missing op/type.');
+        }
+
+        if (op === 'batch') {
+            const nested = Array.isArray(rawOperation.operations)
+                ? rawOperation.operations
+                : (Array.isArray(rawOperation.patches) ? rawOperation.patches : null);
+            if (!Array.isArray(nested) || nested.length === 0) {
+                throw new Error('Patch batch operation requires non-empty operations/patches array.');
+            }
+            queue.unshift(...nested);
+            continue;
+        }
+
+        if (op === 'insert_many' || op === 'update_many') {
+            const baseIndex = Number(rawOperation.index);
+            if (!Number.isInteger(baseIndex) || baseIndex < 0) {
+                throw new Error(`${op} operation index is invalid: ${rawOperation.index}`);
+            }
+
+            const messages = Array.isArray(rawOperation.messages)
+                ? rawOperation.messages
+                : (_.isObjectLike(rawOperation.message) ? [rawOperation.message] : []);
+            if (messages.length === 0) {
+                throw new Error(`${op} operation requires non-empty messages payload.`);
+            }
+
+            const mappedOperationType = op === 'insert_many' ? 'insert' : 'update';
+            for (let offset = 0; offset < messages.length; offset++) {
+                const message = messages[offset];
+                if (!_.isObjectLike(message)) {
+                    throw new Error(`${op} operation message must be an object.`);
+                }
+                normalized.push({
+                    op: mappedOperationType,
+                    index: baseIndex + offset,
+                    message,
+                });
+            }
+            continue;
+        }
+
+        if (op === 'delete_range') {
+            const baseIndex = Number(rawOperation.index);
+            const count = Number(rawOperation.count ?? 1);
+            if (!Number.isInteger(baseIndex) || baseIndex < 0) {
+                throw new Error(`delete_range operation index is invalid: ${rawOperation.index}`);
+            }
+            if (!Number.isInteger(count) || count <= 0) {
+                throw new Error(`delete_range operation count is invalid: ${rawOperation.count}`);
+            }
+            for (let offset = 0; offset < count; offset++) {
+                normalized.push({
+                    op: 'delete',
+                    index: baseIndex,
+                });
+            }
+            continue;
+        }
+
+        normalized.push(rawOperation);
+    }
+
+    return normalized;
+}
+
+export async function patchChatMessagesInFile({ filePath, operations, chatMetadata = {}, integritySlug, force = false }) {
+    const normalizedOperations = normalizeMessagePatchOperations(operations);
+    if (normalizedOperations.length === 0) {
+        return { applied: 0, total_messages: 0 };
+    }
+
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
+        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+    }
+
+    /** @type {object[]} */
+    let chatData = fs.existsSync(filePath) ? getChatData(filePath) : [];
+    if (!Array.isArray(chatData) || chatData.length === 0) {
+        chatData = [createChatHeader(_.isObjectLike(chatMetadata) ? chatMetadata : {})];
+    }
+
+    const first = chatData[0];
+    const hasHeader = _.isObjectLike(first) && Object.hasOwn(first, 'chat_metadata');
+    if (!hasHeader) {
+        chatData.unshift(createChatHeader(_.isObjectLike(chatMetadata) ? chatMetadata : {}));
+    } else if (_.isObjectLike(chatMetadata) && Object.keys(chatMetadata).length > 0) {
+        chatData[0].chat_metadata = {
+            ...(_.isObjectLike(chatData[0].chat_metadata) ? chatData[0].chat_metadata : {}),
+            ...chatMetadata,
+        };
+    }
+
+    const messages = chatData.slice(1);
+    let applied = 0;
+
+    for (const rawOperation of normalizedOperations) {
+        if (!_.isObjectLike(rawOperation)) {
+            throw new Error('Patch operation must be an object.');
+        }
+
+        const op = String(rawOperation.op || rawOperation.type || '').trim().toLowerCase();
+        const index = Number(rawOperation.index);
+        if (!Number.isInteger(index) || index < 0) {
+            throw new Error(`Patch operation index is invalid: ${rawOperation.index}`);
+        }
+
+        if (op === 'delete') {
+            if (index >= messages.length) {
+                throw new Error(`Patch delete index out of bounds: ${index}`);
+            }
+            messages.splice(index, 1);
+            applied++;
+            continue;
+        }
+
+        if (op === 'update') {
+            if (index >= messages.length) {
+                throw new Error(`Patch update index out of bounds: ${index}`);
+            }
+            if (!_.isObjectLike(rawOperation.message)) {
+                throw new Error('Patch update operation requires an object message payload.');
+            }
+            messages[index] = rawOperation.message;
+            applied++;
+            continue;
+        }
+
+        if (op === 'insert') {
+            if (index > messages.length) {
+                throw new Error(`Patch insert index out of bounds: ${index}`);
+            }
+            if (!_.isObjectLike(rawOperation.message)) {
+                throw new Error('Patch insert operation requires an object message payload.');
+            }
+            messages.splice(index, 0, rawOperation.message);
+            applied++;
+            continue;
+        }
+
+        throw new Error(`Unsupported patch operation: ${op}`);
+    }
+
+    const header = chatData[0];
+    const serialized = [header, ...messages].map(entry => JSON.stringify(entry)).join('\n');
+    tryWriteFileSync(filePath, serialized);
+
+    return { applied, total_messages: messages.length };
+}
+
+/**
+ * Updates only chat metadata header in a chat file.
+ * Creates the chat file header when the target file does not exist yet.
+ * @param {object} args Update options.
+ * @param {string} args.filePath Target chat file path.
+ * @param {object} args.chatMetadata Metadata patch to merge into header.
+ * @param {string} [args.integritySlug] Integrity slug to validate before updating.
+ * @param {boolean} [args.force] Skip integrity mismatch error if true.
+ * @returns {Promise<{updated:boolean,total_messages:number,created:boolean}>}
+ */
+export async function updateChatMetadataInFile({ filePath, chatMetadata = {}, integritySlug, force = false }) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
+        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+    }
+
+    /** @type {object[]} */
+    let chatData = getChatData(filePath);
+    const created = !Array.isArray(chatData) || chatData.length === 0;
+    if (created) {
+        chatData = [createChatHeader({})];
+    }
+
+    const first = chatData[0];
+    const hasHeader = _.isObjectLike(first) && Object.hasOwn(first, 'chat_metadata');
+    if (!hasHeader) {
+        chatData.unshift(createChatHeader({}));
+    }
+
+    chatData[0].chat_metadata = {
+        ...(_.isObjectLike(chatData[0].chat_metadata) ? chatData[0].chat_metadata : {}),
+        ...(_.isObjectLike(chatMetadata) ? chatMetadata : {}),
+    };
+
+    const serialized = chatData.map(entry => JSON.stringify(entry)).join('\n');
+    tryWriteFileSync(filePath, serialized);
+
+    return {
+        updated: true,
+        total_messages: Math.max(chatData.length - 1, 0),
+        created,
+    };
+}
+
+/**
+ * Applies patch operations to chat metadata header in a chat file.
+ * Creates the chat file header when the target file does not exist yet.
+ * @param {object} args Patch options.
+ * @param {string} args.filePath Target chat file path.
+ * @param {object[]} args.operations Metadata patch operations.
+ * @param {string} [args.integritySlug] Integrity slug to validate before updating.
+ * @param {boolean} [args.force] Skip integrity mismatch error if true.
+ * @returns {Promise<{applied:number,total_messages:number,created:boolean}>}
+ */
+export async function patchChatMetadataInFile({ filePath, operations = [], integritySlug, force = false }) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+    if (integritySlug && !force && !await checkChatIntegrity(filePath, integritySlug)) {
+        throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${integritySlug}".`);
+    }
+
+    /** @type {object[]} */
+    let chatData = getChatData(filePath);
+    const created = !Array.isArray(chatData) || chatData.length === 0;
+    if (created) {
+        chatData = [createChatHeader({})];
+    }
+
+    const first = chatData[0];
+    const hasHeader = _.isObjectLike(first) && Object.hasOwn(first, 'chat_metadata');
+    if (!hasHeader) {
+        chatData.unshift(createChatHeader({}));
+    }
+
+    const currentMetadata = _.isObjectLike(chatData[0].chat_metadata) && !Array.isArray(chatData[0].chat_metadata)
+        ? chatData[0].chat_metadata
+        : {};
+    const result = applyChatStatePatch(currentMetadata, operations);
+    chatData[0].chat_metadata = result.state;
+
+    const serialized = chatData.map(entry => JSON.stringify(entry)).join('\n');
+    tryWriteFileSync(filePath, serialized);
+
+    return {
+        applied: result.applied,
+        total_messages: Math.max(chatData.length - 1, 0),
+        created,
+    };
+}
+
+/**
+ * Reads chat file delta by message index.
+ * @param {string} chatFilePath Full path to chat file.
+ * @param {number} fromIndex Zero-based message index excluding header.
+ * @param {number} limit Number of messages to return, <=0 means no limit.
+ * @returns {{chat: object[], chat_metadata: object, from_index: number, next_index: number, total_messages: number, has_more: boolean}}
+ */
+function getChatDataDelta(chatFilePath, fromIndex = 0, limit = 0) {
+    const chatData = getChatData(chatFilePath);
+    if (!Array.isArray(chatData) || chatData.length === 0) {
+        return {
+            chat: [],
+            chat_metadata: {},
+            from_index: 0,
+            next_index: 0,
+            total_messages: 0,
+            has_more: false,
+        };
+    }
+
+    const safeLimit = Number(limit) || 0;
+    const header = chatData[0];
+    const messages = chatData.slice(1);
+    const numericFromIndex = Number(fromIndex) || 0;
+    const normalizedFromIndex = numericFromIndex < 0
+        ? Math.max(messages.length + numericFromIndex, 0)
+        : numericFromIndex;
+    const safeFromIndex = Math.min(Math.max(0, normalizedFromIndex), messages.length);
+    const sliced = safeLimit > 0
+        ? messages.slice(safeFromIndex, safeFromIndex + safeLimit)
+        : messages.slice(safeFromIndex);
+
+    return {
+        chat: sliced,
+        chat_metadata: header?.chat_metadata ?? {},
+        from_index: safeFromIndex,
+        next_index: safeFromIndex + sliced.length,
+        total_messages: messages.length,
+        has_more: (safeFromIndex + sliced.length) < messages.length,
+    };
+}
+
+/**
  * Tries to save the chat data to a file, performing an integrity check if required.
  * @param {Array} chatData The chat array to save.
  * @param {string} filePath Target file path for the data.
@@ -461,6 +1149,150 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/append', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const cardName = String(request.body.avatar_url).replace('.png', '');
+        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
+        const chatMetadata = _.isObjectLike(request.body.chat_metadata) ? request.body.chat_metadata : {};
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+        const messages = Array.isArray(request.body.messages)
+            ? request.body.messages
+            : (_.isObjectLike(request.body.message) ? [request.body.message] : []);
+
+        if (messages.length === 0) {
+            return response.status(400).send({ error: 'No message payload found. Expected body.messages or body.message.' });
+        }
+
+        const result = await appendMessagesToChatFile({
+            filePath: chatFilePath,
+            messages,
+            chatMetadata,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/patch', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        const cardName = String(request.body.avatar_url).replace('.png', '');
+        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
+        const chatMetadata = _.isObjectLike(request.body.chat_metadata) ? request.body.chat_metadata : {};
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+        const operations = Array.isArray(request.body.operations)
+            ? request.body.operations
+            : (_.isObjectLike(request.body.operations)
+                ? [request.body.operations]
+                : (_.isObjectLike(request.body.operation) ? [request.body.operation] : []));
+
+        if (operations.length === 0) {
+            return response.status(400).send({ error: 'No patch operations found. Expected body.operations or body.operation.' });
+        }
+
+        const result = await patchChatMessagesInFile({
+            filePath: chatFilePath,
+            operations,
+            chatMetadata,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/meta', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        if (!_.isObjectLike(request.body?.chat_metadata)) {
+            return response.status(400).send({ error: 'Expected body.chat_metadata object.' });
+        }
+        if (typeof request.body?.file_name !== 'string' || !String(request.body.file_name).trim()) {
+            return response.status(400).send({ error: 'Expected body.file_name string.' });
+        }
+
+        const cardName = String(request.body.avatar_url).replace('.png', '');
+        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
+        const chatMetadata = request.body.chat_metadata;
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+
+        const result = await updateChatMetadataInFile({
+            filePath: chatFilePath,
+            chatMetadata,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/meta/patch', validateAvatarUrlMiddleware, async function (request, response) {
+    try {
+        if (typeof request.body?.file_name !== 'string' || !String(request.body.file_name).trim()) {
+            return response.status(400).send({ error: 'Expected body.file_name string.' });
+        }
+        const operations = Array.isArray(request.body?.operations)
+            ? request.body.operations
+            : (_.isObjectLike(request.body?.operations)
+                ? [request.body.operations]
+                : (_.isObjectLike(request.body?.operation) ? [request.body.operation] : []));
+        if (operations.length === 0) {
+            return response.status(400).send({ error: 'No metadata patch operations found. Expected body.operations or body.operation.' });
+        }
+
+        const cardName = String(request.body.avatar_url).replace('.png', '');
+        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFilePath = path.join(request.user.directories.chats, cardName, sanitize(chatFileName));
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+
+        const result = await patchChatMetadataInFile({
+            filePath: chatFilePath,
+            operations,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
@@ -517,6 +1349,144 @@ router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
     }
 });
 
+router.post('/get-delta', validateAvatarUrlMiddleware, function (request, response) {
+    try {
+        const dirName = String(request.body.avatar_url).replace('.png', '');
+        const directoryPath = path.join(request.user.directories.chats, dirName);
+        const chatDirExists = fs.existsSync(directoryPath);
+
+        if (!chatDirExists || !request.body.file_name) {
+            return response.send({
+                chat: [],
+                chat_metadata: {},
+                from_index: 0,
+                next_index: 0,
+                total_messages: 0,
+                has_more: false,
+            });
+        }
+
+        const fromIndex = Number(request.body.from_index) || 0;
+        const limit = Number(request.body.limit) || 0;
+        const chatFileName = `${String(request.body.file_name)}.jsonl`;
+        const chatFilePath = path.join(directoryPath, sanitize(chatFileName));
+
+        return response.send(getChatDataDelta(chatFilePath, fromIndex, limit));
+    } catch (error) {
+        console.error(error);
+        return response.send({
+            chat: [],
+            chat_metadata: {},
+            from_index: 0,
+            next_index: 0,
+            total_messages: 0,
+            has_more: false,
+        });
+    }
+});
+
+router.post('/state/get', function (request, response) {
+    try {
+        const chatFilePath = resolveChatFilePathForStateTarget(request, request.body || {});
+        const namespace = normalizeChatStateNamespace(request.body?.namespace);
+        if (!chatFilePath) {
+            return response.status(400).send({ error: 'Invalid state target payload.' });
+        }
+        if (!namespace) {
+            return response.status(400).send({ error: 'Expected body.namespace string.' });
+        }
+
+        const stateFilePath = getChatStateSidecarPath(chatFilePath, namespace);
+        if (!stateFilePath || !fs.existsSync(stateFilePath)) {
+            return response.send({ ok: true, data: null });
+        }
+
+        const raw = tryReadFileSync(stateFilePath);
+        if (!raw) {
+            return response.send({ ok: true, data: null });
+        }
+
+        const parsed = tryParse(raw);
+        if (!parsed || typeof parsed !== 'object') {
+            console.warn(`Invalid chat state sidecar JSON: ${stateFilePath}`);
+            return response.send({ ok: true, data: null });
+        }
+
+        return response.send({ ok: true, data: parsed });
+    } catch (error) {
+        console.error('Error reading chat state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+router.post('/state/patch', function (request, response) {
+    try {
+        const chatFilePath = resolveChatFilePathForStateTarget(request, request.body || {});
+        const namespace = normalizeChatStateNamespace(request.body?.namespace);
+        if (!chatFilePath) {
+            return response.status(400).send({ error: 'Invalid state target payload.' });
+        }
+        if (!namespace) {
+            return response.status(400).send({ error: 'Expected body.namespace string.' });
+        }
+        const operations = Array.isArray(request.body?.operations)
+            ? request.body.operations
+            : (_.isObjectLike(request.body?.operations)
+                ? [request.body.operations]
+                : (_.isObjectLike(request.body?.operation) ? [request.body.operation] : []));
+        if (operations.length === 0) {
+            return response.status(400).send({ error: 'No state patch operations found. Expected body.operations or body.operation.' });
+        }
+
+        const stateFilePath = getChatStateSidecarPath(chatFilePath, namespace);
+        if (!stateFilePath) {
+            return response.status(400).send({ error: 'Invalid namespace for state sidecar path.' });
+        }
+
+        let state = {};
+        const existed = fs.existsSync(stateFilePath);
+        if (existed) {
+            const raw = tryReadFileSync(stateFilePath);
+            const parsed = raw ? tryParse(raw) : null;
+            if (_.isObjectLike(parsed) && !Array.isArray(parsed)) {
+                state = parsed;
+            }
+        }
+
+        const result = applyChatStatePatch(state, operations);
+
+        fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+        writeFileAtomicSync(stateFilePath, JSON.stringify(result.state), 'utf8');
+        return response.send({
+            ok: true,
+            applied: result.applied,
+            created: !existed,
+        });
+    } catch (error) {
+        console.error('Error patching chat state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+router.post('/state/delete', function (request, response) {
+    try {
+        const chatFilePath = resolveChatFilePathForStateTarget(request, request.body || {});
+        const namespace = normalizeChatStateNamespace(request.body?.namespace);
+        if (!chatFilePath) {
+            return response.status(400).send({ error: 'Invalid state target payload.' });
+        }
+        if (!namespace) {
+            return response.status(400).send({ error: 'Expected body.namespace string.' });
+        }
+        const stateFilePath = getChatStateSidecarPath(chatFilePath, namespace);
+        const deleted = stateFilePath ? tryDeleteFile(stateFilePath) : false;
+        return response.send({ ok: true, deleted: Boolean(deleted) });
+    } catch (error) {
+        console.error('Error deleting chat state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/rename', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body || !request.body.original_file || !request.body.renamed_file) {
@@ -539,6 +1509,8 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
         fs.copyFileSync(pathToOriginalFile, pathToRenamedFile);
         fs.unlinkSync(pathToOriginalFile);
+        renameAllChatStateSidecars(pathToOriginalFile, pathToRenamedFile);
+
         console.info('Successfully renamed chat file.');
         return response.send({ ok: true, sanitizedFileName });
     } catch (error) {
@@ -558,6 +1530,7 @@ router.post('/delete', validateAvatarUrlMiddleware, function (request, response)
         const chatFilePath = path.join(request.user.directories.chats, dirName, sanitize(chatFileName));
         //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
+            deleteAllChatStateSidecars(chatFilePath);
             return response.send({ ok: true });
         } else {
             console.error('The chat file was not deleted.');
@@ -765,6 +1738,18 @@ router.post('/group/get', (request, response) => {
     return response.send(getChatData(chatFilePath));
 });
 
+router.post('/group/get-delta', (request, response) => {
+    if (!request.body || !request.body.id) {
+        return response.sendStatus(400);
+    }
+
+    const id = request.body.id;
+    const fromIndex = Number(request.body.from_index) || 0;
+    const limit = Number(request.body.limit) || 0;
+    const chatFilePath = path.join(request.user.directories.groupChats, `${id}.jsonl`);
+    return response.send(getChatDataDelta(chatFilePath, fromIndex, limit));
+});
+
 router.post('/group/delete', (request, response) => {
     try {
         if (!request.body || !request.body.id) {
@@ -776,6 +1761,7 @@ router.post('/group/delete', (request, response) => {
 
         //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
+            deleteAllChatStateSidecars(chatFilePath);
             return response.send({ ok: true });
         } else {
             console.error('The group chat file was not deleted.\'');
@@ -805,6 +1791,154 @@ router.post('/group/save', async function (request, response) {
         else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/group/append', async function (request, response) {
+    try {
+        if (!request.body || !request.body.id) {
+            return response.sendStatus(400);
+        }
+
+        const id = String(request.body.id);
+        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
+        const chatMetadata = _.isObjectLike(request.body.chat_metadata) ? request.body.chat_metadata : {};
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+        const messages = Array.isArray(request.body.messages)
+            ? request.body.messages
+            : (_.isObjectLike(request.body.message) ? [request.body.message] : []);
+
+        if (messages.length === 0) {
+            return response.status(400).send({ error: 'No message payload found. Expected body.messages or body.message.' });
+        }
+
+        const result = await appendMessagesToChatFile({
+            filePath: chatFilePath,
+            messages,
+            chatMetadata,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/group/patch', async function (request, response) {
+    try {
+        if (!request.body || !request.body.id) {
+            return response.sendStatus(400);
+        }
+
+        const id = String(request.body.id);
+        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
+        const chatMetadata = _.isObjectLike(request.body.chat_metadata) ? request.body.chat_metadata : {};
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+        const operations = Array.isArray(request.body.operations)
+            ? request.body.operations
+            : (_.isObjectLike(request.body.operations)
+                ? [request.body.operations]
+                : (_.isObjectLike(request.body.operation) ? [request.body.operation] : []));
+
+        if (operations.length === 0) {
+            return response.status(400).send({ error: 'No patch operations found. Expected body.operations or body.operation.' });
+        }
+
+        const result = await patchChatMessagesInFile({
+            filePath: chatFilePath,
+            operations,
+            chatMetadata,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/group/meta', async function (request, response) {
+    try {
+        if (!request.body || !request.body.id) {
+            return response.sendStatus(400);
+        }
+        if (!_.isObjectLike(request.body?.chat_metadata)) {
+            return response.status(400).send({ error: 'Expected body.chat_metadata object.' });
+        }
+
+        const id = String(request.body.id);
+        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
+        const chatMetadata = request.body.chat_metadata;
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+
+        const result = await updateChatMetadataInFile({
+            filePath: chatFilePath,
+            chatMetadata,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
+    } catch (error) {
+        if (error instanceof IntegrityMismatchError) {
+            console.error(error.message);
+            return response.status(400).send({ error: 'integrity' });
+        }
+        console.error(error);
+        return response.status(500).send({ error: 'An error has occurred, see the console logs for more information.' });
+    }
+});
+
+router.post('/group/meta/patch', async function (request, response) {
+    try {
+        if (!request.body || !request.body.id) {
+            return response.sendStatus(400);
+        }
+        const operations = Array.isArray(request.body?.operations)
+            ? request.body.operations
+            : (_.isObjectLike(request.body?.operations)
+                ? [request.body.operations]
+                : (_.isObjectLike(request.body?.operation) ? [request.body.operation] : []));
+        if (operations.length === 0) {
+            return response.status(400).send({ error: 'No metadata patch operations found. Expected body.operations or body.operation.' });
+        }
+
+        const id = String(request.body.id);
+        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${id}.jsonl`));
+        const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
+        const force = Boolean(request.body.force);
+
+        const result = await patchChatMetadataInFile({
+            filePath: chatFilePath,
+            operations,
+            integritySlug,
+            force,
+        });
+
+        return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);

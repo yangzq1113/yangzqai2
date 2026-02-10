@@ -8,6 +8,7 @@ import { Fuse, DOMPurify } from '../lib.js';
 import {
     abortStatusCheck,
     cancelStatusCheck,
+    chat_metadata,
     characters,
     event_types,
     eventSource,
@@ -32,7 +33,7 @@ import {
     system_message_types,
     this_chid,
 } from '../script.js';
-import { getGroupNames, selected_group } from './group-chats.js';
+import { getGroupNames, groups, selected_group } from './group-chats.js';
 
 import {
     chatCompletionDefaultPrompts,
@@ -88,6 +89,8 @@ export {
     setOpenAIMessageExamples,
     setupChatCompletionPromptManager,
     sendOpenAIRequest,
+    isLastOpenAIReplyPersistedByServer,
+    getLastOpenAIGenerationId,
     TokenHandler,
     IdentifierNotFoundError,
     Message,
@@ -171,6 +174,10 @@ const textCompletionModels = [
 
 let biasCache = undefined;
 export let model_list = [];
+const promptDeltaStates = new Map();
+const MAX_PROMPT_DELTA_STATES = 128;
+let lastOpenAIReplyPersistedByServer = false;
+let lastOpenAIGenerationId = '';
 
 export const chat_completion_sources = {
     OPENAI: 'openai',
@@ -198,6 +205,192 @@ export const chat_completion_sources = {
     ZAI: 'zai',
     SILICONFLOW: 'siliconflow',
 };
+
+const lukerPromptDeltaUnsupportedSources = new Set([
+    chat_completion_sources.CLAUDE,
+    chat_completion_sources.AI21,
+    chat_completion_sources.MAKERSUITE,
+    chat_completion_sources.VERTEXAI,
+    chat_completion_sources.MISTRALAI,
+    chat_completion_sources.COHERE,
+    chat_completion_sources.DEEPSEEK,
+    chat_completion_sources.AIMLAPI,
+    chat_completion_sources.XAI,
+    chat_completion_sources.CHUTES,
+    chat_completion_sources.ELECTRONHUB,
+    chat_completion_sources.AZURE_OPENAI,
+]);
+
+function isLukerPromptDeltaSupported(source) {
+    return !lukerPromptDeltaUnsupportedSources.has(source);
+}
+
+const lukerServerPersistenceUnsupportedSources = new Set([
+    chat_completion_sources.CLAUDE,
+    chat_completion_sources.AI21,
+    chat_completion_sources.MAKERSUITE,
+    chat_completion_sources.VERTEXAI,
+    chat_completion_sources.MISTRALAI,
+    chat_completion_sources.COHERE,
+    chat_completion_sources.DEEPSEEK,
+    chat_completion_sources.AIMLAPI,
+    chat_completion_sources.XAI,
+    chat_completion_sources.CHUTES,
+    chat_completion_sources.ELECTRONHUB,
+    chat_completion_sources.AZURE_OPENAI,
+]);
+
+function isLukerServerPersistenceSupported(source) {
+    return !lukerServerPersistenceUnsupportedSources.has(String(source || '').trim().toLowerCase());
+}
+
+function getPromptDeltaStateKey(model) {
+    if (selected_group) {
+        return `group:${selected_group}|${oai_settings.chat_completion_source}|${model}`;
+    }
+
+    const avatar = characters[this_chid]?.avatar ?? 'unknown_avatar';
+    const chatName = characters[this_chid]?.chat ?? 'unknown_chat';
+    return `char:${avatar}:${chatName}|${oai_settings.chat_completion_source}|${model}`;
+}
+
+function getCommonMessagePrefixLength(previousMessages, currentMessages) {
+    const minLength = Math.min(previousMessages.length, currentMessages.length);
+    let index = 0;
+
+    while (index < minLength) {
+        if (JSON.stringify(previousMessages[index]) !== JSON.stringify(currentMessages[index])) {
+            break;
+        }
+        index++;
+    }
+
+    return index;
+}
+
+function upsertPromptDeltaState(key, revision, messages) {
+    if (!key || !Array.isArray(messages) || !Number.isInteger(revision) || revision <= 0) {
+        return;
+    }
+
+    if (promptDeltaStates.has(key)) {
+        promptDeltaStates.delete(key);
+    }
+    promptDeltaStates.set(key, { revision, messages: structuredClone(messages), touched: Date.now() });
+
+    while (promptDeltaStates.size > MAX_PROMPT_DELTA_STATES) {
+        const oldestKey = promptDeltaStates.keys().next().value;
+        promptDeltaStates.delete(oldestKey);
+    }
+}
+
+function buildPromptDeltaRequest(generateData, model) {
+    const fullRequestBody = structuredClone(generateData);
+    const promptMessages = Array.isArray(fullRequestBody.messages) ? structuredClone(fullRequestBody.messages) : null;
+    const source = fullRequestBody.chat_completion_source;
+
+    if (!Array.isArray(promptMessages) || !isLukerPromptDeltaSupported(source)) {
+        return {
+            requestBody: fullRequestBody,
+            fallbackBody: null,
+            usedDelta: false,
+            stateKey: null,
+            promptMessages: null,
+        };
+    }
+
+    const stateKey = getPromptDeltaStateKey(model);
+    const previousState = promptDeltaStates.get(stateKey);
+
+    if (!previousState || !Array.isArray(previousState.messages) || !Number.isInteger(previousState.revision)) {
+        fullRequestBody.luker_prompt_state_id = stateKey;
+        return {
+            requestBody: fullRequestBody,
+            fallbackBody: null,
+            usedDelta: false,
+            stateKey,
+            promptMessages,
+        };
+    }
+
+    const prefixLength = getCommonMessagePrefixLength(previousState.messages, promptMessages);
+    const shouldSendDelta = prefixLength >= 2 && prefixLength <= previousState.messages.length;
+
+    if (!shouldSendDelta) {
+        fullRequestBody.luker_prompt_state_id = stateKey;
+        return {
+            requestBody: fullRequestBody,
+            fallbackBody: null,
+            usedDelta: false,
+            stateKey,
+            promptMessages,
+        };
+    }
+
+    const deltaBody = structuredClone(fullRequestBody);
+    deltaBody.luker_prompt_delta = {
+        state_id: stateKey,
+        base_revision: previousState.revision,
+        prefix_length: prefixLength,
+        messages: promptMessages.slice(prefixLength),
+    };
+    delete deltaBody.messages;
+
+    return {
+        requestBody: deltaBody,
+        fallbackBody: fullRequestBody,
+        usedDelta: true,
+        stateKey,
+        promptMessages,
+    };
+}
+
+function buildLukerPersistTarget() {
+    if (selected_group) {
+        const group = groups.find(x => x.id == selected_group);
+        const groupChatId = group?.chat_id;
+        if (!groupChatId) {
+            return null;
+        }
+
+        return {
+            kind: 'group',
+            id: groupChatId,
+            char_name: name2,
+            chat_metadata: { ...chat_metadata },
+            integrity: chat_metadata?.integrity,
+        };
+    }
+
+    const character = characters[this_chid];
+    const avatar = character?.avatar;
+    const fileName = character?.chat;
+
+    if (!avatar || !fileName) {
+        return null;
+    }
+
+    return {
+        kind: 'character',
+        avatar_url: avatar,
+        file_name: fileName,
+        char_name: name2,
+        chat_metadata: { ...chat_metadata },
+        integrity: chat_metadata?.integrity,
+    };
+}
+
+function shouldUseLukerServerPersistence(type, source = oai_settings.chat_completion_source) {
+    return type === 'normal' && isLukerServerPersistenceSupported(source);
+}
+
+function isLastOpenAIReplyPersistedByServer() {
+    return lastOpenAIReplyPersistedByServer;
+}
+
+function getLastOpenAIGenerationId() {
+    return lastOpenAIGenerationId;
+}
 
 const character_names_behavior = {
     NONE: -1,
@@ -368,6 +561,114 @@ export const settingsToUpdate = {
     extensions: ['#NULL_SELECTOR', 'extensions', false, false],
 };
 
+const settingsKeyToPresetKey = Object.entries(settingsToUpdate).reduce((acc, [presetKey, [, settingsKey]]) => {
+    if (!acc[settingsKey]) {
+        acc[settingsKey] = presetKey;
+    }
+    return acc;
+}, {});
+
+/**
+ * Returns true if the OpenAI preset field belongs to API connection/model settings.
+ * @param {string} presetKey
+ * @returns {boolean}
+ */
+export function isOpenAIConnectionPresetField(presetKey) {
+    return Boolean(settingsToUpdate?.[presetKey]?.[3]);
+}
+
+/**
+ * Remove connection/model fields from a chat-completion preset object.
+ * @param {object} preset
+ * @returns {object}
+ */
+export function stripOpenAIConnectionFieldsFromPreset(preset) {
+    const source = preset && typeof preset === 'object' ? structuredClone(preset) : {};
+    for (const key of Object.keys(source)) {
+        if (isOpenAIConnectionPresetField(key)) {
+            delete source[key];
+        }
+    }
+    return source;
+}
+
+function getOpenAIPresetByName(presetName) {
+    const targetName = String(presetName || '').trim();
+    if (!targetName) {
+        return null;
+    }
+
+    const presetIndex = openai_setting_names?.[targetName];
+    const presetSource = Number.isInteger(presetIndex) ? openai_settings?.[presetIndex] : null;
+    if (!presetSource || typeof presetSource !== 'object') {
+        console.warn(`[openai] Preset '${targetName}' not found, using current settings.`);
+        return null;
+    }
+
+    return presetSource;
+}
+
+function applyOpenAIPresetToSettings(settings, presetSource, {
+    includeConnectionFields = false,
+    includeGenerationFields = true,
+} = {}) {
+    if (!presetSource || typeof presetSource !== 'object') {
+        return;
+    }
+
+    for (const [presetKey, value] of Object.entries(presetSource)) {
+        const settingToUpdate = settingsToUpdate[presetKey];
+        if (!settingToUpdate) {
+            continue;
+        }
+        const isConnection = isOpenAIConnectionPresetField(presetKey);
+        if (isConnection && !includeConnectionFields) {
+            continue;
+        }
+        if (!isConnection && !includeGenerationFields) {
+            continue;
+        }
+        const [, settingsKey] = settingToUpdate;
+        settings[settingsKey] = structuredClone(value);
+    }
+}
+
+function applyOpenAIConnectionSettingsOverride(settings, overrides) {
+    if (!overrides || typeof overrides !== 'object') {
+        return;
+    }
+
+    for (const [rawKey, rawValue] of Object.entries(overrides)) {
+        const presetKey = settingsToUpdate[rawKey]
+            ? rawKey
+            : settingsKeyToPresetKey[rawKey];
+        if (!presetKey || !isOpenAIConnectionPresetField(presetKey)) {
+            continue;
+        }
+        const [, settingsKey] = settingsToUpdate[presetKey];
+        settings[settingsKey] = structuredClone(rawValue);
+    }
+}
+
+function getSettingsForRequest({ llmPresetName = '', apiPresetName = '', apiSettingsOverride = null } = {}) {
+    const settings = structuredClone(oai_settings);
+
+    const llmPreset = getOpenAIPresetByName(llmPresetName);
+    applyOpenAIPresetToSettings(settings, llmPreset, {
+        includeConnectionFields: false,
+        includeGenerationFields: true,
+    });
+
+    const apiPreset = getOpenAIPresetByName(apiPresetName);
+    applyOpenAIPresetToSettings(settings, apiPreset, {
+        includeConnectionFields: true,
+        includeGenerationFields: false,
+    });
+
+    applyOpenAIConnectionSettingsOverride(settings, apiSettingsOverride);
+    return settings;
+}
+
 const default_settings = {
     preset_settings_openai: 'Default',
     temp_openai: 1.0,
@@ -465,7 +766,6 @@ const default_settings = {
     request_image_resolution: '',
     seed: -1,
     n: 1,
-    bind_preset_to_connection: true,
     extensions: {},
 };
 
@@ -2444,7 +2744,7 @@ function getVerbosity(settings = null) {
  * @param {import('../script.js').AdditionalRequestOptions} options Additional request options
  * @returns {Promise<object>} Final generation parameters object appropriate for the chat completion source
  */
-export async function createGenerationParameters(settings, model, type, messages, { jsonSchema = null } = {}) {
+export async function createGenerationParameters(settings, model, type, messages, { jsonSchema = null, tools = null, toolChoice = null, replaceTools = false, responseLength = null } = {}) {
     // HACK: Filter out null and non-object messages
     if (!Array.isArray(messages)) {
         throw new Error('messages must be an array');
@@ -2565,6 +2865,10 @@ export async function createGenerationParameters(settings, model, type, messages
         'verbosity': getVerbosity(settings),
     };
 
+    if (Number.isFinite(Number(responseLength)) && Number(responseLength) > 0) {
+        generate_data.max_tokens = Number(responseLength);
+    }
+
     if (settings.chat_completion_source === chat_completion_sources.AZURE_OPENAI) {
         generate_data.azure_base_url = settings.azure_base_url;
         generate_data.azure_deployment_name = settings.azure_deployment_name;
@@ -2577,6 +2881,26 @@ export async function createGenerationParameters(settings, model, type, messages
 
     if (!canMultiSwipe && ToolManager.canPerformToolCalls(type, settings, model)) {
         await ToolManager.registerFunctionToolsOpenAI(generate_data);
+    }
+
+    if (Array.isArray(tools)) {
+        if (replaceTools) {
+            generate_data.tools = structuredClone(tools);
+        } else {
+            const existingTools = Array.isArray(generate_data.tools) ? generate_data.tools : [];
+            generate_data.tools = [...existingTools, ...structuredClone(tools)];
+        }
+    }
+
+    if (toolChoice !== null && toolChoice !== undefined) {
+        generate_data.tool_choice = structuredClone(toolChoice);
+    }
+
+    if (replaceTools && Array.isArray(tools) && tools.length === 0) {
+        delete generate_data.tools;
+        if (toolChoice === null || toolChoice === undefined) {
+            delete generate_data.tool_choice;
+        }
     }
 
     // Empty array will produce a validation error
@@ -2805,28 +3129,85 @@ export async function createGenerationParameters(settings, model, type, messages
  * @returns {Promise<unknown>}
  * @throws {Error}
  */
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } = {}) {
+async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, tools = null, toolChoice = null, replaceTools = false, responseLength = null, llmPresetName = '', apiPresetName = '', apiSettingsOverride = null } = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
     }
 
-    const model = getChatCompletionModel(oai_settings);
-    const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(oai_settings, model, type, messages, { jsonSchema });
+    const requestSettings = getSettingsForRequest({ llmPresetName, apiPresetName, apiSettingsOverride });
+    const model = getChatCompletionModel(requestSettings);
+    const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(requestSettings, model, type, messages, {
+        jsonSchema,
+        tools,
+        toolChoice,
+        replaceTools,
+        responseLength,
+    });
     await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
 
     const generate_url = '/api/backends/chat-completions/generate';
-    const response = await fetch(generate_url, {
+    const deltaRequest = buildPromptDeltaRequest(generate_data, model);
+    let requestBody = deltaRequest.requestBody;
+    lastOpenAIReplyPersistedByServer = false;
+    lastOpenAIGenerationId = '';
+    if (shouldUseLukerServerPersistence(type, requestSettings.chat_completion_source)) {
+        const persistTarget = buildLukerPersistTarget();
+        if (persistTarget) {
+            const generationId = uuidv4();
+            requestBody = {
+                ...requestBody,
+                luker_generation: {
+                    job_id: generationId,
+                    persist_target: persistTarget,
+                },
+            };
+            lastOpenAIGenerationId = generationId;
+        }
+    }
+    let response = await fetch(generate_url, {
         method: 'POST',
-        body: JSON.stringify(generate_data),
+        body: JSON.stringify(requestBody),
         headers: getRequestHeaders(),
         signal: signal,
     });
+
+    if (response.status === 409 && deltaRequest.usedDelta && deltaRequest.fallbackBody) {
+        let fallbackBody = deltaRequest.fallbackBody;
+        if (requestBody?.luker_generation) {
+            fallbackBody = {
+                ...fallbackBody,
+                luker_generation: requestBody.luker_generation,
+            };
+        }
+        response = await fetch(generate_url, {
+            method: 'POST',
+            body: JSON.stringify(fallbackBody),
+            headers: getRequestHeaders(),
+            signal: signal,
+        });
+        requestBody = fallbackBody;
+    }
 
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
     }
+
+    const promptRevisionHeader = response.headers.get('x-luker-prompt-revision');
+    const promptRevision = Number(promptRevisionHeader);
+    const generationIdHeader = response.headers.get('x-luker-generation-id');
+    if (generationIdHeader) {
+        lastOpenAIGenerationId = generationIdHeader;
+    }
+    if (deltaRequest.stateKey && Array.isArray(deltaRequest.promptMessages) && Number.isInteger(promptRevision) && promptRevision > 0) {
+        upsertPromptDeltaState(deltaRequest.stateKey, promptRevision, deltaRequest.promptMessages);
+    } else if (deltaRequest.stateKey && requestBody?.luker_prompt_state_id && Array.isArray(deltaRequest.promptMessages)) {
+        // Fallback compatibility when server did not return prompt revision header.
+        const previousRevision = Number(promptDeltaStates.get(deltaRequest.stateKey)?.revision) || 0;
+        upsertPromptDeltaState(deltaRequest.stateKey, previousRevision + 1, deltaRequest.promptMessages);
+    }
+
     if (stream) {
         const eventStream = getEventSourceStream();
         response.body.pipeThrough(eventStream);
@@ -2843,6 +3224,15 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
                 if (rawData === '[DONE]') return;
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
+                if (parsed?.luker && typeof parsed.luker === 'object') {
+                    if (typeof parsed.luker.generation_id === 'string' && parsed.luker.generation_id) {
+                        lastOpenAIGenerationId = parsed.luker.generation_id;
+                    }
+                    if (typeof parsed.luker.persisted === 'boolean') {
+                        lastOpenAIReplyPersistedByServer = parsed.luker.persisted;
+                    }
+                    continue;
+                }
 
                 if (canMultiSwipe && Array.isArray(parsed?.choices) && parsed?.choices?.[0]?.index > 0) {
                     const swipeIndex = parsed.choices[0].index - 1;
@@ -2859,6 +3249,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
         };
     }
     else {
+        lastOpenAIReplyPersistedByServer = response.headers.get('x-luker-server-persisted') === '1';
         const data = await response.json();
 
         checkQuotaError(data);
@@ -3962,7 +4353,9 @@ function loadOpenAISettings(data, settings) {
     openai_setting_names = data.openai_setting_names;
     openai_settings = data.openai_settings;
     openai_settings.forEach(function (item, i) {
-        openai_settings[i] = JSON.parse(item);
+        const parsed = JSON.parse(item);
+        // Presets remain strictly generation-focused: strip connection fields from legacy files.
+        openai_settings[i] = stripOpenAIConnectionFieldsFromPreset(parsed);
     });
 
     $('#settings_preset_openai').empty();
@@ -4009,7 +4402,6 @@ function loadOpenAISettings(data, settings) {
     }
 
     $(`#settings_preset_openai option[value="${openai_setting_names[oai_settings.preset_settings_openai]}"]`).prop('selected', true);
-    $('#bind_preset_to_connection').prop('checked', oai_settings.bind_preset_to_connection);
     $('#openai_external_category').toggle(oai_settings.show_external_models);
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
 
@@ -4195,6 +4587,9 @@ async function getStatusOpen() {
 export function getChatCompletionPreset(settings = oai_settings) {
     const presetBody = {};
     for (const [presetKey, [, settingsKey]] of Object.entries(settingsToUpdate)) {
+        if (isOpenAIConnectionPresetField(presetKey)) {
+            continue;
+        }
         presetBody[presetKey] = settings[settingsKey];
     }
     return structuredClone(presetBody);
@@ -4395,6 +4790,9 @@ async function onPresetImportFileChange(e) {
         toastr.error(t`Invalid file`);
         return;
     }
+    // Legacy compatibility: imported OpenAI presets may contain connection fields.
+    // Keep chat-completion presets generation-only.
+    presetBody = stripOpenAIConnectionFieldsFromPreset(presetBody);
 
     const fields = sensitiveFields.filter(field => presetBody[field]).map(field => `<b>${field}</b>`);
     const shouldConfirm = fields.length > 0;
@@ -4466,7 +4864,9 @@ async function onExportPresetClick() {
         return;
     }
 
-    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    const preset = stripOpenAIConnectionFieldsFromPreset(
+        structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]),
+    );
 
     const fieldValues = sensitiveFields.filter(field => preset[field]).map(field => `<b>${field}</b>: <code>${preset[field]}</code>`);
     if (fieldValues.length > 0) {
@@ -4636,12 +5036,8 @@ function onSettingsPresetChange() {
         savePreset: saveOpenAIPreset,
         presetNameBefore: presetNameBefore,
     }).finally(async () => {
-        if (oai_settings.bind_preset_to_connection) {
-            $('.model_custom_select').empty();
-        }
-
         for (const [key, [selector, setting, isCheckbox, isConnection]] of Object.entries(settingsToUpdate)) {
-            if (isConnection && !oai_settings.bind_preset_to_connection) {
+            if (isConnection) {
                 continue;
             }
 
@@ -4659,12 +5055,6 @@ function onSettingsPresetChange() {
                 }
                 oai_settings[setting] = preset[key];
             }
-        }
-
-        // These cannot be changed via preset if unbound to connection
-        if (oai_settings.bind_preset_to_connection) {
-            $('#chat_completion_source').trigger('change');
-            $('#openrouter_providers_chat').trigger('change');
         }
 
         $('#openai_logit_bias_preset').trigger('change');
@@ -6766,11 +7156,6 @@ export function initOpenAI() {
 
         oai_settings.openrouter_providers = selectedProviders;
 
-        saveSettingsDebounced();
-    });
-
-    $('#bind_preset_to_connection').on('input', function () {
-        oai_settings.bind_preset_to_connection = !!$(this).prop('checked');
         saveSettingsDebounced();
     });
 

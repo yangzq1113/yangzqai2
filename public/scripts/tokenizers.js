@@ -844,7 +844,9 @@ export function countTokensOpenAI(messages, full = false) {
  * @returns {Promise<number>} Token count.
  */
 export async function countTokensOpenAIAsync(messages, full = false) {
-    const tokenizerEndpoint = `/api/tokenizers/openai/count?model=${getTokenizerModel()}`;
+    const model = getTokenizerModel();
+    const tokenizerEndpoint = `/api/tokenizers/openai/count?model=${model}`;
+    const tokenizerBatchEndpoint = `/api/tokenizers/openai/count-batch?model=${model}`;
     const cacheObject = getTokenCacheObject();
 
     if (!Array.isArray(messages)) {
@@ -852,10 +854,10 @@ export async function countTokensOpenAIAsync(messages, full = false) {
     }
 
     let token_count = -1;
+    const uncachedMessages = [];
+    const uncachedCacheKeys = [];
 
     for (const message of messages) {
-        const model = getTokenizerModel();
-
         if (model === 'claude') {
             full = true;
         }
@@ -867,19 +869,49 @@ export async function countTokensOpenAIAsync(messages, full = false) {
         if (typeof cachedCount === 'number') {
             token_count += cachedCount;
         }
-
         else {
-            const data = await jQuery.ajax({
+            uncachedMessages.push(message);
+            uncachedCacheKeys.push(cacheKey);
+        }
+    }
+
+    if (uncachedMessages.length > 0) {
+        try {
+            const batchData = await jQuery.ajax({
                 async: true,
-                type: 'POST', //
-                url: tokenizerEndpoint,
-                data: JSON.stringify([message]),
+                type: 'POST',
+                url: tokenizerBatchEndpoint,
+                data: JSON.stringify(uncachedMessages),
                 dataType: 'json',
                 contentType: 'application/json',
             });
 
-            token_count += Number(data.token_count);
-            cacheObject[cacheKey] = Number(data.token_count);
+            if (!Array.isArray(batchData?.token_counts) || batchData.token_counts.length !== uncachedMessages.length) {
+                throw new Error('Token batch response is malformed.');
+            }
+
+            for (let i = 0; i < uncachedMessages.length; i++) {
+                const count = Number(batchData.token_counts[i]);
+                token_count += count;
+                cacheObject[uncachedCacheKeys[i]] = count;
+            }
+        } catch (error) {
+            console.warn('Failed to batch count OpenAI tokens, falling back to per-message requests.', error);
+            for (let i = 0; i < uncachedMessages.length; i++) {
+                const message = uncachedMessages[i];
+                const data = await jQuery.ajax({
+                    async: true,
+                    type: 'POST',
+                    url: tokenizerEndpoint,
+                    data: JSON.stringify([message]),
+                    dataType: 'json',
+                    contentType: 'application/json',
+                });
+
+                const count = Number(data.token_count);
+                token_count += count;
+                cacheObject[uncachedCacheKeys[i]] = count;
+            }
         }
     }
 

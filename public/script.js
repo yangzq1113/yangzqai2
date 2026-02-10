@@ -101,6 +101,8 @@ import {
     setupChatCompletionPromptManager,
     prepareOpenAIMessages,
     sendOpenAIRequest,
+    isLastOpenAIReplyPersistedByServer,
+    getLastOpenAIGenerationId,
     loadOpenAISettings,
     oai_settings,
     openai_messages_count,
@@ -284,10 +286,14 @@ import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 
 // API OBJECT FOR EXTERNAL WIRING
-globalThis.SillyTavern = {
+const lukerApi = {
     libs,
     getContext,
 };
+globalThis.Luker = lukerApi;
+globalThis.st = lukerApi;
+globalThis.SillyTavern = lukerApi;
+
 
 export {
     user_avatar,
@@ -370,13 +376,178 @@ export let converter;
 
 // array for prompt token calculations
 
-export const systemUserName = 'SillyTavern System';
+export const systemUserName = 'Luker System';
 export const neutralCharacterName = 'Assistant';
 let default_user_name = 'User';
 export let name1 = default_user_name;
 export let name2 = systemUserName;
 /** @type {ChatMessage[]} */
 export let chat = [];
+const chatServerState = {
+    nextOlderIndex: 0,
+    totalMessages: 0,
+    hasMore: false,
+};
+let lukerRecoveryPollTimer = null;
+let lukerRecoveryPollBusy = false;
+let lukerRecoveryJobId = '';
+let lukerRecoveryChatId = '';
+const LUKER_RECOVERY_PREVIEW_ID = 'luker_generation_recovery_preview';
+
+export function setChatServerState({ nextOlderIndex = 0, totalMessages = 0, hasMore = false } = {}) {
+    chatServerState.nextOlderIndex = Math.max(0, Number(nextOlderIndex) || 0);
+    chatServerState.totalMessages = Math.max(0, Number(totalMessages) || 0);
+    chatServerState.hasMore = Boolean(hasMore);
+}
+
+function getLukerPersistTargetForCurrentChat() {
+    if (selected_group) {
+        const group = groups.find(x => x.id == selected_group);
+        if (!group?.chat_id) {
+            return null;
+        }
+
+        return {
+            kind: 'group',
+            id: group.chat_id,
+        };
+    }
+
+    const character = characters[this_chid];
+    if (!character?.avatar || !character?.chat) {
+        return null;
+    }
+
+    return {
+        kind: 'character',
+        avatar_url: character.avatar,
+        file_name: character.chat,
+    };
+}
+
+function removeLukerRecoveryPreview() {
+    chatElement.find(`#${LUKER_RECOVERY_PREVIEW_ID}`).remove();
+}
+
+function stopLukerGenerationRecovery() {
+    if (lukerRecoveryPollTimer) {
+        clearInterval(lukerRecoveryPollTimer);
+        lukerRecoveryPollTimer = null;
+    }
+    lukerRecoveryPollBusy = false;
+    lukerRecoveryJobId = '';
+    lukerRecoveryChatId = '';
+    removeLukerRecoveryPreview();
+}
+
+function renderLukerRecoveryPreview(text, status = 'running') {
+    let preview = chatElement.find(`#${LUKER_RECOVERY_PREVIEW_ID}`);
+
+    if (!preview.length) {
+        preview = $(`
+            <div id="${LUKER_RECOVERY_PREVIEW_ID}" class="wide100p" style="padding: 8px 12px; border: 1px dashed var(--SmartThemeBorderColor); border-radius: 8px; margin: 10px 0;">
+                <div class="flex-container justifyCenter alignitemscenter" style="gap: 8px;">
+                    <i class="fa-solid fa-link"></i>
+                    <strong>Luker recovery stream</strong>
+                </div>
+                <div class="luker_preview_status" style="margin-top: 6px; opacity: 0.85; font-size: 0.9em;"></div>
+                <div class="luker_preview_text" style="margin-top: 8px; white-space: pre-wrap;"></div>
+            </div>
+        `);
+        chatElement.append(preview);
+    }
+
+    const statusText = status === 'failed'
+        ? t`Generation failed on server`
+        : status === 'completed'
+            ? t`Generation completed on server`
+            : t`Generation in progress on server`;
+    preview.find('.luker_preview_status').text(statusText);
+    preview.find('.luker_preview_text').text(String(text || ''));
+}
+
+async function startLukerGenerationRecovery() {
+    stopLukerGenerationRecovery();
+
+    if (main_api !== 'openai') {
+        return;
+    }
+
+    const persistTarget = getLukerPersistTargetForCurrentChat();
+    if (!persistTarget) {
+        return;
+    }
+
+    const chatIdSnapshot = getCurrentChatId();
+
+    try {
+        const activeResponse = await fetch('/api/backends/chat-completions/jobs/active', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ persist_target: persistTarget }),
+            cache: 'no-cache',
+        });
+
+        if (!activeResponse.ok) {
+            return;
+        }
+
+        const activeData = await activeResponse.json();
+        const activeJob = Array.isArray(activeData?.jobs) ? activeData.jobs[0] : null;
+        if (!activeJob?.id) {
+            return;
+        }
+
+        lukerRecoveryJobId = String(activeJob.id);
+        lukerRecoveryChatId = chatIdSnapshot;
+        renderLukerRecoveryPreview(activeJob.text || '', activeJob.status || 'running');
+
+        lukerRecoveryPollTimer = setInterval(async () => {
+            if (lukerRecoveryPollBusy) {
+                return;
+            }
+
+            if (lukerRecoveryChatId !== getCurrentChatId()) {
+                stopLukerGenerationRecovery();
+                return;
+            }
+
+            lukerRecoveryPollBusy = true;
+            try {
+                const statusResponse = await fetch('/api/backends/chat-completions/jobs/status', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ id: lukerRecoveryJobId }),
+                    cache: 'no-cache',
+                });
+
+                if (!statusResponse.ok) {
+                    stopLukerGenerationRecovery();
+                    return;
+                }
+
+                const statusData = await statusResponse.json();
+                renderLukerRecoveryPreview(statusData?.text || '', statusData?.status || 'running');
+
+                if (statusData?.status === 'failed') {
+                    stopLukerGenerationRecovery();
+                    return;
+                }
+
+                if (statusData?.status === 'completed') {
+                    stopLukerGenerationRecovery();
+                    await reloadCurrentChat();
+                }
+            } catch (error) {
+                console.warn('Failed to poll recovered generation status', error);
+            } finally {
+                lukerRecoveryPollBusy = false;
+            }
+        }, 1000);
+    } catch (error) {
+        console.warn('Failed to query active generation jobs', error);
+    }
+}
 
 /**
  * @type {import('./scripts/constants.js').SWIPE_STATE}
@@ -388,7 +559,7 @@ export let isChatSaving = false;
 let firstRun = false;
 let settingsReady = false;
 let currentVersion = '0.0.0';
-export let displayVersion = 'SillyTavern';
+export let displayVersion = 'Luker';
 
 let generation_started = new Date();
 /** @type {Character[]} */
@@ -403,7 +574,7 @@ export const default_avatar = 'img/ai4.png';
 export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
 export const default_user_avatar = 'img/user-default.png';
-export let CLIENT_VERSION = 'SillyTavern:UNKNOWN:Cohee#1207'; // For Horde header
+export let CLIENT_VERSION = 'Luker:UNKNOWN:Cohee#1207'; // For Horde header
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
 });
@@ -420,6 +591,8 @@ let dialogueResolve = null;
 let dialogueCloseStop = false;
 /** @type {ChatMetadata} */
 export let chat_metadata = {};
+const chatMetadataSnapshotCache = new Map();
+const chatMessageSnapshotCache = new Map();
 /** @type {StreamingProcessor} */
 export let streamingProcessor = null;
 let crop_data = undefined;
@@ -472,7 +645,7 @@ async function getClientVersion() {
         const response = await fetch('/version');
         const data = await response.json();
         CLIENT_VERSION = data.agent;
-        displayVersion = `SillyTavern ${data.pkgVersion}`;
+        displayVersion = `Luker ${data.pkgVersion}`;
         currentVersion = data.pkgVersion;
 
         if (data.gitRevision && data.gitBranch) {
@@ -1388,6 +1561,72 @@ export async function showMoreMessages(messagesToLoad = null) {
         messageId = getLastMessageId() + 1;
     }
 
+    if (messageId <= 0 && chatServerState.hasMore) {
+        const prevHeight = chatElement.prop('scrollHeight');
+        const isButtonInView = isElementInViewport($('#show_more_messages')[0]);
+        const startIndex = Math.max(0, chatServerState.nextOlderIndex - count);
+        const limit = Math.max(1, chatServerState.nextOlderIndex - startIndex);
+        const endpoint = selected_group ? '/api/chats/group/get-delta' : '/api/chats/get-delta';
+        const body = selected_group
+            ? { id: groups.find(x => x.id == selected_group)?.chat_id, from_index: startIndex, limit }
+            : {
+                ch_name: characters[this_chid]?.name,
+                file_name: characters[this_chid]?.chat,
+                avatar_url: characters[this_chid]?.avatar,
+                from_index: startIndex,
+                limit,
+            };
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+            cache: 'no-cache',
+        });
+
+        if (response.ok) {
+            const delta = await response.json();
+            const olderMessages = Array.isArray(delta?.chat) ? delta.chat : [];
+            if (olderMessages.length > 0) {
+                chat.unshift(...olderMessages);
+
+                for (const olderMessage of olderMessages) {
+                    const insertBefore = getFirstDisplayedMessageId();
+                    addOneMessage(olderMessage, {
+                        insertBefore: Number.isInteger(insertBefore) ? insertBefore : null,
+                        scroll: false,
+                        forceId: 0,
+                        showSwipes: false,
+                    });
+                }
+
+                updateViewMessageIds(0);
+                refreshSwipeButtons();
+                applyStylePins();
+
+                chatServerState.nextOlderIndex = Math.max(0, Number(delta?.from_index) || 0);
+                chatServerState.totalMessages = Math.max(chatServerState.totalMessages, Number(delta?.total_messages) || chat.length);
+                chatServerState.hasMore = Boolean(delta?.has_more);
+            } else {
+                chatServerState.hasMore = false;
+            }
+        } else {
+            console.warn('Could not load older messages from server delta endpoint.');
+        }
+
+        if (!chatServerState.hasMore && messageId === 0) {
+            $('#show_more_messages').remove();
+        }
+
+        if (isButtonInView) {
+            const newHeight = chatElement.prop('scrollHeight');
+            chatElement.scrollTop(newHeight - prevHeight);
+        }
+
+        await eventSource.emit(event_types.MORE_MESSAGES_LOADED);
+        return;
+    }
+
     console.debug('Inserting messages before', messageId, 'count', count, 'chat length', chat.length);
     const prevHeight = chatElement.prop('scrollHeight');
     const isButtonInView = isElementInViewport($('#show_more_messages')[0]);
@@ -1400,7 +1639,7 @@ export async function showMoreMessages(messagesToLoad = null) {
     }
     refreshSwipeButtons();
 
-    if (messageId == 0) {
+    if (messageId == 0 && !chatServerState.hasMore) {
         $('#show_more_messages').remove();
     }
 
@@ -1417,9 +1656,12 @@ export async function printMessages() {
     let startIndex = 0;
     let count = power_user.chat_truncation || Number.MAX_SAFE_INTEGER;
 
-    if (chat.length > count) {
+    if (chat.length > count || chatServerState.hasMore) {
         startIndex = chat.length - count;
-        chatElement.append('<div id="show_more_messages">Show more messages</div>');
+        startIndex = Math.max(0, startIndex);
+        if (!$('#show_more_messages').length) {
+            chatElement.append('<div id="show_more_messages">Show more messages</div>');
+        }
     }
 
     for (let i = startIndex; i < chat.length; i++) {
@@ -1483,6 +1725,7 @@ export function cancelDebouncedChatSave() {
 }
 
 export async function clearChat() {
+    stopLukerGenerationRecovery();
     cancelDebouncedChatSave();
     cancelDebouncedMetadataSave();
     closeMessageEditor();
@@ -1558,7 +1801,10 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     const startIndex = [0, minId].includes(id) ? id : null;
     updateViewMessageIds(startIndex);
-    saveChatDebounced();
+    const patched = await patchChatMessages([{ op: 'delete', index: id }]);
+    if (!patched) {
+        saveChatDebounced();
+    }
 
     if (this_edit_mes_id === id) {
         this_edit_mes_id = undefined;
@@ -3613,7 +3859,28 @@ class StreamingProcessor {
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
-        await saveChatConditional();
+        if (main_api === 'openai' && this.type === 'normal' && this.messageId >= 0 && chat[this.messageId]) {
+            chat[this.messageId].extra = chat[this.messageId].extra || {};
+            chat[this.messageId].extra.luker_generation_id = getLastOpenAIGenerationId() || chat[this.messageId].extra.luker_generation_id;
+        }
+        const serverPersistedReply = main_api === 'openai' && isLastOpenAIReplyPersistedByServer();
+        const canUseIncrementalAppend = !isAborted
+            && this.type === 'normal'
+            && this.messageId >= 0
+            && this.messageId === (chat.length - 1)
+            && !chat[this.messageId]?.is_user
+            && !serverPersistedReply;
+        if (canUseIncrementalAppend) {
+            const appended = await appendChatMessages([chat[this.messageId]]);
+            if (!appended) {
+                await saveChatConditional();
+            }
+        } else {
+            if (serverPersistedReply) {
+                console.debug('Skipping incremental append because backend already persisted generation', getLastOpenAIGenerationId());
+            }
+            await saveChatConditional();
+        }
 
         playMessageSound();
     }
@@ -3790,13 +4057,16 @@ export function createRawPrompt(prompt, api, instructOverride, quietToLoud, syst
  * @prop {boolean} [trimNames] Whether to allow trimming "{{user}}:" and "{{char}}:" from the response.
  * @prop {string} [prefill] An optional prefill for the prompt.
  * @prop {object} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
+ * @prop {string} [llmPresetName] Optional OpenAI chat-completion preset name for this request only.
+ * @prop {string} [apiPresetName] Optional OpenAI API preset name for connection settings only.
+ * @prop {object} [apiSettingsOverride] Optional OpenAI connection settings override object for this request only.
  * @param {GenerateRawParams} params Parameters for generating a message
  * @returns {Promise<string>} Generated message
  */
-export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null } = {}) {
+export async function generateRaw({ prompt = '', api = null, instructOverride = false, quietToLoud = false, systemPrompt = '', responseLength = null, trimNames = true, prefill = '', jsonSchema = null, llmPresetName = '', apiPresetName = '', apiSettingsOverride = null } = {}) {
     if (arguments.length > 0 && typeof arguments[0] !== 'object') {
         console.trace('generateRaw called with positional arguments. Please use an object instead.');
-        [prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, trimNames, prefill, jsonSchema] = arguments;
+        [prompt, api, instructOverride, quietToLoud, systemPrompt, responseLength, trimNames, prefill, jsonSchema, llmPresetName, apiPresetName, apiSettingsOverride] = arguments;
     }
 
     if (!api) {
@@ -3872,7 +4142,12 @@ export async function generateRaw({ prompt = '', api = null, instructOverride = 
         if (api === 'koboldhorde') {
             data = await generateHorde(prompt.toString(), generateData, abortController.signal, false);
         } else if (api === 'openai') {
-            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, { jsonSchema });
+            data = await sendOpenAIRequest('quiet', generateData, abortController.signal, {
+                jsonSchema,
+                llmPresetName: String(llmPresetName || '').trim(),
+                apiPresetName: String(apiPresetName || '').trim(),
+                apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+            });
         } else {
             const generateUrl = getGenerateUrl(api);
             const response = await fetch(generateUrl, {
@@ -4053,6 +4328,107 @@ function removeLastMessage() {
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  */
+
+function normalizeGenerationTrigger(type) {
+    return GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal';
+}
+
+/**
+ * Builds the chat text array used by world info scanning.
+ * @param {ChatMessage[]} messages Chat messages in chronological order.
+ * @param {boolean} [includeNames=world_info_include_names] Whether to include speaker names.
+ * @returns {string[]} Reversed array expected by WI scanner.
+ */
+export function buildWorldInfoChatInput(messages, includeNames = world_info_include_names) {
+    const source = Array.isArray(messages) ? messages : [];
+    return source
+        .map(message => includeNames ? `${message?.name}: ${message?.mes}` : String(message?.mes ?? ''))
+        .reverse();
+}
+
+/**
+ * Builds default WI global scan data for the current character context.
+ * @param {string} type Generation type.
+ * @param {Partial<import('./scripts/world-info.js').WIGlobalScanData>} [overrides={}] Additional fields to override.
+ * @returns {import('./scripts/world-info.js').WIGlobalScanData}
+ */
+export function buildWorldInfoGlobalScanData(type, overrides = {}) {
+    const {
+        description,
+        personality,
+        persona,
+        scenario,
+        charDepthPrompt,
+        creatorNotes,
+    } = getCharacterCardFields();
+
+    return {
+        personaDescription: persona,
+        characterDescription: description,
+        characterPersonality: personality,
+        characterDepthPrompt: charDepthPrompt,
+        scenario: scenario,
+        creatorNotes: creatorNotes,
+        trigger: normalizeGenerationTrigger(type),
+        ...(overrides || {}),
+    };
+}
+
+/**
+ * Simulates world info activation for a provided chat snapshot.
+ * Useful for extensions that need hypothetical WI activation before final prompt assembly.
+ * @param {object} params Parameters.
+ * @param {ChatMessage[]} [params.coreChat=[]] Chat snapshot to scan.
+ * @param {number} [params.maxContext] Max context for WI scan.
+ * @param {boolean} [params.dryRun=false] Dry run flag.
+ * @param {string} [params.type='normal'] Generation type.
+ * @param {string[]} [params.chatForWI] Optional prebuilt WI chat array.
+ * @param {boolean} [params.includeNames=world_info_include_names] Include speaker names when building WI chat.
+ * @param {import('./scripts/world-info.js').WIGlobalScanData} [params.globalScanData] Optional custom global scan data.
+ * @returns {Promise<import('./scripts/world-info.js').WIResults & { chatForWI: string[], maxContext: number, globalScanData: import('./scripts/world-info.js').WIGlobalScanData }>}
+ */
+export async function simulateWorldInfoActivation({
+    coreChat = [],
+    maxContext: maxContextOverride = undefined,
+    dryRun = false,
+    type = 'normal',
+    chatForWI = undefined,
+    includeNames = world_info_include_names,
+    globalScanData = undefined,
+} = {}) {
+    const resolvedCoreChat = Array.isArray(coreChat) ? coreChat : [];
+    const resolvedMaxContext = Number.isFinite(maxContextOverride) && Number(maxContextOverride) > 0
+        ? Number(maxContextOverride)
+        : getMaxContextSize();
+    const resolvedChatForWI = Array.isArray(chatForWI)
+        ? chatForWI
+        : buildWorldInfoChatInput(resolvedCoreChat, includeNames);
+    const resolvedGlobalScanData = globalScanData && typeof globalScanData === 'object'
+        ? { ...globalScanData, trigger: normalizeGenerationTrigger(globalScanData.trigger || type) }
+        : buildWorldInfoGlobalScanData(type);
+
+    const worldInfoResolution = await getWorldInfoPrompt(resolvedChatForWI, resolvedMaxContext, dryRun, resolvedGlobalScanData);
+    return {
+        ...worldInfoResolution,
+        chatForWI: resolvedChatForWI,
+        maxContext: resolvedMaxContext,
+        globalScanData: resolvedGlobalScanData,
+    };
+}
+
+function normalizeWorldInfoResolutionData(worldInfoResolution) {
+    const safeResolution = worldInfoResolution && typeof worldInfoResolution === 'object' ? worldInfoResolution : {};
+    return {
+        worldInfoString: safeResolution.worldInfoString || '',
+        worldInfoBefore: safeResolution.worldInfoBefore || '',
+        worldInfoAfter: safeResolution.worldInfoAfter || '',
+        worldInfoExamples: Array.isArray(safeResolution.worldInfoExamples) ? safeResolution.worldInfoExamples : [],
+        worldInfoDepth: Array.isArray(safeResolution.worldInfoDepth) ? safeResolution.worldInfoDepth : [],
+        outletEntries: safeResolution.outletEntries && typeof safeResolution.outletEntries === 'object' ? safeResolution.outletEntries : {},
+        anBefore: Array.isArray(safeResolution.anBefore) ? safeResolution.anBefore : [],
+        anAfter: Array.isArray(safeResolution.anAfter) ? safeResolution.anAfter : [],
+    };
+}
 
 /**
  * MARK:Generate()
@@ -4373,6 +4749,22 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
     }
 
+    const generationContextPayload = {
+        type,
+        dryRun,
+        isContinue,
+        isImpersonate,
+        coreChat,
+        maxContext: this_max_context,
+    };
+    await eventSource.emit(event_types.GENERATION_CONTEXT_READY, generationContextPayload);
+    if (Array.isArray(generationContextPayload.coreChat)) {
+        coreChat = generationContextPayload.coreChat;
+    }
+    if (Number.isFinite(generationContextPayload.maxContext) && Number(generationContextPayload.maxContext) > 0) {
+        this_max_context = Number(generationContextPayload.maxContext);
+    }
+
     console.log(`Core/all messages: ${coreChat.length}/${chat.length}`);
 
     if ((promptBias && !isUserPromptBias) || power_user.always_force_name2 || main_api == 'novel') {
@@ -4391,18 +4783,130 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     // Add WI to prompt (and also inject WI to AN value via hijack)
     // Make quiet prompt available for WIAN
     setExtensionPrompt(inject_ids.QUIET_PROMPT, quiet_prompt || '', extension_prompt_types.IN_PROMPT, 0, true);
-    const chatForWI = coreChat.map(x => world_info_include_names ? `${x.name}: ${x.mes}` : x.mes).reverse();
-    /** @type {import('./scripts/world-info.js').WIGlobalScanData} */
-    const globalScanData = {
+    let chatForWI = buildWorldInfoChatInput(coreChat);
+    let globalScanData = buildWorldInfoGlobalScanData(type, {
         personaDescription: persona,
         characterDescription: description,
         characterPersonality: personality,
         characterDepthPrompt: charDepthPrompt,
         scenario: scenario,
         creatorNotes: creatorNotes,
-        trigger: GENERATION_TYPE_TRIGGERS.includes(type) ? type : 'normal',
+    });
+
+    const runWIScan = async (overrides = {}) => {
+        return await simulateWorldInfoActivation({
+            coreChat: overrides.coreChat ?? coreChat,
+            maxContext: overrides.maxContext ?? this_max_context,
+            dryRun,
+            type,
+            chatForWI: overrides.chatForWI ?? chatForWI,
+            globalScanData: overrides.globalScanData ?? globalScanData,
+        });
     };
-    const { worldInfoString, worldInfoBefore, worldInfoAfter, worldInfoExamples, worldInfoDepth, outletEntries } = await getWorldInfoPrompt(chatForWI, this_max_context, dryRun, globalScanData);
+
+    const wiScanPayload = {
+        type,
+        dryRun,
+        maxContext: this_max_context,
+        coreChat,
+        chatForWI,
+        useCustomChatForWI: false,
+        globalScanData,
+        requestRescan: false,
+        worldInfoResolutionOverride: null,
+        simulateWorldInfo: async (overrides = {}) => await runWIScan(overrides),
+    };
+    await eventSource.emit(event_types.GENERATION_BEFORE_WORLD_INFO_SCAN, wiScanPayload);
+    if (Array.isArray(wiScanPayload.coreChat)) {
+        coreChat = wiScanPayload.coreChat;
+    }
+    if (Number.isFinite(wiScanPayload.maxContext) && Number(wiScanPayload.maxContext) > 0) {
+        this_max_context = Number(wiScanPayload.maxContext);
+    }
+    if (wiScanPayload.useCustomChatForWI === true && Array.isArray(wiScanPayload.chatForWI)) {
+        chatForWI = wiScanPayload.chatForWI;
+    } else {
+        chatForWI = buildWorldInfoChatInput(coreChat);
+    }
+    if (wiScanPayload.globalScanData && typeof wiScanPayload.globalScanData === 'object') {
+        globalScanData = wiScanPayload.globalScanData;
+    }
+
+    const initialWorldInfoResult = await runWIScan();
+    chatForWI = initialWorldInfoResult.chatForWI;
+    this_max_context = initialWorldInfoResult.maxContext;
+    globalScanData = initialWorldInfoResult.globalScanData;
+    let worldInfoResolution = initialWorldInfoResult;
+
+    const wiAfterPayload = {
+        ...wiScanPayload,
+        chatForWI,
+        maxContext: this_max_context,
+        globalScanData,
+        ...normalizeWorldInfoResolutionData(worldInfoResolution),
+        worldInfoResolution,
+        requestRescan: Boolean(wiScanPayload.requestRescan),
+        worldInfoResolutionOverride: wiScanPayload.worldInfoResolutionOverride ?? null,
+        simulateWorldInfo: async (overrides = {}) => await runWIScan(overrides),
+    };
+    await eventSource.emit(event_types.GENERATION_AFTER_WORLD_INFO_SCAN, wiAfterPayload);
+
+    if (Array.isArray(wiAfterPayload.coreChat)) {
+        coreChat = wiAfterPayload.coreChat;
+    }
+    if (Number.isFinite(wiAfterPayload.maxContext) && Number(wiAfterPayload.maxContext) > 0) {
+        this_max_context = Number(wiAfterPayload.maxContext);
+    }
+    if (wiAfterPayload.useCustomChatForWI === true && Array.isArray(wiAfterPayload.chatForWI)) {
+        chatForWI = wiAfterPayload.chatForWI;
+    } else {
+        chatForWI = buildWorldInfoChatInput(coreChat);
+    }
+    if (wiAfterPayload.globalScanData && typeof wiAfterPayload.globalScanData === 'object') {
+        globalScanData = wiAfterPayload.globalScanData;
+    }
+
+    let worldInfoRescanned = false;
+    if (wiAfterPayload.worldInfoResolutionOverride && typeof wiAfterPayload.worldInfoResolutionOverride === 'object') {
+        worldInfoResolution = wiAfterPayload.worldInfoResolutionOverride;
+    } else if (wiAfterPayload.requestRescan === true) {
+        worldInfoResolution = await runWIScan();
+        chatForWI = Array.isArray(worldInfoResolution.chatForWI) ? worldInfoResolution.chatForWI : chatForWI;
+        this_max_context = Number.isFinite(worldInfoResolution.maxContext) ? Number(worldInfoResolution.maxContext) : this_max_context;
+        globalScanData = worldInfoResolution.globalScanData && typeof worldInfoResolution.globalScanData === 'object'
+            ? worldInfoResolution.globalScanData
+            : globalScanData;
+        worldInfoRescanned = true;
+    }
+
+    let {
+        worldInfoString,
+        worldInfoBefore,
+        worldInfoAfter,
+        worldInfoExamples,
+        worldInfoDepth,
+        outletEntries,
+        anBefore,
+        anAfter,
+    } = normalizeWorldInfoResolutionData(worldInfoResolution);
+
+    await eventSource.emit(event_types.GENERATION_WORLD_INFO_FINALIZED, {
+        ...wiAfterPayload,
+        coreChat,
+        chatForWI,
+        maxContext: this_max_context,
+        globalScanData,
+        worldInfoString,
+        worldInfoBefore,
+        worldInfoAfter,
+        worldInfoExamples,
+        worldInfoDepth,
+        anBefore,
+        anAfter,
+        outletEntries,
+        worldInfoResolution,
+        rescanned: worldInfoRescanned,
+    });
     setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
 
     // Add message example WI
@@ -5342,7 +5846,27 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         console.debug('/api/chats/save called by /Generate');
-        await saveChatConditional();
+        if (main_api === 'openai' && type === 'normal' && chat.length > 0 && !chat[chat.length - 1]?.is_user) {
+            chat[chat.length - 1].extra = chat[chat.length - 1].extra || {};
+            chat[chat.length - 1].extra.luker_generation_id = getLastOpenAIGenerationId() || chat[chat.length - 1].extra.luker_generation_id;
+        }
+        const serverPersistedReply = main_api === 'openai' && isLastOpenAIReplyPersistedByServer();
+        const canUseIncrementalAppend = !isImpersonate
+            && type === 'normal'
+            && chat.length > 0
+            && !chat[chat.length - 1]?.is_user
+            && !serverPersistedReply;
+        if (canUseIncrementalAppend) {
+            const appended = await appendChatMessages([chat[chat.length - 1]]);
+            if (!appended) {
+                await saveChatConditional();
+            }
+        } else {
+            if (serverPersistedReply) {
+                console.debug('Skipping incremental append because backend already persisted generation', getLastOpenAIGenerationId());
+            }
+            await saveChatConditional();
+        }
         unblockGeneration(type);
         streamingProcessor = null;
 
@@ -5678,7 +6202,10 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     if (typeof insertAt === 'number' && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        await saveChatConditional();
+        const patched = await patchChatMessages([{ op: 'insert', index: insertAt, message }]);
+        if (!patched) {
+            await saveChatConditional();
+        }
         await eventSource.emit(event_types.MESSAGE_SENT, insertAt);
         await reloadCurrentChat();
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, insertAt);
@@ -5688,7 +6215,10 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
         await eventSource.emit(event_types.MESSAGE_SENT, chat_id);
         addOneMessage(message);
         await eventSource.emit(event_types.USER_MESSAGE_RENDERED, chat_id);
-        await saveChatConditional();
+        const appended = await appendChatMessages([message]);
+        if (!appended) {
+            await saveChatConditional();
+        }
     }
 
     return message;
@@ -5831,6 +6361,9 @@ function setInContextMessages(msgInContextCount, type) {
 /**
  * @typedef {object} AdditionalRequestOptions
  * @property {JsonSchema} [jsonSchema]
+ * @property {string} [llmPresetName]
+ * @property {string} [apiPresetName]
+ * @property {object} [apiSettingsOverride]
  */
 
 /**
@@ -5842,6 +6375,11 @@ function setInContextMessages(msgInContextCount, type) {
  * @throws {Error|object}
  */
 export async function sendGenerationRequest(type, data, options = {}) {
+    const requestPayload = { type, data, options, mainApi: main_api, stream: false };
+    await eventSource.emit(event_types.GENERATION_BEFORE_API_REQUEST, requestPayload);
+    data = requestPayload.data;
+    options = requestPayload.options || options;
+
     if (main_api === 'openai') {
         return await sendOpenAIRequest(type, data.prompt, abortController.signal, options);
     }
@@ -5876,6 +6414,11 @@ export async function sendStreamingRequest(type, data, options = {}) {
     if (abortController?.signal?.aborted) {
         throw new Error('Generation was aborted.');
     }
+
+    const requestPayload = { type, data, options, mainApi: main_api, stream: true };
+    await eventSource.emit(event_types.GENERATION_BEFORE_API_REQUEST, requestPayload);
+    data = requestPayload.data;
+    options = requestPayload.options || options;
 
     switch (main_api) {
         case 'openai':
@@ -7031,36 +7574,55 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
                 cache: 'no-cache',
             });
 
-            if (getChatResponse.ok) {
-                const currentChat = await getChatResponse.json();
+            if (!getChatResponse.ok) {
+                continue;
+            }
 
-                for (const message of currentChat) {
-                    if (message.is_user || message.is_system || message.extra?.type == system_message_types.NARRATOR) {
-                        continue;
-                    }
+            const currentChat = await getChatResponse.json();
+            if (!Array.isArray(currentChat) || currentChat.length === 0) {
+                continue;
+            }
 
-                    if (message.name !== undefined) {
-                        message.name = newName;
-                    }
+            const operations = [];
+            for (let lineIndex = 1; lineIndex < currentChat.length; lineIndex++) {
+                const message = currentChat[lineIndex];
+                if (message?.is_user || message?.is_system || message?.extra?.type == system_message_types.NARRATOR) {
+                    continue;
+                }
+                if (message?.name === undefined) {
+                    continue;
                 }
 
-                await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, currentChat, oldAvatar, newAvatar);
-
-                const saveChatResponse = await fetch('/api/chats/save', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({
-                        ch_name: newName,
-                        file_name: fileNameWithoutExtension,
-                        chat: currentChat,
-                        avatar_url: newAvatar,
-                    }),
-                    cache: 'no-cache',
+                const nextMessage = { ...message, name: newName };
+                currentChat[lineIndex] = nextMessage;
+                operations.push({
+                    op: 'update',
+                    index: lineIndex - 1,
+                    message: nextMessage,
                 });
+            }
 
-                if (!saveChatResponse.ok) {
-                    throw new Error('Could not save chat');
-                }
+            if (operations.length === 0) {
+                continue;
+            }
+
+            await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, currentChat, oldAvatar, newAvatar);
+
+            const patchResponse = await fetch('/api/chats/patch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    ch_name: newName,
+                    file_name: fileNameWithoutExtension,
+                    avatar_url: newAvatar,
+                    operations,
+                    chat_metadata: currentChat?.[0]?.chat_metadata || {},
+                }),
+                cache: 'no-cache',
+            });
+
+            if (!patchResponse.ok) {
+                throw new Error('Could not patch chat');
             }
         } catch (error) {
             toastr.error(t`Past chat could not be updated: ${file_name}`);
@@ -7090,6 +7652,585 @@ export function saveChatDebounced() {
         await saveChatConditional();
         console.debug('Chat saved');
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
+}
+
+/**
+ * Builds chat-state target payload for state/get|patch|delete endpoints.
+ * @param {object|null} [target] Explicit target override.
+ * @returns {object|null} Request target payload or null when no active chat target is available.
+ */
+function resolveChatStateTarget(target = null) {
+    if (target && typeof target === 'object') {
+        if (target.is_group) {
+            const id = String(target.id || '').trim();
+            return id ? { is_group: true, id } : null;
+        }
+        const avatar_url = String(target.avatar_url || '').trim();
+        const file_name = String(target.file_name || '').trim();
+        return avatar_url && file_name
+            ? { is_group: false, avatar_url, file_name }
+            : null;
+    }
+
+    if (selected_group) {
+        const group = groups.find(x => x.id == selected_group);
+        const groupChatId = String(group?.chat_id || '').trim();
+        return groupChatId ? { is_group: true, id: groupChatId } : null;
+    }
+
+    const avatar_url = String(characters[this_chid]?.avatar || '').trim();
+    const file_name = String(characters[this_chid]?.chat || '').trim();
+    return avatar_url && file_name
+        ? { is_group: false, avatar_url, file_name }
+        : null;
+}
+
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJsonValue(value) {
+    if (typeof structuredClone === 'function') {
+        return structuredClone(value);
+    }
+    return JSON.parse(JSON.stringify(value));
+}
+
+function areJsonValuesEqual(left, right) {
+    if (left === right) {
+        return true;
+    }
+    try {
+        return JSON.stringify(left) === JSON.stringify(right);
+    } catch {
+        return false;
+    }
+}
+
+function getChatMetadataSnapshotKey(target = resolveChatStateTarget()) {
+    if (!target || typeof target !== 'object') {
+        return '';
+    }
+    if (target.is_group) {
+        return `group:${String(target.id || '').trim()}`;
+    }
+    const avatar = String(target.avatar_url || '').trim();
+    const file = String(target.file_name || '').trim();
+    if (!avatar || !file) {
+        return '';
+    }
+    return `char:${avatar}:${file}`;
+}
+
+function getChatMessageSnapshotKey(target = resolveChatStateTarget()) {
+    return getChatMetadataSnapshotKey(target);
+}
+
+export function buildObjectPatchOperations(previousState, nextState, options = {}) {
+    const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
+        ? options.maxOperations
+        : 2000;
+    const next = isPlainObject(nextState) ? nextState : null;
+    if (!next) {
+        return [];
+    }
+    if (!isPlainObject(previousState)) {
+        return [{ op: 'replace_root', value: cloneJsonValue(next) }];
+    }
+
+    /** @type {Array<{op:string,path?:string[],value?:any}>} */
+    const operations = [];
+    const walk = (previousNode, nextNode, path = []) => {
+        if (!isPlainObject(previousNode) || !isPlainObject(nextNode)) {
+            if (!areJsonValuesEqual(previousNode, nextNode)) {
+                if (path.length === 0) {
+                    operations.push({
+                        op: 'replace_root',
+                        value: cloneJsonValue(nextNode),
+                    });
+                } else {
+                    operations.push({
+                        op: 'set',
+                        path,
+                        value: cloneJsonValue(nextNode),
+                    });
+                }
+            }
+            return;
+        }
+
+        const keys = new Set([...Object.keys(previousNode), ...Object.keys(nextNode)]);
+        for (const key of keys) {
+            const hasPrev = Object.hasOwn(previousNode, key);
+            const hasNext = Object.hasOwn(nextNode, key);
+            const nextPath = [...path, key];
+            if (!hasNext) {
+                operations.push({ op: 'delete', path: nextPath });
+                continue;
+            }
+            if (!hasPrev) {
+                operations.push({ op: 'set', path: nextPath, value: cloneJsonValue(nextNode[key]) });
+                continue;
+            }
+
+            const previousValue = previousNode[key];
+            const nextValue = nextNode[key];
+            if (isPlainObject(previousValue) && isPlainObject(nextValue)) {
+                walk(previousValue, nextValue, nextPath);
+                continue;
+            }
+            if (!areJsonValuesEqual(previousValue, nextValue)) {
+                operations.push({ op: 'set', path: nextPath, value: cloneJsonValue(nextValue) });
+            }
+        }
+    };
+
+    walk(previousState, next, []);
+    if (operations.length > maxOperations) {
+        return [{ op: 'replace_root', value: cloneJsonValue(next) }];
+    }
+    return operations;
+}
+
+export function buildChatMessagePatchOperations(previousMessages, nextMessages) {
+    const previous = Array.isArray(previousMessages) ? previousMessages : [];
+    const next = Array.isArray(nextMessages) ? nextMessages : [];
+    const previousLength = previous.length;
+    const nextLength = next.length;
+
+    let prefixLength = 0;
+    while (prefixLength < previousLength
+        && prefixLength < nextLength
+        && areJsonValuesEqual(previous[prefixLength], next[prefixLength])) {
+        prefixLength++;
+    }
+
+    let suffixLength = 0;
+    while (suffixLength < (previousLength - prefixLength)
+        && suffixLength < (nextLength - prefixLength)
+        && areJsonValuesEqual(previous[previousLength - 1 - suffixLength], next[nextLength - 1 - suffixLength])) {
+        suffixLength++;
+    }
+
+    const previousMiddleStart = prefixLength;
+    const previousMiddleEnd = previousLength - suffixLength;
+    const nextMiddleStart = prefixLength;
+    const nextMiddleEnd = nextLength - suffixLength;
+
+    const previousMiddleLength = Math.max(0, previousMiddleEnd - previousMiddleStart);
+    const nextMiddleLength = Math.max(0, nextMiddleEnd - nextMiddleStart);
+    const sharedLength = Math.min(previousMiddleLength, nextMiddleLength);
+
+    /** @type {Array<{op:'insert'|'update'|'delete',index:number,message?:ChatMessage}>} */
+    const operations = [];
+
+    for (let offset = 0; offset < sharedLength; offset++) {
+        const index = previousMiddleStart + offset;
+        const nextMessage = next[nextMiddleStart + offset];
+        operations.push({
+            op: 'update',
+            index,
+            message: cloneJsonValue(nextMessage),
+        });
+    }
+
+    for (let offset = 0; offset < (previousMiddleLength - sharedLength); offset++) {
+        operations.push({
+            op: 'delete',
+            index: previousMiddleStart + sharedLength,
+        });
+    }
+
+    for (let offset = 0; offset < (nextMiddleLength - sharedLength); offset++) {
+        operations.push({
+            op: 'insert',
+            index: previousMiddleStart + sharedLength + offset,
+            message: cloneJsonValue(next[nextMiddleStart + sharedLength + offset]),
+        });
+    }
+
+    return operations;
+}
+
+function buildChatMetadataPatchOperations(previousMetadata, nextMetadata) {
+    return buildObjectPatchOperations(previousMetadata, nextMetadata, { maxOperations: 2000 });
+}
+
+function rememberChatMetadataSnapshot(target = resolveChatStateTarget(), metadata = chat_metadata) {
+    const key = getChatMetadataSnapshotKey(target);
+    if (!key) {
+        return;
+    }
+    chatMetadataSnapshotCache.set(key, cloneJsonValue(isPlainObject(metadata) ? metadata : {}));
+}
+
+export function seedChatMetadataSnapshot(target = null, metadata = chat_metadata) {
+    const resolvedTarget = resolveChatStateTarget(target);
+    rememberChatMetadataSnapshot(resolvedTarget, metadata);
+}
+
+export function getChatMetadataSnapshot(target = null) {
+    const resolvedTarget = resolveChatStateTarget(target);
+    const key = getChatMetadataSnapshotKey(resolvedTarget);
+    if (!key) {
+        return null;
+    }
+    const snapshot = chatMetadataSnapshotCache.get(key);
+    return isPlainObject(snapshot) ? cloneJsonValue(snapshot) : null;
+}
+
+function rememberChatMessageSnapshot(target = resolveChatStateTarget(), messages = chat) {
+    const key = getChatMessageSnapshotKey(target);
+    if (!key) {
+        return;
+    }
+    if (!Array.isArray(messages)) {
+        chatMessageSnapshotCache.delete(key);
+        return;
+    }
+    chatMessageSnapshotCache.set(key, cloneJsonValue(messages));
+}
+
+export function seedChatMessageSnapshot(target = null, messages = chat) {
+    const resolvedTarget = resolveChatStateTarget(target);
+    rememberChatMessageSnapshot(resolvedTarget, messages);
+}
+
+export function getChatMessageSnapshot(target = null) {
+    const resolvedTarget = resolveChatStateTarget(target);
+    const key = getChatMessageSnapshotKey(resolvedTarget);
+    if (!key) {
+        return null;
+    }
+    const snapshot = chatMessageSnapshotCache.get(key);
+    return Array.isArray(snapshot) ? cloneJsonValue(snapshot) : null;
+}
+
+/**
+ * Gets chat-bound plugin state payload from server side.
+ * @param {string} namespace Chat state namespace.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit chat target.
+ * @returns {Promise<object|null>} Stored state object or null when not found/failed.
+ */
+export async function getChatState(namespace, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace) {
+            return null;
+        }
+        const target = resolveChatStateTarget(options?.target || null);
+        if (!target) {
+            return null;
+        }
+
+        const response = await fetch('/api/chats/state/get', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...target,
+                namespace: stateNamespace,
+            }),
+        });
+        if (!response.ok) {
+            return null;
+        }
+
+        const payload = await response.json();
+        return payload?.data && typeof payload.data === 'object' ? payload.data : null;
+    } catch (error) {
+        console.warn('Incremental chat state get failed', error);
+        return null;
+    }
+}
+
+/**
+ * Applies incremental patch operations to chat-bound plugin state payload.
+ * @param {string} namespace Chat state namespace.
+ * @param {object[]} operations Patch operations.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit chat target.
+ * @returns {Promise<boolean>} True when patch request succeeded.
+ */
+export async function patchChatState(namespace, operations, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace || !Array.isArray(operations) || operations.length === 0) {
+            return false;
+        }
+        const target = resolveChatStateTarget(options?.target || null);
+        if (!target) {
+            return false;
+        }
+
+        const response = await fetch('/api/chats/state/patch', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...target,
+                namespace: stateNamespace,
+                operations,
+            }),
+        });
+
+        return response.ok;
+    } catch (error) {
+        console.warn('Incremental chat state patch failed', error);
+        return false;
+    }
+}
+
+/**
+ * Deletes chat-bound plugin state payload for namespace.
+ * @param {string} namespace Chat state namespace.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit chat target.
+ * @returns {Promise<boolean>} True when delete request succeeded.
+ */
+export async function deleteChatState(namespace, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace) {
+            return false;
+        }
+        const target = resolveChatStateTarget(options?.target || null);
+        if (!target) {
+            return false;
+        }
+
+        const response = await fetch('/api/chats/state/delete', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...target,
+                namespace: stateNamespace,
+            }),
+        });
+
+        return response.ok;
+    } catch (error) {
+        console.warn('Incremental chat state delete failed', error);
+        return false;
+    }
+}
+
+/**
+ * Appends new chat messages to server-side chat storage.
+ * Falls back to legacy full-save callers when this returns false.
+ * @param {ChatMessage[]} messages Messages to append.
+ * @returns {Promise<boolean>} True on successful append.
+ */
+export async function appendChatMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return true;
+    }
+
+    try {
+        if (selected_group) {
+            const group = groups.find(x => x.id == selected_group);
+            const groupChatId = group?.chat_id;
+            if (!groupChatId) {
+                return false;
+            }
+
+            const response = await fetch('/api/chats/group/append', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    id: groupChatId,
+                    messages: messages,
+                    chat_metadata: { ...chat_metadata },
+                    integrity: chat_metadata?.integrity,
+                }),
+            });
+
+            if (response.ok) {
+                rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
+            }
+            return response.ok;
+        }
+
+        const fileName = characters[this_chid]?.chat;
+        const avatar = characters[this_chid]?.avatar;
+        const charName = characters[this_chid]?.name;
+
+        if (!fileName || !avatar || !charName) {
+            return false;
+        }
+
+        const response = await fetch('/api/chats/append', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: charName,
+                file_name: fileName,
+                messages: messages,
+                avatar_url: avatar,
+                chat_metadata: { ...chat_metadata },
+                integrity: chat_metadata?.integrity,
+            }),
+        });
+
+        if (response.ok) {
+            rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
+        }
+        return response.ok;
+    } catch (error) {
+        console.warn('Incremental chat append failed', error);
+        return false;
+    }
+}
+
+/**
+ * Applies incremental patch operations to chat messages on server-side chat storage.
+ * Falls back to legacy full-save callers when this returns false.
+ * @param {object[]|object} operations Patch operations (single op or op array).
+ * @returns {Promise<boolean>} True on successful patch.
+ */
+export async function patchChatMessages(operations) {
+    const normalizedOperations = Array.isArray(operations)
+        ? operations
+        : (operations && typeof operations === 'object' ? [operations] : []);
+
+    if (normalizedOperations.length === 0) {
+        return true;
+    }
+
+    try {
+        if (selected_group) {
+            const group = groups.find(x => x.id == selected_group);
+            const groupChatId = group?.chat_id;
+            if (!groupChatId) {
+                return false;
+            }
+
+            const response = await fetch('/api/chats/group/patch', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    id: groupChatId,
+                    operations: normalizedOperations,
+                    chat_metadata: { ...chat_metadata },
+                    integrity: chat_metadata?.integrity,
+                }),
+            });
+
+            if (response.ok) {
+                rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
+            }
+            return response.ok;
+        }
+
+        const fileName = characters[this_chid]?.chat;
+        const avatar = characters[this_chid]?.avatar;
+        const charName = characters[this_chid]?.name;
+
+        if (!fileName || !avatar || !charName) {
+            return false;
+        }
+
+        const response = await fetch('/api/chats/patch', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: charName,
+                file_name: fileName,
+                operations: normalizedOperations,
+                avatar_url: avatar,
+                chat_metadata: { ...chat_metadata },
+                integrity: chat_metadata?.integrity,
+            }),
+        });
+
+        if (response.ok) {
+            rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
+        }
+        return response.ok;
+    } catch (error) {
+        console.warn('Incremental chat patch failed', error);
+        return false;
+    }
+}
+
+/**
+ * Updates only chat metadata on server-side chat storage.
+ * Falls back to legacy full-save callers when this returns false.
+ * @param {object} [withMetadata] Optional metadata patch to merge before save.
+ * @returns {Promise<boolean>} True on successful metadata save.
+ */
+export async function saveChatMetadata(withMetadata = undefined) {
+    try {
+        const metadata = {
+            ...chat_metadata,
+            ...((withMetadata && typeof withMetadata === 'object') ? withMetadata : {}),
+        };
+        const target = resolveChatStateTarget();
+        if (!target) {
+            return false;
+        }
+
+        const snapshotKey = getChatMetadataSnapshotKey(target);
+        const previousMetadata = snapshotKey ? chatMetadataSnapshotCache.get(snapshotKey) : null;
+        const operations = buildChatMetadataPatchOperations(previousMetadata, metadata);
+
+        // Nothing changed.
+        if (operations.length === 0) {
+            return true;
+        }
+
+        // Prefer metadata patch route to avoid re-sending huge metadata payloads.
+        if (target.is_group) {
+            const response = await fetch('/api/chats/group/meta/patch', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    id: target.id,
+                    operations,
+                    integrity: chat_metadata?.integrity,
+                }),
+            });
+
+            if (response.ok) {
+                rememberChatMetadataSnapshot(target, metadata);
+                return true;
+            }
+        } else {
+            const charName = characters[this_chid]?.name;
+            if (!charName) {
+                return false;
+            }
+            const response = await fetch('/api/chats/meta/patch', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    ch_name: charName,
+                    file_name: target.file_name,
+                    avatar_url: target.avatar_url,
+                    operations,
+                    integrity: chat_metadata?.integrity,
+                }),
+            });
+
+            if (response.ok) {
+                rememberChatMetadataSnapshot(target, metadata);
+                return true;
+            }
+        }
+
+        return false;
+    } catch (error) {
+        console.warn('Incremental chat metadata save failed', error);
+        return false;
+    }
 }
 
 /**
@@ -7126,6 +8267,13 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false } 
         return;
     }
 
+    const charName = characters[this_chid]?.name;
+    const avatar = characters[this_chid]?.avatar;
+    if (!charName || !avatar) {
+        console.warn('saveChat called without active character identity');
+        return;
+    }
+
     characters[this_chid]['date_last_chat'] = Date.now();
 
     const trimmedChat = (mesId !== undefined && mesId >= 0 && mesId < chat.length)
@@ -7140,20 +8288,80 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false } 
     };
 
     try {
+        const target = { is_group: false, avatar_url: avatar, file_name: fileName };
+        const previousMessages = chatMessageSnapshotCache.get(getChatMessageSnapshotKey(target));
+
+        if (!force && Array.isArray(previousMessages)) {
+            const operations = buildChatMessagePatchOperations(previousMessages, trimmedChat);
+
+            if (operations.length > 0) {
+                const patchResult = await fetch('/api/chats/patch', {
+                    method: 'POST',
+                    cache: 'no-cache',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({
+                        ch_name: charName,
+                        file_name: fileName,
+                        operations,
+                        avatar_url: avatar,
+                        chat_metadata: metadata,
+                        integrity: chat_metadata?.integrity,
+                        force: force,
+                    }),
+                });
+
+                if (patchResult.ok) {
+                    rememberChatMessageSnapshot(target, trimmedChat);
+                    rememberChatMetadataSnapshot(target, metadata);
+                    return;
+                }
+
+                const patchErrorData = await patchResult.json().catch(() => null);
+                const patchIntegrityError = patchErrorData?.error === 'integrity' && !force;
+                if (patchIntegrityError) {
+                    const popupResult = await Popup.show.input(
+                        t`ERROR: Chat integrity check failed while saving the file.`,
+                        t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
+                          <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
+                        '',
+                        { okButton: 'OK', cancelButton: false },
+                    );
+
+                    const forceSaveConfirmed = popupResult === 'OVERWRITE';
+                    if (!forceSaveConfirmed) {
+                        console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
+                        window.location.reload();
+                        return;
+                    }
+
+                    await saveChat({ chatName, withMetadata, mesId, force: true });
+                    return;
+                }
+            } else {
+                const metadataSaved = await saveChatMetadata(withMetadata);
+                if (metadataSaved) {
+                    rememberChatMessageSnapshot(target, trimmedChat);
+                    return;
+                }
+            }
+        }
+
         const result = await fetch('/api/chats/save', {
             method: 'POST',
             cache: 'no-cache',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                ch_name: characters[this_chid].name,
+                ch_name: charName,
                 file_name: fileName,
                 chat: [chatHeader, ...trimmedChat],
-                avatar_url: characters[this_chid].avatar,
+                avatar_url: avatar,
                 force: force,
             }),
         });
 
         if (result.ok) {
+            rememberChatMessageSnapshot(target, trimmedChat);
+            rememberChatMetadataSnapshot(target, metadata);
             return;
         }
 
@@ -7358,16 +8566,22 @@ export async function getChat() {
             dataType: 'json',
             contentType: 'application/json',
         });
+
         if (response[0] !== undefined) {
             chat.splice(0, chat.length, ...response);
             chat_metadata = chat[0]['chat_metadata'] ?? {};
-
             chat.shift();
             chat.forEach(ensureMessageMediaIsArray);
         }
+        chatServerState.nextOlderIndex = 0;
+        chatServerState.totalMessages = chat.length;
+        chatServerState.hasMore = false;
+
         if (!chat_metadata['integrity']) {
             chat_metadata['integrity'] = uuidv4();
         }
+        rememberChatMetadataSnapshot();
+        rememberChatMessageSnapshot();
         await getChatResult();
         eventSource.emit('chatLoaded', { detail: { id: this_chid, character: characters[this_chid] } });
 
@@ -7395,6 +8609,10 @@ async function getChatResult() {
         }
         // Make sure the chat appears on the server
         await saveChatConditional();
+    }
+    chatServerState.totalMessages = Math.max(chatServerState.totalMessages, chat.length);
+    if (!chatServerState.hasMore) {
+        chatServerState.nextOlderIndex = 0;
     }
     await loadItemizedPrompts(getCurrentChatId());
     await printMessages();
@@ -7450,6 +8668,9 @@ export async function openCharacterChat(file_name) {
     characters[this_chid]['chat'] = file_name;
     chat.length = 0;
     chat_metadata = {};
+    chatServerState.nextOlderIndex = 0;
+    chatServerState.totalMessages = 0;
+    chatServerState.hasMore = false;
     await getChat();
     $('#selected_chat_pole').val(file_name);
     await createOrEditCharacter(new CustomEvent('newChat'));
@@ -8078,7 +9299,13 @@ async function messageEditMove(sourceId, targetId) {
 
     updateViewMessageIds();
     refreshSwipeButtons();
-    await saveChatConditional();
+    const patched = await patchChatMessages([
+        { op: 'update', index: sourceId, message: chat[sourceId] },
+        { op: 'update', index: targetId, message: chat[targetId] },
+    ]);
+    if (!patched) {
+        await saveChatConditional();
+    }
     return true;
 }
 
@@ -8087,6 +9314,7 @@ async function messageEditDone(div) {
         console.trace('this_edit_mes_id cannot be blank when calling messageEditDone.');
         return;
     }
+    const editedMessageId = Number(this_edit_mes_id);
 
     let { mesBlock, text, mes, bias } = updateMessage(div);
     if (this_edit_mes_id == 0) {
@@ -8121,7 +9349,12 @@ async function messageEditDone(div) {
 
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     this_edit_mes_id = undefined;
-    await saveChatConditional();
+    const patched = await patchChatMessages([
+        { op: 'update', index: editedMessageId, message: chat[editedMessageId] },
+    ]);
+    if (!patched) {
+        await saveChatConditional();
+    }
     showSwipeButtons();
 }
 
@@ -9051,13 +10284,47 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     //Animate swipe and swap dispayed message.
     await swipe(null, direction, { source: SWIPE_SOURCE.DELETE, repeated: false, forceMesId: messageId, forceSwipeId: newSwipeId });
 
-    await saveChatConditional();
+    const patched = await patchChatMessages([
+        { op: 'update', index: messageId, message: chat[messageId] },
+    ]);
+    if (!patched) {
+        await saveChatConditional();
+    }
 
     return newSwipeId;
 }
 
-export async function saveMetadata() {
-    return await saveChatConditional();
+export async function saveMetadata(options = {}) {
+    const withMetadata = (options && typeof options === 'object') ? options.withMetadata : undefined;
+
+    try {
+        await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
+    } catch {
+        console.warn('Timeout waiting for chat to save');
+        return;
+    }
+
+    try {
+        cancelDebouncedChatSave();
+        isChatSaving = true;
+
+        const saved = await saveChatMetadata(withMetadata);
+        if (!saved) {
+            if (selected_group) {
+                await saveGroupChat(selected_group, true);
+            } else {
+                await saveChat({ withMetadata });
+            }
+        }
+
+        // Save token and prompts cache to IndexedDB storage
+        saveTokenCache();
+        saveItemizedPrompts(getCurrentChatId());
+    } catch (error) {
+        console.error('Error saving chat metadata', error);
+    } finally {
+        isChatSaving = false;
+    }
 }
 
 export async function saveChatConditional() {
@@ -10812,6 +12079,12 @@ jQuery(async function () {
     $(document).on('click', '.last_mes .swipe_left', async (e, data) => await swipe(e, SWIPE_DIRECTION.LEFT, data));
 
     initCharacterSearch();
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        void startLukerGenerationRecovery();
+    });
+    eventSource.on(event_types.GENERATION_STARTED, () => {
+        stopLukerGenerationRecovery();
+    });
 
     $('#mes_impersonate').on('click', function () {
         $('#option_impersonate').trigger('click');
@@ -11763,7 +13036,7 @@ jQuery(async function () {
             }
 
             if (selected_group && format === 'json') {
-                toastr.warning(t`Only SillyTavern's own format is supported for group chat imports. Sorry!`);
+                toastr.warning(t`Only Luker's own format is supported for group chat imports. Sorry!`);
                 continue;
             }
 

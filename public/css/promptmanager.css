@@ -195,6 +195,16 @@
     text-decoration: underline;
 }
 
+#completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt_name .prompt-manager-plugin-extra-badge {
+    margin-left: 0.4em;
+    padding: 0.05em 0.35em;
+    border-radius: 999px;
+    border: 1px solid var(--white20a);
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.72em;
+    text-transform: uppercase;
+}
+
 #completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt_disabled .completion_prompt_manager_prompt_name,
 #completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt_disabled .completion_prompt_manager_prompt_name .prompt-manager-inspect-action {
     color: var(--white30a);

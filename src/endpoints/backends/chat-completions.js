@@ -1,7 +1,9 @@
 import process from 'node:process';
 import util from 'node:util';
+import path from 'node:path';
 import express from 'express';
 import fetch from 'node-fetch';
+import sanitize from 'sanitize-filename';
 import urlJoin from 'url-join';
 
 import {
@@ -60,6 +62,7 @@ import {
     getWebTokenizer,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
+import { appendMessagesToChatFile } from '../chats.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -101,6 +104,497 @@ const cachingAtDepth = (() => {
  * @type {string[]}
  */
 const openRouterCacheableModels = [];
+const lukerPromptStates = new Map();
+const LUKER_PROMPT_STATE_MAX_ITEMS = 256;
+const LUKER_PROMPT_STATE_TTL_MS = 30 * 60 * 1000;
+
+function pruneLukerPromptStates() {
+    const now = Date.now();
+    for (const [key, value] of lukerPromptStates.entries()) {
+        if (!value || !Number.isFinite(value.touched) || (now - value.touched) > LUKER_PROMPT_STATE_TTL_MS) {
+            lukerPromptStates.delete(key);
+        }
+    }
+
+    while (lukerPromptStates.size > LUKER_PROMPT_STATE_MAX_ITEMS) {
+        const oldestKey = lukerPromptStates.keys().next().value;
+        lukerPromptStates.delete(oldestKey);
+    }
+}
+
+function commitLukerPromptState(stateId, messages) {
+    if (!stateId || !Array.isArray(messages)) {
+        return null;
+    }
+
+    pruneLukerPromptStates();
+    const previous = lukerPromptStates.get(stateId);
+    const revision = previous ? Number(previous.revision || 0) + 1 : 1;
+    lukerPromptStates.set(stateId, {
+        revision,
+        messages: structuredClone(messages),
+        touched: Date.now(),
+    });
+    pruneLukerPromptStates();
+    return revision;
+}
+
+function resolveLukerPromptMessages(requestBody) {
+    const explicitStateId = typeof requestBody?.luker_prompt_state_id === 'string'
+        ? requestBody.luker_prompt_state_id.trim()
+        : '';
+    const delta = requestBody?.luker_prompt_delta;
+
+    if (Array.isArray(requestBody?.messages)) {
+        const stateId = explicitStateId || (typeof delta?.state_id === 'string' ? delta.state_id.trim() : '');
+        return {
+            ok: true,
+            statusCode: 200,
+            stateId: stateId || null,
+            messagesSnapshot: stateId ? structuredClone(requestBody.messages) : null,
+            message: '',
+        };
+    }
+
+    if (!delta || typeof delta !== 'object') {
+        return {
+            ok: true,
+            statusCode: 200,
+            stateId: null,
+            messagesSnapshot: null,
+            message: '',
+        };
+    }
+
+    const stateId = typeof delta.state_id === 'string' ? delta.state_id.trim() : '';
+    const baseRevision = Number(delta.base_revision);
+    const prefixLength = Number(delta.prefix_length);
+    const suffixMessages = Array.isArray(delta.messages) ? delta.messages : null;
+
+    if (!stateId || !Number.isInteger(baseRevision) || !Number.isInteger(prefixLength) || !Array.isArray(suffixMessages)) {
+        return {
+            ok: false,
+            statusCode: 400,
+            stateId: null,
+            messagesSnapshot: null,
+            message: 'Invalid luker_prompt_delta payload.',
+        };
+    }
+
+    pruneLukerPromptStates();
+    const state = lukerPromptStates.get(stateId);
+    if (!state || !Array.isArray(state.messages)) {
+        return {
+            ok: false,
+            statusCode: 409,
+            stateId,
+            messagesSnapshot: null,
+            message: 'Prompt delta state not found on the server.',
+        };
+    }
+
+    if (Number(state.revision) !== baseRevision) {
+        return {
+            ok: false,
+            statusCode: 409,
+            stateId,
+            messagesSnapshot: null,
+            message: 'Prompt delta revision mismatch.',
+        };
+    }
+
+    if (prefixLength < 0 || prefixLength > state.messages.length) {
+        return {
+            ok: false,
+            statusCode: 400,
+            stateId,
+            messagesSnapshot: null,
+            message: 'Prompt delta prefix_length is out of bounds.',
+        };
+    }
+
+    const reconstructedMessages = structuredClone([
+        ...state.messages.slice(0, prefixLength),
+        ...suffixMessages,
+    ]);
+    requestBody.messages = reconstructedMessages;
+
+    return {
+        ok: true,
+        statusCode: 200,
+        stateId,
+        messagesSnapshot: structuredClone(reconstructedMessages),
+        message: '',
+    };
+}
+
+const lukerGenerationJobs = new Map();
+const LUKER_GENERATION_JOB_MAX_ITEMS = 128;
+const LUKER_GENERATION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
+const LUKER_GENERATION_JOB_MAX_EVENTS = 8000;
+const LUKER_GENERATION_UNSUPPORTED_SOURCES = new Set([
+    CHAT_COMPLETION_SOURCES.CLAUDE,
+    CHAT_COMPLETION_SOURCES.AI21,
+    CHAT_COMPLETION_SOURCES.MAKERSUITE,
+    CHAT_COMPLETION_SOURCES.VERTEXAI,
+    CHAT_COMPLETION_SOURCES.MISTRALAI,
+    CHAT_COMPLETION_SOURCES.COHERE,
+    CHAT_COMPLETION_SOURCES.DEEPSEEK,
+    CHAT_COMPLETION_SOURCES.AIMLAPI,
+    CHAT_COMPLETION_SOURCES.XAI,
+    CHAT_COMPLETION_SOURCES.CHUTES,
+    CHAT_COMPLETION_SOURCES.ELECTRONHUB,
+    CHAT_COMPLETION_SOURCES.AZURE_OPENAI,
+]);
+
+function isLukerGenerationSupportedSource(source) {
+    const resolvedSource = String(source || CHAT_COMPLETION_SOURCES.OPENAI).trim().toLowerCase();
+    return !LUKER_GENERATION_UNSUPPORTED_SOURCES.has(resolvedSource);
+}
+
+function pruneLukerGenerationJobs() {
+    const now = Date.now();
+    for (const [key, job] of lukerGenerationJobs.entries()) {
+        const updatedAt = Number(job?.updatedAt || job?.createdAt || 0);
+        if (!updatedAt || (now - updatedAt) > LUKER_GENERATION_JOB_TTL_MS) {
+            lukerGenerationJobs.delete(key);
+        }
+    }
+
+    while (lukerGenerationJobs.size > LUKER_GENERATION_JOB_MAX_ITEMS) {
+        const oldestKey = lukerGenerationJobs.keys().next().value;
+        lukerGenerationJobs.delete(oldestKey);
+    }
+}
+
+function getLukerPersistChatKey(persistTarget) {
+    if (!persistTarget || typeof persistTarget !== 'object') {
+        return '';
+    }
+
+    if (persistTarget.kind === 'group') {
+        return `group:${String(persistTarget.id || '')}`;
+    }
+
+    const avatar = String(persistTarget.avatar_url || '');
+    const fileName = String(persistTarget.file_name || '');
+    if (!avatar || !fileName) {
+        return '';
+    }
+    return `char:${avatar}:${fileName}`;
+}
+
+function extractTextFromOpenAIMessageContent(content) {
+    if (typeof content === 'string') {
+        return content;
+    }
+
+    if (Array.isArray(content)) {
+        return content.map(part => {
+            if (typeof part === 'string') {
+                return part;
+            }
+            if (typeof part?.text === 'string') {
+                return part.text;
+            }
+            if (typeof part?.content === 'string') {
+                return part.content;
+            }
+            return '';
+        }).join('');
+    }
+
+    if (content && typeof content === 'object') {
+        if (typeof content.text === 'string') {
+            return content.text;
+        }
+        if (typeof content.content === 'string') {
+            return content.content;
+        }
+    }
+
+    return '';
+}
+
+function extractTextFromStreamingData(rawData) {
+    if (!rawData || rawData === '[DONE]') {
+        return '';
+    }
+
+    try {
+        const parsed = JSON.parse(rawData);
+        const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null;
+        if (!choice) {
+            return '';
+        }
+
+        if (typeof choice?.delta?.content === 'string') {
+            return choice.delta.content;
+        }
+
+        if (Array.isArray(choice?.delta?.content)) {
+            return extractTextFromOpenAIMessageContent(choice.delta.content);
+        }
+
+        if (typeof choice?.text === 'string') {
+            return choice.text;
+        }
+
+        if (typeof choice?.message?.content === 'string') {
+            return choice.message.content;
+        }
+
+        if (Array.isArray(choice?.message?.content)) {
+            return extractTextFromOpenAIMessageContent(choice.message.content);
+        }
+
+        return '';
+    } catch {
+        return '';
+    }
+}
+
+function extractTextFromFinalResponse(data) {
+    const choice = Array.isArray(data?.choices) ? data.choices[0] : null;
+
+    if (typeof choice?.message?.content === 'string') {
+        return choice.message.content;
+    }
+
+    if (Array.isArray(choice?.message?.content)) {
+        return extractTextFromOpenAIMessageContent(choice.message.content);
+    }
+
+    if (typeof choice?.text === 'string') {
+        return choice.text;
+    }
+
+    if (typeof data?.response === 'string') {
+        return data.response;
+    }
+
+    return '';
+}
+
+function createLukerGenerationJob(request, options) {
+    if (!options || typeof options !== 'object') {
+        return null;
+    }
+
+    const jobId = typeof options.job_id === 'string' && options.job_id.trim()
+        ? options.job_id.trim()
+        : '';
+    if (!jobId) {
+        return null;
+    }
+
+    const now = Date.now();
+    const persistTarget = options.persist_target && typeof options.persist_target === 'object'
+        ? options.persist_target
+        : null;
+    const chatKey = getLukerPersistChatKey(persistTarget);
+    const existing = lukerGenerationJobs.get(jobId);
+    const job = existing || {
+        id: jobId,
+        handle: request.user.profile.handle,
+        createdAt: now,
+        updatedAt: now,
+        status: 'running',
+        text: '',
+        events: [],
+        lastSeq: 0,
+        error: '',
+        persisted: false,
+        persistTarget,
+        chatKey,
+    };
+
+    job.status = 'running';
+    job.updatedAt = now;
+    job.error = '';
+    job.persistTarget = persistTarget;
+    job.chatKey = chatKey;
+    if (!Array.isArray(job.events)) {
+        job.events = [];
+    }
+
+    lukerGenerationJobs.set(jobId, job);
+    pruneLukerGenerationJobs();
+    return job;
+}
+
+function appendLukerGenerationEvent(job, rawData) {
+    if (!job) {
+        return;
+    }
+
+    const nextSeq = Number(job.lastSeq || 0) + 1;
+    job.lastSeq = nextSeq;
+    job.events.push({ seq: nextSeq, data: rawData, ts: Date.now() });
+    if (job.events.length > LUKER_GENERATION_JOB_MAX_EVENTS) {
+        job.events.splice(0, job.events.length - LUKER_GENERATION_JOB_MAX_EVENTS);
+    }
+    job.updatedAt = Date.now();
+
+    const deltaText = extractTextFromStreamingData(rawData);
+    if (deltaText) {
+        job.text += deltaText;
+    }
+}
+
+async function persistLukerGeneratedReply(request, persistTarget, text, generationId = '') {
+    if (!persistTarget || typeof persistTarget !== 'object') {
+        return false;
+    }
+
+    const finalText = String(text || '');
+    if (!finalText) {
+        return false;
+    }
+
+    const message = {
+        name: String(persistTarget.char_name || request.body.char_name || 'Assistant'),
+        is_user: false,
+        is_system: false,
+        send_date: new Date().toISOString(),
+        mes: finalText,
+        extra: {
+            api: 'openai',
+            model: request.body.model,
+            luker_server_persisted: true,
+            ...(generationId ? { luker_generation_id: generationId } : {}),
+        },
+    };
+
+    if (persistTarget.kind === 'group') {
+        const groupId = String(persistTarget.id || '');
+        if (!groupId) {
+            return false;
+        }
+
+        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${groupId}.jsonl`));
+        await appendMessagesToChatFile({
+            filePath: chatFilePath,
+            messages: [message],
+            chatMetadata: persistTarget.chat_metadata || {},
+            integritySlug: persistTarget.integrity,
+            force: Boolean(persistTarget.force),
+        });
+        return true;
+    }
+
+    if (persistTarget.kind === 'character') {
+        const avatar = String(persistTarget.avatar_url || '').replace('.png', '');
+        const fileName = String(persistTarget.file_name || '');
+        if (!avatar || !fileName) {
+            return false;
+        }
+
+        const chatFilePath = path.join(
+            request.user.directories.chats,
+            avatar,
+            sanitize(`${fileName}.jsonl`),
+        );
+        await appendMessagesToChatFile({
+            filePath: chatFilePath,
+            messages: [message],
+            chatMetadata: persistTarget.chat_metadata || {},
+            integritySlug: persistTarget.integrity,
+            force: Boolean(persistTarget.force),
+        });
+        return true;
+    }
+
+    return false;
+}
+
+async function forwardStreamingWithLukerJob(fetchResponse, response, request, job) {
+    let statusCode = fetchResponse.status;
+    if (statusCode === 401) {
+        statusCode = 400;
+    }
+
+    response.statusCode = statusCode;
+    response.statusMessage = fetchResponse.statusText;
+    response.setHeader('x-luker-generation-id', job.id);
+    const contentType = fetchResponse.headers.get('content-type');
+    if (contentType) {
+        response.setHeader('content-type', contentType);
+    }
+
+    let clientClosed = false;
+    response.socket?.on('close', () => {
+        clientClosed = true;
+    });
+
+    if (!fetchResponse.ok) {
+        if (fetchResponse.body) {
+            for await (const chunk of fetchResponse.body) {
+                if (!clientClosed && !response.writableEnded) {
+                    response.write(chunk);
+                }
+            }
+        }
+        if (!clientClosed && !response.writableEnded) {
+            response.end();
+        }
+        return;
+    }
+
+    let buffer = '';
+    if (fetchResponse.body) {
+        for await (const chunk of fetchResponse.body) {
+            const chunkText = Buffer.from(chunk).toString('utf8');
+            if (!clientClosed && !response.writableEnded) {
+                response.write(chunkText);
+            }
+
+            buffer += chunkText.replace(/\r\n/g, '\n');
+            let delimiterIndex = buffer.indexOf('\n\n');
+            while (delimiterIndex !== -1) {
+                const frame = buffer.slice(0, delimiterIndex);
+                buffer = buffer.slice(delimiterIndex + 2);
+                const dataLines = frame
+                    .split('\n')
+                    .map(line => line.trimEnd())
+                    .filter(line => line.startsWith('data:'))
+                    .map(line => line.slice(5).trimStart());
+                if (dataLines.length > 0) {
+                    appendLukerGenerationEvent(job, dataLines.join('\n'));
+                }
+                delimiterIndex = buffer.indexOf('\n\n');
+            }
+        }
+    }
+
+    if (buffer.trim()) {
+        const dataLines = buffer
+            .split('\n')
+            .map(line => line.trimEnd())
+            .filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).trimStart());
+        if (dataLines.length > 0) {
+            appendLukerGenerationEvent(job, dataLines.join('\n'));
+        }
+    }
+
+    job.status = 'completed';
+    job.updatedAt = Date.now();
+    job.finishedAt = Date.now();
+    job.persisted = await persistLukerGeneratedReply(request, job.persistTarget, job.text, job.id);
+    const completionEvent = JSON.stringify({
+        luker: {
+            generation_id: job.id,
+            persisted: Boolean(job.persisted),
+            status: job.status,
+        },
+    });
+    appendLukerGenerationEvent(job, completionEvent);
+    if (!clientClosed && !response.writableEnded) {
+        response.write(`data: ${completionEvent}\n\n`);
+        response.end();
+    }
+}
 
 /**
  * Checks if an OpenRouter model supports prompt cache writing.
@@ -1631,6 +2125,97 @@ async function sendAzureOpenAIRequest(request, response) {
 
 export const router = express.Router();
 
+router.post('/jobs/status', async function (request, response) {
+    try {
+        const jobId = String(request.body?.id || '');
+        if (!jobId) {
+            return response.sendStatus(400);
+        }
+
+        pruneLukerGenerationJobs();
+        const job = lukerGenerationJobs.get(jobId);
+        if (!job || job.handle !== request.user.profile.handle) {
+            return response.sendStatus(404);
+        }
+
+        return response.send({
+            id: job.id,
+            status: job.status,
+            text: job.text,
+            last_seq: job.lastSeq,
+            persisted: Boolean(job.persisted),
+            error: job.error || '',
+            created_at: job.createdAt,
+            updated_at: job.updatedAt,
+            finished_at: job.finishedAt || null,
+        });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/jobs/events', async function (request, response) {
+    try {
+        const jobId = String(request.body?.id || '');
+        const afterSeq = Math.max(0, Number(request.body?.after_seq) || 0);
+        if (!jobId) {
+            return response.sendStatus(400);
+        }
+
+        pruneLukerGenerationJobs();
+        const job = lukerGenerationJobs.get(jobId);
+        if (!job || job.handle !== request.user.profile.handle) {
+            return response.sendStatus(404);
+        }
+
+        const events = Array.isArray(job.events)
+            ? job.events.filter(event => Number(event.seq) > afterSeq)
+            : [];
+
+        return response.send({
+            id: job.id,
+            status: job.status,
+            text: job.text,
+            last_seq: job.lastSeq,
+            persisted: Boolean(job.persisted),
+            events: events,
+            error: job.error || '',
+        });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/jobs/active', async function (request, response) {
+    try {
+        const chatKey = getLukerPersistChatKey(request.body?.persist_target);
+        if (!chatKey) {
+            return response.send({ jobs: [] });
+        }
+
+        pruneLukerGenerationJobs();
+        const handle = request.user.profile.handle;
+        const jobs = Array.from(lukerGenerationJobs.values())
+            .filter(job => job.handle === handle && job.chatKey === chatKey && ['running', 'queued'].includes(job.status))
+            .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+            .map(job => ({
+                id: job.id,
+                status: job.status,
+                text: job.text,
+                last_seq: job.lastSeq,
+                created_at: job.createdAt,
+                updated_at: job.updatedAt,
+            }));
+
+        return response.send({ jobs });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
 router.post('/status', async function (request, statusResponse) {
     try {
         if (!request.body) return statusResponse.sendStatus(400);
@@ -2011,6 +2596,26 @@ router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
+        const lukerPromptResolution = resolveLukerPromptMessages(request.body);
+        if (!lukerPromptResolution.ok) {
+            return response.status(lukerPromptResolution.statusCode).send({
+                error: {
+                    message: lukerPromptResolution.message,
+                    type: 'luker_prompt_delta',
+                },
+            });
+        }
+
+        const lukerPromptStateId = lukerPromptResolution.stateId;
+        let lukerPromptMessagesSnapshot = lukerPromptResolution.messagesSnapshot;
+        const requestedLukerGenerationOptions = request.body.luker_generation && typeof request.body.luker_generation === 'object'
+            ? request.body.luker_generation
+            : null;
+        const lukerGenerationOptions = isLukerGenerationSupportedSource(request.body.chat_completion_source)
+            ? requestedLukerGenerationOptions
+            : null;
+        const lukerGenerationJob = createLukerGenerationJob(request, lukerGenerationOptions);
+
         const postProcessingType = request.body.custom_prompt_post_processing;
         if (Array.isArray(request.body.messages) && postProcessingType) {
             console.info('Applying custom prompt post-processing of type', postProcessingType);
@@ -2320,10 +2925,12 @@ router.post('/generate', async function (request, response) {
             `${apiUrl}/chat/completions`;
 
         const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            controller.abort();
-        });
+        if (!lukerGenerationJob) {
+            request.socket.removeAllListeners('close');
+            request.socket.on('close', function () {
+                controller.abort();
+            });
+        }
 
         if (!isTextCompletion && Array.isArray(request.body.tools) && request.body.tools.length > 0) {
             bodyParams['tools'] = request.body.tools;
@@ -2360,6 +2967,10 @@ router.post('/generate', async function (request, response) {
             ...bodyParams,
         };
 
+        if (lukerPromptStateId && Array.isArray(requestBody.messages)) {
+            lukerPromptMessagesSnapshot = structuredClone(requestBody.messages);
+        }
+
         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             excludeKeysByYaml(requestBody, request.body.custom_exclude_body);
         }
@@ -2380,8 +2991,22 @@ router.post('/generate', async function (request, response) {
 
         const fetchResponse = await fetch(endpointUrl, config);
 
+        if (fetchResponse.ok) {
+            const promptRevision = commitLukerPromptState(lukerPromptStateId, lukerPromptMessagesSnapshot);
+            if (Number.isInteger(promptRevision) && promptRevision > 0) {
+                response.setHeader('x-luker-prompt-revision', String(promptRevision));
+            }
+        }
+
+        if (lukerGenerationJob) {
+            response.setHeader('x-luker-generation-id', lukerGenerationJob.id);
+        }
+
         if (request.body.stream) {
             console.info('Streaming request in progress');
+            if (lukerGenerationJob) {
+                return await forwardStreamingWithLukerJob(fetchResponse, response, request, lukerGenerationJob);
+            }
             return forwardFetchResponse(fetchResponse, response);
         }
 
@@ -2389,6 +3014,15 @@ router.post('/generate', async function (request, response) {
             /** @type {any} */
             const json = await fetchResponse.json();
             console.debug('Chat Completion response:', json);
+            if (lukerGenerationJob) {
+                const finalText = extractTextFromFinalResponse(json);
+                lukerGenerationJob.text = finalText;
+                lukerGenerationJob.status = 'completed';
+                lukerGenerationJob.updatedAt = Date.now();
+                lukerGenerationJob.finishedAt = Date.now();
+                lukerGenerationJob.persisted = await persistLukerGeneratedReply(request, lukerGenerationJob.persistTarget, finalText, lukerGenerationJob.id);
+                response.setHeader('x-luker-server-persisted', lukerGenerationJob.persisted ? '1' : '0');
+            }
             return response.send(json);
         } else {
             const responseText = await fetchResponse.text();
@@ -2397,6 +3031,12 @@ router.post('/generate', async function (request, response) {
             const message = fetchResponse.statusText || 'Unknown error occurred';
             const quota_error = fetchResponse.status === 429 && errorData?.error?.type === 'insufficient_quota';
             console.error('Chat completion request error: ', message, responseText);
+            if (lukerGenerationJob) {
+                lukerGenerationJob.status = 'failed';
+                lukerGenerationJob.error = message;
+                lukerGenerationJob.updatedAt = Date.now();
+                lukerGenerationJob.finishedAt = Date.now();
+            }
 
             if (!response.headersSent) {
                 response.send({ error: { message }, quota_error: quota_error });
@@ -2408,6 +3048,17 @@ router.post('/generate', async function (request, response) {
         }
     } catch (error) {
         console.error('Generation failed', error);
+        const failedJobId = String(request.body?.luker_generation?.job_id || '');
+        if (failedJobId) {
+            const job = lukerGenerationJobs.get(failedJobId);
+            if (job && job.handle === request.user.profile.handle) {
+                job.status = 'failed';
+                job.error = error?.message || 'Unknown error occurred';
+                job.updatedAt = Date.now();
+                job.finishedAt = Date.now();
+            }
+        }
+
         const message = error.code === 'ECONNREFUSED'
             ? `Connection refused: ${error.message}`
             : error.message || 'Unknown error occurred';

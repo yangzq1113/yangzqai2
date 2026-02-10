@@ -93,7 +93,7 @@ class BackupsBrowser {
             return;
         }
 
-        const context = SillyTavern.getContext();
+        const context = Luker.getContext();
 
         const formData = new FormData();
         formData.set('file_type', extension);

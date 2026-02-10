@@ -15,6 +15,7 @@ import {
     saveSettingsDebounced,
     this_chid,
     saveChatConditional,
+    patchChatMessages,
     chat_metadata,
     neutralCharacterName,
     updateChatMetadata,
@@ -97,6 +98,40 @@ const converters = {
 };
 
 /**
+ * Persists selected message rows via incremental patch, then falls back to full chat save.
+ * @param {number[]} indexes Zero-based chat message indexes (header excluded).
+ * @returns {Promise<void>}
+ */
+async function patchMessagesByIndex(indexes) {
+    const unique = [...new Set((Array.isArray(indexes) ? indexes : []).map(i => Number(i)).filter(Number.isInteger))];
+    if (unique.length === 0) {
+        return;
+    }
+
+    const operations = [];
+    for (const index of unique) {
+        const message = chat[index];
+        if (!message || typeof message !== 'object') {
+            continue;
+        }
+        operations.push({
+            op: 'update',
+            index,
+            message,
+        });
+    }
+
+    if (operations.length === 0) {
+        return;
+    }
+
+    const patched = await patchChatMessages(operations);
+    if (!patched) {
+        await saveChatConditional();
+    }
+}
+
+/**
  * Finds a matching key in the converters object.
  * @param {string} type MIME type
  * @returns {string} Matching key
@@ -149,12 +184,14 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
     if (!end) end = start;
     const hide = !unhide;
 
+    const dirtyIndexes = [];
     for (let messageId = start; messageId <= end; messageId++) {
         const message = chat[messageId];
         if (!message) continue;
         if (nameFitler && message.name !== nameFitler) continue;
 
         message.is_system = hide;
+        dirtyIndexes.push(messageId);
 
         // Also toggle "hidden" state for all visible messages
         const messageBlock = $(`.mes[mesid="${messageId}"]`);
@@ -165,7 +202,7 @@ export async function hideChatMessageRange(start, end, unhide, nameFitler = null
     // Reload swipes. Useful when a last message is hidden.
     refreshSwipeButtons();
 
-    await saveChatConditional();
+    await patchMessagesByIndex(dirtyIndexes);
 }
 
 /**
@@ -420,7 +457,7 @@ async function deleteMessageFile(messageBlock, messageId, fileIndex) {
     const url = message.extra.files[fileIndex]?.url;
     message.extra.files.splice(fileIndex, 1);
 
-    await saveChatConditional();
+    await patchMessagesByIndex([messageId]);
     await deleteFileFromServer(url);
 
     appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
@@ -495,7 +532,7 @@ function embedMessageFile(messageId, messageBlock) {
         await populateFileAttachment(message, 'embed_file_input');
         await eventSource.emit(event_types.MESSAGE_FILE_EMBEDDED, messageId);
         appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
-        await saveChatConditional();
+        await patchMessagesByIndex([messageId]);
     }
 }
 
@@ -1057,7 +1094,7 @@ async function deleteMessageMedia(messageId, mediaIndex, messageBlock) {
         }
     }
 
-    await saveChatConditional();
+    await patchMessagesByIndex([messageId]);
     appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
@@ -1086,7 +1123,7 @@ async function switchMessageMediaDisplay(messageId, messageBlock, targetDisplay)
     }
 
     message.extra.media_display = targetDisplay;
-    await saveChatConditional();
+    await patchMessagesByIndex([messageId]);
     appendMediaToMessage(message, messageBlock, SCROLL_BEHAVIOR.KEEP);
 }
 
@@ -2105,7 +2142,7 @@ async function onImageSwiped(messageId, element, direction) {
         message.extra.media_index = newIndex >= media.length ? 0 : newIndex;
     }
 
-    await saveChatConditional();
+    await patchMessagesByIndex([messageId]);
     appendMediaToMessage(message, element);
 }
 

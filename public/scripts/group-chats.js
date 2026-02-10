@@ -80,6 +80,13 @@ import {
     unshallowCharacter,
     chatElement,
     ensureMessageMediaIsArray,
+    setChatServerState,
+    seedChatMetadataSnapshot,
+    seedChatMessageSnapshot,
+    getChatMetadataSnapshot,
+    getChatMessageSnapshot,
+    buildObjectPatchOperations,
+    buildChatMessagePatchOperations,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect } from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
@@ -204,9 +211,11 @@ async function loadGroupChat(chatId) {
         if (!Array.isArray(data)) {
             return [];
         }
+        setChatServerState({ nextOlderIndex: 0, totalMessages: Math.max(0, data.length - 1), hasMore: false });
         return data;
     }
 
+    setChatServerState({ nextOlderIndex: 0, totalMessages: 0, hasMore: false });
     return [];
 }
 
@@ -310,6 +319,8 @@ export async function getGroupChat(groupId, reload = false) {
     }
 
     updateChatMetadata(metadata, true);
+    seedChatMetadataSnapshot({ is_group: true, id: chat_id }, metadata);
+    seedChatMessageSnapshot({ is_group: true, id: chat_id }, chat);
 
     if (reload) {
         select_group_chats(groupId, true);
@@ -628,6 +639,10 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
         return;
     }
     const chatId = group.chat_id;
+    if (!chatId) {
+        console.warn('Group chat id is empty', groupId);
+        return;
+    }
     group['date_last_chat'] = Date.now();
     /** @type {ChatHeader} */
     const chatHeader = {
@@ -635,11 +650,51 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
         user_name: 'unused',
         character_name: 'unused',
     };
-    const response = await fetch('/api/chats/group/save', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId, chat: [chatHeader, ...chat], force: force }),
-    });
+    const target = { is_group: true, id: chatId };
+    const previousMessages = getChatMessageSnapshot(target);
+    let response = null;
+
+    if (!force && Array.isArray(previousMessages)) {
+        const operations = buildChatMessagePatchOperations(previousMessages, chat);
+        if (operations.length > 0) {
+            response = await fetch('/api/chats/group/patch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    id: chatId,
+                    operations,
+                    chat_metadata: { ...chat_metadata },
+                    integrity: chat_metadata?.integrity,
+                    force: force,
+                }),
+            });
+        } else {
+            const previousMetadata = getChatMetadataSnapshot(target);
+            const metadataOperations = buildObjectPatchOperations(previousMetadata, chat_metadata, { maxOperations: 2000 });
+            if (metadataOperations.length === 0) {
+                response = { ok: true };
+            } else {
+                response = await fetch('/api/chats/group/meta/patch', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({
+                        id: chatId,
+                        operations: metadataOperations,
+                        integrity: chat_metadata?.integrity,
+                        force: force,
+                    }),
+                });
+            }
+        }
+    }
+
+    if (!response || !response.ok) {
+        response = await fetch('/api/chats/group/save', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id: chatId, chat: [chatHeader, ...chat], force: force }),
+        });
+    }
 
     if (!response.ok) {
         const errorData = await response.json();
@@ -668,6 +723,9 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
 
         await saveGroupChat(groupId, shouldSaveGroup, true);
     }
+
+    seedChatMetadataSnapshot(target, chat_metadata);
+    seedChatMessageSnapshot(target, chat);
 
     if (shouldSaveGroup) {
         await editGroup(groupId, false, false);
@@ -729,14 +787,37 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
 
                     if (hadChanges) {
                         await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, messages, oldAvatar, newAvatar);
+                        const operations = [];
+                        for (let lineIndex = 1; lineIndex < messages.length; lineIndex++) {
+                            const message = messages[lineIndex];
+                            if (!message || message.is_user || message.is_system) {
+                                continue;
+                            }
+                            const forceAvatar = String(message.force_avatar || '');
+                            if (!forceAvatar || forceAvatar.indexOf(encodeURIComponent(newAvatar)) === -1) {
+                                continue;
+                            }
+                            operations.push({
+                                op: 'update',
+                                index: lineIndex - 1,
+                                message,
+                            });
+                        }
+                        if (operations.length === 0) {
+                            continue;
+                        }
 
-                        const saveChatResponse = await fetch('/api/chats/group/save', {
+                        const patchResponse = await fetch('/api/chats/group/patch', {
                             method: 'POST',
                             headers: getRequestHeaders(),
-                            body: JSON.stringify({ id: chatId, chat: [...messages] }),
+                            body: JSON.stringify({
+                                id: chatId,
+                                operations,
+                                chat_metadata: messages?.[0]?.chat_metadata || {},
+                            }),
                         });
 
-                        if (!saveChatResponse.ok) {
+                        if (!patchResponse.ok) {
                             throw new Error('Group member could not be renamed');
                         }
 

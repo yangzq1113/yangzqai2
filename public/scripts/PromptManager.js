@@ -163,6 +163,12 @@ class Prompt {
     marker;
 
     /**
+     * Marks this prompt as "extra" for plugin calls. Extra prompts are excluded in plugin preset assembly.
+     * @type {boolean}
+     */
+    plugin_extra;
+
+    /**
      * Create a new Prompt instance.
      *
      * @param {Object} [param0] - Object containing the properties of the prompt.
@@ -178,8 +184,9 @@ class Prompt {
      * @param {string[]} [param0.injection_trigger] - The generation type trigger for the prompt injection.
      * @param {boolean} [param0.forbid_overrides] - Indicates if the prompt should not be overridden.
      * @param {boolean} [param0.extension] - Prompt is added by an extension.
+     * @param {boolean} [param0.plugin_extra] - Exclude this prompt from plugin preset assembly.
      */
-    constructor({ identifier, role, content, name, system_prompt, position, injection_depth, injection_position, forbid_overrides, extension, injection_order, injection_trigger } = {}) {
+    constructor({ identifier, role, content, name, system_prompt, position, injection_depth, injection_position, forbid_overrides, extension, injection_order, injection_trigger, plugin_extra } = {}) {
         this.identifier = identifier;
         this.role = role;
         this.content = content;
@@ -192,6 +199,7 @@ class Prompt {
         this.extension = extension ?? false;
         this.injection_order = injection_order ?? DEFAULT_ORDER;
         this.injection_trigger = injection_trigger ?? [];
+        this.plugin_extra = Boolean(plugin_extra);
     }
 }
 
@@ -379,6 +387,9 @@ class PromptManager {
         /** Toggle prompt button click */
         this.handleToggle = () => { };
 
+        /** Toggle plugin-extra marker */
+        this.handlePluginExtraToggle = () => { };
+
         /** Prompt name click */
         this.handleInspect = () => { };
 
@@ -447,6 +458,14 @@ class PromptManager {
 
             counts[promptID] = null;
             promptOrderEntry.enabled = !promptOrderEntry.enabled;
+            this.render();
+            this.saveServiceSettings();
+        };
+
+        this.handlePluginExtraToggle = (event) => {
+            const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
+            const current = this.isPromptPluginExtra(promptID);
+            this.setPromptPluginExtra(promptID, !current);
             this.render();
             this.saveServiceSettings();
         };
@@ -528,19 +547,23 @@ class PromptManager {
                     prompt.name = 'Main Prompt';
                     prompt.content = this.configuration.defaultPrompts.main;
                     prompt.forbid_overrides = false;
+                    prompt.plugin_extra = false;
                     break;
                 case 'nsfw':
                     prompt.name = 'Nsfw Prompt';
                     prompt.content = this.configuration.defaultPrompts.nsfw;
+                    prompt.plugin_extra = false;
                     break;
                 case 'jailbreak':
                     prompt.name = 'Jailbreak Prompt';
                     prompt.content = this.configuration.defaultPrompts.jailbreak;
                     prompt.forbid_overrides = false;
+                    prompt.plugin_extra = false;
                     break;
                 case 'enhanceDefinitions':
                     prompt.name = 'Enhance Definitions';
                     prompt.content = this.configuration.defaultPrompts.enhanceDefinitions;
+                    prompt.plugin_extra = false;
                     break;
             }
 
@@ -555,6 +578,7 @@ class PromptManager {
             const orderBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_order_block'));
             const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
             const forbidOverridesBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_forbid_overrides_block'));
+            const pluginExtraField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_plugin_extra'));
             const entrySourceBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source_block'));
             const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
 
@@ -572,6 +596,7 @@ class PromptManager {
             orderBlock.style.visibility = prompt.injection_position === INJECTION_POSITION.ABSOLUTE ? 'visible' : 'hidden';
             forbidOverridesField.checked = prompt.forbid_overrides ?? false;
             forbidOverridesBlock.style.visibility = this.overridablePrompts.includes(prompt.identifier) ? 'visible' : 'hidden';
+            pluginExtraField.checked = Boolean(prompt.plugin_extra);
             promptField.disabled = prompt.marker ?? false;
             entrySourceBlock.style.display = isPulledPrompt ? '' : 'none';
 
@@ -908,6 +933,7 @@ class PromptManager {
         const injectionOrderField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_order'));
         const injectionTriggerField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_trigger'));
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
+        const pluginExtraField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_plugin_extra'));
 
         prompt.name = nameField.value;
         prompt.role = roleField.value;
@@ -917,6 +943,7 @@ class PromptManager {
         prompt.injection_order = Number(injectionOrderField.value);
         prompt.injection_trigger = Array.from(injectionTriggerField.selectedOptions).map(option => option.value);
         prompt.forbid_overrides = forbidOverridesField.checked;
+        prompt.plugin_extra = pluginExtraField.checked;
     }
 
     /**
@@ -994,6 +1021,7 @@ class PromptManager {
             system_prompt: false,
             enabled: false,
             marker: false,
+            plugin_extra: false,
             ...prompt,
         };
 
@@ -1007,6 +1035,15 @@ class PromptManager {
     sanitizeServiceSettings() {
         this.serviceSettings.prompts = this.serviceSettings.prompts ?? [];
         this.serviceSettings.prompt_order = this.serviceSettings.prompt_order ?? [];
+        this.serviceSettings.extensions = this.serviceSettings.extensions && typeof this.serviceSettings.extensions === 'object'
+            ? this.serviceSettings.extensions
+            : {};
+        this.serviceSettings.extensions.luker = this.serviceSettings.extensions.luker && typeof this.serviceSettings.extensions.luker === 'object'
+            ? this.serviceSettings.extensions.luker
+            : {};
+        this.serviceSettings.extensions.luker.prompt_layout = Array.isArray(this.serviceSettings.extensions.luker.prompt_layout)
+            ? this.serviceSettings.extensions.luker.prompt_layout
+            : [];
 
         if ('global' === this.configuration.promptOrder.strategy) {
             const dummyCharacter = { id: this.configuration.promptOrder.dummyId };
@@ -1021,7 +1058,13 @@ class PromptManager {
             : this.checkForMissingPrompts(this.serviceSettings.prompts);
 
         // Add identifiers if there are none assigned to a prompt
-        this.serviceSettings.prompts.forEach(prompt => prompt && (prompt.identifier = prompt.identifier ?? this.getUuidv4()));
+        this.serviceSettings.prompts.forEach(prompt => {
+            if (!prompt) {
+                return;
+            }
+            prompt.identifier = prompt.identifier ?? this.getUuidv4();
+            prompt.plugin_extra = Boolean(prompt.plugin_extra);
+        });
 
         if (this.activeCharacter) {
             const promptReferences = this.getPromptOrderForCharacter(this.activeCharacter);
@@ -1250,6 +1293,19 @@ class PromptManager {
         return this.getPromptOrderForCharacter(character).find(entry => entry.identifier === identifier) ?? null;
     }
 
+    isPromptPluginExtra(identifier) {
+        const prompt = this.getPromptById(identifier);
+        return Boolean(prompt?.plugin_extra);
+    }
+
+    setPromptPluginExtra(identifier, extra) {
+        const prompt = this.getPromptById(identifier);
+        if (!prompt) {
+            return;
+        }
+        prompt.plugin_extra = Boolean(extra);
+    }
+
     /**
      * Finds and returns a prompt by its identifier.
      * @param {string} identifier - Identifier of the prompt
@@ -1368,6 +1424,7 @@ class PromptManager {
         const injectionOrderBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_order_block'));
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
         const forbidOverridesBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_forbid_overrides_block'));
+        const pluginExtraField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_plugin_extra'));
         const entrySourceBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source_block'));
         const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
         const isPulledPrompt = Object.keys(this.promptSources).includes(prompt.identifier);
@@ -1388,6 +1445,7 @@ class PromptManager {
         injectionPositionField.removeAttribute('disabled');
         forbidOverridesField.checked = prompt.forbid_overrides ?? false;
         forbidOverridesBlock.style.visibility = this.overridablePrompts.includes(prompt.identifier) ? 'visible' : 'hidden';
+        pluginExtraField.checked = Boolean(prompt.plugin_extra);
         entrySourceBlock.style.display = isPulledPrompt ? '' : 'none';
 
         if (isPulledPrompt) {
@@ -1481,6 +1539,7 @@ class PromptManager {
         const injectionTriggerField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_trigger'));
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
         const forbidOverridesBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_forbid_overrides_block'));
+        const pluginExtraField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_plugin_extra'));
         const entrySourceBlock = /** @type {HTMLDivElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source_block'));
         const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
 
@@ -1497,6 +1556,7 @@ class PromptManager {
         injectionOrderBlock.style.visibility = 'unset';
         forbidOverridesBlock.style.visibility = 'unset';
         forbidOverridesField.checked = false;
+        pluginExtraField.checked = false;
         entrySourceBlock.style.display = 'none';
         entrySource.textContent = '';
 
@@ -1720,6 +1780,14 @@ class PromptManager {
                 toggleSpanHtml = '<span class="fa-solid"></span>';
             }
 
+            const pluginExtra = this.isPromptPluginExtra(prompt.identifier);
+            const pluginExtraSpanHtml = `
+                <span title="Extra Prompt: exclude from plugin request assembly" class="prompt-manager-plugin-extra-action ${pluginExtra ? 'fa-solid fa-bookmark' : 'fa-regular fa-bookmark'}"></span>
+            `;
+            const pluginExtraBadgeHtml = pluginExtra
+                ? '<small class="prompt-manager-plugin-extra-badge" title="Excluded from plugin request assembly">extra</small>'
+                : '';
+
             const encodedName = escapeHtml(prompt.name);
             const isMarkerPrompt = prompt.marker && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE;
             const isSystemPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && !prompt.forbid_overrides;
@@ -1748,6 +1816,7 @@ class PromptManager {
                         ${isUserPrompt ? '<span class="fa-fw fa-solid fa-asterisk" title="Preset Prompt"></span>' : ''}
                         ${isInjectionPrompt ? '<span class="fa-fw fa-solid fa-syringe" title="In-Chat Injection"></span>' : ''}
                         ${this.isPromptInspectionAllowed(prompt) ? `<a title="${encodedName}" class="prompt-manager-inspect-action">${encodedName}</a>` : `<span title="${encodedName}">${encodedName}</span>`}
+                        ${pluginExtraBadgeHtml}
                         ${roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : ''}
                         ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : ''}
                         ${isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : ''}
@@ -1756,6 +1825,7 @@ class PromptManager {
                             <span class="prompt_manager_prompt_controls">
                                 ${detachSpanHtml}
                                 ${editSpanHtml}
+                                ${pluginExtraSpanHtml}
                                 ${toggleSpanHtml}
                             </span>
                     </span>
@@ -1782,6 +1852,10 @@ class PromptManager {
 
         Array.from(promptManagerList.querySelectorAll('.prompt-manager-toggle-action')).forEach(el => {
             el.addEventListener('click', this.handleToggle);
+        });
+
+        Array.from(promptManagerList.querySelectorAll('.prompt-manager-plugin-extra-action')).forEach(el => {
+            el.addEventListener('click', this.handlePluginExtraToggle);
         });
     }
 
@@ -1819,12 +1893,23 @@ class PromptManager {
      * @param importData
      */
     import(importData) {
+        const normalizeImportedPrompt = (prompt) => {
+            if (!prompt || typeof prompt !== 'object') {
+                return prompt;
+            }
+            return {
+                ...prompt,
+                plugin_extra: Boolean(prompt.plugin_extra),
+            };
+        };
+
         const mergeKeepNewer = (prompts, newPrompts) => {
             let merged = [...prompts, ...newPrompts];
 
             let map = new Map();
             for (let obj of merged) {
-                map.set(obj.identifier, obj);
+                const normalized = normalizeImportedPrompt(obj);
+                map.set(normalized.identifier, normalized);
             }
 
             merged = Array.from(map.values());
