@@ -6300,6 +6300,19 @@ jQuery(() => {
             updateUiStatus(i18n('Recall injected via fallback after WI scan. Requested WI rescan for this generation.'));
         }
     });
+    const clearRuntimeProjectionAfterGeneration = async () => {
+        try {
+            await clearRuntimeLorebookProjection(context, getSettings());
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
+        }
+    };
+    if (context.eventTypes.GENERATION_ENDED) {
+        context.eventSource.on(context.eventTypes.GENERATION_ENDED, clearRuntimeProjectionAfterGeneration);
+    }
+    if (context.eventTypes.GENERATION_STOPPED) {
+        context.eventSource.on(context.eventTypes.GENERATION_STOPPED, clearRuntimeProjectionAfterGeneration);
+    }
 
     context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, captureMessage);
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_legacyLength, mutationMeta) => {
