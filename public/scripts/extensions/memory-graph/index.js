@@ -2257,18 +2257,17 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
         const resolvedApiPresetName = String(settings.extractApiPresetName || '').trim();
         const requestApi = resolveRequestApiFromConnectionProfileName(context, resolvedApiPresetName);
         const promptPresetName = String(settings.extractPresetName || '').trim();
+        const forceUpdateTypes = new Set(
+            schema
+                .filter(item => item && typeof item === 'object' && item.forceUpdate)
+                .map(item => String(item.id || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
         const promptMessages = buildPresetAwareLLMMessages(context, settings, {
             api: requestApi,
             systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
             userPrompt: JSON.stringify({
-                schema,
-                schema_field_targets: schema.map(item => ({
-                    type: String(item?.id || ''),
-                    table_name: String(item?.tableName || ''),
-                    fields: Array.isArray(item?.tableColumns) ? item.tableColumns : [],
-                    required_fields: Array.isArray(item?.requiredColumns) ? item.requiredColumns : [],
-                    force_update: Boolean(item?.forceUpdate),
-                })),
+                required_types: Array.from(forceUpdateTypes),
                 messages,
             }),
             includeCharacterCard: true,
@@ -2281,12 +2280,6 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
             String(context?.chatCompletionSettings?.chat_completion_source || ''),
         );
         const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
-        const forceUpdateTypes = new Set(
-            schema
-                .filter(item => item && typeof item === 'object' && item.forceUpdate)
-                .map(item => String(item.id || '').trim().toLowerCase())
-                .filter(Boolean),
-        );
         let validatedUpserts = [];
         let retryReason = '';
         for (let attempt = 0; attempt <= semanticRetries; attempt++) {
