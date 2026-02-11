@@ -15,8 +15,6 @@ const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenera
 const LEVEL = {
     SEMANTIC: 'semantic',
 };
-const COMPRESSION_SUMMARY_SOFT_LIMIT = 150;
-const EXTRACT_SUMMARY_SOFT_TARGET = 300;
 
 const defaultNodeTypeSchema = [
     {
@@ -190,9 +188,10 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Use flattened top-level parameters (table columns as direct keys). Do not pack payload into one nested object.',
     'For non-required columns, omit when unknown. Do not hallucinate values.',
     'Respect required columns and force-update types declared in tool descriptions.',
+    'If a type is marked force-update, you must emit at least one node for it in this batch. Do not hallucinate nodes for non-force-update types.',
     'For events, include links to involved entities/locations/threads whenever possible when evidence exists.',
     'Summary rule is strict: summary must be compact abstraction, not raw text copy.',
-    `Length guide for summary: target around ${EXTRACT_SUMMARY_SOFT_TARGET} Chinese characters (soft limit).`,
+    'Length guide for summary: target around 300 Chinese characters (soft limit).',
     'Never paste long dialogue, narration, or quotes into summary.',
     'If information is large, split into multiple node upserts instead of writing one oversized summary.',
     'Title policy: non-event nodes should use short, stable, human-readable titles.',
@@ -680,6 +679,13 @@ function normalizeNodeTypeSchema(schema) {
             const requiredColumns = Array.isArray(item.requiredColumns)
                 ? item.requiredColumns.map(x => String(x || '').trim()).filter(Boolean)
                 : defaultRequired;
+            const columnHints = item.columnHints && typeof item.columnHints === 'object' && !Array.isArray(item.columnHints)
+                ? Object.fromEntries(
+                    Object.entries(item.columnHints)
+                        .map(([key, value]) => [String(key || '').trim(), String(value || '').trim()])
+                        .filter(([key, value]) => key && value),
+                )
+                : {};
             const forceUpdate = item.forceUpdate === undefined
                 ? rawId === 'event'
                 : Boolean(item.forceUpdate);
@@ -693,6 +699,7 @@ function normalizeNodeTypeSchema(schema) {
                 level: String(item.level || LEVEL.SEMANTIC),
                 extractHint: String(item.extractHint || '').trim(),
                 keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
+                columnHints,
                 requiredColumns,
                 forceUpdate,
                 alwaysInject: Boolean(item.alwaysInject),
@@ -1679,7 +1686,7 @@ function buildCompressionSummaryInstruction(baseInstruction) {
     const instruction = base || fallback;
     return [
         instruction,
-        `Length guide: target within ${COMPRESSION_SUMMARY_SOFT_LIMIT} Chinese characters (soft limit; slight overflow only if critical information would be lost).`,
+        'Length guide: target within 150 Chinese characters (soft limit; slight overflow only if critical information would be lost).',
         'Avoid raw dialogue and excessive detail. Keep only durable plot signal.',
     ].join('\n');
 }
@@ -1980,6 +1987,9 @@ function buildDynamicToolDescription(spec = {}) {
     const tableName = String(spec?.tableName || typeId || '').trim();
     const hint = normalizeText(spec?.extractHint || '');
     const fields = Array.isArray(spec?.tableColumns) ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
+    const columnHints = spec?.columnHints && typeof spec.columnHints === 'object' && !Array.isArray(spec.columnHints)
+        ? spec.columnHints
+        : {};
     const required = Array.isArray(spec?.requiredColumns) ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
     const forceUpdate = Boolean(spec?.forceUpdate);
     const chunks = [
@@ -1990,6 +2000,12 @@ function buildDynamicToolDescription(spec = {}) {
     }
     if (fields.length > 0) {
         chunks.push(`Columns: ${fields.join(', ')}`);
+    }
+    const hintRows = fields
+        .map(field => `${field}=${normalizeText(columnHints[field] || '')}`)
+        .filter(row => !row.endsWith('='));
+    if (hintRows.length > 0) {
+        chunks.push(`Column meanings: ${hintRows.join('; ')}`);
     }
     if (required.length > 0) {
         chunks.push(`Required columns: ${required.join(', ')}`);
@@ -2036,6 +2052,14 @@ function buildDynamicExtractTools(schema = []) {
         const filteredRequiredColumns = isEventType
             ? requiredColumns.filter(field => String(field || '').trim().toLowerCase() !== 'title')
             : requiredColumns;
+        const rawColumnHints = spec.columnHints && typeof spec.columnHints === 'object' && !Array.isArray(spec.columnHints)
+            ? spec.columnHints
+            : {};
+        const filteredColumnHints = Object.fromEntries(
+            Object.entries(rawColumnHints)
+                .map(([key, value]) => [String(key || '').trim(), String(value || '').trim()])
+                .filter(([key, value]) => key && value && filteredFields.includes(key)),
+        );
         const fieldSet = new Set(filteredFields);
         const properties = {
             summary: { type: 'string' },
@@ -2084,8 +2108,9 @@ function buildDynamicExtractTools(schema = []) {
                 description: buildDynamicToolDescription({
                     ...spec,
                     id: typeId,
-                    tableColumns: fields,
-                    requiredColumns,
+                    tableColumns: filteredFields,
+                    requiredColumns: filteredRequiredColumns,
+                    columnHints: filteredColumnHints,
                 }),
                 parameters: {
                     type: 'object',
@@ -2100,6 +2125,7 @@ function buildDynamicExtractTools(schema = []) {
             id: typeId,
             tableColumns: filteredFields,
             requiredColumns: filteredRequiredColumns,
+            columnHints: filteredColumnHints,
         });
     }
 
@@ -5082,6 +5108,7 @@ function getSchemaTypeTemplate(index = 1) {
         level: LEVEL.SEMANTIC,
         extractHint: '',
         keywords: [],
+        columnHints: {},
         requiredColumns: [],
         forceUpdate: false,
         alwaysInject: false,
