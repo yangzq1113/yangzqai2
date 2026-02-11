@@ -671,7 +671,6 @@ const memoryLoadTasks = new Map();
 let activeRuntimeInfoToast = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
-let generationStopped = false;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -2682,20 +2681,14 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
 
 async function runExtractionForStore(context, store, { force = false, startSeq = null } = {}) {
     const settings = getSettings();
-    const frames = buildPlayableFramesFromContext(context);
-    const latestSeq = Number(frames.length || 0);
-    const appliedSeqTo = Math.max(0, Math.floor(Number(store.appliedSeqTo || 0)));
-    const sourceMessageCount = Math.max(0, Math.floor(Number(store.sourceMessageCount || 0)));
-    const maxNodeSeqTo = Object.values(store.nodes || {})
-        .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
-        .reduce((maxSeq, node) => Math.max(maxSeq, Math.max(0, Number(node.seqTo || 0))), 0);
-    const coveredSeqTo = Math.min(latestSeq, Math.max(appliedSeqTo, maxNodeSeqTo, sourceMessageCount));
-    if (coveredSeqTo !== appliedSeqTo) {
+    const window = computeExtractionWindow(context, store, startSeq);
+    const frames = window.frames;
+    const latestSeq = window.latestSeq;
+    const coveredSeqTo = window.coveredSeqTo;
+    if (coveredSeqTo !== Math.max(0, Math.floor(Number(store.appliedSeqTo || 0)))) {
         store.appliedSeqTo = coveredSeqTo;
     }
-    const beginSeq = Number.isFinite(Number(startSeq))
-        ? Math.max(1, Math.floor(Number(startSeq)))
-        : coveredSeqTo + 1;
+    const beginSeq = window.beginSeq;
     if (beginSeq > latestSeq) {
         store.appliedSeqTo = latestSeq;
         store.seqCounter = latestSeq;
@@ -2711,7 +2704,7 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     }
 
     if (!force) {
-        const gap = latestSeq - coveredSeqTo;
+        const gap = Number(window.gap || 0);
         if (gap < Number(settings.updateEvery || 1)) {
             store.lastExtractionDebug = {
                 beginSeq,
@@ -2735,7 +2728,8 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
         extractedAny = true;
         store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(frame.seq || 0));
     }
-    store.seqCounter = latestSeq;
+    store.appliedSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
+    store.seqCounter = store.appliedSeqTo;
     updateStoreSourceState(store, context);
     store.updatedAt = Date.now();
     store.lastExtractionDebug = {
@@ -3418,17 +3412,7 @@ function getNodeSeqRange(node) {
 }
 
 function getLatestSeqIndex(store) {
-    const covered = Number(store?.appliedSeqTo || -1);
-    if (Number.isFinite(covered) && covered >= 0) {
-        return covered;
-    }
-    const semanticNodes = Object.values(store?.nodes || {})
-        .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC);
-    if (semanticNodes.length === 0) {
-        return -1;
-    }
-    const maxSeq = Math.max(...semanticNodes.map(node => Number(node?.seqTo ?? -1)));
-    return Number.isFinite(maxSeq) ? maxSeq : -1;
+    return Math.max(-1, getSemanticCoverageSeq(store));
 }
 
 function isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages) {
@@ -3853,6 +3837,41 @@ function buildPlayableFramesFromContext(context) {
     return frames;
 }
 
+function getSemanticCoverageSeq(store) {
+    const nodes = Object.values(store?.nodes || {})
+        .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC);
+    if (nodes.length === 0) {
+        return 0;
+    }
+    const maxSeq = nodes.reduce((maxSeq, node) => {
+        const seq = Number(node?.seqTo ?? 0);
+        if (!Number.isFinite(seq)) {
+            return maxSeq;
+        }
+        return Math.max(maxSeq, Math.max(0, Math.floor(seq)));
+    }, 0);
+    return Number.isFinite(maxSeq) ? maxSeq : 0;
+}
+
+function computeExtractionWindow(context, store, startSeq = null) {
+    const frames = buildPlayableFramesFromContext(context);
+    const latestSeq = Number(frames.length || 0);
+    const coveredSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
+    const hasExplicitStartSeq = startSeq !== null
+        && startSeq !== undefined
+        && Number.isFinite(Number(startSeq));
+    const beginSeq = hasExplicitStartSeq
+        ? Math.max(1, Math.floor(Number(startSeq)))
+        : coveredSeqTo + 1;
+    return {
+        frames,
+        latestSeq,
+        coveredSeqTo,
+        beginSeq,
+        gap: latestSeq - coveredSeqTo,
+    };
+}
+
 function normalizeMutationMeta(rawMeta = null) {
     if (!rawMeta || typeof rawMeta !== 'object') {
         return null;
@@ -3884,8 +3903,9 @@ function truncateStoreFromSeq(store, fromSeq) {
         }
     }
     if (removeIds.size === 0) {
-        store.appliedSeqTo = Math.min(Number(store.appliedSeqTo || 0), startSeq - 1);
-        store.seqCounter = Math.max(0, Number(store.appliedSeqTo || 0));
+        const covered = getSemanticCoverageSeq(store);
+        store.appliedSeqTo = covered;
+        store.seqCounter = covered;
         store.updatedAt = Date.now();
         return;
     }
@@ -3918,8 +3938,9 @@ function truncateStoreFromSeq(store, fromSeq) {
             return from && to && !removeIds.has(from) && !removeIds.has(to);
         });
     }
-    store.appliedSeqTo = Math.min(Number(store.appliedSeqTo || 0), startSeq - 1);
-    store.seqCounter = Math.max(0, Number(store.appliedSeqTo || 0));
+    const covered = getSemanticCoverageSeq(store);
+    store.appliedSeqTo = covered;
+    store.seqCounter = covered;
     store.updatedAt = Date.now();
 }
 
@@ -3929,13 +3950,15 @@ function alignStoreCoverageToChat(store, context) {
     }
     const frames = buildPlayableFramesFromContext(context);
     const latestSeq = Number(frames.length || 0);
+    const covered = getSemanticCoverageSeq(store);
     let changed = false;
-    if (Number(store.appliedSeqTo || 0) > latestSeq) {
+    if (covered > latestSeq) {
         truncateStoreFromSeq(store, latestSeq + 1);
         changed = true;
     }
-    store.appliedSeqTo = Math.min(Math.max(0, Number(store.appliedSeqTo || 0)), latestSeq);
-    store.seqCounter = latestSeq;
+    const normalizedCovered = Math.min(latestSeq, getSemanticCoverageSeq(store));
+    store.appliedSeqTo = normalizedCovered;
+    store.seqCounter = normalizedCovered;
     updateStoreSourceState(store, context);
     return { changed, latestSeq };
 }
@@ -4008,7 +4031,18 @@ async function injectMemoryPrompts(context, payload) {
 }
 
 async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world_info_scan') {
-    showRuntimeInfoToast(i18n('Memory recall running...'));
+    const settings = getSettings();
+    const generationType = String(payload?.type || '').trim().toLowerCase();
+    const shouldShowRuntimeToast = settings.enabled
+        && settings.recallEnabled
+        && settings.lorebookProjectionEnabled
+        && RECALL_ALLOWED_GENERATION_TYPES.has(generationType)
+        && payload?.dryRun !== true
+        && generationType !== 'quiet'
+        && Array.isArray(payload?.coreChat);
+    if (shouldShowRuntimeToast) {
+        showRuntimeInfoToast(i18n('Memory recall running...'));
+    }
     try {
         const injected = await injectMemoryPrompts(context, payload);
         if (injected && payload && typeof payload === 'object') {
@@ -4024,7 +4058,9 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world
         ));
         return false;
     } finally {
-        clearRuntimeInfoToast();
+        if (shouldShowRuntimeToast) {
+            clearRuntimeInfoToast();
+        }
     }
 }
 
@@ -4064,9 +4100,31 @@ function scheduleExtraction(context) {
         if (!store) {
             return;
         }
-        showRuntimeInfoToast(i18n('Memory extraction running...'));
         try {
             alignStoreCoverageToChat(store, context);
+            const settings = getSettings();
+            const preview = computeExtractionWindow(context, store, null);
+            if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
+                store.lastExtractionDebug = {
+                    beginSeq: preview.beginSeq,
+                    latestSeq: preview.latestSeq,
+                    coveredSeqTo: preview.coveredSeqTo,
+                    extracted: false,
+                    reason: preview.beginSeq > preview.latestSeq ? 'already_up_to_date' : 'gap_below_threshold',
+                    at: Date.now(),
+                };
+                const debug = store.lastExtractionDebug || {};
+                updateUiStatus(i18nFormat(
+                    'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                    'skip',
+                    Number(debug.beginSeq || 0),
+                    Number(debug.latestSeq || 0),
+                    Number(debug.coveredSeqTo || 0),
+                ));
+                refreshUiStats();
+                return;
+            }
+            showRuntimeInfoToast(i18n('Memory extraction running...'));
             const extracted = await runExtractionForStore(context, store);
             if (extracted) {
                 store.updatedAt = Date.now();
@@ -4101,7 +4159,7 @@ function getStoreStats(store) {
     return {
         nodeCount: nodes.length,
         edgeCount: Array.isArray(store.edges) ? store.edges.length : 0,
-        messageCount: Number(store.appliedSeqTo || 0),
+        messageCount: getSemanticCoverageSeq(store),
         sourceMessageCount: Number(store.sourceMessageCount || 0),
         levelCount,
         lastRecallSteps: Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace.length : 0,
@@ -6204,16 +6262,21 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
-        const store = await rebuildStoreFromCurrentChat(context);
-        if (!store) {
-            notifyError(i18n('No active chat selected.'));
-            return;
+        showRuntimeInfoToast(i18n('Memory extraction running...'));
+        try {
+            const store = await rebuildStoreFromCurrentChat(context);
+            if (!store) {
+                notifyError(i18n('No active chat selected.'));
+                return;
+            }
+            await runCompressionLoop(context, store, settings);
+            await persistMemoryStoreByChatKey(context, getChatKey(context), store);
+            refreshUiStats();
+            notifySuccess(i18n('Memory graph rebuilt from current chat.'));
+            updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
+        } finally {
+            clearRuntimeInfoToast();
         }
-        await runCompressionLoop(context, store, settings);
-        await persistMemoryStoreByChatKey(context, getChatKey(context), store);
-        refreshUiStats();
-        notifySuccess(i18n('Memory graph rebuilt from current chat.'));
-        updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
     });
 
     root.find('#luker_rpg_memory_reset').off('click').on('click', async function () {
@@ -6393,23 +6456,14 @@ jQuery(() => {
             console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
         }
     };
-    if (context.eventTypes.GENERATION_STARTED) {
-        context.eventSource.on(context.eventTypes.GENERATION_STARTED, () => {
-            generationStopped = false;
-        });
-    }
-    if (context.eventTypes.GENERATION_STOPPED) {
-        context.eventSource.on(context.eventTypes.GENERATION_STOPPED, async () => {
-            generationStopped = true;
-            await clearRuntimeProjectionAfterGeneration();
-            clearRuntimeInfoToast();
-        });
-    }
     if (context.eventTypes.GENERATION_ENDED) {
         context.eventSource.on(context.eventTypes.GENERATION_ENDED, async () => {
             await clearRuntimeProjectionAfterGeneration();
-            if (generationStopped) {
-                generationStopped = false;
+            clearRuntimeInfoToast();
+            const runtimeContext = getContext();
+            const abortedByUser = Boolean(runtimeContext?.streamingProcessor?.abortController?.signal?.aborted);
+            if (abortedByUser) {
+                updateUiStatus(i18n('Generation aborted. Skipped memory extraction.'));
                 return;
             }
             await captureLatestAssistantAfterGeneration();
