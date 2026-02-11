@@ -1818,9 +1818,17 @@ export async function clearChat() {
 }
 
 export async function deleteLastMessage() {
+    const deletedMessage = chat[chat.length - 1];
+    const deletedPlayableSeq = deletedMessage && !deletedMessage.is_system
+        ? chat.reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0)
+        : null;
     chat.length = chat.length - 1;
     chatElement.children('.mes').last().remove();
-    await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
+    await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
+        kind: 'delete',
+        deletedPlayableSeqFrom: deletedPlayableSeq,
+        deletedPlayableSeqTo: deletedPlayableSeq,
+    });
 }
 
 /**
@@ -1867,6 +1875,11 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
         return;
     }
 
+    const deletedMessage = chat[id];
+    const deletedPlayableSeq = deletedMessage && !deletedMessage.is_system
+        ? chat.slice(0, id + 1).reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0)
+        : null;
+
     chat.splice(id, 1);
     messageElement.remove();
 
@@ -1885,7 +1898,11 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     refreshSwipeButtons();
 
-    await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
+    await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
+        kind: 'delete',
+        deletedPlayableSeqFrom: deletedPlayableSeq,
+        deletedPlayableSeqTo: deletedPlayableSeq,
+    });
 }
 
 export async function reloadCurrentChat() {
@@ -4628,9 +4645,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             //do nothing? why does this check exist?
         }
         else if (type !== 'quiet' && type !== 'swipe' && !isImpersonate && !dryRun && chat.length) {
+            const deletedMessage = chat[chat.length - 1];
+            const deletedPlayableSeq = deletedMessage && !deletedMessage.is_system
+                ? chat.reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0)
+                : null;
             chat.length = chat.length - 1;
             await removeLastMessage();
-            await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
+            await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
+                kind: 'delete',
+                deletedPlayableSeqFrom: deletedPlayableSeq,
+                deletedPlayableSeqTo: deletedPlayableSeq,
+            });
         }
     }
 
@@ -12786,13 +12811,23 @@ jQuery(async function () {
         });
 
         if (this_del_mes >= 0) {
+            const deletedPlayablePrefix = chat
+                .slice(0, this_del_mes)
+                .reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0);
+            const deletedPlayableCount = chat
+                .slice(this_del_mes)
+                .reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0);
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).nextAll('div').remove();
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).remove();
             chat.length = this_del_mes;
             chat_metadata['tainted'] = true;
             await saveChatConditional();
             chatElement.scrollTop(chatElement[0].scrollHeight);
-            await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
+            await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
+                kind: 'delete',
+                deletedPlayableSeqFrom: deletedPlayableCount > 0 ? deletedPlayablePrefix + 1 : null,
+                deletedPlayableSeqTo: deletedPlayableCount > 0 ? deletedPlayablePrefix + deletedPlayableCount : null,
+            });
             chatElement.find('.mes').removeClass('last_mes');
             chatElement.find('.mes').last().addClass('last_mes');
         } else {

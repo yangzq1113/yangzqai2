@@ -1077,16 +1077,6 @@ function createEmptyStore() {
     };
 }
 
-function buildMessageReplayKey(message) {
-    const normalized = normalizeText(message?.mes || '');
-    return hashTextFNV1a([
-        message?.is_user ? 'u' : 'a',
-        normalizeText(message?.name || ''),
-        normalized,
-        normalizeText(message?.send_date || ''),
-    ].join('|'));
-}
-
 function snapshotGraphForReplay(store) {
     return {
         nodeSeq: Math.max(0, Number(store?.nodeSeq || 0)),
@@ -1102,8 +1092,7 @@ function normalizeReplayTransaction(transaction) {
         return null;
     }
     const sourceSeq = Number(transaction.sourceSeq);
-    const messageKey = String(transaction.messageKey || '').trim();
-    if (!Number.isFinite(sourceSeq) || sourceSeq <= 0 || !messageKey) {
+    if (!Number.isFinite(sourceSeq) || sourceSeq <= 0) {
         return null;
     }
     const operations = Array.isArray(transaction.operations)
@@ -1111,7 +1100,6 @@ function normalizeReplayTransaction(transaction) {
         : [];
     return {
         sourceSeq: Math.floor(sourceSeq),
-        messageKey,
         operations: cloneDefault(operations),
     };
 }
@@ -1121,16 +1109,11 @@ function appendMessageTransaction(store, frame, operations = []) {
     if (!Number.isFinite(sourceSeq) || sourceSeq <= 0) {
         return;
     }
-    const messageKey = buildMessageReplayKey(frame);
-    if (!messageKey) {
-        return;
-    }
     if (!Array.isArray(store.messageTransactions)) {
         store.messageTransactions = [];
     }
     const normalized = normalizeReplayTransaction({
         sourceSeq,
-        messageKey,
         operations,
     });
     if (!normalized) {
@@ -3772,36 +3755,133 @@ function buildPlayableFramesFromContext(context) {
     return frames;
 }
 
+function chatIndexToPlayableSeq(context, messageIndex) {
+    const index = Number(messageIndex);
+    if (!Number.isInteger(index) || index < 0) {
+        return null;
+    }
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    if (index >= source.length) {
+        return null;
+    }
+    if (source[index]?.is_system) {
+        return null;
+    }
+    let seq = 0;
+    for (let i = 0; i <= index; i++) {
+        if (source[i] && !source[i].is_system) {
+            seq += 1;
+        }
+    }
+    return seq > 0 ? seq : null;
+}
+
+function normalizeMutationMeta(rawMeta = null) {
+    if (!rawMeta || typeof rawMeta !== 'object') {
+        return null;
+    }
+    const kind = String(rawMeta.kind || '').trim().toLowerCase();
+    const fromSeq = Number(rawMeta?.deletedPlayableSeqFrom);
+    const toSeq = Number(rawMeta?.deletedPlayableSeqTo);
+    const mutatedSeq = Number(rawMeta?.mutatedPlayableSeq);
+    return {
+        kind,
+        deletedPlayableSeqFrom: Number.isFinite(fromSeq) ? Math.max(1, Math.floor(fromSeq)) : null,
+        deletedPlayableSeqTo: Number.isFinite(toSeq) ? Math.max(1, Math.floor(toSeq)) : null,
+        mutatedPlayableSeq: Number.isFinite(mutatedSeq) ? Math.max(1, Math.floor(mutatedSeq)) : null,
+    };
+}
+
+function applyTransactionMutation(store, mutationMeta) {
+    if (!store || typeof store !== 'object' || !Array.isArray(store.messageTransactions)) {
+        return;
+    }
+    const meta = normalizeMutationMeta(mutationMeta);
+    if (!meta) {
+        return;
+    }
+
+    if (meta.kind === 'delete') {
+        const fromSeq = Number(meta.deletedPlayableSeqFrom || 0);
+        const toSeq = Number(meta.deletedPlayableSeqTo || fromSeq);
+        if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
+            return;
+        }
+        const upper = Math.max(fromSeq, toSeq);
+        const delta = upper - fromSeq + 1;
+        store.messageTransactions = store.messageTransactions
+            .map(item => normalizeReplayTransaction(item))
+            .filter(Boolean)
+            .filter(item => {
+                const seq = Number(item.sourceSeq || 0);
+                return !(seq >= fromSeq && seq <= upper);
+            })
+            .map(item => {
+                const seq = Number(item.sourceSeq || 0);
+                if (seq > upper) {
+                    item.sourceSeq = Math.max(1, seq - delta);
+                }
+                return item;
+            });
+        if (Array.isArray(store.pendingMessages)) {
+            store.pendingMessages = store.pendingMessages
+                .filter(item => {
+                    const seq = Number(item?.seq || 0);
+                    return !(seq >= fromSeq && seq <= upper);
+                })
+                .map(item => {
+                    const seq = Number(item?.seq || 0);
+                    if (seq > upper) {
+                        item.seq = Math.max(1, seq - delta);
+                    }
+                    return item;
+                });
+            store.messagesSinceUpdate = store.pendingMessages.length;
+        }
+        store.updatedAt = Date.now();
+        return;
+    }
+
+    if (meta.kind === 'edit' || meta.kind === 'swipe') {
+        const targetSeq = Number(meta.mutatedPlayableSeq || 0);
+        if (!Number.isFinite(targetSeq) || targetSeq <= 0) {
+            return;
+        }
+        store.messageTransactions = store.messageTransactions
+            .map(item => normalizeReplayTransaction(item))
+            .filter(Boolean)
+            .filter(item => Number(item.sourceSeq || 0) !== targetSeq);
+        if (Array.isArray(store.pendingMessages)) {
+            store.pendingMessages = store.pendingMessages.filter(item => Number(item?.seq || 0) !== targetSeq);
+            store.messagesSinceUpdate = store.pendingMessages.length;
+        }
+        store.updatedAt = Date.now();
+    }
+}
+
 async function rebuildStoreByReplayingTransactions(context, existingStore = null) {
     const store = existingStore && typeof existingStore === 'object' ? existingStore : createEmptyStore();
     const transactions = Array.isArray(store.messageTransactions)
-        ? store.messageTransactions.map(item => normalizeReplayTransaction(item)).filter(Boolean)
+        ? store.messageTransactions
+            .map(item => normalizeReplayTransaction(item))
+            .filter(Boolean)
+            .sort((a, b) => Number(a.sourceSeq || 0) - Number(b.sourceSeq || 0))
         : [];
     const frames = buildPlayableFramesFromContext(context);
     const replayState = snapshotGraphForReplay(createEmptyStore());
     const keptTransactions = [];
     const removedSeqs = new Set();
     const pendingFrames = [];
+    const txMap = new Map(transactions.map(item => [Number(item.sourceSeq || 0), item]));
+    const maxSeq = Number(frames.length || 0);
 
-    let txIndex = 0;
     for (const frame of frames) {
-        const messageKey = buildMessageReplayKey(frame);
-        let foundIndex = -1;
-        for (let i = txIndex; i < transactions.length; i++) {
-            if (transactions[i].messageKey === messageKey) {
-                foundIndex = i;
-                break;
-            }
-        }
-        if (foundIndex < 0) {
+        const frameSeq = Number(frame?.seq || 0);
+        const matched = txMap.get(frameSeq);
+        if (!matched) {
             pendingFrames.push(frame);
             continue;
         }
-        for (let i = txIndex; i < foundIndex; i++) {
-            removedSeqs.add(Number(transactions[i].sourceSeq));
-        }
-        const matched = transactions[foundIndex];
-        txIndex = foundIndex + 1;
         const nextGraph = applyObjectPatchOperations(replayState, matched.operations);
         replayState.nodeSeq = Math.max(0, Number(nextGraph.nodeSeq || replayState.nodeSeq || 0));
         replayState.seqCounter = Math.max(0, Number(nextGraph.seqCounter || replayState.seqCounter || 0));
@@ -3809,13 +3889,19 @@ async function rebuildStoreByReplayingTransactions(context, existingStore = null
         replayState.edges = Array.isArray(nextGraph.edges) ? nextGraph.edges : [];
         replayState.layerSnapshots = Array.isArray(nextGraph.layerSnapshots) ? nextGraph.layerSnapshots : [];
         keptTransactions.push({
-            sourceSeq: Number(frame.seq),
-            messageKey: matched.messageKey,
+            sourceSeq: frameSeq,
             operations: matched.operations,
         });
     }
-    for (let i = txIndex; i < transactions.length; i++) {
-        removedSeqs.add(Number(transactions[i].sourceSeq));
+
+    for (const tx of transactions) {
+        const txSeq = Number(tx?.sourceSeq || 0);
+        if (!Number.isFinite(txSeq) || txSeq <= 0) {
+            continue;
+        }
+        if (txSeq > maxSeq) {
+            removedSeqs.add(txSeq);
+        }
     }
 
     const rebuilt = createEmptyStore();
@@ -6225,7 +6311,7 @@ jQuery(() => {
 
     context.eventSource.on(context.eventTypes.MESSAGE_SENT, captureMessage);
     context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, captureMessage);
-    const replayStoreFromMutation = async () => {
+    const replayStoreFromMutation = async (rawMeta = null) => {
         const chatKey = getChatKey(context, { allowFallback: true });
         if (mutationReplayTasks.has(chatKey)) {
             await mutationReplayTasks.get(chatKey);
@@ -6237,6 +6323,7 @@ jQuery(() => {
             if (!store) {
                 return;
             }
+            applyTransactionMutation(store, rawMeta);
             const replayResult = await rebuildStoreByReplayingTransactions(context, store);
             if (!replayResult?.store) {
                 return;
@@ -6263,9 +6350,15 @@ jQuery(() => {
             mutationReplayTasks.delete(chatKey);
         }
     };
-    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, replayStoreFromMutation);
-    context.eventSource.on(context.eventTypes.MESSAGE_EDITED, replayStoreFromMutation);
-    context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, replayStoreFromMutation);
+    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, (_legacyLength, mutationMeta) => replayStoreFromMutation(mutationMeta));
+    context.eventSource.on(context.eventTypes.MESSAGE_EDITED, (messageIndex) => replayStoreFromMutation({
+        kind: 'edit',
+        mutatedPlayableSeq: chatIndexToPlayableSeq(context, messageIndex),
+    }));
+    context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, (messageIndex) => replayStoreFromMutation({
+        kind: 'swipe',
+        mutatedPlayableSeq: chatIndexToPlayableSeq(context, messageIndex),
+    }));
     if (context.eventTypes.PRESET_CHANGED) {
         context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
             if (String(event?.apiId || '') === 'openai') {
