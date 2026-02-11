@@ -269,6 +269,8 @@ function registerLocaleData() {
         'Recall debug query': '召回调试查询',
         'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遗迹发生了什么？',
         'Run Recall Debug': '运行召回调试',
+        'View Last Injection': '查看最近注入',
+        'No recall injection result yet.': '当前还没有召回注入结果。',
         'No active chat selected.': '未选择有效聊天。',
         'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
         'Import': '导入',
@@ -324,7 +326,7 @@ function registerLocaleData() {
         'Finalized': '已定稿',
         'Archived': '已归档',
         'Links (comma separated node ids)': '链接（逗号分隔节点 ID）',
-        'Metadata (one key=value per line)': '元数据（每行一个 key=value）',
+        'Fields (one key=value per line)': '字段（每行一个 key=value）',
         'Edge ${0}: configure relation between two nodes.': '边 ${0}：配置两个节点之间的关系。',
         'From Node': '起点节点',
         'To Node': '终点节点',
@@ -452,6 +454,8 @@ function registerLocaleData() {
         'Recall debug query': '召回除錯查詢',
         'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遺跡發生了什麼？',
         'Run Recall Debug': '執行召回除錯',
+        'View Last Injection': '查看最近注入',
+        'No recall injection result yet.': '目前還沒有召回注入結果。',
         'No active chat selected.': '未選擇有效聊天。',
         'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
         'Import': '匯入',
@@ -507,7 +511,7 @@ function registerLocaleData() {
         'Finalized': '已定稿',
         'Archived': '已封存',
         'Links (comma separated node ids)': '連結（以逗號分隔節點 ID）',
-        'Metadata (one key=value per line)': '中繼資料（每行一個 key=value）',
+        'Fields (one key=value per line)': '字段（每行一個 key=value）',
         'Edge ${0}: configure relation between two nodes.': '邊 ${0}：設定兩個節點之間的關係。',
         'From Node': '起點節點',
         'To Node': '終點節點',
@@ -1166,6 +1170,20 @@ function normalizeLegacyNodeForStore(node, fallbackSeq = 0) {
                         ? Number(node.fromTurn)
                         : fallbackSeq;
     const summary = normalizeText(node.summary || node.content || '');
+    const legacyMetadata = node.metadata && typeof node.metadata === 'object' && !Array.isArray(node.metadata)
+        ? node.metadata
+        : {};
+    const nodeFields = node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+        ? node.fields
+        : {};
+    const fields = {
+        ...legacyMetadata,
+        ...nodeFields,
+    };
+    delete fields.semantic_depth;
+    delete fields.semantic_rollup;
+    delete fields.semantic_source_type;
+    delete fields.merged_node_ids;
     return {
         id: String(node.id || ''),
         type: String(node.type || 'semantic'),
@@ -1173,7 +1191,21 @@ function normalizeLegacyNodeForStore(node, fallbackSeq = 0) {
         title: normalizeText(node.title || ''),
         summary,
         seqTo: Number.isFinite(seqTo) ? seqTo : fallbackSeq,
-        metadata: node.metadata && typeof node.metadata === 'object' ? node.metadata : {},
+        fields,
+        semanticDepth: Number.isFinite(Number(node.semanticDepth))
+            ? Number(node.semanticDepth)
+            : Number.isFinite(Number(legacyMetadata.semantic_depth))
+                ? Number(legacyMetadata.semantic_depth)
+                : 0,
+        semanticRollup: node.semanticRollup !== undefined
+            ? Boolean(node.semanticRollup)
+            : Boolean(legacyMetadata.semantic_rollup),
+        semanticSourceType: normalizeText(node.semanticSourceType || legacyMetadata.semantic_source_type || ''),
+        mergedNodeIds: Array.isArray(node.mergedNodeIds)
+            ? node.mergedNodeIds.map(id => String(id || '').trim()).filter(Boolean)
+            : Array.isArray(legacyMetadata.merged_node_ids)
+                ? legacyMetadata.merged_node_ids.map(id => String(id || '').trim()).filter(Boolean)
+                : [],
         childrenIds: Array.isArray(node.childrenIds) ? node.childrenIds.map(id => String(id || '').trim()).filter(Boolean) : [],
         links: Array.isArray(node.links) ? node.links.map(id => String(id || '').trim()).filter(Boolean) : [],
         parentId: String(node.parentId || '').trim(),
@@ -1374,9 +1406,8 @@ function getStructuredNodeFields(node) {
             Object.assign(fields, obj.fields);
         }
     };
-    mergeObject(node?.metadata);
-    mergeObject(tryParseJsonObject(node?.metadata?.fields));
-    mergeObject(tryParseJsonObject(node?.metadata?.data));
+    mergeObject(node?.fields);
+    mergeObject(tryParseJsonObject(node?.fields));
     mergeObject(tryParseJsonObject(node?.summary));
     return fields;
 }
@@ -1566,7 +1597,11 @@ function createNode(store, node) {
         parentId: node.parentId ? String(node.parentId) : '',
         childrenIds: [],
         links: [],
-        metadata: node.metadata && typeof node.metadata === 'object' ? node.metadata : {},
+        fields: node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields) ? node.fields : {},
+        semanticDepth: Number.isFinite(Number(node.semanticDepth)) ? Number(node.semanticDepth) : 0,
+        semanticRollup: Boolean(node.semanticRollup),
+        semanticSourceType: normalizeText(node.semanticSourceType || ''),
+        mergedNodeIds: Array.isArray(node.mergedNodeIds) ? node.mergedNodeIds.map(id => String(id || '').trim()).filter(Boolean) : [],
         seqTo: Number.isFinite(seqTo) ? seqTo : undefined,
         finalized: Boolean(node.finalized),
         archived: Boolean(node.archived),
@@ -2160,11 +2195,15 @@ function buildUpsertFromDynamicToolCall(call, spec) {
         if (!key) {
             continue;
         }
+        // `title` and `summary` are first-class node properties, avoid duplicating them in `fields`.
+        if (key === 'title' || key === 'summary') {
+            continue;
+        }
         const rawValue = args[key];
         fields[key] = rawValue === undefined || rawValue === null ? '' : rawValue;
     }
-    const titleValue = args.title ?? fields.title ?? '';
-    const summaryValue = args.summary ?? fields.summary ?? '';
+    const titleValue = args.title ?? '';
+    const summaryValue = args.summary ?? '';
     const missingRequired = [];
     for (const requiredField of Array.isArray(spec.requiredColumns) ? spec.requiredColumns : []) {
         const key = String(requiredField || '').trim();
@@ -2365,11 +2404,9 @@ function upsertSemanticNode(store, item) {
             title: generatedTitle,
             summary: normalizeText(item.summary || ''),
             finalized: true,
-            metadata: {
-                semantic_depth: 0,
-                semantic_rollup: false,
-                ...(item?.fields && typeof item.fields === 'object' ? item.fields : {}),
-            },
+            fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
+            semanticDepth: 0,
+            semanticRollup: false,
             seqTo,
         });
     }
@@ -2394,27 +2431,25 @@ function upsertSemanticNode(store, item) {
             title,
             summary: normalizeText(item.summary || ''),
             finalized: true,
-            metadata: {
-                semantic_depth: 0,
-                semantic_rollup: false,
-                ...(item?.fields && typeof item.fields === 'object' ? item.fields : {}),
-            },
+            fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
+            semanticDepth: 0,
+            semanticRollup: false,
             seqTo,
         });
     } else {
         target.summary = normalizeText(item.summary || target.summary || '');
         target.count = Number(target.count || 1) + 1;
-        if (!target.metadata || typeof target.metadata !== 'object') {
-            target.metadata = {};
+        if (!target.fields || typeof target.fields !== 'object' || Array.isArray(target.fields)) {
+            target.fields = {};
         }
-        if (!Number.isFinite(Number(target.metadata.semantic_depth))) {
-            target.metadata.semantic_depth = 0;
+        if (!Number.isFinite(Number(target.semanticDepth))) {
+            target.semanticDepth = 0;
         }
-        if (target.metadata.semantic_rollup === undefined) {
-            target.metadata.semantic_rollup = false;
+        if (target.semanticRollup === undefined) {
+            target.semanticRollup = false;
         }
         if (item?.fields && typeof item.fields === 'object') {
-            Object.assign(target.metadata, item.fields);
+            Object.assign(target.fields, item.fields);
         }
         target.seqTo = Math.max(Number(target.seqTo || 0), seqTo);
         target.updatedAt = Date.now();
@@ -2470,7 +2505,7 @@ function getSemanticNodesForType(store, type) {
 
 function compactSemanticLatestOnly(store, type, keepLatest = 1) {
     const nodes = getSemanticNodesForType(store, type)
-        .filter(node => !node.metadata?.semantic_rollup)
+        .filter(node => !node.semanticRollup)
         .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
     const byTitle = new Map();
     let changed = false;
@@ -2495,7 +2530,7 @@ function compactSemanticLatestOnly(store, type, keepLatest = 1) {
 
 function collectSemanticRootsByDepth(store, type, depth) {
     return getSemanticNodesForType(store, type)
-        .filter(node => Number(node?.metadata?.semantic_depth ?? 0) === Number(depth))
+        .filter(node => Number(node?.semanticDepth ?? 0) === Number(depth))
         .filter(node => !String(node.parentId || '').trim())
         .sort((a, b) => {
             const aTo = Number(a.seqTo ?? a.createdAt ?? 0);
@@ -2541,12 +2576,10 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 summary,
                 finalized: true,
                 archived: false,
-                metadata: {
-                    semantic_rollup: true,
-                    semantic_depth: depth + 1,
-                    semantic_source_type: type,
-                    merged_node_ids: group.map(node => node.id),
-                },
+                semanticRollup: true,
+                semanticDepth: depth + 1,
+                semanticSourceType: String(type || ''),
+                mergedNodeIds: group.map(node => node.id),
                 seqTo: Math.max(...group.map(node => Number(node.seqTo ?? 0))),
             });
 
@@ -2701,7 +2734,9 @@ function formatNodeDetail(node, extra = {}) {
         type: node.type,
         title: node.title,
         summary: String(node.summary || ''),
-        metadata: node.metadata || {},
+        fields: node.fields || {},
+        semantic_depth: Number(node.semanticDepth || 0),
+        semantic_rollup: Boolean(node.semanticRollup),
         children: Array.isArray(node.childrenIds) ? node.childrenIds : [],
         to_seq: node.seqTo ?? null,
         ...extra,
@@ -2745,8 +2780,8 @@ function compareNodesByRecency(a, b) {
     if (aUpdated !== bUpdated) {
         return bUpdated - aUpdated;
     }
-    const aDepth = Number(a?.metadata?.depth ?? 0);
-    const bDepth = Number(b?.metadata?.depth ?? 0);
+    const aDepth = Number(a?.semanticDepth ?? 0);
+    const bDepth = Number(b?.semanticDepth ?? 0);
     return bDepth - aDepth;
 }
 
@@ -2898,18 +2933,24 @@ function getNodeRecallKeywords(node) {
             }
         }
     };
-    pushValue(node?.metadata?.keywords);
-    pushValue(node?.metadata?.keyword);
-    pushValue(node?.metadata?.aliases);
-    pushValue(node?.metadata?.alias);
-    pushValue(node?.metadata?.tags);
+    pushValue(node?.fields?.keywords);
+    pushValue(node?.fields?.keyword);
+    pushValue(node?.fields?.aliases);
+    pushValue(node?.fields?.alias);
+    pushValue(node?.fields?.tags);
     return Array.from(new Set(values));
+}
+
+function isRecallDiagnosticNode(node) {
+    const type = String(node?.type || '').trim().toLowerCase();
+    return type === 'recall' || type.startsWith('recall_');
 }
 
 function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = []) {
     const query = normalizeText(queryBundle?.fullText || '');
     const semantic = listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter(node => !node.archived);
+        .filter(node => !node.archived)
+        .filter(node => !isRecallDiagnosticNode(node));
     const schemaMap = getNodeTypeSchemaMap(settings);
     const merged = [
         ...getSortedNodesByRecency(alwaysInjectNodes.filter(Boolean)),
@@ -2990,7 +3031,7 @@ async function chooseRecallRoute(context, settings, recallState) {
             exposure,
             edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 8 }),
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
-            fields: node?.metadata && typeof node.metadata === 'object' ? node.metadata : {},
+            fields: node?.fields && typeof node.fields === 'object' ? node.fields : {},
         });
         return row;
     });
@@ -3284,7 +3325,11 @@ function hasActiveSemanticChildOfType(store, node, type) {
 
 function collectAlwaysInjectNodes(store, settings) {
     const alwaysSpecs = normalizeNodeTypeSchema(settings.nodeTypeSchema)
-        .filter(spec => spec?.alwaysInject)
+        .filter((spec) => {
+            const tableName = String(spec?.tableName || '').trim().toLowerCase();
+            // `event_table` is always considered core storyline context and must stay injected.
+            return Boolean(spec?.alwaysInject) || tableName === 'event_table';
+        })
         .map(spec => ({
             type: String(spec.id || '').toLowerCase(),
             compression: getSemanticCompressionConfig(settings, String(spec.id || '').toLowerCase()),
@@ -3299,6 +3344,7 @@ function collectAlwaysInjectNodes(store, settings) {
     for (const spec of alwaysSpecs) {
         const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
             .filter(node => !node.archived)
+            .filter(node => !isRecallDiagnosticNode(node))
             .filter(node => String(node.type || '').toLowerCase() === spec.type);
         if (nodes.length === 0) {
             continue;
@@ -3412,12 +3458,12 @@ function getTableCellValueFromNode(node, columnName) {
         return toDisplayScalar(structured[key]);
     }
     const parsedSummary = tryParseJsonObject(node?.summary);
-    const deepHit = findValueByKeyDeep(node?.metadata, key)
+    const deepHit = findValueByKeyDeep(node?.fields, key)
         ?? findValueByKeyDeep(parsedSummary, key);
     if (deepHit !== undefined) {
         return toDisplayScalar(deepHit);
     }
-    return String(node?.metadata?.[key] ?? '');
+    return String(node?.fields?.[key] ?? '');
 }
 
 function buildFocusTablesText(nodes, settings, options = {}) {
@@ -4101,11 +4147,11 @@ function parseLooseScalar(value) {
     return text;
 }
 
-function encodeMetadataAsLines(metadata) {
-    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+function encodeFieldsAsLines(fields) {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
         return '';
     }
-    return Object.entries(metadata)
+    return Object.entries(fields)
         .map(([key, value]) => {
             let encoded = value;
             if (value && typeof value === 'object') {
@@ -4116,7 +4162,7 @@ function encodeMetadataAsLines(metadata) {
         .join('\n');
 }
 
-function decodeMetadataFromLines(text) {
+function decodeFieldsFromLines(text) {
     const out = {};
     for (const rawLine of String(text || '').split('\n')) {
         const line = rawLine.trim();
@@ -4222,8 +4268,8 @@ function renderNodeFormEditorHtml(node, store, settings, editorId) {
     <label>${escapeHtml(i18n('Links (comma separated node ids)'))}
         <input data-field="links" class="text_pole" type="text" value="${escapeHtml(joinCommaList(node.links || []))}" />
     </label>
-    <label>${escapeHtml(i18n('Metadata (one key=value per line)'))}
-        <textarea data-field="metadataLines" class="text_pole textarea_compact" rows="6">${escapeHtml(encodeMetadataAsLines(node.metadata || {}))}</textarea>
+    <label>${escapeHtml(i18n('Fields (one key=value per line)'))}
+        <textarea data-field="fieldsLines" class="text_pole textarea_compact" rows="6">${escapeHtml(encodeFieldsAsLines(node.fields || {}))}</textarea>
     </label>
 </div>`;
 }
@@ -4864,7 +4910,7 @@ async function openGraphInspectorPopup(context) {
             target.finalized = Boolean(editorRoot.find('[data-field="finalized"]').prop('checked'));
             target.archived = Boolean(editorRoot.find('[data-field="archived"]').prop('checked'));
             target.links = splitCommaList(editorRoot.find('[data-field="links"]').val());
-            target.metadata = decodeMetadataFromLines(editorRoot.find('[data-field="metadataLines"]').val());
+            target.fields = decodeFieldsFromLines(editorRoot.find('[data-field="fieldsLines"]').val());
 
             if (parsedParentId !== oldParentId) {
                 if (oldParentId && latest.nodes[oldParentId]) {
@@ -6057,6 +6103,20 @@ function bindUi() {
         refreshUiStats();
     });
 
+    root.find('#luker_rpg_memory_view_last_injection').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        const data = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+            ? store.lastRecallProjection
+            : { message: i18n('No recall injection result yet.') };
+        const html = `<pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+        await context.callGenericPopup(html, context.POPUP_TYPE.TEXT, i18n('View Last Injection'), { wide: true, large: true });
+    });
+
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
         const store = await rebuildStoreFromCurrentChat(context);
         if (!store) {
@@ -6201,6 +6261,7 @@ function ensureUi() {
             <input id="luker_rpg_memory_debug_query" class="text_pole" type="text" placeholder="${escapeHtml(i18n('e.g. what happened at the ruins with Mira?'))}" />
             <div class="flex-container">
                 <div id="luker_rpg_memory_recall_debug" class="menu_button">${escapeHtml(i18n('Run Recall Debug'))}</div>
+                <div id="luker_rpg_memory_view_last_injection" class="menu_button">${escapeHtml(i18n('View Last Injection'))}</div>
             </div>
 
             <small id="luker_rpg_memory_stats" style="opacity:0.8"></small>
