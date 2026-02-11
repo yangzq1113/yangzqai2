@@ -202,6 +202,9 @@ function registerLocaleData() {
         'AI profile generation failed: ${0}': 'AI 配置生成失败：${0}',
         'Function output is invalid.': '函数输出无效。',
         'AI build did not provide any stage tool calls.': 'AI 构建未提供任何阶段工具调用。',
+        'Orchestrator running...': '编排插件运行中...',
+        'Orchestrator completed.': '编排插件运行完成。',
+        'Orchestrator failed: ${0}': '编排插件运行失败：${0}',
         'Failed to persist character override.': '角色卡覆写写入失败。',
     });
     addLocaleData('zh-tw', {
@@ -306,6 +309,9 @@ function registerLocaleData() {
         'AI profile generation failed: ${0}': 'AI 設定生成失敗：${0}',
         'Function output is invalid.': '函式輸出無效。',
         'AI build did not provide any stage tool calls.': 'AI 建構未提供任何階段工具呼叫。',
+        'Orchestrator running...': '編排插件運行中...',
+        'Orchestrator completed.': '編排插件運行完成。',
+        'Orchestrator failed: ${0}': '編排插件運行失敗：${0}',
         'Failed to persist character override.': '角色卡覆寫寫入失敗。',
     });
 }
@@ -372,6 +378,7 @@ const uiState = {
     characterEditor: null,
 };
 let orchInFlight = false;
+let activeRunInfoToast = null;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -765,8 +772,31 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
 }
 
 function isRetryableToolCallError(error) {
+    const statusCode = Number(
+        error?.status
+        || error?.response?.status
+        || error?.cause?.status
+        || error?.error?.status
+        || 0,
+    );
+    if ([408, 409, 425, 429, 500, 502, 503, 504].includes(statusCode)) {
+        return true;
+    }
     const message = String(error?.message || error || '').toLowerCase();
-    return message.includes('tool call');
+    return (
+        message.includes('tool call')
+        || message.includes('network')
+        || message.includes('timeout')
+        || message.includes('timed out')
+        || message.includes('fetch failed')
+        || message.includes('bad gateway')
+        || message.includes('gateway timeout')
+        || message.includes('service unavailable')
+        || message.includes('too many requests')
+        || message.includes('502')
+        || message.includes('503')
+        || message.includes('504')
+    );
 }
 
 async function requestToolCallWithRetry(settings, promptMessages, {
@@ -965,16 +995,7 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
 
 async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, wiHint = '') {
     const preset = presets[nodeSpec.preset] || {};
-    try {
-        return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint);
-    } catch (error) {
-        console.warn(`[${MODULE_NAME}] LLM node '${nodeSpec.id}' failed`, error);
-        return {
-            error: String(error?.message || error || 'Node request failed'),
-            directives: [],
-            risks: ['Node execution failed'],
-        };
-    }
+    return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint);
 }
 
 async function runOrchestration(context, payload, messages, profile, wiHint = '') {
@@ -1285,6 +1306,8 @@ async function onWorldInfoFinalized(payload) {
     orchInFlight = true;
 
     try {
+        updateUiStatus(i18n('Orchestrator running...'));
+        showRunInfoToast(i18n('Orchestrator running...'));
         const profile = getEffectiveProfile(context);
         const messages = structuredClone(getCoreMessages(payload));
         if (messages.length === 0) {
@@ -1303,7 +1326,18 @@ async function onWorldInfoFinalized(payload) {
         });
         injectCapsule(context, capsuleText);
         saveLastCapsuleMetadata(context, capsuleText, payload, profile);
+        updateUiStatus(i18n('Orchestrator completed.'));
+        clearRunInfoToast();
+    } catch (error) {
+        clearCapsulePrompt(context);
+        clearLastCapsuleMetadata(context);
+        console.warn(`[${MODULE_NAME}] Orchestration failed`, error);
+        const failText = i18nFormat('Orchestrator failed: ${0}', String(error?.message || error));
+        updateUiStatus(failText);
+        clearRunInfoToast();
+        notifyError(failText);
     } finally {
+        clearRunInfoToast();
         orchInFlight = false;
     }
 }
@@ -1941,6 +1975,31 @@ function renderDynamicPanels(root, context) {
 
 function updateUiStatus(text) {
     jQuery('#luker_orch_status').text(String(text || ''));
+}
+
+function showRunInfoToast(message) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    if (activeRunInfoToast) {
+        toastr.clear(activeRunInfoToast);
+        activeRunInfoToast = null;
+    }
+    activeRunInfoToast = toastr.info(String(message || ''), '', {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: false,
+        closeButton: false,
+        progressBar: false,
+    });
+}
+
+function clearRunInfoToast() {
+    if (typeof toastr === 'undefined' || !activeRunInfoToast) {
+        return;
+    }
+    toastr.clear(activeRunInfoToast);
+    activeRunInfoToast = null;
 }
 
 async function persistGlobalEditorFrom(settings, editor) {
