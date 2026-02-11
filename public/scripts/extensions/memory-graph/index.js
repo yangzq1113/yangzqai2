@@ -383,6 +383,7 @@ function registerLocaleData() {
         'Table Name': '表名',
         'Table Columns (comma separated)': '表列（逗号分隔）',
         'Required Columns (comma separated)': '必填列（逗号分隔）',
+        'Column Hints (one per line: column=meaning)': '列含义（每行一个：列名=含义）',
         'Keywords (comma separated)': '关键词（逗号分隔）',
         'Force Update (must appear each extraction batch)': '强制更新（每次抽取必须出现）',
         'Extract Hint': '抽取提示',
@@ -565,6 +566,7 @@ function registerLocaleData() {
         'Table Name': '表名',
         'Table Columns (comma separated)': '表欄位（逗號分隔）',
         'Required Columns (comma separated)': '必填欄位（逗號分隔）',
+        'Column Hints (one per line: column=meaning)': '欄位說明（每行一個：欄位=說明）',
         'Keywords (comma separated)': '關鍵字（逗號分隔）',
         'Force Update (must appear each extraction batch)': '強制更新（每次抽取必須出現）',
         'Extract Hint': '抽取提示',
@@ -5099,6 +5101,38 @@ function splitCommaList(value) {
         .filter(Boolean);
 }
 
+function joinKeyValueLines(map) {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) {
+        return '';
+    }
+    return Object.entries(map)
+        .map(([key, value]) => `${String(key || '').trim()}=${String(value || '').trim()}`)
+        .filter(line => !line.startsWith('=') && !line.endsWith('='))
+        .join('\n');
+}
+
+function parseKeyValueLines(value) {
+    const lines = String(value || '').split(/\r?\n/);
+    const result = {};
+    for (const line of lines) {
+        const trimmed = String(line || '').trim();
+        if (!trimmed) {
+            continue;
+        }
+        const idx = trimmed.indexOf('=');
+        if (idx <= 0) {
+            continue;
+        }
+        const key = trimmed.slice(0, idx).trim();
+        const val = trimmed.slice(idx + 1).trim();
+        if (!key || !val) {
+            continue;
+        }
+        result[key] = val;
+    }
+    return result;
+}
+
 function getSchemaTypeTemplate(index = 1) {
     return {
         id: `custom_${index}`,
@@ -5550,6 +5584,9 @@ function renderNodeTypeSchemaCard(spec, index) {
     <label>${escapeHtml(i18n('Required Columns (comma separated)'))}
         <input data-field="requiredColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.requiredColumns))}" />
     </label>
+    <label>${escapeHtml(i18n('Column Hints (one per line: column=meaning)'))}
+        <textarea data-field="columnHints" class="text_pole textarea_compact" rows="3">${escapeHtml(joinKeyValueLines(spec.columnHints))}</textarea>
+    </label>
     <label>${escapeHtml(i18n('Keywords (comma separated)'))}
         <input data-field="keywords" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.keywords))}" />
     </label>
@@ -5609,6 +5646,7 @@ function readSchemaCard(card) {
         tableName: String(root.find('[data-field="tableName"]').val() || '').trim(),
         tableColumns: splitCommaList(root.find('[data-field="tableColumns"]').val()),
         requiredColumns: splitCommaList(root.find('[data-field="requiredColumns"]').val()),
+        columnHints: parseKeyValueLines(root.find('[data-field="columnHints"]').val()),
         level: LEVEL.SEMANTIC,
         extractHint: String(root.find('[data-field="extractHint"]').val() || '').trim(),
         keywords: splitCommaList(root.find('[data-field="keywords"]').val()),
