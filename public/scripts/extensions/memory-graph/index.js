@@ -23,7 +23,14 @@ const defaultNodeTypeSchema = [
         id: 'event',
         label: 'Event',
         tableName: 'event_table',
-        tableColumns: ['title', 'seq_to', 'summary', 'participants', 'locations', 'threads', 'status'],
+        tableColumns: ['summary', 'participants', 'locations', 'threads', 'status'],
+        columnHints: {
+            summary: 'Concise event abstraction with causality and outcome.',
+            participants: 'Key involved entities or characters.',
+            locations: 'Primary locations where the event happened.',
+            threads: 'Related long-running threads affected by this event.',
+            status: 'Event state such as resolved/ongoing/blocked.',
+        },
         requiredColumns: ['summary'],
         forceUpdate: true,
         level: LEVEL.SEMANTIC,
@@ -44,7 +51,12 @@ const defaultNodeTypeSchema = [
         id: 'thread',
         label: 'Thread',
         tableName: 'thread_table',
-        tableColumns: ['title', 'summary', 'status', 'related_events', 'last_update_seq'],
+        tableColumns: ['title', 'summary', 'status'],
+        columnHints: {
+            title: 'Stable thread name.',
+            summary: 'Current progress and key open points.',
+            status: 'Thread state such as active/resolved/stalled.',
+        },
         requiredColumns: ['title'],
         forceUpdate: false,
         level: LEVEL.SEMANTIC,
@@ -65,12 +77,23 @@ const defaultNodeTypeSchema = [
         id: 'character_sheet',
         label: 'Character Sheet',
         tableName: 'character_table',
-        tableColumns: ['name', 'identity', 'state', 'goal', 'relationship', 'inventory', 'secret', 'language_sample', 'note', 'addressing_user', 'last_update_seq'],
+        tableColumns: ['name', 'identity', 'state', 'goal', 'relationship', 'inventory', 'language_sample', 'core_note', 'addressing_user'],
+        columnHints: {
+            name: 'Canonical character name.',
+            identity: 'Stable identity/background facts.',
+            state: 'Current condition or stance.',
+            goal: 'Current objective or motivation.',
+            relationship: 'Relationship status to key others/user.',
+            inventory: 'Key carried or owned items.',
+            language_sample: 'Representative current speech style sample.',
+            core_note: 'Stable critical notes worth persistent recall.',
+            addressing_user: 'How this character addresses the user.',
+        },
         requiredColumns: ['name'],
         forceUpdate: false,
         level: LEVEL.SEMANTIC,
-        extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: identity/status/goal/inventory/relationships/secrets.',
-        keywords: ['character', 'status', 'relationship', 'inventory', 'goal', 'secret'],
+        extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: identity/status/goal/inventory/relationships/core notes.',
+        keywords: ['character', 'status', 'relationship', 'inventory', 'goal', 'core note'],
         alwaysInject: false,
         compression: {
             mode: 'latest_only',
@@ -86,7 +109,15 @@ const defaultNodeTypeSchema = [
         id: 'location_state',
         label: 'Location State',
         tableName: 'location_table',
-        tableColumns: ['name', 'controller', 'danger', 'resource', 'state', 'last_event', 'last_update_seq'],
+        tableColumns: ['name', 'controller', 'danger', 'resources', 'state', 'last_event'],
+        columnHints: {
+            name: 'Canonical location name.',
+            controller: 'Current owner/controller of the location.',
+            danger: 'Current danger level or threat profile.',
+            resources: 'Important available resources/services/features.',
+            state: 'Current location condition.',
+            last_event: 'Most relevant recent event at this location.',
+        },
         requiredColumns: ['name'],
         forceUpdate: false,
         level: LEVEL.SEMANTIC,
@@ -104,52 +135,16 @@ const defaultNodeTypeSchema = [
         },
     },
     {
-        id: 'faction_state',
-        label: 'Faction State',
-        tableName: 'faction_table',
-        tableColumns: ['name', 'goal', 'alliance', 'hostility', 'leverage', 'state', 'last_update_seq'],
-        requiredColumns: ['name'],
-        forceUpdate: false,
-        level: LEVEL.SEMANTIC,
-        extractHint: 'Faction goals, alliances, hostility shifts, leverage, and conflict escalation.',
-        keywords: ['faction', 'alliance', 'hostility', 'politics', 'power'],
-        alwaysInject: false,
-        compression: {
-            mode: 'latest_only',
-            threshold: 2,
-            fanIn: 2,
-            maxDepth: 1,
-            keepRecentLeaves: 1,
-            keepLatest: 1,
-            summarizeInstruction: '',
-        },
-    },
-    {
-        id: 'item_state',
-        label: 'Item State',
-        tableName: 'item_table',
-        tableColumns: ['name', 'owner', 'state', 'effect', 'constraint', 'last_update_seq'],
-        requiredColumns: ['name'],
-        forceUpdate: false,
-        level: LEVEL.SEMANTIC,
-        extractHint: 'Key item ownership, condition, unlock state, seals, and usage constraints.',
-        keywords: ['artifact', 'item', 'key', 'weapon', 'relic'],
-        alwaysInject: false,
-        compression: {
-            mode: 'latest_only',
-            threshold: 2,
-            fanIn: 2,
-            maxDepth: 1,
-            keepRecentLeaves: 1,
-            keepLatest: 1,
-            summarizeInstruction: '',
-        },
-    },
-    {
         id: 'rule_constraint',
         label: 'Rule Constraint',
         tableName: 'rule_table',
         tableColumns: ['title', 'constraint', 'scope', 'status'],
+        columnHints: {
+            title: 'Short rule name.',
+            constraint: 'Non-negotiable rule text.',
+            scope: 'Where/when this rule applies.',
+            status: 'Current validity or enforcement state.',
+        },
         requiredColumns: ['title', 'constraint'],
         forceUpdate: false,
         level: LEVEL.SEMANTIC,
@@ -2028,15 +2023,21 @@ function buildDynamicExtractTools(schema = []) {
         }
         usedNames.add(toolName);
 
+        const isEventType = typeId === 'event';
         const fields = Array.isArray(spec.tableColumns)
             ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean)
             : [];
+        const filteredFields = isEventType
+            ? fields.filter(field => String(field || '').trim().toLowerCase() !== 'title')
+            : fields;
         const requiredColumns = Array.isArray(spec.requiredColumns)
             ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean)
             : [];
-        const fieldSet = new Set(fields);
+        const filteredRequiredColumns = isEventType
+            ? requiredColumns.filter(field => String(field || '').trim().toLowerCase() !== 'title')
+            : requiredColumns;
+        const fieldSet = new Set(filteredFields);
         const properties = {
-            title: { type: 'string' },
             summary: { type: 'string' },
             evidence_seqs: {
                 type: 'array',
@@ -2066,6 +2067,9 @@ function buildDynamicExtractTools(schema = []) {
                 },
             },
         };
+        if (!isEventType) {
+            properties.title = { type: 'string' };
+        }
         for (const field of fieldSet) {
             if (properties[field]) {
                 continue;
@@ -2086,7 +2090,7 @@ function buildDynamicExtractTools(schema = []) {
                 parameters: {
                     type: 'object',
                     properties,
-                    required: requiredColumns.filter(field => fieldSet.has(field) || field === 'title' || field === 'summary'),
+                    required: filteredRequiredColumns.filter(field => fieldSet.has(field) || field === 'title' || field === 'summary'),
                     additionalProperties: false,
                 },
             },
@@ -2094,8 +2098,8 @@ function buildDynamicExtractTools(schema = []) {
         specByToolName.set(toolName, {
             ...spec,
             id: typeId,
-            tableColumns: fields,
-            requiredColumns,
+            tableColumns: filteredFields,
+            requiredColumns: filteredRequiredColumns,
         });
     }
 
