@@ -1584,14 +1584,32 @@ function hashTextFNV1a(text) {
 }
 
 function getAssistantChatMessages(context) {
-    return (Array.isArray(context?.chat) ? context.chat : [])
-        .filter(message => message && !message.is_system && !message.is_user)
-        .map(message => ({
-            is_user: Boolean(message.is_user),
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    const result = [];
+    let lastUser = null;
+    for (const message of source) {
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (message.is_user) {
+            lastUser = {
+                name: String(message.name || ''),
+                mes: String(message.mes || ''),
+                send_date: String(message.send_date || ''),
+            };
+            continue;
+        }
+        result.push({
+            is_user: false,
             name: String(message.name || ''),
             mes: String(message.mes || ''),
             send_date: String(message.send_date || ''),
-        }));
+            last_user_name: String(lastUser?.name || ''),
+            last_user_mes: String(lastUser?.mes || ''),
+            last_user_send_date: String(lastUser?.send_date || ''),
+        });
+    }
+    return result;
 }
 
 function computeChatSourceState(context) {
@@ -1605,12 +1623,23 @@ function computeChatSourceState(context) {
             name: String(message.name || ''),
             mes: String(message.mes || ''),
             send_date: String(message.send_date || ''),
+            last_user_name: String(message.last_user_name || ''),
+            last_user_mes: String(message.last_user_mes || ''),
+            last_user_send_date: String(message.last_user_send_date || ''),
         });
         if (tail.length > 24) {
             tail.shift();
         }
     }
-    const digestPayload = tail.map(message => `${message.is_user ? 'u' : 'a'}|${message.name}|${normalizeText(message.mes)}|${message.send_date}`).join('\n');
+    const digestPayload = tail.map(message => [
+        message.is_user ? 'u' : 'a',
+        message.name,
+        normalizeText(message.mes),
+        message.send_date,
+        `ctx_user_name=${message.last_user_name}`,
+        `ctx_user_mes=${normalizeText(message.last_user_mes)}`,
+        `ctx_user_date=${message.last_user_send_date}`,
+    ].join('|')).join('\n');
     return {
         messageCount: count,
         digest: hashTextFNV1a(`${count}\n${digestPayload}`),
@@ -1802,6 +1831,9 @@ function appendPendingMessageFrame(store, message) {
         name: String(message?.name || ''),
         mes: text,
         send_date: String(message?.send_date || ''),
+        last_user_name: String(message?.last_user_name || ''),
+        last_user_mes: String(message?.last_user_mes || ''),
+        last_user_send_date: String(message?.last_user_send_date || ''),
     };
     store.seqCounter = nextSeq;
     if (!Array.isArray(store.pendingMessages)) {
@@ -2528,7 +2560,25 @@ async function runCompressionLoop(context, store, settings) {
 
 async function processPendingMessageFrameWithLLM(context, store, settings, schema, frame) {
     const beforeGraph = snapshotGraphForReplay(store);
-    const upserts = await extractNodesWithLLM(context, settings, schema, [frame]);
+    const extractBatch = [];
+    const lastUserText = normalizeText(frame?.last_user_mes || '');
+    if (lastUserText) {
+        extractBatch.push({
+            seq: Number(frame?.seq || 0),
+            is_user: true,
+            name: String(frame?.last_user_name || ''),
+            mes: lastUserText,
+            send_date: String(frame?.last_user_send_date || ''),
+        });
+    }
+    extractBatch.push({
+        seq: Number(frame?.seq || 0),
+        is_user: Boolean(frame?.is_user),
+        name: String(frame?.name || ''),
+        mes: String(frame?.mes || ''),
+        send_date: String(frame?.send_date || ''),
+    });
+    const upserts = await extractNodesWithLLM(context, settings, schema, extractBatch);
     if (upserts.length === 0) {
         return false;
     }
@@ -3698,6 +3748,9 @@ function buildPlayableFramesFromContext(context) {
             name: String(message?.name || ''),
             mes: text,
             send_date: String(message?.send_date || ''),
+            last_user_name: String(message?.last_user_name || ''),
+            last_user_mes: String(message?.last_user_mes || ''),
+            last_user_send_date: String(message?.last_user_send_date || ''),
         });
     }
     return frames;
@@ -3941,6 +3994,10 @@ async function captureMessage(messageId) {
     if (!message || message.is_system || message.is_user) {
         return;
     }
+    const lastUserMessage = context.chat
+        .slice(0, index)
+        .reverse()
+        .find(item => item && !item.is_system && item.is_user) || null;
 
     await ensureMemoryStoreLoaded(context);
     const store = getMemoryStore(context);
@@ -3952,6 +4009,9 @@ async function captureMessage(messageId) {
         name: String(message.name || ''),
         mes: String(message.mes || ''),
         send_date: String(message.send_date || ''),
+        last_user_name: String(lastUserMessage?.name || ''),
+        last_user_mes: String(lastUserMessage?.mes || ''),
+        last_user_send_date: String(lastUserMessage?.send_date || ''),
     });
     updateStoreSourceState(store, context);
 
