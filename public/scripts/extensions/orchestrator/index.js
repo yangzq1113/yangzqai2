@@ -873,7 +873,6 @@ function renderTemplate(template, vars) {
 function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     api = '',
     promptPresetName = '',
-    runtimePromptFields = {},
 } = {}) {
     const systemText = String(systemPrompt || '').trim() || 'Return concise guidance through function-call fields.';
     const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
@@ -891,13 +890,10 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
             promptPresetName: selectedPromptPresetName,
         },
         promptPresetName: selectedPromptPresetName,
-        runtimePromptFields: runtimePromptFields && typeof runtimePromptFields === 'object'
-            ? runtimePromptFields
-            : {},
     });
 }
 
-async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, wiHint = '') {
+async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint = '') {
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
@@ -928,10 +924,6 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         {
             api,
             promptPresetName,
-            runtimePromptFields: {
-                worldInfoBefore: String(payload?.worldInfoBefore || ''),
-                worldInfoAfter: String(payload?.worldInfoAfter || ''),
-            },
         },
     );
 
@@ -971,10 +963,10 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
 }
 
-async function executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, presets, wiHint = '') {
+async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, wiHint = '') {
     const preset = presets[nodeSpec.preset] || {};
     try {
-        return await runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, wiHint);
+        return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint);
     } catch (error) {
         console.warn(`[${MODULE_NAME}] LLM node '${nodeSpec.id}' failed`, error);
         return {
@@ -1001,7 +993,7 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 return {
                     node: nodeSpec.id,
-                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint),
+                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint),
                 };
             }));
             nodeOutputs.push(...outputs);
@@ -1010,7 +1002,7 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 nodeOutputs.push({
                     node: nodeSpec.id,
-                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint),
+                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint),
                 });
             }
         }
