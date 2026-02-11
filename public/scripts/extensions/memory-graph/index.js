@@ -6053,25 +6053,7 @@ function bindUi() {
 
         const result = await runLLMDrivenRecall(context, store, payload);
         store.lastRecallTrace = result.trace;
-
-        const details = {
-            query,
-            selected_nodes: result.selectedNodes.map(formatNodeDetail),
-            always_inject_nodes: (result.alwaysInjectNodes || []).map(formatNodeDetail),
-            trace: result.trace,
-            preview: {
-                core_packet: buildFocusTablesText(result.alwaysInjectNodes || [], settings, { tablePrefix: 'Core' }),
-                focus_packet: buildFocusTablesText(result.selectedNodes, settings, { tablePrefix: 'Recall' }),
-            },
-        };
-
-        await context.callGenericPopup(
-            `<pre style="white-space:pre-wrap;">${JSON.stringify(details, null, 2).replace(/</g, '&lt;')}</pre>`,
-            context.POPUP_TYPE.TEXT,
-            '',
-            { wide: true, large: true, allowVerticalScrolling: true },
-        );
-
+        updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query, result.selectedNodes.length));
         refreshUiStats();
     });
 
