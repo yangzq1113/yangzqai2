@@ -1822,12 +1822,17 @@ export async function deleteLastMessage() {
     const deletedPlayableSeq = deletedMessage && !deletedMessage.is_system
         ? chat.reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0)
         : null;
+    const deletedAssistantSeq = deletedMessage && !deletedMessage.is_system && !deletedMessage.is_user
+        ? chat.reduce((count, message) => count + (message && !message.is_system && !message.is_user ? 1 : 0), 0)
+        : null;
     chat.length = chat.length - 1;
     chatElement.children('.mes').last().remove();
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
         kind: 'delete',
         deletedPlayableSeqFrom: deletedPlayableSeq,
         deletedPlayableSeqTo: deletedPlayableSeq,
+        deletedAssistantSeqFrom: deletedAssistantSeq,
+        deletedAssistantSeqTo: deletedAssistantSeq,
     });
 }
 
@@ -1879,6 +1884,9 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
     const deletedPlayableSeq = deletedMessage && !deletedMessage.is_system
         ? chat.slice(0, id + 1).reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0)
         : null;
+    const deletedAssistantSeq = deletedMessage && !deletedMessage.is_system && !deletedMessage.is_user
+        ? chat.slice(0, id + 1).reduce((count, message) => count + (message && !message.is_system && !message.is_user ? 1 : 0), 0)
+        : null;
 
     chat.splice(id, 1);
     messageElement.remove();
@@ -1902,6 +1910,8 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
         kind: 'delete',
         deletedPlayableSeqFrom: deletedPlayableSeq,
         deletedPlayableSeqTo: deletedPlayableSeq,
+        deletedAssistantSeqFrom: deletedAssistantSeq,
+        deletedAssistantSeqTo: deletedAssistantSeq,
     });
 }
 
@@ -4649,12 +4659,17 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             const deletedPlayableSeq = deletedMessage && !deletedMessage.is_system
                 ? chat.reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0)
                 : null;
+            const deletedAssistantSeq = deletedMessage && !deletedMessage.is_system && !deletedMessage.is_user
+                ? chat.reduce((count, message) => count + (message && !message.is_system && !message.is_user ? 1 : 0), 0)
+                : null;
             chat.length = chat.length - 1;
             await removeLastMessage();
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
                 kind: 'delete',
                 deletedPlayableSeqFrom: deletedPlayableSeq,
                 deletedPlayableSeqTo: deletedPlayableSeq,
+                deletedAssistantSeqFrom: deletedAssistantSeq,
+                deletedAssistantSeqTo: deletedAssistantSeq,
             });
         }
     }
@@ -12817,6 +12832,12 @@ jQuery(async function () {
             const deletedPlayableCount = chat
                 .slice(this_del_mes)
                 .reduce((count, message) => count + (message && !message.is_system ? 1 : 0), 0);
+            const deletedAssistantPrefix = chat
+                .slice(0, this_del_mes)
+                .reduce((count, message) => count + (message && !message.is_system && !message.is_user ? 1 : 0), 0);
+            const deletedAssistantCount = chat
+                .slice(this_del_mes)
+                .reduce((count, message) => count + (message && !message.is_system && !message.is_user ? 1 : 0), 0);
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).nextAll('div').remove();
             chatElement.find(`.mes[mesid="${this_del_mes}"]`).remove();
             chat.length = this_del_mes;
@@ -12827,6 +12848,8 @@ jQuery(async function () {
                 kind: 'delete',
                 deletedPlayableSeqFrom: deletedPlayableCount > 0 ? deletedPlayablePrefix + 1 : null,
                 deletedPlayableSeqTo: deletedPlayableCount > 0 ? deletedPlayablePrefix + deletedPlayableCount : null,
+                deletedAssistantSeqFrom: deletedAssistantCount > 0 ? deletedAssistantPrefix + 1 : null,
+                deletedAssistantSeqTo: deletedAssistantCount > 0 ? deletedAssistantPrefix + deletedAssistantCount : null,
             });
             chatElement.find('.mes').removeClass('last_mes');
             chatElement.find('.mes').last().addClass('last_mes');

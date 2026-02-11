@@ -212,7 +212,7 @@ const defaultSettings = {
     extractPresetName: '',
     extractSystemPrompt: DEFAULT_EXTRACT_SYSTEM_PROMPT,
     extractResponseLength: 360,
-    extractBatchTurns: 12,
+    extractBatchTurns: 1,
     recentRawTurns: 5,
     lorebookProjectionEnabled: true,
     lorebookNameOverride: '',
@@ -240,7 +240,7 @@ function registerLocaleData() {
         'Project recall output to chat lorebook before WI scan': '在世界书扫描前将召回结果投影到聊天 Lorebook',
         'Exclude latest N messages from memory injection': '记忆注入排除最近 N 条消息',
         'Recall max iterations': '召回最大轮数',
-        'Extract batch messages': '写入批量消息数',
+        'Manual rebuild batch assistant turns': '手动重建每轮 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
         'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
@@ -252,7 +252,7 @@ function registerLocaleData() {
         'Advanced settings saved.': '高级设置已保存。',
         'Saved advanced settings.': '已保存高级设置。',
         'Advanced settings reset to defaults in editor.': '高级设置已在编辑器中重置为默认值。',
-        'Update every N messages': '每 N 条消息更新',
+        'Update every N assistant turns': '每 N 条 Assistant 楼层更新',
         'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆表类型、抽取提示与压缩策略。',
         'Open Schema Editor': '打开 Schema 编辑器',
@@ -283,7 +283,7 @@ function registerLocaleData() {
         '(unset)': '（未设置）',
         '(new)': '（新建）',
         'Memory Graph': '记忆图',
-        'Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}': '节点：${0} | 边：${1} | 消息：${2} | 源消息：${3}',
+        'Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}': '节点：${0} | 边：${1} | Assistant 楼层：${2} | 源楼层：${3}',
         'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0}': '最近召回步数：${0}',
         'Visual graph ready. Click an edge to select it for editing.': '可视化图已就绪。点击边可选择并编辑。',
@@ -420,7 +420,7 @@ function registerLocaleData() {
         'Project recall output to chat lorebook before WI scan': '在世界書掃描前將召回結果投影到聊天 Lorebook',
         'Exclude latest N messages from memory injection': '記憶注入排除最近 N 條訊息',
         'Recall max iterations': '召回最大輪數',
-        'Extract batch messages': '寫入批次訊息數',
+        'Manual rebuild batch assistant turns': '手動重建每輪 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
         'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
@@ -432,7 +432,7 @@ function registerLocaleData() {
         'Advanced settings saved.': '進階設定已儲存。',
         'Saved advanced settings.': '已儲存進階設定。',
         'Advanced settings reset to defaults in editor.': '進階設定已在編輯器中重設為預設值。',
-        'Update every N messages': '每 N 條訊息更新',
+        'Update every N assistant turns': '每 N 條 Assistant 樓層更新',
         'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶表類型、抽取提示與壓縮策略。',
         'Open Schema Editor': '開啟 Schema 編輯器',
@@ -463,7 +463,7 @@ function registerLocaleData() {
         '(unset)': '（未設定）',
         '(new)': '（新建）',
         'Memory Graph': '記憶圖',
-        'Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}': '節點：${0} | 邊：${1} | 訊息：${2} | 來源訊息：${3}',
+        'Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}': '節點：${0} | 邊：${1} | Assistant 樓層：${2} | 來源樓層：${3}',
         'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0}': '最近召回步數：${0}',
         'Visual graph ready. Click an edge to select it for editing.': '視覺化圖已就緒。點擊邊可選取並編輯。',
@@ -755,7 +755,7 @@ function ensureSettings() {
     const extractBatchTurnsRaw = Number(extension_settings[MODULE_NAME].extractBatchTurns);
     const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
     extension_settings[MODULE_NAME].extractBatchTurns = Math.max(
-        2,
+        1,
         Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : defaultSettings.extractBatchTurns),
     );
     extension_settings[MODULE_NAME].recentRawTurns = Math.max(
@@ -1583,9 +1583,9 @@ function hashTextFNV1a(text) {
     return hash.toString(16).padStart(8, '0');
 }
 
-function getPlayableChatMessages(context) {
+function getAssistantChatMessages(context) {
     return (Array.isArray(context?.chat) ? context.chat : [])
-        .filter(message => message && !message.is_system)
+        .filter(message => message && !message.is_system && !message.is_user)
         .map(message => ({
             is_user: Boolean(message.is_user),
             name: String(message.name || ''),
@@ -1595,13 +1595,10 @@ function getPlayableChatMessages(context) {
 }
 
 function computeChatSourceState(context) {
-    const source = Array.isArray(context?.chat) ? context.chat : [];
+    const source = getAssistantChatMessages(context);
     const tail = [];
     let count = 0;
     for (const message of source) {
-        if (!message || message.is_system) {
-            continue;
-        }
         count += 1;
         tail.push({
             is_user: Boolean(message.is_user),
@@ -3668,14 +3665,17 @@ async function rebuildStoreFromCurrentChat(context) {
     }
 
     const rebuilt = createEmptyStore();
-    for (const message of getPlayableChatMessages(context)) {
-        appendPendingMessageFrame(rebuilt, message);
-    }
-    updateStoreSourceState(rebuilt, context);
-    if (rebuilt.pendingMessages.length > 0) {
+    const frames = getAssistantChatMessages(context);
+    const batchSize = Math.max(1, Math.floor(Number(settings.extractBatchTurns || 1)));
+    for (let offset = 0; offset < frames.length; offset += batchSize) {
+        const batch = frames.slice(offset, offset + batchSize);
+        for (const message of batch) {
+            appendPendingMessageFrame(rebuilt, message);
+        }
         rebuilt.messagesSinceUpdate = Math.max(Number(settings.updateEvery || 1), Number(rebuilt.messagesSinceUpdate || 0));
         await runExtractionForStore(context, rebuilt);
     }
+    updateStoreSourceState(rebuilt, context);
     rebuilt.updatedAt = Date.now();
     memoryStoreTargets.set(chatKey, target);
     memoryStoreCache.set(chatKey, rebuilt);
@@ -3686,7 +3686,7 @@ async function rebuildStoreFromCurrentChat(context) {
 function buildPlayableFramesFromContext(context) {
     const frames = [];
     let seq = 0;
-    for (const message of getPlayableChatMessages(context)) {
+    for (const message of getAssistantChatMessages(context)) {
         const text = normalizeText(message?.mes || '');
         if (!text) {
             continue;
@@ -3703,40 +3703,17 @@ function buildPlayableFramesFromContext(context) {
     return frames;
 }
 
-function chatIndexToPlayableSeq(context, messageIndex) {
-    const index = Number(messageIndex);
-    if (!Number.isInteger(index) || index < 0) {
-        return null;
-    }
-    const source = Array.isArray(context?.chat) ? context.chat : [];
-    if (index >= source.length) {
-        return null;
-    }
-    if (source[index]?.is_system) {
-        return null;
-    }
-    let seq = 0;
-    for (let i = 0; i <= index; i++) {
-        if (source[i] && !source[i].is_system) {
-            seq += 1;
-        }
-    }
-    return seq > 0 ? seq : null;
-}
-
 function normalizeMutationMeta(rawMeta = null) {
     if (!rawMeta || typeof rawMeta !== 'object') {
         return null;
     }
     const kind = String(rawMeta.kind || '').trim().toLowerCase();
-    const fromSeq = Number(rawMeta?.deletedPlayableSeqFrom);
-    const toSeq = Number(rawMeta?.deletedPlayableSeqTo);
-    const mutatedSeq = Number(rawMeta?.mutatedPlayableSeq);
+    const fromSeq = Number(rawMeta?.deletedAssistantSeqFrom ?? rawMeta?.deletedPlayableSeqFrom);
+    const toSeq = Number(rawMeta?.deletedAssistantSeqTo ?? rawMeta?.deletedPlayableSeqTo);
     return {
         kind,
         deletedPlayableSeqFrom: Number.isFinite(fromSeq) ? Math.max(1, Math.floor(fromSeq)) : null,
         deletedPlayableSeqTo: Number.isFinite(toSeq) ? Math.max(1, Math.floor(toSeq)) : null,
-        mutatedPlayableSeq: Number.isFinite(mutatedSeq) ? Math.max(1, Math.floor(mutatedSeq)) : null,
     };
 }
 
@@ -3749,62 +3726,47 @@ function applyTransactionMutation(store, mutationMeta) {
         return;
     }
 
-    if (meta.kind === 'delete') {
-        const fromSeq = Number(meta.deletedPlayableSeqFrom || 0);
-        const toSeq = Number(meta.deletedPlayableSeqTo || fromSeq);
-        if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
-            return;
-        }
-        const upper = Math.max(fromSeq, toSeq);
-        const delta = upper - fromSeq + 1;
-        store.messageTransactions = store.messageTransactions
-            .map(item => normalizeReplayTransaction(item))
-            .filter(Boolean)
-            .filter(item => {
-                const seq = Number(item.sourceSeq || 0);
-                return !(seq >= fromSeq && seq <= upper);
-            })
-            .map(item => {
-                const seq = Number(item.sourceSeq || 0);
-                if (seq > upper) {
-                    item.sourceSeq = Math.max(1, seq - delta);
-                }
-                return item;
-            });
-        if (Array.isArray(store.pendingMessages)) {
-            store.pendingMessages = store.pendingMessages
-                .filter(item => {
-                    const seq = Number(item?.seq || 0);
-                    return !(seq >= fromSeq && seq <= upper);
-                })
-                .map(item => {
-                    const seq = Number(item?.seq || 0);
-                    if (seq > upper) {
-                        item.seq = Math.max(1, seq - delta);
-                    }
-                    return item;
-                });
-            store.messagesSinceUpdate = store.pendingMessages.length;
-        }
-        store.updatedAt = Date.now();
+    if (meta.kind !== 'delete') {
         return;
     }
 
-    if (meta.kind === 'edit' || meta.kind === 'swipe') {
-        const targetSeq = Number(meta.mutatedPlayableSeq || 0);
-        if (!Number.isFinite(targetSeq) || targetSeq <= 0) {
-            return;
-        }
-        store.messageTransactions = store.messageTransactions
-            .map(item => normalizeReplayTransaction(item))
-            .filter(Boolean)
-            .filter(item => Number(item.sourceSeq || 0) !== targetSeq);
-        if (Array.isArray(store.pendingMessages)) {
-            store.pendingMessages = store.pendingMessages.filter(item => Number(item?.seq || 0) !== targetSeq);
-            store.messagesSinceUpdate = store.pendingMessages.length;
-        }
-        store.updatedAt = Date.now();
+    const fromSeq = Number(meta.deletedPlayableSeqFrom || 0);
+    const toSeq = Number(meta.deletedPlayableSeqTo || fromSeq);
+    if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
+        return;
     }
+    const upper = Math.max(fromSeq, toSeq);
+    const delta = upper - fromSeq + 1;
+    store.messageTransactions = store.messageTransactions
+        .map(item => normalizeReplayTransaction(item))
+        .filter(Boolean)
+        .filter(item => {
+            const seq = Number(item.sourceSeq || 0);
+            return !(seq >= fromSeq && seq <= upper);
+        })
+        .map(item => {
+            const seq = Number(item.sourceSeq || 0);
+            if (seq > upper) {
+                item.sourceSeq = Math.max(1, seq - delta);
+            }
+            return item;
+        });
+    if (Array.isArray(store.pendingMessages)) {
+        store.pendingMessages = store.pendingMessages
+            .filter(item => {
+                const seq = Number(item?.seq || 0);
+                return !(seq >= fromSeq && seq <= upper);
+            })
+            .map(item => {
+                const seq = Number(item?.seq || 0);
+                if (seq > upper) {
+                    item.seq = Math.max(1, seq - delta);
+                }
+                return item;
+            });
+        store.messagesSinceUpdate = store.pendingMessages.length;
+    }
+    store.updatedAt = Date.now();
 }
 
 async function rebuildStoreByReplayingTransactions(context, existingStore = null) {
@@ -3875,7 +3837,7 @@ async function rebuildStoreByReplayingTransactions(context, existingStore = null
     };
 }
 
-async function ensureStoreSyncedWithChat(context, { force = false } = {}) {
+async function ensureStoreSyncedWithChat(context) {
     const loaded = await ensureMemoryStoreLoaded(context);
     const store = getMemoryStore(context) || loaded || null;
     if (!store) {
@@ -3885,22 +3847,13 @@ async function ensureStoreSyncedWithChat(context, { force = false } = {}) {
     if (!target) {
         return store;
     }
-    if (!force && !hasStoreSourceMismatch(store, context)) {
+    if (!hasStoreSourceMismatch(store, context)) {
         if (Array.isArray(store.pendingMessages) && store.pendingMessages.length > 0) {
             await runExtractionForStore(context, store);
             const chatKey = getChatKey(context, { allowFallback: true });
             await persistMemoryStoreByChatKey(context, chatKey, store);
         }
         return store;
-    }
-    const replayResult = await rebuildStoreByReplayingTransactions(context, store);
-    if (replayResult?.store) {
-        const chatKey = getChatKey(context, { allowFallback: true });
-        memoryStoreCache.set(chatKey, replayResult.store);
-        await persistMemoryStoreByChatKey(context, chatKey, replayResult.store);
-        if (Number(replayResult.missingCount || 0) === 0) {
-            return replayResult.store;
-        }
     }
     return await rebuildStoreFromCurrentChat(context);
 }
@@ -3985,7 +3938,7 @@ async function captureMessage(messageId) {
     }
 
     const message = context.chat[index];
-    if (!message || message.is_system) {
+    if (!message || message.is_system || message.is_user) {
         return;
     }
 
@@ -4074,7 +4027,7 @@ function renderGraphInspectorHtml(store) {
     return `
 <div class="flex-container flexFlowColumn luker-rpg-memory-graph-popup-inner">
     <h3 class="margin0">${escapeHtml(i18n('Memory Graph'))}</h3>
-    <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
+    <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
     <div>${escapeHtml(i18nFormat('semantic=${0}', stats.levelCount.semantic))}</div>
     <div>${escapeHtml(i18nFormat('Last recall steps: ${0}', stats.lastRecallSteps))}</div>
     <div class="luker-rpg-memory-graph-canvas-wrap">
@@ -5848,8 +5801,8 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Tool-call retries'))}
         <input id="${popupId}_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Number(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))}" />
     </label>
-    <label>${escapeHtml(i18n('Extract batch messages'))}
-        <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="2" step="1" value="${Math.max(2, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
+    <label>${escapeHtml(i18n('Manual rebuild batch assistant turns'))}
+        <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
     </label>
     <label>${escapeHtml(i18n('Extract Table Fill Prompt'))}
         <textarea id="${popupId}_extract_system_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(extractPrompt)}</textarea>
@@ -5876,7 +5829,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         popupRoot.find(`#${popupId}_recent_raw_turns`).val(String(Math.max(0, Number(source.recentRawTurns ?? defaultSettings.recentRawTurns))));
         popupRoot.find(`#${popupId}_recall_iterations`).val(String(Math.max(2, Math.min(6, Number(source.recallMaxIterations ?? defaultSettings.recallMaxIterations)))));
         popupRoot.find(`#${popupId}_tool_retries`).val(String(Math.max(0, Math.min(10, Number(source.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))));
-        popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(2, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
+        popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(1, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
         popupRoot.find(`#${popupId}_extract_system_prompt`).val(String(source.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_finalize_prompt`).val(String(source.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT));
@@ -5943,7 +5896,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         Math.min(10, Math.floor(Number.isFinite(values.toolRetriesValue) ? values.toolRetriesValue : defaultSettings.toolCallRetryMax)),
     );
     settings.extractBatchTurns = Math.max(
-        2,
+        1,
         Math.floor(Number.isFinite(values.extractBatchTurnsValue) ? values.extractBatchTurnsValue : defaultSettings.extractBatchTurns),
     );
     settings.extractSystemPrompt = values.extractSystemPromptValue || DEFAULT_EXTRACT_SYSTEM_PROMPT;
@@ -6071,7 +6024,7 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
-        const store = await ensureStoreSyncedWithChat(context, { force: true });
+        const store = await rebuildStoreFromCurrentChat(context);
         if (!store) {
             notifyError(i18n('No active chat selected.'));
             return;
@@ -6189,7 +6142,7 @@ function ensureUi() {
             <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook before WI scan'))}</label>
 
             <div class="flex-container">
-                <label style="flex:1">${escapeHtml(i18n('Update every N messages'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
+                <label style="flex:1">${escapeHtml(i18n('Update every N assistant turns'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
             </div>
 
             <label>${escapeHtml(i18n('Node Type Schema (Visual Editor)'))}</label>
@@ -6276,11 +6229,11 @@ jQuery(() => {
             await persistMemoryStoreByChatKey(context, chatKey, replayResult.store);
             if (Number(replayResult.missingCount || 0) > 0) {
                 updateUiStatus(i18nFormat(
-                    'Chat mutation replayed locally. ${0} message(s) changed and are pending fresh extraction.',
+                    'Chat deletion replayed locally. ${0} message(s) changed and are pending fresh extraction.',
                     Number(replayResult.missingCount || 0),
                 ));
             } else {
-                updateUiStatus(i18n('Chat mutation replayed locally. Memory graph updated immediately.'));
+                updateUiStatus(i18n('Chat deletion replayed locally. Memory graph updated immediately.'));
             }
             refreshUiStats();
         })();
@@ -6289,20 +6242,12 @@ jQuery(() => {
             await task;
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Local replay after chat mutation failed`, error);
-            updateUiStatus(i18n('Chat mutation detected, local replay failed. Will re-sync on next generation.'));
+            updateUiStatus(i18n('Chat deletion detected, local replay failed. Will re-sync on next generation.'));
         } finally {
             mutationReplayTasks.delete(chatKey);
         }
     };
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, (_legacyLength, mutationMeta) => replayStoreFromMutation(mutationMeta));
-    context.eventSource.on(context.eventTypes.MESSAGE_EDITED, (messageIndex) => replayStoreFromMutation({
-        kind: 'edit',
-        mutatedPlayableSeq: chatIndexToPlayableSeq(context, messageIndex),
-    }));
-    context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, (messageIndex) => replayStoreFromMutation({
-        kind: 'swipe',
-        mutatedPlayableSeq: chatIndexToPlayableSeq(context, messageIndex),
-    }));
     if (context.eventTypes.PRESET_CHANGED) {
         context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
             if (String(event?.apiId || '') === 'openai') {
