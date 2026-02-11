@@ -23,7 +23,7 @@ const defaultNodeTypeSchema = [
         id: 'event',
         label: 'Event',
         tableName: 'event_table',
-        tableColumns: ['title', 'seq_range', 'summary', 'participants', 'locations', 'threads', 'status'],
+        tableColumns: ['title', 'seq_to', 'summary', 'participants', 'locations', 'threads', 'status'],
         level: LEVEL.SEMANTIC,
         extractHint: 'Critical plot events, turning points, commitments, betrayals, and irreversible outcomes.',
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
@@ -185,15 +185,11 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Put table-like attributes into "fields" object and align keys with schema table columns.',
     'If evidence supports a field (state/goal/identity/status/etc), fill it explicitly instead of leaving blank.',
     'Keyword focus: when available, fill retrieval keys in fields.keywords (array preferred) and fields.aliases (array preferred), including formal names, nicknames, aliases, and common references.',
-    'Title policy is strict: every node must have a short, stable, human-readable title that is logically self-consistent.',
+    'Title policy: non-event nodes must use short, stable, human-readable titles.',
     'Do not use random or decorative titles. Keep title compact and functional.',
-    'If the node refers to an existing entity/event/thread/location/item, reuse the same title exactly for updates.',
-    'When creating a new node, choose a unique title within the same type based on canonical naming.',
+    'If the node refers to an existing entity/thread/location/item, reuse the same title exactly for updates.',
     'Naming guidance: character/faction/location/item nodes should use canonical names.',
-    'For event nodes, prefer sequence labels like "Summary 1", "Summary 2", "Summary 3" instead of forcing unique semantic titles.',
-    'Event title should act as a stable short id; put real meaning in summary/fields.',
-    'When updating an existing event, reuse exactly the same Summary label.',
-    'When creating a new event, choose the next available Summary number within event type to keep titles unique and predictable.',
+    'Event titles are assigned by system in strict sequence labels (Summary N). You can omit event title.',
 ].join('\n');
 
 const defaultSettings = {
@@ -650,7 +646,6 @@ const memoryStoreCache = new Map();
 const memoryStoreTargets = new Map();
 const memoryStorePersistedSnapshots = new Map();
 const memoryLoadTasks = new Map();
-const mutationReplayTasks = new Map();
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 
@@ -1059,184 +1054,18 @@ async function deleteMemoryStoreByTarget(context, target) {
 
 function createEmptyStore() {
     return {
-        version: 4,
+        version: 5,
         nodeSeq: 0,
         seqCounter: 0,
+        appliedSeqTo: 0,
         nodes: {},
         edges: [],
-        pendingMessages: [],
-        messagesSinceUpdate: 0,
-        messageTransactions: [],
         lastRecallTrace: [],
         lastRecallProjection: null,
         sourceMessageCount: 0,
         sourceDigest: '',
         updatedAt: Date.now(),
     };
-}
-
-function snapshotGraphForReplay(store) {
-    return {
-        nodeSeq: Math.max(0, Number(store?.nodeSeq || 0)),
-        seqCounter: Math.max(0, Number(store?.seqCounter || 0)),
-        nodes: store?.nodes && typeof store.nodes === 'object' ? cloneDefault(store.nodes) : {},
-        edges: Array.isArray(store?.edges) ? cloneDefault(store.edges) : [],
-    };
-}
-
-function normalizeReplayTransaction(transaction) {
-    if (!transaction || typeof transaction !== 'object') {
-        return null;
-    }
-    const sourceSeq = Number(transaction.sourceSeq);
-    if (!Number.isFinite(sourceSeq) || sourceSeq <= 0) {
-        return null;
-    }
-    const operations = Array.isArray(transaction.operations)
-        ? transaction.operations.filter(op => op && typeof op === 'object' && typeof op.op === 'string')
-        : [];
-    return {
-        sourceSeq: Math.floor(sourceSeq),
-        operations: cloneDefault(operations),
-    };
-}
-
-function appendMessageTransaction(store, frame, operations = []) {
-    const sourceSeq = Number(frame?.seq || 0);
-    if (!Number.isFinite(sourceSeq) || sourceSeq <= 0) {
-        return;
-    }
-    if (!Array.isArray(store.messageTransactions)) {
-        store.messageTransactions = [];
-    }
-    const normalized = normalizeReplayTransaction({
-        sourceSeq,
-        operations,
-    });
-    if (!normalized) {
-        return;
-    }
-    store.messageTransactions.push(normalized);
-}
-
-function setNestedPathValue(root, path, value) {
-    if (!root || typeof root !== 'object' || !Array.isArray(path) || path.length === 0) {
-        return root;
-    }
-    let cursor = root;
-    for (let i = 0; i < path.length - 1; i++) {
-        const key = String(path[i] || '');
-        if (!key) {
-            return root;
-        }
-        if (!cursor[key] || typeof cursor[key] !== 'object') {
-            cursor[key] = {};
-        }
-        cursor = cursor[key];
-    }
-    const leaf = String(path[path.length - 1] || '');
-    if (!leaf) {
-        return root;
-    }
-    cursor[leaf] = cloneDefault(value);
-    return root;
-}
-
-function deleteNestedPathValue(root, path) {
-    if (!root || typeof root !== 'object' || !Array.isArray(path) || path.length === 0) {
-        return root;
-    }
-    let cursor = root;
-    for (let i = 0; i < path.length - 1; i++) {
-        const key = String(path[i] || '');
-        if (!key || !cursor[key] || typeof cursor[key] !== 'object') {
-            return root;
-        }
-        cursor = cursor[key];
-    }
-    const leaf = String(path[path.length - 1] || '');
-    if (!leaf) {
-        return root;
-    }
-    if (Object.hasOwn(cursor, leaf)) {
-        delete cursor[leaf];
-    }
-    return root;
-}
-
-function applyObjectPatchOperations(baseState, operations) {
-    let state = cloneDefault(baseState && typeof baseState === 'object' ? baseState : {});
-    for (const operation of Array.isArray(operations) ? operations : []) {
-        if (!operation || typeof operation !== 'object') {
-            continue;
-        }
-        const opName = String(operation.op || '').trim();
-        if (opName === 'replace_root') {
-            state = cloneDefault(operation.value && typeof operation.value === 'object' ? operation.value : {});
-            continue;
-        }
-        if (opName === 'set') {
-            setNestedPathValue(state, Array.isArray(operation.path) ? operation.path : [], operation.value);
-            continue;
-        }
-        if (opName === 'delete') {
-            deleteNestedPathValue(state, Array.isArray(operation.path) ? operation.path : []);
-        }
-    }
-    return state;
-}
-
-function remapStoreSeqValues(store, removedSeqSet) {
-    if (!store || typeof store !== 'object' || !(removedSeqSet instanceof Set) || removedSeqSet.size === 0) {
-        return;
-    }
-    const removed = [...removedSeqSet].map(value => Number(value)).filter(Number.isFinite).sort((a, b) => a - b);
-    if (removed.length === 0) {
-        return;
-    }
-    const remap = (value) => {
-        const num = Number(value);
-        if (!Number.isFinite(num) || num <= 0) {
-            return value;
-        }
-        let shift = 0;
-        for (const removedSeq of removed) {
-            if (removedSeq <= num) {
-                shift += 1;
-                continue;
-            }
-            break;
-        }
-        const nextValue = num - shift;
-        return nextValue > 0 ? nextValue : 1;
-    };
-    const patchObject = (target) => {
-        if (!target || typeof target !== 'object') {
-            return;
-        }
-        for (const [key, value] of Object.entries(target)) {
-            if (value && typeof value === 'object') {
-                patchObject(value);
-                continue;
-            }
-            const normalizedKey = String(key || '').toLowerCase();
-            if (!normalizedKey.includes('seq')) {
-                continue;
-            }
-            target[key] = remap(value);
-        }
-    };
-
-    for (const node of Object.values(store.nodes || {})) {
-        node.seqFrom = remap(node.seqFrom);
-        node.seqTo = remap(node.seqTo);
-        patchObject(node.metadata);
-    }
-    if (Array.isArray(store.pendingMessages)) {
-        for (const frame of store.pendingMessages) {
-            frame.seq = remap(frame.seq);
-        }
-    }
 }
 
 function pruneUnsupportedLevels(store) {
@@ -1291,22 +1120,17 @@ function normalizeLegacyNodeForStore(node, fallbackSeq = 0) {
     if (level !== LEVEL.SEMANTIC) {
         return null;
     }
-    const seqFrom = Number.isFinite(Number(node.seqFrom))
-        ? Number(node.seqFrom)
-        : Number.isFinite(Number(node.fromTurn))
-            ? Number(node.fromTurn)
-            : Number.isFinite(Number(node.turnIndex))
-                ? Number(node.turnIndex)
-                : fallbackSeq;
     const seqTo = Number.isFinite(Number(node.seqTo))
         ? Number(node.seqTo)
         : Number.isFinite(Number(node.toTurn))
             ? Number(node.toTurn)
             : Number.isFinite(Number(node.turnIndex))
                 ? Number(node.turnIndex)
-                : seqFrom;
-    const minSeq = Math.min(seqFrom, seqTo);
-    const maxSeq = Math.max(seqFrom, seqTo);
+                : Number.isFinite(Number(node.seqFrom))
+                    ? Number(node.seqFrom)
+                    : Number.isFinite(Number(node.fromTurn))
+                        ? Number(node.fromTurn)
+                        : fallbackSeq;
     const summary = normalizeText(node.summary || node.content || '');
     return {
         id: String(node.id || ''),
@@ -1314,8 +1138,7 @@ function normalizeLegacyNodeForStore(node, fallbackSeq = 0) {
         level: LEVEL.SEMANTIC,
         title: normalizeText(node.title || ''),
         summary,
-        seqFrom: Number.isFinite(minSeq) ? minSeq : fallbackSeq,
-        seqTo: Number.isFinite(maxSeq) ? maxSeq : (Number.isFinite(minSeq) ? minSeq : fallbackSeq),
+        seqTo: Number.isFinite(seqTo) ? seqTo : fallbackSeq,
         metadata: node.metadata && typeof node.metadata === 'object' ? node.metadata : {},
         childrenIds: Array.isArray(node.childrenIds) ? node.childrenIds.map(id => String(id || '').trim()).filter(Boolean) : [],
         links: Array.isArray(node.links) ? node.links.map(id => String(id || '').trim()).filter(Boolean) : [],
@@ -1338,15 +1161,11 @@ function migrateLegacyStoreIfNeeded(store) {
     migrated.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
     migrated.sourceDigest = String(store.sourceDigest || '');
     migrated.updatedAt = Number(store.updatedAt || Date.now());
+    migrated.appliedSeqTo = Math.max(0, Number(store.appliedSeqTo || 0));
     migrated.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
     migrated.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? store.lastRecallProjection
         : null;
-    migrated.messageTransactions = Array.isArray(store.messageTransactions)
-        ? store.messageTransactions
-            .map(item => normalizeReplayTransaction(item))
-            .filter(Boolean)
-        : [];
 
     let fallbackSeq = 0;
     if (store.nodes && typeof store.nodes === 'object') {
@@ -1365,7 +1184,7 @@ function migrateLegacyStoreIfNeeded(store) {
                 id: nodeId,
                 title: normalizeText(normalized.title || nodeId),
             };
-            migrated.seqCounter = Math.max(migrated.seqCounter, Number(normalized.seqTo || normalized.seqFrom || 0));
+            migrated.seqCounter = Math.max(migrated.seqCounter, Number(normalized.seqTo || 0));
             const extractedNodeSeq = Number(String(nodeId).replace(/^n_/, ''));
             if (Number.isFinite(extractedNodeSeq)) {
                 migrated.nodeSeq = Math.max(migrated.nodeSeq, extractedNodeSeq);
@@ -1394,21 +1213,10 @@ function migrateLegacyStoreIfNeeded(store) {
             .filter(edge => edge.from && edge.to && edge.from !== edge.to && validNodeIds.has(edge.from) && validNodeIds.has(edge.to))
         : [];
 
-    migrated.pendingMessages = Array.isArray(store.pendingMessages)
-        ? store.pendingMessages
-            .filter(item => item && typeof item === 'object')
-            .map(item => ({
-                seq: Number.isFinite(Number(item.seq)) ? Number(item.seq) : ++migrated.seqCounter,
-                is_user: Boolean(item.is_user),
-                name: String(item.name || ''),
-                mes: String(item.mes || ''),
-                send_date: String(item.send_date || ''),
-            }))
-            .filter(item => normalizeText(item.mes))
-        : [];
-
-    const legacyMessagesSinceUpdate = Number(store.messagesSinceUpdate ?? store.turnsSinceUpdate ?? 0);
-    migrated.messagesSinceUpdate = Math.max(0, Math.floor(Number.isFinite(legacyMessagesSinceUpdate) ? legacyMessagesSinceUpdate : 0));
+    migrated.appliedSeqTo = Math.max(
+        0,
+        Math.floor(Number.isFinite(Number(migrated.appliedSeqTo)) ? Number(migrated.appliedSeqTo) : migrated.seqCounter),
+    );
     pruneUnsupportedLevels(migrated);
     return migrated;
 }
@@ -1652,12 +1460,6 @@ function updateStoreSourceState(store, context) {
     store.sourceDigest = String(source.digest || '');
 }
 
-function hasStoreSourceMismatch(store, context) {
-    const source = computeChatSourceState(context);
-    return Number(store?.sourceMessageCount || 0) !== Number(source.messageCount || 0)
-        || String(store?.sourceDigest || '') !== String(source.digest || '');
-}
-
 function getNodeTypeSchemaMap(settings) {
     const map = new Map();
     for (const entry of normalizeNodeTypeSchema(settings.nodeTypeSchema)) {
@@ -1714,20 +1516,12 @@ function nextNodeId(store) {
 function createNode(store, node) {
     const id = nextNodeId(store);
     const now = Date.now();
-    const seqFromRaw = Number.isFinite(Number(node.seqFrom))
-        ? Number(node.seqFrom)
-        : Number.isFinite(Number(node.seq))
-            ? Number(node.seq)
-            : Number.isFinite(Number(node.seqTo))
-                ? Number(node.seqTo)
-                : Number(store.seqCounter || 0);
     const seqToRaw = Number.isFinite(Number(node.seqTo))
         ? Number(node.seqTo)
         : Number.isFinite(Number(node.seq))
             ? Number(node.seq)
-            : seqFromRaw;
-    const seqFrom = Math.min(seqFromRaw, seqToRaw);
-    const seqTo = Math.max(seqFromRaw, seqToRaw);
+            : Number(store.seqCounter || 0);
+    const seqTo = Number.isFinite(seqToRaw) ? Math.max(0, Math.floor(seqToRaw)) : Number(store.seqCounter || 0);
     store.seqCounter = Math.max(Number(store.seqCounter || 0), Number.isFinite(seqTo) ? seqTo : 0);
     store.nodes[id] = {
         id,
@@ -1739,7 +1533,6 @@ function createNode(store, node) {
         childrenIds: [],
         links: [],
         metadata: node.metadata && typeof node.metadata === 'object' ? node.metadata : {},
-        seqFrom: Number.isFinite(seqFrom) ? seqFrom : undefined,
         seqTo: Number.isFinite(seqTo) ? seqTo : undefined,
         finalized: Boolean(node.finalized),
         archived: Boolean(node.archived),
@@ -1816,38 +1609,6 @@ function getChildren(store, nodeId) {
         return [];
     }
     return node.childrenIds.map(id => store.nodes[id]).filter(child => Boolean(child) && !child.archived);
-}
-
-function appendPendingMessageFrame(store, message) {
-    const settings = getSettings();
-    const text = normalizeText(message?.mes || '');
-    if (!text) {
-        return null;
-    }
-    const nextSeq = Number(store.seqCounter || 0) + 1;
-    const frame = {
-        seq: nextSeq,
-        is_user: Boolean(message?.is_user),
-        name: String(message?.name || ''),
-        mes: text,
-        send_date: String(message?.send_date || ''),
-        last_user_name: String(message?.last_user_name || ''),
-        last_user_mes: String(message?.last_user_mes || ''),
-        last_user_send_date: String(message?.last_user_send_date || ''),
-    };
-    store.seqCounter = nextSeq;
-    if (!Array.isArray(store.pendingMessages)) {
-        store.pendingMessages = [];
-    }
-    store.pendingMessages.push(frame);
-    store.messagesSinceUpdate = Math.max(0, Number(store.messagesSinceUpdate || 0)) + 1;
-    if (store.pendingMessages.length > Number(settings.maxTurns || 900)) {
-        const overflow = store.pendingMessages.length - Number(settings.maxTurns || 900);
-        store.pendingMessages.splice(0, overflow);
-    }
-
-    store.updatedAt = Date.now();
-    return frame;
 }
 
 function dropNode(store, nodeId, recursive = true) {
@@ -2165,23 +1926,19 @@ function buildEvidenceSeqRange(item, batch) {
         ? item.evidence_seqs.map(value => Number(value)).filter(Number.isFinite)
         : [];
     if (seqs.length > 0) {
-        return { seqFrom: Math.min(...seqs), seqTo: Math.max(...seqs) };
+        return { seqTo: Math.max(...seqs) };
     }
     const fromRaw = Number(item?.evidence_seq_range?.from_seq);
     const toRaw = Number(item?.evidence_seq_range?.to_seq);
     if (Number.isFinite(fromRaw) || Number.isFinite(toRaw)) {
-        const from = Number.isFinite(fromRaw) ? fromRaw : toRaw;
         const to = Number.isFinite(toRaw) ? toRaw : fromRaw;
-        return { seqFrom: Math.min(from, to), seqTo: Math.max(from, to) };
+        return { seqTo: Number(to) };
     }
-    const fallbackFrom = Number(batch?.[0]?.seq);
     const fallbackTo = Number(batch?.[batch.length - 1]?.seq);
-    if (Number.isFinite(fallbackFrom) || Number.isFinite(fallbackTo)) {
-        const from = Number.isFinite(fallbackFrom) ? fallbackFrom : fallbackTo;
-        const to = Number.isFinite(fallbackTo) ? fallbackTo : fallbackFrom;
-        return { seqFrom: Math.min(from, to), seqTo: Math.max(from, to) };
+    if (Number.isFinite(fallbackTo)) {
+        return { seqTo: Number(fallbackTo) };
     }
-    return { seqFrom: 0, seqTo: 0 };
+    return { seqTo: 0 };
 }
 
 async function extractNodesWithLLM(context, settings, schema, messageBatch) {
@@ -2260,7 +2017,7 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
                                 },
                             },
                         },
-                        required: ['type', 'title'],
+                        required: ['type'],
                         additionalProperties: true,
                     },
                 },
@@ -2316,7 +2073,7 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
             const upserts = calls
                 .filter(call => String(call?.name || '') === 'luker_rpg_extract_upsert')
                 .map(call => call.args)
-                .filter(item => item && typeof item === 'object' && String(item.title || '').trim());
+                .filter(item => item && typeof item === 'object' && String(item.type || '').trim());
             if (upserts.length < 1) {
                 continue;
             }
@@ -2335,11 +2092,59 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
 
 function upsertSemanticNode(store, item) {
     const type = String(item.type || 'semantic').toLowerCase();
-    const title = normalizeText(item.title || 'Untitled');
+    let title = normalizeText(item.title || '');
+    const parseEventSummaryIndex = (value) => {
+        const text = normalizeText(value || '');
+        if (!text) {
+            return null;
+        }
+        const match = text.match(/^(?:summary|摘要)\s*#?\s*(\d+)$/i);
+        if (!match) {
+            return null;
+        }
+        const num = Number(match[1]);
+        return Number.isFinite(num) && num > 0 ? Math.floor(num) : null;
+    };
+    const nextEventSummaryTitle = () => {
+        let maxIndex = 0;
+        for (const node of Object.values(store.nodes || {})) {
+            if (!node || node.archived || node.level !== LEVEL.SEMANTIC) {
+                continue;
+            }
+            if (String(node.type || '').toLowerCase() !== 'event') {
+                continue;
+            }
+            const index = parseEventSummaryIndex(node.title);
+            if (index && index > maxIndex) {
+                maxIndex = index;
+            }
+        }
+        return `Summary ${maxIndex + 1}`;
+    };
+    const seqTo = Number.isFinite(Number(item.seqTo))
+        ? Math.max(0, Math.floor(Number(item.seqTo)))
+        : Math.max(0, Number(store.seqCounter || 0));
+
+    if (type === 'event') {
+        const generatedTitle = nextEventSummaryTitle();
+        return createNode(store, {
+            type,
+            level: LEVEL.SEMANTIC,
+            title: generatedTitle,
+            summary: normalizeText(item.summary || ''),
+            finalized: true,
+            metadata: {
+                semantic_depth: 0,
+                semantic_rollup: false,
+                ...(item?.fields && typeof item.fields === 'object' ? item.fields : {}),
+            },
+            seqTo,
+        });
+    }
+
     if (!title) {
         return null;
     }
-
     const normalizedKey = `${type}::${title.toLowerCase()}`;
     let target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
 
@@ -2355,8 +2160,7 @@ function upsertSemanticNode(store, item) {
                 semantic_rollup: false,
                 ...(item?.fields && typeof item.fields === 'object' ? item.fields : {}),
             },
-            seqFrom: Number.isFinite(Number(item.seqFrom)) ? Number(item.seqFrom) : undefined,
-            seqTo: Number.isFinite(Number(item.seqTo)) ? Number(item.seqTo) : undefined,
+            seqTo,
         });
     } else {
         target.summary = normalizeText(item.summary || target.summary || '');
@@ -2373,21 +2177,14 @@ function upsertSemanticNode(store, item) {
         if (item?.fields && typeof item.fields === 'object') {
             Object.assign(target.metadata, item.fields);
         }
-        if (Number.isFinite(Number(item.seqFrom)) || Number.isFinite(Number(item.seqTo))) {
-            const inputFrom = Number.isFinite(Number(item.seqFrom)) ? Number(item.seqFrom) : Number(item.seqTo);
-            const inputTo = Number.isFinite(Number(item.seqTo)) ? Number(item.seqTo) : Number(item.seqFrom);
-            const currentFrom = Number.isFinite(Number(target.seqFrom)) ? Number(target.seqFrom) : inputFrom;
-            const currentTo = Number.isFinite(Number(target.seqTo)) ? Number(target.seqTo) : inputTo;
-            target.seqFrom = Math.min(currentFrom, inputFrom);
-            target.seqTo = Math.max(currentTo, inputTo);
-        }
+        target.seqTo = Math.max(Number(target.seqTo || 0), seqTo);
         target.updatedAt = Date.now();
     }
 
     return target;
 }
 
-function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqFrom: 0, seqTo: 0 }) {
+function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqTo: 0 }) {
     if (!sourceNode || !Array.isArray(rawLinks) || rawLinks.length === 0) {
         return;
     }
@@ -2402,7 +2199,6 @@ function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { se
             type: String(link?.target_type || 'entity').toLowerCase(),
             title: targetTitle,
             summary: normalizeText(link?.target_summary || ''),
-            seqFrom: Number.isFinite(Number(defaultSeqRange?.seqFrom)) ? Number(defaultSeqRange.seqFrom) : undefined,
             seqTo: Number.isFinite(Number(defaultSeqRange?.seqTo)) ? Number(defaultSeqRange.seqTo) : undefined,
         });
         if (!targetNode) {
@@ -2463,8 +2259,8 @@ function collectSemanticRootsByDepth(store, type, depth) {
         .filter(node => Number(node?.metadata?.semantic_depth ?? 0) === Number(depth))
         .filter(node => !String(node.parentId || '').trim())
         .sort((a, b) => {
-            const aTo = Number(a.seqTo ?? a.seqFrom ?? a.createdAt ?? 0);
-            const bTo = Number(b.seqTo ?? b.seqFrom ?? b.createdAt ?? 0);
+            const aTo = Number(a.seqTo ?? a.createdAt ?? 0);
+            const bTo = Number(b.seqTo ?? b.createdAt ?? 0);
             return aTo - bTo;
         });
 }
@@ -2512,8 +2308,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                     semantic_source_type: type,
                     merged_node_ids: group.map(node => node.id),
                 },
-                seqFrom: Math.min(...group.map(node => Number(node.seqFrom ?? node.seqTo ?? 0))),
-                seqTo: Math.max(...group.map(node => Number(node.seqTo ?? node.seqFrom ?? 0))),
+                seqTo: Math.max(...group.map(node => Number(node.seqTo ?? 0))),
             });
 
             for (const child of group) {
@@ -2559,7 +2354,6 @@ async function runCompressionLoop(context, store, settings) {
 }
 
 async function processPendingMessageFrameWithLLM(context, store, settings, schema, frame) {
-    const beforeGraph = snapshotGraphForReplay(store);
     const extractBatch = [];
     const lastUserText = normalizeText(frame?.last_user_mes || '');
     if (lastUserText) {
@@ -2584,17 +2378,17 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
     }
 
     for (const item of upserts) {
+        const type = String(item?.type || 'semantic').toLowerCase();
         const title = normalizeText(item?.title || '');
-        if (!title) {
+        if (type !== 'event' && !title) {
             continue;
         }
         const evidence = buildEvidenceSeqRange(item, [frame]);
         const targetNode = upsertSemanticNode(store, {
-            type: String(item?.type || 'semantic').toLowerCase(),
+            type,
             title,
             summary: normalizeText(item?.summary || ''),
             fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
-            seqFrom: evidence.seqFrom,
             seqTo: evidence.seqTo,
         });
         if (targetNode) {
@@ -2608,37 +2402,44 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
     }
 
     await runCompressionLoop(context, store, settings);
-    const afterGraph = snapshotGraphForReplay(store);
-    const operations = buildObjectPatchOperations(beforeGraph, afterGraph, { maxOperations: 32000 });
-    appendMessageTransaction(store, frame, operations);
     return true;
 }
 
-async function runExtractionForStore(context, store) {
+async function runExtractionForStore(context, store, { force = false, startSeq = null } = {}) {
     const settings = getSettings();
-    if (store.messagesSinceUpdate < Number(settings.updateEvery || 1)) {
-        return;
+    const frames = buildPlayableFramesFromContext(context);
+    const latestSeq = Number(frames.length || 0);
+    const appliedSeqTo = Math.max(0, Math.floor(Number(store.appliedSeqTo || 0)));
+    const beginSeq = Number.isFinite(Number(startSeq))
+        ? Math.max(1, Math.floor(Number(startSeq)))
+        : appliedSeqTo + 1;
+    if (beginSeq > latestSeq) {
+        store.appliedSeqTo = latestSeq;
+        store.seqCounter = latestSeq;
+        return false;
     }
 
-    const pendingQueue = Array.isArray(store.pendingMessages) ? store.pendingMessages.slice() : [];
-    if (pendingQueue.length === 0) {
-        store.messagesSinceUpdate = 0;
-        return;
-    }
-    store.pendingMessages = [];
-
-    const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
-    const failedQueue = [];
-    for (const frame of pendingQueue) {
-        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frame);
-        if (!success) {
-            failedQueue.push(frame);
-            continue;
+    if (!force) {
+        const gap = latestSeq - appliedSeqTo;
+        if (gap < Number(settings.updateEvery || 1)) {
+            return false;
         }
     }
-    store.pendingMessages = failedQueue;
-    store.messagesSinceUpdate = failedQueue.length;
+
+    const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
+    let extractedAny = false;
+    for (const frame of frames.slice(beginSeq - 1)) {
+        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frame);
+        if (!success) {
+            break;
+        }
+        extractedAny = true;
+        store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(frame.seq || 0));
+    }
+    store.seqCounter = latestSeq;
+    updateStoreSourceState(store, context);
     store.updatedAt = Date.now();
+    return extractedAny;
 }
 
 function formatNodeBrief(node, extra = {}) {
@@ -2649,8 +2450,7 @@ function formatNodeBrief(node, extra = {}) {
         title: node.title,
         summary: String(node.summary || ''),
         child_count: Array.isArray(node.childrenIds) ? node.childrenIds.length : 0,
-        to_seq: node.seqTo ?? node.seqFrom ?? null,
-        from_seq: node.seqFrom ?? node.seqTo ?? null,
+        to_seq: node.seqTo ?? null,
         ...extra,
     };
 }
@@ -2664,8 +2464,7 @@ function formatNodeDetail(node, extra = {}) {
         summary: String(node.summary || ''),
         metadata: node.metadata || {},
         children: Array.isArray(node.childrenIds) ? node.childrenIds : [],
-        from_seq: node.seqFrom ?? node.seqTo ?? null,
-        to_seq: node.seqTo ?? node.seqFrom ?? null,
+        to_seq: node.seqTo ?? null,
         ...extra,
     };
 }
@@ -2697,8 +2496,8 @@ function extractWorldInfoHints(payload) {
 }
 
 function compareNodesByRecency(a, b) {
-    const aSeq = Number(a?.seqTo ?? a?.seqFrom ?? -1);
-    const bSeq = Number(b?.seqTo ?? b?.seqFrom ?? -1);
+    const aSeq = Number(a?.seqTo ?? -1);
+    const bSeq = Number(b?.seqTo ?? -1);
     if (aSeq !== bSeq) {
         return bSeq - aSeq;
     }
@@ -3202,13 +3001,8 @@ async function chooseFocusNodes(context, settings, recallState) {
 }
 
 function compareNodesByTimeline(a, b) {
-    const aFrom = Number(a?.seqFrom ?? a?.seqTo ?? Number.MAX_SAFE_INTEGER);
-    const bFrom = Number(b?.seqFrom ?? b?.seqTo ?? Number.MAX_SAFE_INTEGER);
-    if (aFrom !== bFrom) {
-        return aFrom - bFrom;
-    }
-    const aTo = Number(a?.seqTo ?? a?.seqFrom ?? Number.MAX_SAFE_INTEGER);
-    const bTo = Number(b?.seqTo ?? b?.seqFrom ?? Number.MAX_SAFE_INTEGER);
+    const aTo = Number(a?.seqTo ?? Number.MAX_SAFE_INTEGER);
+    const bTo = Number(b?.seqTo ?? Number.MAX_SAFE_INTEGER);
     if (aTo !== bTo) {
         return aTo - bTo;
     }
@@ -3295,28 +3089,23 @@ function collectAlwaysInjectNodes(store, settings) {
 }
 
 function getNodeSeqRange(node) {
-    if (Number.isFinite(Number(node?.seqFrom)) || Number.isFinite(Number(node?.seqTo))) {
-        const from = Number.isFinite(Number(node?.seqFrom)) ? Number(node.seqFrom) : Number(node?.seqTo ?? 0);
-        const to = Number.isFinite(Number(node?.seqTo)) ? Number(node.seqTo) : Number(node?.seqFrom ?? 0);
-        return `${from}~${to}`;
+    if (Number.isFinite(Number(node?.seqTo))) {
+        return String(Number(node.seqTo));
     }
     return '';
 }
 
 function getLatestSeqIndex(store) {
-    const queue = Array.isArray(store?.pendingMessages) ? store.pendingMessages : [];
-    if (queue.length > 0) {
-        const maxPending = Math.max(...queue.map(item => Number(item?.seq || -1)));
-        if (Number.isFinite(maxPending)) {
-            return maxPending;
-        }
+    const covered = Number(store?.appliedSeqTo || -1);
+    if (Number.isFinite(covered) && covered >= 0) {
+        return covered;
     }
     const semanticNodes = Object.values(store?.nodes || {})
         .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC);
     if (semanticNodes.length === 0) {
         return -1;
     }
-    const maxSeq = Math.max(...semanticNodes.map(node => Number(node?.seqTo ?? node?.seqFrom ?? -1)));
+    const maxSeq = Math.max(...semanticNodes.map(node => Number(node?.seqTo ?? -1)));
     return Number.isFinite(maxSeq) ? maxSeq : -1;
 }
 
@@ -3325,16 +3114,9 @@ function isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages) {
     if (windowSize <= 0 || latestSeqIndex < 0 || !node) {
         return false;
     }
-    let fromSeq = Number(node?.seqFrom ?? node?.seqTo ?? NaN);
-    let toSeq = Number(node?.seqTo ?? node?.seqFrom ?? NaN);
-    if (!Number.isFinite(fromSeq) && !Number.isFinite(toSeq)) {
-        return false;
-    }
-    if (!Number.isFinite(fromSeq)) {
-        fromSeq = toSeq;
-    }
+    const toSeq = Number(node?.seqTo ?? NaN);
     if (!Number.isFinite(toSeq)) {
-        toSeq = fromSeq;
+        return false;
     }
     const cutoff = latestSeqIndex - windowSize + 1;
     return Number.isFinite(cutoff) && toSeq >= cutoff;
@@ -3380,7 +3162,7 @@ function getTableCellValueFromNode(node, columnName) {
         return '';
     }
     if (key === 'last_update_seq' || key === 'last_update_turn') {
-        return String(node.seqTo ?? node.seqFrom ?? '');
+        return String(node.seqTo ?? '');
     }
     if (structured[key] !== undefined) {
         return toDisplayScalar(structured[key]);
@@ -3707,7 +3489,6 @@ async function runLLMDrivenRecall(context, store, payload) {
 }
 
 async function rebuildStoreFromCurrentChat(context) {
-    const settings = getSettings();
     const chatKey = getChatKey(context);
     const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
     if (!target) {
@@ -3715,16 +3496,7 @@ async function rebuildStoreFromCurrentChat(context) {
     }
 
     const rebuilt = createEmptyStore();
-    const frames = getAssistantChatMessages(context);
-    const batchSize = Math.max(1, Math.floor(Number(settings.extractBatchTurns || 1)));
-    for (let offset = 0; offset < frames.length; offset += batchSize) {
-        const batch = frames.slice(offset, offset + batchSize);
-        for (const message of batch) {
-            appendPendingMessageFrame(rebuilt, message);
-        }
-        rebuilt.messagesSinceUpdate = Math.max(Number(settings.updateEvery || 1), Number(rebuilt.messagesSinceUpdate || 0));
-        await runExtractionForStore(context, rebuilt);
-    }
+    await runExtractionForStore(context, rebuilt, { force: true, startSeq: 1 });
     updateStoreSourceState(rebuilt, context);
     rebuilt.updatedAt = Date.now();
     memoryStoreTargets.set(chatKey, target);
@@ -3770,124 +3542,73 @@ function normalizeMutationMeta(rawMeta = null) {
     };
 }
 
-function applyTransactionMutation(store, mutationMeta) {
-    if (!store || typeof store !== 'object' || !Array.isArray(store.messageTransactions)) {
+function truncateStoreFromSeq(store, fromSeq) {
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    if (!store || typeof store !== 'object' || !Number.isFinite(startSeq) || startSeq <= 0) {
         return;
     }
-    const meta = normalizeMutationMeta(mutationMeta);
-    if (!meta) {
+    const removeIds = new Set();
+    for (const [id, node] of Object.entries(store.nodes || {})) {
+        const nodeSeq = Number(node?.seqTo || 0);
+        if (Number.isFinite(nodeSeq) && nodeSeq >= startSeq) {
+            removeIds.add(String(id || ''));
+        }
+    }
+    if (removeIds.size === 0) {
+        store.appliedSeqTo = Math.min(Number(store.appliedSeqTo || 0), startSeq - 1);
+        store.seqCounter = Math.max(0, Number(store.appliedSeqTo || 0));
+        store.updatedAt = Date.now();
         return;
     }
 
-    if (meta.kind !== 'delete') {
-        return;
+    for (const id of removeIds) {
+        delete store.nodes[id];
     }
-
-    const fromSeq = Number(meta.deletedPlayableSeqFrom || 0);
-    const toSeq = Number(meta.deletedPlayableSeqTo || fromSeq);
-    if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
-        return;
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        if (Array.isArray(node.childrenIds)) {
+            node.childrenIds = node.childrenIds.filter(childId => !removeIds.has(String(childId || '')));
+        } else {
+            node.childrenIds = [];
+        }
+        if (String(node.parentId || '').trim() && removeIds.has(String(node.parentId || '').trim())) {
+            node.parentId = '';
+        }
+        if (Array.isArray(node.links)) {
+            node.links = node.links.filter(linkId => !removeIds.has(String(linkId || '')));
+        } else {
+            node.links = [];
+        }
     }
-    const upper = Math.max(fromSeq, toSeq);
-    const delta = upper - fromSeq + 1;
-    store.messageTransactions = store.messageTransactions
-        .map(item => normalizeReplayTransaction(item))
-        .filter(Boolean)
-        .filter(item => {
-            const seq = Number(item.sourceSeq || 0);
-            return !(seq >= fromSeq && seq <= upper);
-        })
-        .map(item => {
-            const seq = Number(item.sourceSeq || 0);
-            if (seq > upper) {
-                item.sourceSeq = Math.max(1, seq - delta);
-            }
-            return item;
+    if (Array.isArray(store.edges)) {
+        store.edges = store.edges.filter(edge => {
+            const from = String(edge?.from || '');
+            const to = String(edge?.to || '');
+            return from && to && !removeIds.has(from) && !removeIds.has(to);
         });
-    if (Array.isArray(store.pendingMessages)) {
-        store.pendingMessages = store.pendingMessages
-            .filter(item => {
-                const seq = Number(item?.seq || 0);
-                return !(seq >= fromSeq && seq <= upper);
-            })
-            .map(item => {
-                const seq = Number(item?.seq || 0);
-                if (seq > upper) {
-                    item.seq = Math.max(1, seq - delta);
-                }
-                return item;
-            });
-        store.messagesSinceUpdate = store.pendingMessages.length;
     }
+    store.appliedSeqTo = Math.min(Number(store.appliedSeqTo || 0), startSeq - 1);
+    store.seqCounter = Math.max(0, Number(store.appliedSeqTo || 0));
     store.updatedAt = Date.now();
 }
 
-async function rebuildStoreByReplayingTransactions(context, existingStore = null) {
-    const store = existingStore && typeof existingStore === 'object' ? existingStore : createEmptyStore();
-    const transactions = Array.isArray(store.messageTransactions)
-        ? store.messageTransactions
-            .map(item => normalizeReplayTransaction(item))
-            .filter(Boolean)
-            .sort((a, b) => Number(a.sourceSeq || 0) - Number(b.sourceSeq || 0))
-        : [];
+function alignStoreCoverageToChat(store, context) {
+    if (!store || typeof store !== 'object') {
+        return { changed: false, latestSeq: 0 };
+    }
     const frames = buildPlayableFramesFromContext(context);
-    const replayState = snapshotGraphForReplay(createEmptyStore());
-    const keptTransactions = [];
-    const removedSeqs = new Set();
-    const pendingFrames = [];
-    const txMap = new Map(transactions.map(item => [Number(item.sourceSeq || 0), item]));
-    const maxSeq = Number(frames.length || 0);
-
-    for (const frame of frames) {
-        const frameSeq = Number(frame?.seq || 0);
-        const matched = txMap.get(frameSeq);
-        if (!matched) {
-            pendingFrames.push(frame);
-            continue;
-        }
-        const nextGraph = applyObjectPatchOperations(replayState, matched.operations);
-        replayState.nodeSeq = Math.max(0, Number(nextGraph.nodeSeq || replayState.nodeSeq || 0));
-        replayState.seqCounter = Math.max(0, Number(nextGraph.seqCounter || replayState.seqCounter || 0));
-        replayState.nodes = nextGraph.nodes && typeof nextGraph.nodes === 'object' ? nextGraph.nodes : {};
-        replayState.edges = Array.isArray(nextGraph.edges) ? nextGraph.edges : [];
-        keptTransactions.push({
-            sourceSeq: frameSeq,
-            operations: matched.operations,
-        });
+    const latestSeq = Number(frames.length || 0);
+    let changed = false;
+    if (Number(store.appliedSeqTo || 0) > latestSeq) {
+        truncateStoreFromSeq(store, latestSeq + 1);
+        changed = true;
     }
-
-    for (const tx of transactions) {
-        const txSeq = Number(tx?.sourceSeq || 0);
-        if (!Number.isFinite(txSeq) || txSeq <= 0) {
-            continue;
-        }
-        if (txSeq > maxSeq) {
-            removedSeqs.add(txSeq);
-        }
-    }
-
-    const rebuilt = createEmptyStore();
-    rebuilt.nodeSeq = Math.max(0, Number(replayState.nodeSeq || 0));
-    rebuilt.seqCounter = Number(frames.length || 0);
-    rebuilt.nodes = replayState.nodes && typeof replayState.nodes === 'object' ? replayState.nodes : {};
-    rebuilt.edges = Array.isArray(replayState.edges) ? replayState.edges : [];
-    rebuilt.messageTransactions = keptTransactions.map(item => normalizeReplayTransaction(item)).filter(Boolean);
-    remapStoreSeqValues(rebuilt, removedSeqs);
-
-    if (pendingFrames.length > 0) {
-        rebuilt.pendingMessages = pendingFrames.map(frame => ({
-            ...frame,
-            seq: Number(frame.seq),
-        }));
-        rebuilt.messagesSinceUpdate = rebuilt.pendingMessages.length;
-    }
-
-    updateStoreSourceState(rebuilt, context);
-    rebuilt.updatedAt = Date.now();
-    return {
-        store: rebuilt,
-        missingCount: pendingFrames.length,
-    };
+    store.appliedSeqTo = Math.min(Math.max(0, Number(store.appliedSeqTo || 0)), latestSeq);
+    store.seqCounter = latestSeq;
+    updateStoreSourceState(store, context);
+    return { changed, latestSeq };
 }
 
 async function ensureStoreSyncedWithChat(context) {
@@ -3900,15 +3621,12 @@ async function ensureStoreSyncedWithChat(context) {
     if (!target) {
         return store;
     }
-    if (!hasStoreSourceMismatch(store, context)) {
-        if (Array.isArray(store.pendingMessages) && store.pendingMessages.length > 0) {
-            await runExtractionForStore(context, store);
-            const chatKey = getChatKey(context, { allowFallback: true });
-            await persistMemoryStoreByChatKey(context, chatKey, store);
-        }
-        return store;
+    const { changed } = alignStoreCoverageToChat(store, context);
+    if (changed) {
+        const chatKey = getChatKey(context, { allowFallback: true });
+        await persistMemoryStoreByChatKey(context, chatKey, store);
     }
-    return await rebuildStoreFromCurrentChat(context);
+    return store;
 }
 
 async function injectMemoryPrompts(context, payload) {
@@ -3994,27 +3712,8 @@ async function captureMessage(messageId) {
     if (!message || message.is_system || message.is_user) {
         return;
     }
-    const lastUserMessage = context.chat
-        .slice(0, index)
-        .reverse()
-        .find(item => item && !item.is_system && item.is_user) || null;
 
     await ensureMemoryStoreLoaded(context);
-    const store = getMemoryStore(context);
-    if (!store) {
-        return;
-    }
-    appendPendingMessageFrame(store, {
-        is_user: Boolean(message.is_user),
-        name: String(message.name || ''),
-        mes: String(message.mes || ''),
-        send_date: String(message.send_date || ''),
-        last_user_name: String(lastUserMessage?.name || ''),
-        last_user_mes: String(lastUserMessage?.mes || ''),
-        last_user_send_date: String(lastUserMessage?.send_date || ''),
-    });
-    updateStoreSourceState(store, context);
-
     scheduleExtraction(context);
 }
 
@@ -4030,8 +3729,11 @@ function scheduleExtraction(context) {
         if (!store) {
             return;
         }
-        await runExtractionForStore(context, store);
-        store.updatedAt = Date.now();
+        alignStoreCoverageToChat(store, context);
+        const extracted = await runExtractionForStore(context, store);
+        if (extracted) {
+            store.updatedAt = Date.now();
+        }
         await persistMemoryStoreByChatKey(context, chatKey, store);
         refreshUiStats();
     }, 0);
@@ -4048,7 +3750,7 @@ function getStoreStats(store) {
     return {
         nodeCount: nodes.length,
         edgeCount: Array.isArray(store.edges) ? store.edges.length : 0,
-        messageCount: Number(store.seqCounter || 0),
+        messageCount: Number(store.appliedSeqTo || 0),
         sourceMessageCount: Number(store.sourceMessageCount || 0),
         levelCount,
         lastRecallSteps: Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace.length : 0,
@@ -4075,7 +3777,7 @@ function renderGraphInspectorHtml(store) {
 <td>${String(node.title || '').replace(/</g, '&lt;')}</td>
 <td>${String(node.summary || '').replace(/</g, '&lt;')}</td>
 <td>${Array.isArray(node.childrenIds) ? node.childrenIds.length : 0}</td>
-<td>${node.seqFrom ?? ''}~${node.seqTo ?? ''}</td>
+<td>${node.seqTo ?? ''}</td>
 <td>
     <div class="flex-container">
         <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('View'))}</div>
@@ -4105,7 +3807,7 @@ function renderGraphInspectorHtml(store) {
     </div>
     <div class="luker-rpg-memory-graph-table-wrap">
     <table class="table" style="font-size:12px; margin-top:8px;">
-        <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Level'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Children'))}</th><th>${escapeHtml(i18n('SeqRange'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+        <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Level'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Children'))}</th><th>${escapeHtml(i18n('Sequence'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
         <tbody>${rows}</tbody>
     </table>
     </div>
@@ -4259,10 +3961,7 @@ function renderNodeFormEditorHtml(node, store, settings, editorId) {
         <label>${escapeHtml(i18n('Level'))}
             <select data-field="level" class="text_pole">${levelOptions}</select>
         </label>
-        <label>${escapeHtml(i18n('From Sequence'))}
-            <input data-field="seqFrom" class="text_pole" type="number" step="1" value="${escapeHtml(node.seqFrom ?? '')}" />
-        </label>
-        <label>${escapeHtml(i18n('To Sequence'))}
+        <label>${escapeHtml(i18n('Sequence'))}
             <input data-field="seqTo" class="text_pole" type="number" step="1" value="${escapeHtml(node.seqTo ?? '')}" />
         </label>
     </div>
@@ -4381,8 +4080,8 @@ function buildGraphCytoscapeElements(store) {
         const levelNodes = (nodesByLevel.get(level) || [])
             .slice()
             .sort((a, b) => {
-                const at = Number(a.seqTo ?? a.seqFrom ?? a.createdAt ?? 0);
-                const bt = Number(b.seqTo ?? b.seqFrom ?? b.createdAt ?? 0);
+                const at = Number(a.seqTo ?? a.createdAt ?? 0);
+                const bt = Number(b.seqTo ?? b.createdAt ?? 0);
                 if (at !== bt) {
                     return at - bt;
                 }
@@ -4916,7 +4615,6 @@ async function openGraphInspectorPopup(context) {
             target.level = String(editorRoot.find('[data-field="level"]').val() || target.level || LEVEL.SEMANTIC).trim() || LEVEL.SEMANTIC;
             target.title = normalizeText(editorRoot.find('[data-field="title"]').val() || target.title || nodeId);
             target.summary = normalizeText(editorRoot.find('[data-field="summary"]').val() || '');
-            target.seqFrom = parseOptionalNumber(editorRoot.find('[data-field="seqFrom"]').val());
             target.seqTo = parseOptionalNumber(editorRoot.find('[data-field="seqTo"]').val());
             target.count = Math.max(1, Number(target.count || 1));
             target.finalized = Boolean(editorRoot.find('[data-field="finalized"]').prop('checked'));
@@ -6266,48 +5964,33 @@ jQuery(() => {
         }
     });
 
-    context.eventSource.on(context.eventTypes.MESSAGE_SENT, captureMessage);
     context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, captureMessage);
-    const replayStoreFromMutation = async (rawMeta = null) => {
-        const chatKey = getChatKey(context, { allowFallback: true });
-        if (mutationReplayTasks.has(chatKey)) {
-            await mutationReplayTasks.get(chatKey);
-            return;
-        }
-        const task = (async () => {
+    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_legacyLength, mutationMeta) => {
+        try {
             await ensureMemoryStoreLoaded(context);
+            const chatKey = getChatKey(context, { allowFallback: true });
             const store = memoryStoreCache.get(chatKey);
             if (!store) {
                 return;
             }
-            applyTransactionMutation(store, rawMeta);
-            const replayResult = await rebuildStoreByReplayingTransactions(context, store);
-            if (!replayResult?.store) {
+            const meta = normalizeMutationMeta(mutationMeta);
+            const fromSeq = Number(meta?.deletedPlayableSeqFrom || 0);
+            if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
+                alignStoreCoverageToChat(store, context);
+                await persistMemoryStoreByChatKey(context, chatKey, store);
+                refreshUiStats();
                 return;
             }
-            memoryStoreCache.set(chatKey, replayResult.store);
-            await persistMemoryStoreByChatKey(context, chatKey, replayResult.store);
-            if (Number(replayResult.missingCount || 0) > 0) {
-                updateUiStatus(i18nFormat(
-                    'Chat deletion replayed locally. ${0} message(s) changed and are pending fresh extraction.',
-                    Number(replayResult.missingCount || 0),
-                ));
-            } else {
-                updateUiStatus(i18n('Chat deletion replayed locally. Memory graph updated immediately.'));
-            }
+            truncateStoreFromSeq(store, fromSeq);
+            alignStoreCoverageToChat(store, context);
+            await persistMemoryStoreByChatKey(context, chatKey, store);
             refreshUiStats();
-        })();
-        mutationReplayTasks.set(chatKey, task);
-        try {
-            await task;
+            updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
         } catch (error) {
-            console.warn(`[${MODULE_NAME}] Local replay after chat mutation failed`, error);
-            updateUiStatus(i18n('Chat deletion detected, local replay failed. Will re-sync on next generation.'));
-        } finally {
-            mutationReplayTasks.delete(chatKey);
+            console.warn(`[${MODULE_NAME}] Local truncate after chat mutation failed`, error);
+            updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
         }
-    };
-    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, (_legacyLength, mutationMeta) => replayStoreFromMutation(mutationMeta));
+    });
     if (context.eventTypes.PRESET_CHANGED) {
         context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
             if (String(event?.apiId || '') === 'openai') {
