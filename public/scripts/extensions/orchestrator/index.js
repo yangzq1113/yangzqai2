@@ -870,7 +870,11 @@ function renderTemplate(template, vars) {
         .replaceAll('{{wi_summary}}', String(vars.wi_summary || ''));
 }
 
-function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, { api = '', promptPresetName = '' } = {}) {
+function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
+    api = '',
+    promptPresetName = '',
+    runtimePromptFields = {},
+} = {}) {
     const systemText = String(systemPrompt || '').trim() || 'Return concise guidance through function-call fields.';
     const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
@@ -887,6 +891,9 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
             promptPresetName: selectedPromptPresetName,
         },
         promptPresetName: selectedPromptPresetName,
+        runtimePromptFields: runtimePromptFields && typeof runtimePromptFields === 'object'
+            ? runtimePromptFields
+            : {},
     });
 }
 
@@ -918,7 +925,14 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         settings,
         String(preset.systemPrompt || '').trim(),
         userPrompt,
-        { api, promptPresetName },
+        {
+            api,
+            promptPresetName,
+            runtimePromptFields: {
+                worldInfoBefore: String(payload?.worldInfoBefore || ''),
+                worldInfoAfter: String(payload?.worldInfoAfter || ''),
+            },
+        },
     );
 
     const nodeOutputSchema = {
