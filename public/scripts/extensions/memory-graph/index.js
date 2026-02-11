@@ -309,10 +309,14 @@ function registerLocaleData() {
         '(unset)': '（未设置）',
         '(new)': '（新建）',
         'Memory Graph': '记忆图',
+        'Inspector': '检查器',
+        'Select a node or edge to edit.': '点击节点或边以编辑。',
+        'Apply Changes': '应用修改',
+        'No node selected. Click a node in graph first.': '未选择节点。请先在图中点击一个节点。',
         'Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}': '节点：${0} | 边：${1} | Assistant 楼层：${2} | 源楼层：${3}',
         'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0}': '最近召回步数：${0}',
-        'Visual graph ready. Click an edge to select it for editing.': '可视化图已就绪。点击边可选择并编辑。',
+        'Visual graph ready. Click a node or edge to select it for editing.': '可视化图已就绪。点击节点或边可选择并编辑。',
         'Fit View': '适配视图',
         'Re-layout': '重新布局',
         'Add Edge': '新增边',
@@ -498,10 +502,14 @@ function registerLocaleData() {
         '(unset)': '（未設定）',
         '(new)': '（新建）',
         'Memory Graph': '記憶圖',
+        'Inspector': '檢視器',
+        'Select a node or edge to edit.': '點擊節點或邊以編輯。',
+        'Apply Changes': '套用修改',
+        'No node selected. Click a node in graph first.': '未選擇節點。請先在圖中點擊一個節點。',
         'Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}': '節點：${0} | 邊：${1} | Assistant 樓層：${2} | 來源樓層：${3}',
         'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0}': '最近召回步數：${0}',
-        'Visual graph ready. Click an edge to select it for editing.': '視覺化圖已就緒。點擊邊可選取並編輯。',
+        'Visual graph ready. Click a node or edge to select it for editing.': '視覺化圖已就緒。點擊節點或邊可選取並編輯。',
         'Fit View': '適配視圖',
         'Re-layout': '重新佈局',
         'Add Edge': '新增邊',
@@ -4290,10 +4298,17 @@ function renderGraphInspectorHtml(store) {
     <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
     <div>${escapeHtml(i18nFormat('semantic=${0}', stats.levelCount.semantic))}</div>
     <div>${escapeHtml(i18nFormat('Last recall steps: ${0}', stats.lastRecallSteps))}</div>
-    <div class="luker-rpg-memory-graph-canvas-wrap">
-        <div class="luker-rpg-memory-graph-cy"></div>
+    <div class="luker-rpg-memory-graph-workspace">
+        <div class="luker-rpg-memory-graph-canvas-wrap">
+            <div class="luker-rpg-memory-graph-cy"></div>
+            <small class="luker-rpg-memory-graph-selection">${escapeHtml(i18n('Visual graph ready. Click a node or edge to select it for editing.'))}</small>
+        </div>
+        <div class="luker-rpg-memory-graph-sidepanel">
+            <h4 class="margin0">${escapeHtml(i18n('Inspector'))}</h4>
+            <small class="luker-rpg-memory-graph-sidehint">${escapeHtml(i18n('Select a node or edge to edit.'))}</small>
+            <div class="luker-rpg-memory-graph-editor-slot"></div>
+        </div>
     </div>
-    <small class="luker-rpg-memory-graph-selection">${escapeHtml(i18n('Visual graph ready. Click an edge to select it for editing.'))}</small>
     <div class="flex-container luker-rpg-memory-graph-toolbar">
         <div class="menu_button luker-rpg-memory-graph-fit">${escapeHtml(i18n('Fit View'))}</div>
         <div class="menu_button luker-rpg-memory-graph-relayout">${escapeHtml(i18n('Re-layout'))}</div>
@@ -4710,6 +4725,7 @@ async function openGraphInspectorPopup(context) {
     const popupHtml = `<div id="${popupId}" class="luker-rpg-memory-graph-popup">${renderGraphInspectorHtml(store)}</div>`;
     let cy = null;
     let selectedEdgeIndex = -1;
+    let selectedNodeId = '';
     let runLayout = null;
     let mountRetryTimer = null;
 
@@ -4722,13 +4738,59 @@ async function openGraphInspectorPopup(context) {
 
     const getStore = () => memoryStoreCache.get(chatKey) || store;
     const getPopupRoot = () => jQuery(selector);
-    const getDefaultSelectionText = () => i18n('Visual graph ready. Click an edge to select it for editing.');
+    const getDefaultSelectionText = () => i18n('Visual graph ready. Click a node or edge to select it for editing.');
     const updateSelectionText = (text = '') => {
         const popupRoot = getPopupRoot();
         if (!popupRoot.length) {
             return;
         }
         popupRoot.find('.luker-rpg-memory-graph-selection').text(String(text || getDefaultSelectionText()));
+    };
+    const updateInspectorPanel = () => {
+        const popupRoot = getPopupRoot();
+        const latest = getStore();
+        if (!popupRoot.length || !latest) {
+            return;
+        }
+        const slot = popupRoot.find('.luker-rpg-memory-graph-editor-slot');
+        if (!slot.length) {
+            return;
+        }
+        if (selectedNodeId) {
+            const node = latest.nodes?.[selectedNodeId];
+            if (!node) {
+                slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18nFormat('Node not found: ${0}', selectedNodeId))}</div>`);
+                return;
+            }
+            const editorId = `${popupId}_inline_node_editor`;
+            slot.html(`
+<div class="luker-rpg-memory-graph-editor-box">
+${renderNodeFormEditorHtml(node, latest, getSettings(), editorId)}
+<div class="luker-rpg-memory-graph-inline-actions">
+    <div class="menu_button luker-rpg-memory-inline-node-apply">${escapeHtml(i18n('Apply Changes'))}</div>
+    <div class="menu_button luker-rpg-memory-inline-node-view" data-node-id="${escapeHtml(selectedNodeId)}">${escapeHtml(i18n('View'))}</div>
+</div>
+</div>`);
+            return;
+        }
+        if (Number.isInteger(selectedEdgeIndex) && selectedEdgeIndex >= 0) {
+            const edge = latest.edges?.[selectedEdgeIndex];
+            if (!edge) {
+                slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18nFormat('Selected edge index ${0} (missing).', selectedEdgeIndex))}</div>`);
+                return;
+            }
+            const editorId = `${popupId}_inline_edge_editor`;
+            slot.html(`
+<div class="luker-rpg-memory-graph-editor-box">
+${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
+<div class="luker-rpg-memory-graph-inline-actions">
+    <div class="menu_button luker-rpg-memory-inline-edge-apply">${escapeHtml(i18n('Apply Changes'))}</div>
+    <div class="menu_button luker-rpg-memory-inline-edge-delete">${escapeHtml(i18n('Delete'))}</div>
+</div>
+</div>`);
+            return;
+        }
+        slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18n('Select a node or edge to edit.'))}</div>`);
     };
     const persistLatest = async (latest, successText, statusText) => {
         latest.updatedAt = Date.now();
@@ -4889,7 +4951,10 @@ async function openGraphInspectorPopup(context) {
 
             cy.on('tap', 'node', (event) => {
                 const nodeId = String(event.target.data('nodeId') || '');
+                selectedNodeId = nodeId;
+                selectedEdgeIndex = -1;
                 updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
+                updateInspectorPanel();
             });
             cy.on('tap', 'edge', (event) => {
                 const edgeIndex = Number(event.target.data('edgeIndex'));
@@ -4897,9 +4962,11 @@ async function openGraphInspectorPopup(context) {
                     return;
                 }
                 selectedEdgeIndex = edgeIndex;
-                const edge = latest.edges?.[edgeIndex];
+                selectedNodeId = '';
+                const edge = getStore()?.edges?.[edgeIndex];
                 if (!edge) {
                     updateSelectionText(i18nFormat('Selected edge index ${0} (missing).', edgeIndex));
+                    updateInspectorPanel();
                     return;
                 }
                 updateSelectionText(i18nFormat(
@@ -4909,13 +4976,16 @@ async function openGraphInspectorPopup(context) {
                     edge.to,
                     edge.type,
                 ));
+                updateInspectorPanel();
             });
             cy.on('tap', (event) => {
                 if (event.target !== cy) {
                     return;
                 }
+                selectedNodeId = '';
                 selectedEdgeIndex = -1;
                 updateSelectionText('');
+                updateInspectorPanel();
             });
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Cytoscape mount failed`, error);
@@ -4953,8 +5023,18 @@ async function openGraphInspectorPopup(context) {
         if (!latest.edges?.[selectedEdgeIndex]) {
             selectedEdgeIndex = -1;
         }
+        if (!latest.nodes?.[selectedNodeId]) {
+            selectedNodeId = '';
+        }
         await mountGraphWithRetry();
-        if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
+        if (cy && selectedNodeId && latest.nodes?.[selectedNodeId]) {
+            cy.$id(`node:${selectedNodeId}`).select();
+        } else if (cy && selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
+            cy.$id(`edge:${selectedEdgeIndex}`).select();
+        }
+        if (selectedNodeId && latest.nodes?.[selectedNodeId]) {
+            updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', selectedNodeId));
+        } else if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
             const edge = latest.edges[selectedEdgeIndex];
             updateSelectionText(i18nFormat(
                 'Selected edge #${0}: ${1} -> ${2} [${3}]',
@@ -4966,6 +5046,7 @@ async function openGraphInspectorPopup(context) {
         } else {
             updateSelectionText('');
         }
+        updateInspectorPanel();
     };
     const openEdgeEditor = async (edgeIndex = -1) => {
         const latest = getStore();
@@ -5049,10 +5130,123 @@ async function openGraphInspectorPopup(context) {
             notifyError(i18nFormat('Edge edit failed: ${0}', error?.message || error));
         }
     };
+    const applyNodeEditorFromRoot = async (editorRoot, nodeId) => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const node = latest?.nodes?.[nodeId];
+        if (!node) {
+            throw new Error(i18nFormat('Node not found: ${0}', nodeId));
+        }
+        if (!editorRoot || !editorRoot.length) {
+            throw new Error(i18n('Node form not found'));
+        }
+        const parsedParentId = String(editorRoot.find('[data-field="parentId"]').val() || '').trim();
+        if (parsedParentId && !latest.nodes[parsedParentId]) {
+            throw new Error(i18nFormat('Parent node does not exist: ${0}', parsedParentId));
+        }
+        if (parsedParentId === nodeId) {
+            throw new Error(i18n('Parent node cannot be itself'));
+        }
+        if (willCreateParentCycle(latest, nodeId, parsedParentId)) {
+            throw new Error(i18n('Parent selection would create a cycle'));
+        }
+
+        const target = latest.nodes[nodeId];
+        const oldParentId = String(target.parentId || '').trim();
+        const now = Date.now();
+
+        target.type = String(editorRoot.find('[data-field="type"]').val() || target.type || 'unknown').trim() || 'unknown';
+        target.level = String(editorRoot.find('[data-field="level"]').val() || target.level || LEVEL.SEMANTIC).trim() || LEVEL.SEMANTIC;
+        target.title = normalizeText(editorRoot.find('[data-field="title"]').val() || target.title || nodeId);
+        target.summary = normalizeText(editorRoot.find('[data-field="summary"]').val() || '');
+        target.seqTo = parseOptionalNumber(editorRoot.find('[data-field="seqTo"]').val());
+        target.count = Math.max(1, Number(target.count || 1));
+        target.finalized = Boolean(editorRoot.find('[data-field="finalized"]').prop('checked'));
+        target.archived = Boolean(editorRoot.find('[data-field="archived"]').prop('checked'));
+        target.links = splitCommaList(editorRoot.find('[data-field="links"]').val());
+        target.fields = decodeFieldsFromLines(editorRoot.find('[data-field="fieldsLines"]').val());
+
+        if (parsedParentId !== oldParentId) {
+            if (oldParentId && latest.nodes[oldParentId]) {
+                const oldParent = latest.nodes[oldParentId];
+                oldParent.childrenIds = (oldParent.childrenIds || []).filter(id => id !== nodeId);
+                oldParent.updatedAt = now;
+            }
+            if (parsedParentId && latest.nodes[parsedParentId]) {
+                reparentNode(latest, nodeId, parsedParentId);
+            } else {
+                target.parentId = '';
+            }
+        } else if (parsedParentId && latest.nodes[parsedParentId]) {
+            const parent = latest.nodes[parsedParentId];
+            if (!Array.isArray(parent.childrenIds)) {
+                parent.childrenIds = [];
+            }
+            if (!parent.childrenIds.includes(nodeId)) {
+                parent.childrenIds.push(nodeId);
+            }
+        }
+
+        target.updatedAt = now;
+        selectedNodeId = nodeId;
+        selectedEdgeIndex = -1;
+        await persistLatest(
+            latest,
+            i18nFormat('Node updated: ${0}', nodeId),
+            i18nFormat('Updated node ${0}.', nodeId),
+        );
+        await rerender();
+    };
+    const applyEdgeEditorFromRoot = async (editorRoot, edgeIndex) => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const edge = latest.edges?.[edgeIndex];
+        if (!edge) {
+            throw new Error(i18nFormat('Edge not found: #${0}', edgeIndex));
+        }
+        if (!editorRoot || !editorRoot.length) {
+            throw new Error(i18n('Edge form not found'));
+        }
+        const from = String(editorRoot.find('[data-field="from"]').val() || '').trim();
+        const to = String(editorRoot.find('[data-field="to"]').val() || '').trim();
+        const type = String(editorRoot.find('[data-field="type"]').val() || 'related').trim() || 'related';
+
+        if (!from || !to) {
+            throw new Error(i18n('From/To node is required'));
+        }
+        if (!latest.nodes[from] || !latest.nodes[to]) {
+            throw new Error(i18n('From/To node does not exist'));
+        }
+        if (from === to) {
+            throw new Error(i18n('From and To cannot be the same node'));
+        }
+
+        latest.edges[edgeIndex] = {
+            from,
+            to,
+            type,
+            updatedAt: Date.now(),
+        };
+        selectedEdgeIndex = edgeIndex;
+        selectedNodeId = '';
+        await persistLatest(
+            latest,
+            i18nFormat('Edge updated (#${0})', edgeIndex),
+            i18nFormat('Updated edge #${0}.', edgeIndex),
+        );
+        await rerender();
+    };
 
     jQuery(document).off(namespace);
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-view`, async function () {
         const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        selectedNodeId = nodeId;
+        selectedEdgeIndex = -1;
+        updateInspectorPanel();
         const latest = getStore();
         const node = latest?.nodes?.[nodeId];
         if (!node) {
@@ -5069,86 +5263,42 @@ async function openGraphInspectorPopup(context) {
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-edit`, async function () {
         const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        selectedNodeId = nodeId;
+        selectedEdgeIndex = -1;
+        updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
+        updateInspectorPanel();
+        if (cy && nodeId) {
+            cy.elements().unselect();
+            cy.$id(`node:${nodeId}`).select();
+        }
+        return;
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-node-view`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || selectedNodeId || '').trim();
         const latest = getStore();
         const node = latest?.nodes?.[nodeId];
         if (!node) {
             notifyError(i18nFormat('Node not found: ${0}', nodeId));
             return;
         }
-
-        const editorId = `luker_rpg_memory_node_editor_${Date.now()}`;
-        const editorHtml = renderNodeFormEditorHtml(node, latest, getSettings(), editorId);
-
-        const result = await context.callGenericPopup(
-            editorHtml,
-            context.POPUP_TYPE.CONFIRM,
+        await context.callGenericPopup(
+            `<pre style="white-space:pre-wrap; max-height:68vh; overflow:auto;">${escapeHtml(JSON.stringify(node, null, 2))}</pre>`,
+            context.POPUP_TYPE.TEXT,
             '',
-            { okButton: i18n('Apply Node'), cancelButton: i18n('Cancel'), wide: true, large: true, allowVerticalScrolling: true },
+            { wide: true, large: true, allowVerticalScrolling: true },
         );
-        if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-node-apply`, async function () {
+        const nodeId = String(selectedNodeId || '').trim();
+        if (!nodeId) {
+            notifyError(i18n('No node selected. Click a node in graph first.'));
             return;
         }
-
+        const editorRoot = jQuery(`#${popupId}_inline_node_editor`);
         try {
-            const editorRoot = jQuery(`#${editorId}`);
-            if (!editorRoot.length) {
-                throw new Error(i18n('Node form not found'));
-            }
-            const parsedParentId = String(editorRoot.find('[data-field="parentId"]').val() || '').trim();
-            if (parsedParentId && !latest.nodes[parsedParentId]) {
-                throw new Error(i18nFormat('Parent node does not exist: ${0}', parsedParentId));
-            }
-            if (parsedParentId === nodeId) {
-                throw new Error(i18n('Parent node cannot be itself'));
-            }
-            if (willCreateParentCycle(latest, nodeId, parsedParentId)) {
-                throw new Error(i18n('Parent selection would create a cycle'));
-            }
-
-            const target = latest.nodes[nodeId];
-            const oldParentId = String(target.parentId || '').trim();
-            const now = Date.now();
-
-            target.type = String(editorRoot.find('[data-field="type"]').val() || target.type || 'unknown').trim() || 'unknown';
-            target.level = String(editorRoot.find('[data-field="level"]').val() || target.level || LEVEL.SEMANTIC).trim() || LEVEL.SEMANTIC;
-            target.title = normalizeText(editorRoot.find('[data-field="title"]').val() || target.title || nodeId);
-            target.summary = normalizeText(editorRoot.find('[data-field="summary"]').val() || '');
-            target.seqTo = parseOptionalNumber(editorRoot.find('[data-field="seqTo"]').val());
-            target.count = Math.max(1, Number(target.count || 1));
-            target.finalized = Boolean(editorRoot.find('[data-field="finalized"]').prop('checked'));
-            target.archived = Boolean(editorRoot.find('[data-field="archived"]').prop('checked'));
-            target.links = splitCommaList(editorRoot.find('[data-field="links"]').val());
-            target.fields = decodeFieldsFromLines(editorRoot.find('[data-field="fieldsLines"]').val());
-
-            if (parsedParentId !== oldParentId) {
-                if (oldParentId && latest.nodes[oldParentId]) {
-                    const oldParent = latest.nodes[oldParentId];
-                    oldParent.childrenIds = (oldParent.childrenIds || []).filter(id => id !== nodeId);
-                    oldParent.updatedAt = now;
-                }
-                if (parsedParentId && latest.nodes[parsedParentId]) {
-                    reparentNode(latest, nodeId, parsedParentId);
-                } else {
-                    target.parentId = '';
-                }
-            } else if (parsedParentId && latest.nodes[parsedParentId]) {
-                const parent = latest.nodes[parsedParentId];
-                if (!Array.isArray(parent.childrenIds)) {
-                    parent.childrenIds = [];
-                }
-                if (!parent.childrenIds.includes(nodeId)) {
-                    parent.childrenIds.push(nodeId);
-                }
-            }
-
-            target.updatedAt = now;
-            latest.updatedAt = now;
-            memoryStoreCache.set(chatKey, latest);
-            await persistMemoryStoreByChatKey(context, chatKey, latest);
-            refreshUiStats();
-            updateUiStatus(i18nFormat('Updated node ${0}.', nodeId));
-            notifySuccess(i18nFormat('Node updated: ${0}', nodeId));
-            await rerender();
+            await applyNodeEditorFromRoot(editorRoot, nodeId);
         } catch (error) {
             notifyError(i18nFormat('Node edit failed: ${0}', error?.message || error));
         }
@@ -5190,7 +5340,40 @@ async function openGraphInspectorPopup(context) {
             return;
         }
         selectedEdgeIndex = edgeIndex;
-        await openEdgeEditor(edgeIndex);
+        selectedNodeId = '';
+        const latest = getStore();
+        const edge = latest?.edges?.[edgeIndex];
+        if (edge) {
+            updateSelectionText(i18nFormat(
+                'Selected edge #${0}: ${1} -> ${2} [${3}]',
+                edgeIndex,
+                edge.from,
+                edge.to,
+                edge.type,
+            ));
+        }
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            cy.$id(`edge:${edgeIndex}`).select();
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-edge-apply`, async function () {
+        if (!Number.isInteger(selectedEdgeIndex) || selectedEdgeIndex < 0) {
+            notifyError(i18n('No edge selected. Click an edge in graph first.'));
+            return;
+        }
+        const editorRoot = jQuery(`#${popupId}_inline_edge_editor`);
+        try {
+            await applyEdgeEditorFromRoot(editorRoot, selectedEdgeIndex);
+        } catch (error) {
+            notifyError(i18nFormat('Edge edit failed: ${0}', error?.message || error));
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-edge-delete`, async function () {
+        jQuery(`${selector} .luker-rpg-memory-edge-delete`).trigger('click');
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-delete`, async function () {
@@ -5285,6 +5468,7 @@ async function openGraphInspectorPopup(context) {
     });
 
     await mountGraphWithRetry();
+    updateInspectorPanel();
     setTimeout(() => { void mountGraphWithRetry(); }, 0);
     setTimeout(() => { void mountGraphWithRetry(); }, 180);
     try {
@@ -5696,6 +5880,13 @@ function ensureStyles() {
     text-align: left;
 }
 
+.luker-rpg-memory-graph-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+    gap: 10px;
+    align-items: stretch;
+}
+
 .luker-rpg-memory-graph-toolbar {
     gap: 8px;
     margin-top: 6px;
@@ -5703,6 +5894,9 @@ function ensureStyles() {
 }
 
 .luker-rpg-memory-graph-canvas-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
     border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
     border-radius: 10px;
     background: radial-gradient(circle at 20% 20%, rgba(70, 104, 138, 0.2), rgba(21, 24, 31, 0.25));
@@ -5721,6 +5915,56 @@ function ensureStyles() {
     display: block;
     opacity: 0.9;
     font-size: 0.9em;
+}
+
+.luker-rpg-memory-graph-sidepanel {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 10px;
+    background: linear-gradient(150deg, rgba(30, 35, 47, 0.35), rgba(12, 14, 20, 0.4));
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: min(62vh, 640px);
+    overflow: auto;
+}
+
+.luker-rpg-memory-graph-sidehint {
+    opacity: 0.8;
+    font-size: 0.88em;
+}
+
+.luker-rpg-memory-graph-editor-slot {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.luker-rpg-memory-graph-editor-empty {
+    opacity: 0.78;
+    font-size: 0.9em;
+    padding: 8px;
+    border: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.luker-rpg-memory-graph-inline-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-memory-graph-sidepanel .luker-rpg-memory-node-form {
+    min-width: 0;
+}
+
+.luker-rpg-memory-graph-sidepanel .luker-rpg-memory-node-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.luker-rpg-memory-graph-sidepanel .luker-rpg-memory-edge-form-grid {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
 }
 
 .luker-rpg-memory-graph-table-wrap {
@@ -5809,6 +6053,12 @@ function ensureStyles() {
     }
     .luker-rpg-memory-advanced-actions {
         justify-content: flex-start;
+    }
+    .luker-rpg-memory-graph-workspace {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .luker-rpg-memory-graph-sidepanel {
+        max-height: none;
     }
 }
 </style>`);
