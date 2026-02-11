@@ -1989,7 +1989,7 @@ function showRunInfoToast(message) {
         timeOut: 0,
         extendedTimeOut: 0,
         tapToDismiss: false,
-        closeButton: false,
+        closeButton: true,
         progressBar: false,
     });
 }

@@ -671,6 +671,7 @@ const memoryLoadTasks = new Map();
 let activeRuntimeInfoToast = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
+let generationStopped = false;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -1477,10 +1478,14 @@ function getAssistantChatMessages(context) {
             };
             continue;
         }
+        const text = normalizeText(message?.mes || '');
+        if (!text) {
+            continue;
+        }
         result.push({
             is_user: false,
             name: String(message.name || ''),
-            mes: String(message.mes || ''),
+            mes: text,
             send_date: String(message.send_date || ''),
             last_user_name: String(lastUser?.name || ''),
             last_user_mes: String(lastUser?.mes || ''),
@@ -2680,10 +2685,11 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     const frames = buildPlayableFramesFromContext(context);
     const latestSeq = Number(frames.length || 0);
     const appliedSeqTo = Math.max(0, Math.floor(Number(store.appliedSeqTo || 0)));
+    const sourceMessageCount = Math.max(0, Math.floor(Number(store.sourceMessageCount || 0)));
     const maxNodeSeqTo = Object.values(store.nodes || {})
         .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
         .reduce((maxSeq, node) => Math.max(maxSeq, Math.max(0, Number(node.seqTo || 0))), 0);
-    const coveredSeqTo = Math.max(appliedSeqTo, maxNodeSeqTo);
+    const coveredSeqTo = Math.min(latestSeq, Math.max(appliedSeqTo, maxNodeSeqTo, sourceMessageCount));
     if (coveredSeqTo !== appliedSeqTo) {
         store.appliedSeqTo = coveredSeqTo;
     }
@@ -2693,12 +2699,28 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     if (beginSeq > latestSeq) {
         store.appliedSeqTo = latestSeq;
         store.seqCounter = latestSeq;
+        store.lastExtractionDebug = {
+            beginSeq,
+            latestSeq,
+            coveredSeqTo,
+            extracted: false,
+            reason: 'already_up_to_date',
+            at: Date.now(),
+        };
         return false;
     }
 
     if (!force) {
         const gap = latestSeq - coveredSeqTo;
         if (gap < Number(settings.updateEvery || 1)) {
+            store.lastExtractionDebug = {
+                beginSeq,
+                latestSeq,
+                coveredSeqTo,
+                extracted: false,
+                reason: 'gap_below_threshold',
+                at: Date.now(),
+            };
             return false;
         }
     }
@@ -2716,6 +2738,14 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     store.seqCounter = latestSeq;
     updateStoreSourceState(store, context);
     store.updatedAt = Date.now();
+    store.lastExtractionDebug = {
+        beginSeq,
+        latestSeq,
+        coveredSeqTo,
+        extracted: extractedAny,
+        reason: extractedAny ? 'ok' : 'no_upserts',
+        at: Date.now(),
+    };
     return extractedAny;
 }
 
@@ -3828,12 +3858,16 @@ function normalizeMutationMeta(rawMeta = null) {
         return null;
     }
     const kind = String(rawMeta.kind || '').trim().toLowerCase();
-    const fromSeq = Number(rawMeta?.deletedAssistantSeqFrom ?? rawMeta?.deletedPlayableSeqFrom);
-    const toSeq = Number(rawMeta?.deletedAssistantSeqTo ?? rawMeta?.deletedPlayableSeqTo);
+    const assistantFromSeq = Number(rawMeta?.deletedAssistantSeqFrom);
+    const assistantToSeq = Number(rawMeta?.deletedAssistantSeqTo);
+    const playableFromSeq = Number(rawMeta?.deletedPlayableSeqFrom);
+    const playableToSeq = Number(rawMeta?.deletedPlayableSeqTo);
     return {
         kind,
-        deletedPlayableSeqFrom: Number.isFinite(fromSeq) ? Math.max(1, Math.floor(fromSeq)) : null,
-        deletedPlayableSeqTo: Number.isFinite(toSeq) ? Math.max(1, Math.floor(toSeq)) : null,
+        deletedAssistantSeqFrom: Number.isFinite(assistantFromSeq) ? Math.max(1, Math.floor(assistantFromSeq)) : null,
+        deletedAssistantSeqTo: Number.isFinite(assistantToSeq) ? Math.max(1, Math.floor(assistantToSeq)) : null,
+        deletedPlayableSeqFrom: Number.isFinite(playableFromSeq) ? Math.max(1, Math.floor(playableFromSeq)) : null,
+        deletedPlayableSeqTo: Number.isFinite(playableToSeq) ? Math.max(1, Math.floor(playableToSeq)) : null,
     };
 }
 
@@ -3994,36 +4028,32 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world
     }
 }
 
-async function captureMessage(messageId, messageType = '') {
+async function captureLatestAssistantAfterGeneration() {
     const context = getContext();
     const settings = getSettings();
     if (!settings.enabled) {
         return;
     }
-
-    const index = Number(messageId);
-    if (!Number.isInteger(index) || index < 0 || index >= context.chat.length) {
+    if (!Array.isArray(context.chat) || context.chat.length === 0) {
         return;
     }
-
+    const index = context.chat.length - 1;
     const message = context.chat[index];
     if (!message || message.is_system || message.is_user) {
         return;
     }
-    if (String(messageType || '').trim().toLowerCase() === 'command') {
+    if (!normalizeText(message.mes || '')) {
         return;
     }
-    // Skip partial/aborted assistant outputs: extraction only runs for completed assistant messages.
-    if (!message.gen_finished) {
-        return;
-    }
-
     await ensureMemoryStoreLoaded(context);
     scheduleExtraction(context);
 }
 
 function scheduleExtraction(context) {
-    const chatKey = getChatKey(context);
+    const chatKey = getChatKey(context, { allowFallback: true });
+    if (!chatKey || chatKey === 'invalid_target') {
+        return;
+    }
     if (extractionTimers.has(chatKey)) {
         return;
     }
@@ -4042,6 +4072,14 @@ function scheduleExtraction(context) {
                 store.updatedAt = Date.now();
             }
             await persistMemoryStoreByChatKey(context, chatKey, store);
+            const debug = store.lastExtractionDebug || {};
+            updateUiStatus(i18nFormat(
+                'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                debug.extracted ? 'ok' : 'skip',
+                Number(debug.beginSeq || 0),
+                Number(debug.latestSeq || 0),
+                Number(debug.coveredSeqTo || 0),
+            ));
             refreshUiStats();
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Extraction failed`, error);
@@ -5141,7 +5179,7 @@ function showRuntimeInfoToast(message) {
         timeOut: 0,
         extendedTimeOut: 0,
         tapToDismiss: false,
-        closeButton: false,
+        closeButton: true,
         progressBar: false,
     });
 }
@@ -6355,14 +6393,28 @@ jQuery(() => {
             console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
         }
     };
-    if (context.eventTypes.GENERATION_ENDED) {
-        context.eventSource.on(context.eventTypes.GENERATION_ENDED, clearRuntimeProjectionAfterGeneration);
+    if (context.eventTypes.GENERATION_STARTED) {
+        context.eventSource.on(context.eventTypes.GENERATION_STARTED, () => {
+            generationStopped = false;
+        });
     }
     if (context.eventTypes.GENERATION_STOPPED) {
-        context.eventSource.on(context.eventTypes.GENERATION_STOPPED, clearRuntimeProjectionAfterGeneration);
+        context.eventSource.on(context.eventTypes.GENERATION_STOPPED, async () => {
+            generationStopped = true;
+            await clearRuntimeProjectionAfterGeneration();
+            clearRuntimeInfoToast();
+        });
     }
-
-    context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, captureMessage);
+    if (context.eventTypes.GENERATION_ENDED) {
+        context.eventSource.on(context.eventTypes.GENERATION_ENDED, async () => {
+            await clearRuntimeProjectionAfterGeneration();
+            if (generationStopped) {
+                generationStopped = false;
+                return;
+            }
+            await captureLatestAssistantAfterGeneration();
+        });
+    }
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_legacyLength, mutationMeta) => {
         try {
             await ensureMemoryStoreLoaded(context);
@@ -6372,7 +6424,7 @@ jQuery(() => {
                 return;
             }
             const meta = normalizeMutationMeta(mutationMeta);
-            const fromSeq = Number(meta?.deletedPlayableSeqFrom || 0);
+            const fromSeq = Number(meta?.deletedAssistantSeqFrom || 0);
             if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
                 alignStoreCoverageToChat(store, context);
                 await persistMemoryStoreByChatKey(context, chatKey, store);
