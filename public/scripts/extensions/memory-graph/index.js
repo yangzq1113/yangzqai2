@@ -24,6 +24,8 @@ const defaultNodeTypeSchema = [
         label: 'Event',
         tableName: 'event_table',
         tableColumns: ['title', 'seq_to', 'summary', 'participants', 'locations', 'threads', 'status'],
+        requiredColumns: ['summary'],
+        forceUpdate: true,
         level: LEVEL.SEMANTIC,
         extractHint: 'Critical plot events, turning points, commitments, betrayals, and irreversible outcomes.',
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
@@ -43,6 +45,8 @@ const defaultNodeTypeSchema = [
         label: 'Thread',
         tableName: 'thread_table',
         tableColumns: ['title', 'summary', 'status', 'related_events', 'last_update_seq'],
+        requiredColumns: ['title'],
+        forceUpdate: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'Unresolved clues, foreshadowing, quests, promises, and long-term hooks.',
         keywords: ['quest', 'clue', 'mystery', 'promise', 'goal', 'thread'],
@@ -61,7 +65,9 @@ const defaultNodeTypeSchema = [
         id: 'character_sheet',
         label: 'Character Sheet',
         tableName: 'character_table',
-        tableColumns: ['name', 'identity', 'state', 'goal', 'relationship', 'inventory', 'secret', 'last_update_seq'],
+        tableColumns: ['name', 'identity', 'state', 'goal', 'relationship', 'inventory', 'secret', 'language_sample', 'note', 'addressing_user', 'last_update_seq'],
+        requiredColumns: ['name'],
+        forceUpdate: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: identity/status/goal/inventory/relationships/secrets.',
         keywords: ['character', 'status', 'relationship', 'inventory', 'goal', 'secret'],
@@ -81,6 +87,8 @@ const defaultNodeTypeSchema = [
         label: 'Location State',
         tableName: 'location_table',
         tableColumns: ['name', 'controller', 'danger', 'resource', 'state', 'last_event', 'last_update_seq'],
+        requiredColumns: ['name'],
+        forceUpdate: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'Location status, ownership/control, danger level, and environmental/resource changes. Prefer structured JSON-like content.',
         keywords: ['location', 'control', 'danger', 'resource', 'region', 'base'],
@@ -100,6 +108,8 @@ const defaultNodeTypeSchema = [
         label: 'Faction State',
         tableName: 'faction_table',
         tableColumns: ['name', 'goal', 'alliance', 'hostility', 'leverage', 'state', 'last_update_seq'],
+        requiredColumns: ['name'],
+        forceUpdate: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'Faction goals, alliances, hostility shifts, leverage, and conflict escalation.',
         keywords: ['faction', 'alliance', 'hostility', 'politics', 'power'],
@@ -119,6 +129,8 @@ const defaultNodeTypeSchema = [
         label: 'Item State',
         tableName: 'item_table',
         tableColumns: ['name', 'owner', 'state', 'effect', 'constraint', 'last_update_seq'],
+        requiredColumns: ['name'],
+        forceUpdate: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'Key item ownership, condition, unlock state, seals, and usage constraints.',
         keywords: ['artifact', 'item', 'key', 'weapon', 'relic'],
@@ -138,6 +150,8 @@ const defaultNodeTypeSchema = [
         label: 'Rule Constraint',
         tableName: 'rule_table',
         tableColumns: ['title', 'constraint', 'scope', 'status'],
+        requiredColumns: ['title', 'constraint'],
+        forceUpdate: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'World rules, magic limits, taboos, hard constraints, and never-break conditions.',
         keywords: ['rule', 'constraint', 'law', 'taboo', 'limit'],
@@ -173,23 +187,23 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Extract structured memory nodes from dialogue messages.',
     'Use tool calls only. Do not return plain JSON text.',
-    'Call luker_rpg_extract_upsert once per node update. Never emit one huge array payload.',
-    'Call luker_rpg_extract_done after all upserts are emitted.',
+    'Tool set is dynamic. Each semantic type has one tool. Follow each tool description as the source of truth.',
+    'Call the matching type tool once per node update.',
+    'Call luker_rpg_extract_done after all type tool calls are emitted in this response.',
     'Hard rule: one response must contain COMPLETE extraction tool calls. Do not stop after a single tool call.',
-    'Hard rule: return at least 2 tool calls in one response: >=1 luker_rpg_extract_upsert + 1 luker_rpg_extract_done (done must be last).',
-    'For events, include links to involved entities/locations/threads whenever possible.',
+    'Hard rule: return at least 2 tool calls in one response: >=1 type tool call + 1 luker_rpg_extract_done (done must be last).',
+    'Use flattened top-level parameters (table columns as direct keys). Do not pack payload into one nested object.',
+    'For non-required columns, omit when unknown. Do not hallucinate values.',
+    'Respect required columns and force-update types declared in tool descriptions.',
+    'For events, include links to involved entities/locations/threads whenever possible when evidence exists.',
     'Summary rule is strict: summary must be compact abstraction, not raw text copy.',
-    `Length guide for summary: target around ${EXTRACT_SUMMARY_SOFT_TARGET} Chinese characters (soft limit). If critical context would be lost, allow slight overflow.`,
+    `Length guide for summary: target around ${EXTRACT_SUMMARY_SOFT_TARGET} Chinese characters (soft limit).`,
     'Never paste long dialogue, narration, or quotes into summary.',
     'If information is large, split into multiple node upserts instead of writing one oversized summary.',
-    'Put table-like attributes into "fields" object and align keys with schema table columns.',
-    'If evidence supports a field (state/goal/identity/status/etc), fill it explicitly instead of leaving blank.',
-    'Keyword focus: when available, fill retrieval keys in fields.keywords (array preferred) and fields.aliases (array preferred), including formal names, nicknames, aliases, and common references.',
-    'Title policy: non-event nodes must use short, stable, human-readable titles.',
+    'Title policy: non-event nodes should use short, stable, human-readable titles.',
     'Do not use random or decorative titles. Keep title compact and functional.',
     'If the node refers to an existing entity/thread/location/item, reuse the same title exactly for updates.',
-    'Naming guidance: character/faction/location/item nodes should use canonical names.',
-    'Event titles are assigned by system in strict sequence labels (Summary N). You can omit event title.',
+    'Event titles are assigned by system in strict sequence labels (Summary N), so you may omit event title.',
 ].join('\n');
 
 const defaultSettings = {
@@ -270,7 +284,7 @@ function registerLocaleData() {
         'Imported memory graph JSON.': '已导入记忆图 JSON。',
         'Memory graph import failed.': '记忆图导入失败。',
         'Import failed: ${0}': '导入失败：${0}',
-        'Types: ${0} | Always Inject: ${1} | Hierarchical: ${2}': '类型：${0} | 常驻注入：${1} | 分层压缩：${2}',
+        'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '类型：${0} | 常驻注入：${1} | 强制更新：${2} | 分层压缩：${3}',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
@@ -374,7 +388,9 @@ function registerLocaleData() {
         'Label': '标签',
         'Table Name': '表名',
         'Table Columns (comma separated)': '表列（逗号分隔）',
+        'Required Columns (comma separated)': '必填列（逗号分隔）',
         'Keywords (comma separated)': '关键词（逗号分隔）',
+        'Force Update (must appear each extraction batch)': '强制更新（每次抽取必须出现）',
         'Extract Hint': '抽取提示',
         'Compression Mode': '压缩模式',
         'none': 'none',
@@ -450,7 +466,7 @@ function registerLocaleData() {
         'Imported memory graph JSON.': '已匯入記憶圖 JSON。',
         'Memory graph import failed.': '記憶圖匯入失敗。',
         'Import failed: ${0}': '匯入失敗：${0}',
-        'Types: ${0} | Always Inject: ${1} | Hierarchical: ${2}': '類型：${0} | 常駐注入：${1} | 分層壓縮：${2}',
+        'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '類型：${0} | 常駐注入：${1} | 強制更新：${2} | 分層壓縮：${3}',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 設定）',
         '(missing)': '（缺失）',
@@ -554,7 +570,9 @@ function registerLocaleData() {
         'Label': '標籤',
         'Table Name': '表名',
         'Table Columns (comma separated)': '表欄位（逗號分隔）',
+        'Required Columns (comma separated)': '必填欄位（逗號分隔）',
         'Keywords (comma separated)': '關鍵字（逗號分隔）',
+        'Force Update (must appear each extraction batch)': '強制更新（每次抽取必須出現）',
         'Extract Hint': '抽取提示',
         'Compression Mode': '壓縮模式',
         'none': 'none',
@@ -661,27 +679,39 @@ function normalizeNodeTypeSchema(schema) {
     };
     const normalized = list
         .filter(item => item && typeof item === 'object')
-        .map((item, index) => ({
-            id: String(item.id || `custom_${index + 1}`).trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_'),
-            label: String(item.label || item.id || `Type ${index + 1}`).trim(),
-            tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
-            tableColumns: Array.isArray(item.tableColumns)
-                ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
-                : ['title', 'summary'],
-            level: String(item.level || LEVEL.SEMANTIC),
-            extractHint: String(item.extractHint || '').trim(),
-            keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
-            alwaysInject: Boolean(item.alwaysInject),
-            compression: {
-                mode: normalizeCompressionMode(item?.compression?.mode),
-                threshold: Math.max(2, Number(item?.compression?.threshold) || 6),
-                fanIn: Math.max(2, Number(item?.compression?.fanIn) || 3),
-                maxDepth: Math.max(1, Number(item?.compression?.maxDepth) || 6),
-                keepRecentLeaves: Math.max(0, Number(item?.compression?.keepRecentLeaves) || 0),
-                keepLatest: Math.max(1, Number(item?.compression?.keepLatest) || 1),
-                summarizeInstruction: String(item?.compression?.summarizeInstruction || '').trim(),
-            },
-        }))
+        .map((item, index) => {
+            const rawId = String(item.id || `custom_${index + 1}`).trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_');
+            const defaultRequired = rawId === 'event' ? ['summary'] : [];
+            const requiredColumns = Array.isArray(item.requiredColumns)
+                ? item.requiredColumns.map(x => String(x || '').trim()).filter(Boolean)
+                : defaultRequired;
+            const forceUpdate = item.forceUpdate === undefined
+                ? rawId === 'event'
+                : Boolean(item.forceUpdate);
+            return {
+                id: rawId,
+                label: String(item.label || item.id || `Type ${index + 1}`).trim(),
+                tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
+                tableColumns: Array.isArray(item.tableColumns)
+                    ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
+                    : ['title', 'summary'],
+                level: String(item.level || LEVEL.SEMANTIC),
+                extractHint: String(item.extractHint || '').trim(),
+                keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
+                requiredColumns,
+                forceUpdate,
+                alwaysInject: Boolean(item.alwaysInject),
+                compression: {
+                    mode: normalizeCompressionMode(item?.compression?.mode),
+                    threshold: Math.max(2, Number(item?.compression?.threshold) || 6),
+                    fanIn: Math.max(2, Number(item?.compression?.fanIn) || 3),
+                    maxDepth: Math.max(1, Number(item?.compression?.maxDepth) || 6),
+                    keepRecentLeaves: Math.max(0, Number(item?.compression?.keepRecentLeaves) || 0),
+                    keepLatest: Math.max(1, Number(item?.compression?.keepLatest) || 1),
+                    summarizeInstruction: String(item?.compression?.summarizeInstruction || '').trim(),
+                },
+            };
+        })
         .filter(item => item.id);
 
     const deduped = [];
@@ -1941,6 +1971,199 @@ function buildEvidenceSeqRange(item, batch) {
     return { seqTo: 0 };
 }
 
+function sanitizeExtractToolNameSuffix(typeId = '') {
+    return String(typeId || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'semantic';
+}
+
+function buildDynamicToolDescription(spec = {}) {
+    const typeId = String(spec?.id || '').trim().toLowerCase();
+    const tableName = String(spec?.tableName || typeId || '').trim();
+    const hint = normalizeText(spec?.extractHint || '');
+    const fields = Array.isArray(spec?.tableColumns) ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
+    const required = Array.isArray(spec?.requiredColumns) ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
+    const forceUpdate = Boolean(spec?.forceUpdate);
+    const chunks = [
+        `Upsert semantic node for type "${typeId}" (table "${tableName || typeId}").`,
+    ];
+    if (hint) {
+        chunks.push(`Meaning: ${hint}`);
+    }
+    if (fields.length > 0) {
+        chunks.push(`Columns: ${fields.join(', ')}`);
+    }
+    if (required.length > 0) {
+        chunks.push(`Required columns: ${required.join(', ')}`);
+    } else {
+        chunks.push('Required columns: none');
+    }
+    chunks.push(`Force update each extraction batch: ${forceUpdate ? 'yes' : 'no'}`);
+    return chunks.join(' ');
+}
+
+function buildDynamicExtractTools(schema = []) {
+    const tools = [];
+    const specByToolName = new Map();
+    const usedNames = new Set();
+
+    for (const rawSpec of Array.isArray(schema) ? schema : []) {
+        const spec = rawSpec && typeof rawSpec === 'object' ? rawSpec : null;
+        if (!spec) {
+            continue;
+        }
+        const typeId = String(spec.id || '').trim().toLowerCase();
+        if (!typeId) {
+            continue;
+        }
+        const baseName = `luker_rpg_extract_${sanitizeExtractToolNameSuffix(typeId)}`;
+        let toolName = baseName;
+        let suffix = 2;
+        while (usedNames.has(toolName)) {
+            toolName = `${baseName}_${suffix}`;
+            suffix += 1;
+        }
+        usedNames.add(toolName);
+
+        const fields = Array.isArray(spec.tableColumns)
+            ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean)
+            : [];
+        const requiredColumns = Array.isArray(spec.requiredColumns)
+            ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean)
+            : [];
+        const fieldSet = new Set(fields);
+        const properties = {
+            title: { type: 'string' },
+            summary: { type: 'string' },
+            evidence_seqs: {
+                type: 'array',
+                items: { type: 'integer' },
+            },
+            evidence_seq_range: {
+                type: 'object',
+                properties: {
+                    from_seq: { type: 'integer' },
+                    to_seq: { type: 'integer' },
+                },
+                additionalProperties: false,
+            },
+            links: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        target_type: { type: 'string' },
+                        target_title: { type: 'string' },
+                        target_summary: { type: 'string' },
+                        relation: { type: 'string' },
+                        direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
+                    },
+                    required: ['target_title'],
+                    additionalProperties: true,
+                },
+            },
+        };
+        for (const field of fieldSet) {
+            if (properties[field]) {
+                continue;
+            }
+            properties[field] = { type: 'string' };
+        }
+
+        tools.push({
+            type: 'function',
+            function: {
+                name: toolName,
+                description: buildDynamicToolDescription({
+                    ...spec,
+                    id: typeId,
+                    tableColumns: fields,
+                    requiredColumns,
+                }),
+                parameters: {
+                    type: 'object',
+                    properties,
+                    required: requiredColumns.filter(field => fieldSet.has(field) || field === 'title' || field === 'summary'),
+                    additionalProperties: false,
+                },
+            },
+        });
+        specByToolName.set(toolName, {
+            ...spec,
+            id: typeId,
+            tableColumns: fields,
+            requiredColumns,
+        });
+    }
+
+    tools.push({
+        type: 'function',
+        function: {
+            name: 'luker_rpg_extract_done',
+            description: 'Signal extraction completion.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    note: { type: 'string' },
+                },
+                additionalProperties: false,
+            },
+        },
+    });
+
+    return { tools, specByToolName };
+}
+
+function buildUpsertFromDynamicToolCall(call, spec) {
+    if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
+        return { payload: null, missingRequired: [] };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const fields = {};
+    for (const column of Array.isArray(spec.tableColumns) ? spec.tableColumns : []) {
+        const key = String(column || '').trim();
+        if (!key) {
+            continue;
+        }
+        const rawValue = args[key];
+        fields[key] = rawValue === undefined || rawValue === null ? '' : rawValue;
+    }
+    const titleValue = args.title ?? fields.title ?? '';
+    const summaryValue = args.summary ?? fields.summary ?? '';
+    const missingRequired = [];
+    for (const requiredField of Array.isArray(spec.requiredColumns) ? spec.requiredColumns : []) {
+        const key = String(requiredField || '').trim();
+        if (!key) {
+            continue;
+        }
+        const value = key === 'title'
+            ? titleValue
+            : key === 'summary'
+                ? summaryValue
+                : fields[key];
+        if (!normalizeText(toDisplayScalar(value))) {
+            missingRequired.push(key);
+        }
+    }
+    return {
+        payload: {
+            type: String(spec.id || '').trim().toLowerCase(),
+            title: normalizeText(titleValue),
+            summary: normalizeText(summaryValue),
+            fields,
+            links: Array.isArray(args.links) ? args.links : [],
+            evidence_seqs: Array.isArray(args.evidence_seqs) ? args.evidence_seqs : [],
+            evidence_seq_range: args.evidence_seq_range && typeof args.evidence_seq_range === 'object'
+                ? args.evidence_seq_range
+                : null,
+        },
+        missingRequired,
+    };
+}
+
 async function extractNodesWithLLM(context, settings, schema, messageBatch) {
     const messages = (Array.isArray(messageBatch) ? messageBatch : [])
         .map(item => ({
@@ -1967,88 +2190,34 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
                     type: String(item?.id || ''),
                     table_name: String(item?.tableName || ''),
                     fields: Array.isArray(item?.tableColumns) ? item.tableColumns : [],
+                    required_fields: Array.isArray(item?.requiredColumns) ? item.requiredColumns : [],
+                    force_update: Boolean(item?.forceUpdate),
                 })),
                 messages,
             }),
             includeCharacterCard: true,
             promptPresetName,
         });
-        const tools = [
-            {
-                type: 'function',
-                function: {
-                    name: 'luker_rpg_extract_upsert',
-                    description: 'Emit one semantic node upsert.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            type: { type: 'string' },
-                            title: { type: 'string' },
-                            summary: { type: 'string' },
-                            fields: {
-                                type: 'object',
-                                additionalProperties: true,
-                            },
-                            evidence_seqs: {
-                                type: 'array',
-                                items: { type: 'integer' },
-                            },
-                            evidence_seq_range: {
-                                type: 'object',
-                                properties: {
-                                    from_seq: { type: 'integer' },
-                                    to_seq: { type: 'integer' },
-                                },
-                                additionalProperties: false,
-                            },
-                            links: {
-                                type: 'array',
-                                items: {
-                                    type: 'object',
-                                    properties: {
-                                        target_type: { type: 'string' },
-                                        target_title: { type: 'string' },
-                                        target_summary: { type: 'string' },
-                                        relation: { type: 'string' },
-                                        direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
-                                    },
-                                    required: ['target_title'],
-                                    additionalProperties: true,
-                                },
-                            },
-                        },
-                        required: ['type'],
-                        additionalProperties: true,
-                    },
-                },
-            },
-            {
-                type: 'function',
-                function: {
-                    name: 'luker_rpg_extract_done',
-                    description: 'Signal extraction completion.',
-                    parameters: {
-                        type: 'object',
-                        properties: {
-                            note: { type: 'string' },
-                        },
-                        additionalProperties: false,
-                    },
-                },
-            },
-        ];
-        const allowedNames = new Set(['luker_rpg_extract_upsert', 'luker_rpg_extract_done']);
+        const { tools, specByToolName } = buildDynamicExtractTools(schema);
+        const allowedNames = new Set(['luker_rpg_extract_done', ...specByToolName.keys()]);
         const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(
             resolvedApiPresetName,
             String(context?.chatCompletionSettings?.chat_completion_source || ''),
         );
         const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+        const forceUpdateTypes = new Set(
+            schema
+                .filter(item => item && typeof item === 'object' && item.forceUpdate)
+                .map(item => String(item.id || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
         let validatedUpserts = [];
+        let retryReason = '';
         for (let attempt = 0; attempt <= semanticRetries; attempt++) {
             const reminder = attempt > 0
                 ? [{
                     role: 'user',
-                    content: 'Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one luker_rpg_extract_upsert and exactly one final luker_rpg_extract_done as the last call.',
+                    content: `Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one type tool call and exactly one final luker_rpg_extract_done as the last call.${retryReason ? ` Fix: ${retryReason}` : ''}`,
                 }]
                 : [];
             const calls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
@@ -2068,13 +2237,44 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
                 continue;
             }
             if (names[names.length - 1] !== 'luker_rpg_extract_done') {
+                retryReason = 'luker_rpg_extract_done must be the last call.';
                 continue;
             }
-            const upserts = calls
-                .filter(call => String(call?.name || '') === 'luker_rpg_extract_upsert')
-                .map(call => call.args)
-                .filter(item => item && typeof item === 'object' && String(item.type || '').trim());
+            const upsertCalls = calls.filter(call => specByToolName.has(String(call?.name || '')));
+            if (upsertCalls.length < 1) {
+                retryReason = 'No semantic type tool call found.';
+                continue;
+            }
+            const upserts = [];
+            const calledTypes = new Set();
+            let invalid = false;
+            for (const call of upsertCalls) {
+                const toolName = String(call?.name || '');
+                const spec = specByToolName.get(toolName);
+                if (!spec) {
+                    continue;
+                }
+                const mapped = buildUpsertFromDynamicToolCall(call, spec);
+                if (mapped.missingRequired.length > 0) {
+                    invalid = true;
+                    retryReason = `Type "${spec.id}" missing required columns: ${mapped.missingRequired.join(', ')}.`;
+                    break;
+                }
+                if (mapped.payload) {
+                    calledTypes.add(String(spec.id || '').trim().toLowerCase());
+                    upserts.push(mapped.payload);
+                }
+            }
+            if (invalid) {
+                continue;
+            }
+            const missingForceTypes = [...forceUpdateTypes].filter(typeId => !calledTypes.has(typeId));
+            if (missingForceTypes.length > 0) {
+                retryReason = `Missing force-update type tool calls: ${missingForceTypes.join(', ')}.`;
+                continue;
+            }
             if (upserts.length < 1) {
+                retryReason = 'No valid upsert payload found.';
                 continue;
             }
             validatedUpserts = upserts;
@@ -2143,7 +2343,14 @@ function upsertSemanticNode(store, item) {
     }
 
     if (!title) {
-        return null;
+        const fallbackName = normalizeText(
+            item?.fields?.name
+            || item?.fields?.id
+            || item?.fields?.key
+            || item?.fields?.label
+            || '',
+        );
+        title = fallbackName || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
     }
     const normalizedKey = `${type}::${title.toLowerCase()}`;
     let target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
@@ -2380,7 +2587,7 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
     for (const item of upserts) {
         const type = String(item?.type || 'semantic').toLowerCase();
         const title = normalizeText(item?.title || '');
-        if (type !== 'event' && !title) {
+        if (!type) {
             continue;
         }
         const evidence = buildEvidenceSeqRange(item, [frame]);
@@ -2767,6 +2974,8 @@ async function chooseRecallRoute(context, settings, recallState) {
                     id: item.id,
                     table_name: item.tableName,
                     table_columns: item.tableColumns,
+                    required_columns: item.requiredColumns,
+                    force_update: Boolean(item.forceUpdate),
                     always_inject: Boolean(item.alwaysInject),
                     compression_mode: String(item?.compression?.mode || 'none'),
                 })),
@@ -3162,6 +3371,9 @@ function getTableCellValueFromNode(node, columnName) {
         return '';
     }
     if (key === 'last_update_seq' || key === 'last_update_turn') {
+        return String(node.seqTo ?? '');
+    }
+    if (key === 'seq_to' || key === 'turn_to' || key === 'seq') {
         return String(node.seqTo ?? '');
     }
     if (structured[key] !== undefined) {
@@ -4866,6 +5078,8 @@ function getSchemaTypeTemplate(index = 1) {
         level: LEVEL.SEMANTIC,
         extractHint: '',
         keywords: [],
+        requiredColumns: [],
+        forceUpdate: false,
         alwaysInject: false,
         compression: {
             mode: 'none',
@@ -5266,7 +5480,7 @@ function renderNodeTypeSchemaCard(spec, index) {
     const summarizeInstruction = String(spec?.compression?.summarizeInstruction || '');
     const cardTitle = String(spec?.label || `Type ${index + 1}`).trim();
     const tableName = String(spec?.tableName || spec?.id || '').trim();
-    const cardClass = `mode-${mode}${spec.alwaysInject ? ' is-always' : ''}`;
+    const cardClass = `mode-${mode}${spec.alwaysInject ? ' is-always' : ''}${spec.forceUpdate ? ' is-force' : ''}`;
     return `
 <div class="luker-schema-card ${cardClass}" data-index="${index}">
     <div class="luker-schema-card-header">
@@ -5277,6 +5491,7 @@ function renderNodeTypeSchemaCard(spec, index) {
         <div class="luker-schema-badges">
             <span class="luker-schema-badge">${escapeHtml(i18nFormat('mode: ${0}', mode))}</span>
             ${spec.alwaysInject ? `<span class="luker-schema-badge">${escapeHtml(i18n('always inject'))}</span>` : ''}
+            ${spec.forceUpdate ? `<span class="luker-schema-badge">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}</span>` : ''}
         </div>
     </div>
     <div class="luker-schema-grid-2">
@@ -5295,8 +5510,14 @@ function renderNodeTypeSchemaCard(spec, index) {
             <input data-field="alwaysInject" type="checkbox" ${spec.alwaysInject ? 'checked' : ''} />
         </label>
     </div>
+    <label class="luker-schema-checkbox">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}
+        <input data-field="forceUpdate" type="checkbox" ${spec.forceUpdate ? 'checked' : ''} />
+    </label>
     <label>${escapeHtml(i18n('Table Columns (comma separated)'))}
         <input data-field="tableColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.tableColumns))}" />
+    </label>
+    <label>${escapeHtml(i18n('Required Columns (comma separated)'))}
+        <input data-field="requiredColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.requiredColumns))}" />
     </label>
     <label>${escapeHtml(i18n('Keywords (comma separated)'))}
         <input data-field="keywords" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.keywords))}" />
@@ -5356,9 +5577,11 @@ function readSchemaCard(card) {
         label: String(root.find('[data-field="label"]').val() || '').trim(),
         tableName: String(root.find('[data-field="tableName"]').val() || '').trim(),
         tableColumns: splitCommaList(root.find('[data-field="tableColumns"]').val()),
+        requiredColumns: splitCommaList(root.find('[data-field="requiredColumns"]').val()),
         level: LEVEL.SEMANTIC,
         extractHint: String(root.find('[data-field="extractHint"]').val() || '').trim(),
         keywords: splitCommaList(root.find('[data-field="keywords"]').val()),
+        forceUpdate: Boolean(root.find('[data-field="forceUpdate"]').prop('checked')),
         alwaysInject: Boolean(root.find('[data-field="alwaysInject"]').prop('checked')),
         compression: {
             mode: String(root.find('[data-field="compression.mode"]').val() || 'none').trim(),
@@ -5396,11 +5619,13 @@ function updateSchemaSummary(root, schema) {
     const normalized = normalizeNodeTypeSchema(schema);
     const total = normalized.length;
     const alwaysInject = normalized.filter(item => item.alwaysInject).length;
+    const forceUpdate = normalized.filter(item => item.forceUpdate).length;
     const hierarchical = normalized.filter(item => String(item?.compression?.mode || '') === 'hierarchical').length;
     root.find('#luker_rpg_memory_schema_summary').text(i18nFormat(
-        'Types: ${0} | Always Inject: ${1} | Hierarchical: ${2}',
+        'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}',
         total,
         alwaysInject,
+        forceUpdate,
         hierarchical,
     ));
 }
