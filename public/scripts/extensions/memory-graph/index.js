@@ -230,6 +230,8 @@ const defaultSettings = {
     extractSystemPrompt: DEFAULT_EXTRACT_SYSTEM_PROMPT,
     extractResponseLength: 360,
     extractBatchTurns: 1,
+    extractContextTurns: 2,
+    recallQueryMessages: 2,
     recentRawTurns: 5,
     lorebookProjectionEnabled: true,
     lorebookNameOverride: '',
@@ -257,6 +259,8 @@ function registerLocaleData() {
         'Project recall output to chat lorebook before WI scan': '在世界书扫描前将召回结果投影到聊天 Lorebook',
         'Exclude latest N messages from memory injection': '记忆注入排除最近 N 条消息',
         'Recall max iterations': '召回最大轮数',
+        'Extract context assistant turns': '写入上下文 Assistant 楼层数',
+        'Recall query recent messages': '召回查询最近消息条数',
         'Manual rebuild batch assistant turns': '手动重建每轮 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
         'Extract Table Fill Prompt': '抽取填表提示词',
@@ -444,6 +448,8 @@ function registerLocaleData() {
         'Project recall output to chat lorebook before WI scan': '在世界書掃描前將召回結果投影到聊天 Lorebook',
         'Exclude latest N messages from memory injection': '記憶注入排除最近 N 條訊息',
         'Recall max iterations': '召回最大輪數',
+        'Extract context assistant turns': '寫入上下文 Assistant 樓層數',
+        'Recall query recent messages': '召回查詢最近訊息條數',
         'Manual rebuild batch assistant turns': '手動重建每輪 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
         'Extract Table Fill Prompt': '抽取填表提示詞',
@@ -804,10 +810,20 @@ function ensureSettings() {
         Math.min(6, Math.floor(Number(extension_settings[MODULE_NAME].recallMaxIterations) || defaultSettings.recallMaxIterations)),
     );
     const extractBatchTurnsRaw = Number(extension_settings[MODULE_NAME].extractBatchTurns);
+    const extractContextTurnsRaw = Number(extension_settings[MODULE_NAME].extractContextTurns);
+    const recallQueryMessagesRaw = Number(extension_settings[MODULE_NAME].recallQueryMessages);
     const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
     extension_settings[MODULE_NAME].extractBatchTurns = Math.max(
         1,
         Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : defaultSettings.extractBatchTurns),
+    );
+    extension_settings[MODULE_NAME].extractContextTurns = Math.max(
+        1,
+        Math.min(32, Math.floor(Number.isFinite(extractContextTurnsRaw) ? extractContextTurnsRaw : defaultSettings.extractContextTurns)),
+    );
+    extension_settings[MODULE_NAME].recallQueryMessages = Math.max(
+        1,
+        Math.min(64, Math.floor(Number.isFinite(recallQueryMessagesRaw) ? recallQueryMessagesRaw : defaultSettings.recallQueryMessages)),
     );
     extension_settings[MODULE_NAME].recentRawTurns = Math.max(
         0,
@@ -2640,25 +2656,53 @@ async function runCompressionLoop(context, store, settings) {
     return await compressSemanticTypesIfNeeded(context, store, settings);
 }
 
-async function processPendingMessageFrameWithLLM(context, store, settings, schema, frame) {
-    const extractBatch = [];
-    const lastUserText = normalizeText(frame?.last_user_mes || '');
-    if (lastUserText) {
-        extractBatch.push({
-            seq: Number(frame?.seq || 0),
-            is_user: true,
-            name: String(frame?.last_user_name || ''),
-            mes: lastUserText,
-            send_date: String(frame?.last_user_send_date || ''),
+function buildExtractBatchFromFrames(frames, frameIndex, contextTurns = 1) {
+    const source = Array.isArray(frames) ? frames : [];
+    const currentIndex = Math.max(0, Math.min(source.length - 1, Math.floor(Number(frameIndex) || 0)));
+    const windowSize = Math.max(1, Math.min(32, Math.floor(Number(contextTurns) || 1)));
+    const startIndex = Math.max(0, currentIndex - windowSize + 1);
+    const batch = [];
+
+    for (let i = startIndex; i <= currentIndex; i++) {
+        const frame = source[i];
+        if (!frame || typeof frame !== 'object') {
+            continue;
+        }
+        const seq = Number(frame?.seq || 0);
+        const lastUserText = normalizeText(frame?.last_user_mes || '');
+        if (lastUserText) {
+            batch.push({
+                seq,
+                is_user: true,
+                name: String(frame?.last_user_name || ''),
+                mes: lastUserText,
+                send_date: String(frame?.last_user_send_date || ''),
+            });
+        }
+        const assistantText = normalizeText(frame?.mes || '');
+        if (!assistantText) {
+            continue;
+        }
+        batch.push({
+            seq,
+            is_user: Boolean(frame?.is_user),
+            name: String(frame?.name || ''),
+            mes: assistantText,
+            send_date: String(frame?.send_date || ''),
         });
     }
-    extractBatch.push({
-        seq: Number(frame?.seq || 0),
-        is_user: Boolean(frame?.is_user),
-        name: String(frame?.name || ''),
-        mes: String(frame?.mes || ''),
-        send_date: String(frame?.send_date || ''),
-    });
+
+    return batch;
+}
+
+async function processPendingMessageFrameWithLLM(context, store, settings, schema, frames, frameIndex) {
+    const frame = Array.isArray(frames) ? frames[frameIndex] : null;
+    if (!frame || typeof frame !== 'object') {
+        return false;
+    }
+    const extractBatch = [];
+    const contextTurns = Math.max(1, Math.min(32, Number(settings?.extractContextTurns || 1)));
+    extractBatch.push(...buildExtractBatchFromFrames(frames, frameIndex, contextTurns));
     const upserts = await extractNodesWithLLM(context, settings, schema, extractBatch);
     if (upserts.length === 0) {
         return false;
@@ -2670,7 +2714,7 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
         if (!type) {
             continue;
         }
-        const evidence = buildEvidenceSeqRange(item, [frame]);
+        const evidence = buildEvidenceSeqRange(item, extractBatch);
         const targetNode = upsertSemanticNode(store, {
             type,
             title,
@@ -2733,8 +2777,9 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
 
     const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
     let extractedAny = false;
-    for (const frame of frames.slice(beginSeq - 1)) {
-        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frame);
+    for (let i = beginSeq - 1; i < frames.length; i++) {
+        const frame = frames[i];
+        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frames, i);
         if (!success) {
             break;
         }
@@ -2833,9 +2878,17 @@ function getSortedNodesByRecency(nodes) {
         .sort(compareNodesByRecency);
 }
 
-function getRecallQueryBundle(payload, context) {
+function getRecallQueryBundle(payload, context, settings = null) {
     const payloadMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : null;
     const source = payloadMessages || context.chat || [];
+    const recentLimit = Math.max(
+        1,
+        Math.min(
+            64,
+            Math.floor(Number(settings?.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
+        ),
+    );
+    const recentMessages = [];
     let lastUser = '';
     let lastAssistant = '';
 
@@ -2844,23 +2897,38 @@ function getRecallQueryBundle(payload, context) {
         if (!message) {
             continue;
         }
+        if (message.is_system) {
+            continue;
+        }
+        const text = normalizeText(message.mes || '');
+        if (text && recentMessages.length < recentLimit) {
+            recentMessages.push({
+                role: message.is_user ? 'user' : 'assistant',
+                text,
+            });
+        }
         if (!lastUser && message.is_user) {
-            lastUser = String(message.mes || '');
+            lastUser = text;
             continue;
         }
         if (!lastAssistant && !message.is_user) {
-            lastAssistant = String(message.mes || '');
+            lastAssistant = text;
             continue;
         }
-        if (lastUser && lastAssistant) {
+        if (lastUser && lastAssistant && recentMessages.length >= recentLimit) {
             break;
         }
     }
+    recentMessages.reverse();
     const wiHints = extractWorldInfoHints(payload);
-    const fullText = normalizeText([lastUser, lastAssistant, ...wiHints].join('\n'));
+    const recentText = recentMessages
+        .map(item => `${item.role}: ${item.text}`)
+        .join('\n');
+    const fullText = normalizeText([recentText, ...wiHints].join('\n'));
     return {
         last_user: normalizeText(lastUser),
         last_assistant: normalizeText(lastAssistant),
+        recent_messages: recentMessages,
         wi_hints: wiHints,
         fullText,
     };
@@ -3097,6 +3165,7 @@ async function chooseRecallRoute(context, settings, recallState) {
                 constraints: {
                     recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
                     injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
+                    recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
                 },
             }),
             apiPresetName: settings.recallApiPresetName || '',
@@ -3286,6 +3355,7 @@ async function chooseFocusNodes(context, settings, recallState) {
                     require_event_continuity: true,
                     recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
                     injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
+                    recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
                     min_event_nodes_if_available: 2,
                 },
             }),
@@ -3670,7 +3740,7 @@ async function runLLMDrivenRecall(context, store, payload) {
         return { selectedNodes: [], alwaysInjectNodes: [], trace: [], query: '' };
     }
 
-    const queryBundle = getRecallQueryBundle(payload, context);
+    const queryBundle = getRecallQueryBundle(payload, context, settings);
     const query = normalizeText(queryBundle.fullText || '');
     const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings);
     const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes);
@@ -6056,6 +6126,12 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Tool-call retries'))}
         <input id="${popupId}_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Number(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))}" />
     </label>
+    <label>${escapeHtml(i18n('Extract context assistant turns'))}
+        <input id="${popupId}_extract_context_turns" class="text_pole" type="number" min="1" max="32" step="1" value="${Math.max(1, Math.min(32, Number(settings.extractContextTurns || defaultSettings.extractContextTurns)))}" />
+    </label>
+    <label>${escapeHtml(i18n('Recall query recent messages'))}
+        <input id="${popupId}_recall_query_messages" class="text_pole" type="number" min="1" max="64" step="1" value="${Math.max(1, Math.min(64, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages)))}" />
+    </label>
     <label>${escapeHtml(i18n('Manual rebuild batch assistant turns'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
     </label>
@@ -6084,6 +6160,8 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         popupRoot.find(`#${popupId}_recent_raw_turns`).val(String(Math.max(0, Number(source.recentRawTurns ?? defaultSettings.recentRawTurns))));
         popupRoot.find(`#${popupId}_recall_iterations`).val(String(Math.max(2, Math.min(6, Number(source.recallMaxIterations ?? defaultSettings.recallMaxIterations)))));
         popupRoot.find(`#${popupId}_tool_retries`).val(String(Math.max(0, Math.min(10, Number(source.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))));
+        popupRoot.find(`#${popupId}_extract_context_turns`).val(String(Math.max(1, Math.min(32, Number(source.extractContextTurns ?? defaultSettings.extractContextTurns)))));
+        popupRoot.find(`#${popupId}_recall_query_messages`).val(String(Math.max(1, Math.min(64, Number(source.recallQueryMessages ?? defaultSettings.recallQueryMessages)))));
         popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(1, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
         popupRoot.find(`#${popupId}_extract_system_prompt`).val(String(source.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
@@ -6098,6 +6176,8 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             recentRawTurnsValue: Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val()),
             recallIterationsValue: Number(popupRoot.find(`#${popupId}_recall_iterations`).val()),
             toolRetriesValue: Number(popupRoot.find(`#${popupId}_tool_retries`).val()),
+            extractContextTurnsValue: Number(popupRoot.find(`#${popupId}_extract_context_turns`).val()),
+            recallQueryMessagesValue: Number(popupRoot.find(`#${popupId}_recall_query_messages`).val()),
             extractBatchTurnsValue: Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val()),
             extractSystemPromptValue: String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim(),
             recallRoutePromptValue: String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim(),
@@ -6149,6 +6229,14 @@ async function openAdvancedSettingsPopup(context, settings, root) {
     settings.toolCallRetryMax = Math.max(
         0,
         Math.min(10, Math.floor(Number.isFinite(values.toolRetriesValue) ? values.toolRetriesValue : defaultSettings.toolCallRetryMax)),
+    );
+    settings.extractContextTurns = Math.max(
+        1,
+        Math.min(32, Math.floor(Number.isFinite(values.extractContextTurnsValue) ? values.extractContextTurnsValue : defaultSettings.extractContextTurns)),
+    );
+    settings.recallQueryMessages = Math.max(
+        1,
+        Math.min(64, Math.floor(Number.isFinite(values.recallQueryMessagesValue) ? values.recallQueryMessagesValue : defaultSettings.recallQueryMessages)),
     );
     settings.extractBatchTurns = Math.max(
         1,
