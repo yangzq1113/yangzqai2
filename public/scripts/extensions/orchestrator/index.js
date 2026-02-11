@@ -1306,8 +1306,6 @@ async function onWorldInfoFinalized(payload) {
     orchInFlight = true;
 
     try {
-        updateUiStatus(i18n('Orchestrator running...'));
-        showRunInfoToast(i18n('Orchestrator running...'));
         const profile = getEffectiveProfile(context);
         const messages = structuredClone(getCoreMessages(payload));
         if (messages.length === 0) {
@@ -1315,6 +1313,8 @@ async function onWorldInfoFinalized(payload) {
             clearLastCapsuleMetadata(context);
             return;
         }
+        updateUiStatus(i18n('Orchestrator running...'));
+        showRunInfoToast(i18n('Orchestrator running...'));
 
         const wiActivated = summarizeActivatedEntries(payload);
         const wiHint = settings.includeWorldInfoSummary ? wiActivated.slice(0, 5).join('; ') : '';
