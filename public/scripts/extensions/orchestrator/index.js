@@ -1184,13 +1184,6 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
     return lines.join('\n');
 }
 
-function buildWISummary(payload) {
-    return [
-        String(payload?.worldInfoBefore || '').trim(),
-        String(payload?.worldInfoAfter || '').trim(),
-    ].filter(Boolean).join('\n');
-}
-
 function summarizeActivatedEntries(payload) {
     const result = [];
     const allActivated = payload?.worldInfoResolution?.allActivatedEntries;
@@ -1228,18 +1221,8 @@ function buildCapsuleText(capsule, settings) {
     if (customInstruction) {
         lines.push(customInstruction);
     }
-    lines.push(`<luker_orchestration phase="${escapeXml(capsule.phase)}" trigger="${escapeXml(capsule.trigger)}" profile_source="${escapeXml(capsule.profile_source)}" profile_key="${escapeXml(capsule.profile_key)}">`);
+    lines.push(`<luker_orchestration phase="${escapeXml(capsule.phase)}" trigger="${escapeXml(capsule.trigger)}">`);
     lines.push('  <guidance_policy>Use this as high-priority planning context for the next roleplay reply.</guidance_policy>');
-    if (capsule.wi_summary) {
-        lines.push(`  <wi_summary>${escapeXml(capsule.wi_summary)}</wi_summary>`);
-    }
-    if (Array.isArray(capsule.wi_activated) && capsule.wi_activated.length > 0) {
-        lines.push('  <wi_activated>');
-        for (const item of capsule.wi_activated) {
-            lines.push(`    <entry>${escapeXml(item)}</entry>`);
-        }
-        lines.push('  </wi_activated>');
-    }
     if (capsule.final_stage) {
         lines.push(`  <final_stage id="${escapeXml(capsule.final_stage.id)}" mode="${escapeXml(capsule.final_stage.mode)}">`);
         for (const node of capsule.final_stage.nodes || []) {
@@ -1253,22 +1236,13 @@ function buildCapsuleText(capsule, settings) {
     return lines.join('\n').trim();
 }
 
-function buildCapsule(payload, stageOutputs, profile, options = {}) {
+function buildCapsule(payload, stageOutputs, options = {}) {
     const finalStage = getFinalStageSnapshot(stageOutputs);
     const capsule = {
         phase: options.phase || 'final',
         trigger: payload?.type || 'normal',
-        profile_source: profile?.source || 'global',
-        profile_key: profile?.key || 'global',
         final_stage: finalStage,
     };
-
-    if (extension_settings[MODULE_NAME].includeWorldInfoSummary && options.wiSummary) {
-        capsule.wi_summary = String(options.wiSummary || '').trim();
-    }
-    if (Array.isArray(options.wiActivated) && options.wiActivated.length > 0) {
-        capsule.wi_activated = options.wiActivated.slice(0, 10);
-    }
 
     const settings = extension_settings[MODULE_NAME];
     return buildCapsuleText(capsule, settings);
@@ -1313,16 +1287,13 @@ async function onWorldInfoFinalized(payload) {
             return;
         }
 
-        const wiSummary = buildWISummary(payload);
         const wiActivated = summarizeActivatedEntries(payload);
-        const wiHint = wiActivated.slice(0, 5).join('; ');
+        const wiHint = settings.includeWorldInfoSummary ? wiActivated.slice(0, 5).join('; ') : '';
 
         const finalRun = await runOrchestration(context, payload, messages, profile, wiHint);
 
-        const capsuleText = buildCapsule(payload, finalRun.stageOutputs || [], profile, {
+        const capsuleText = buildCapsule(payload, finalRun.stageOutputs || [], {
             phase: 'final',
-            wiSummary,
-            wiActivated,
         });
         injectCapsule(context, capsuleText);
         saveLastCapsuleMetadata(context, capsuleText, payload, profile);
