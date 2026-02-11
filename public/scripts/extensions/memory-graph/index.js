@@ -208,6 +208,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Length guide for summary: target around 300 Chinese characters (soft limit).',
     'Never paste long dialogue, narration, or quotes into summary.',
     'If information is large, split into multiple focused node upserts instead of one oversized summary.',
+    'For non-event types, summary is optional unless schema requires it.',
     'Title policy: non-event nodes should use short stable human-readable titles.',
     'Reuse the exact same title for the same ongoing entity/thread/location to keep updates merged.',
     'Event titles are assigned by system in strict sequence labels (Summary N), so you may omit event title.',
@@ -289,7 +290,7 @@ function registerLocaleData() {
         'View Last Injection': '查看最近注入',
         'No recall injection result yet.': '当前还没有召回注入结果。',
         'Memory recall running...': '记忆召回进行中...',
-        'Memory extraction running...': '记忆图更新进行中...',
+        'Memory graph update running...': '记忆图更新进行中...',
         'No active chat selected.': '未选择有效聊天。',
         'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
         'Import': '导入',
@@ -478,7 +479,7 @@ function registerLocaleData() {
         'View Last Injection': '查看最近注入',
         'No recall injection result yet.': '目前還沒有召回注入結果。',
         'Memory recall running...': '記憶召回進行中...',
-        'Memory extraction running...': '記憶圖更新進行中...',
+        'Memory graph update running...': '記憶圖更新進行中...',
         'No active chat selected.': '未選擇有效聊天。',
         'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
         'Import': '匯入',
@@ -725,7 +726,7 @@ function normalizeNodeTypeSchema(schema) {
                 tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
                 tableColumns: Array.isArray(item.tableColumns)
                     ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
-                    : ['title', 'summary'],
+                    : ['title'],
                 level: String(item.level || LEVEL.SEMANTIC),
                 extractHint: String(item.extractHint || '').trim(),
                 keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
@@ -2136,8 +2137,10 @@ function buildDynamicExtractTools(schema = []) {
                 .filter(([key, value]) => key && value && filteredFields.includes(key)),
         );
         const fieldSet = new Set(filteredFields);
+        const needsSummaryField = isEventType
+            || fieldSet.has('summary')
+            || filteredRequiredColumns.includes('summary');
         const properties = {
-            summary: { type: 'string' },
             evidence_seqs: {
                 type: 'array',
                 items: { type: 'integer' },
@@ -2168,6 +2171,9 @@ function buildDynamicExtractTools(schema = []) {
         };
         if (!isEventType) {
             properties.title = { type: 'string' };
+        }
+        if (needsSummaryField) {
+            properties.summary = { type: 'string' };
         }
         for (const field of fieldSet) {
             if (properties[field]) {
@@ -4207,7 +4213,7 @@ function scheduleExtraction(context) {
                 refreshUiStats();
                 return;
             }
-            showRuntimeInfoToast(i18n('Memory extraction running...'));
+            showRuntimeInfoToast(i18n('Memory graph update running...'));
             const extracted = await runExtractionForStore(context, store);
             if (extracted) {
                 store.updatedAt = Date.now();
@@ -5411,7 +5417,7 @@ function getSchemaTypeTemplate(index = 1) {
         id: `custom_${index}`,
         label: `Custom Type ${index}`,
         tableName: `custom_table_${index}`,
-        tableColumns: ['title', 'summary'],
+        tableColumns: ['title'],
         level: LEVEL.SEMANTIC,
         extractHint: '',
         keywords: [],
@@ -6363,7 +6369,7 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
-        showRuntimeInfoToast(i18n('Memory extraction running...'));
+        showRuntimeInfoToast(i18n('Memory graph update running...'));
         try {
             const store = await rebuildStoreFromCurrentChat(context);
             if (!store) {
