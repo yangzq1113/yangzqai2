@@ -163,6 +163,249 @@ function sortPersonas(personas) {
     return personas;
 }
 
+function isPersonaVisibleForCurrentConnection(avatarId) {
+    const descriptor = power_user.persona_descriptions?.[avatarId];
+    const connections = Array.isArray(descriptor?.connections) ? descriptor.connections : [];
+
+    if (connections.length === 0) {
+        return true;
+    }
+
+    const currentConnection = getCurrentConnectionObj();
+    if (!currentConnection?.id) {
+        return false;
+    }
+
+    return connections.some(connection => connection?.type === currentConnection.type && connection?.id === currentConnection.id);
+}
+
+function getOrCreatePersonaDescriptorForAvatar(avatarId) {
+    let descriptor = power_user.persona_descriptions[avatarId];
+    if (!descriptor || typeof descriptor !== 'object') {
+        descriptor = {
+            description: '',
+            position: persona_description_positions.IN_PROMPT,
+            depth: DEFAULT_DEPTH,
+            role: DEFAULT_ROLE,
+            lorebook: '',
+            connections: [],
+            title: '',
+        };
+        power_user.persona_descriptions[avatarId] = descriptor;
+    }
+
+    if (!Array.isArray(descriptor.connections)) {
+        descriptor.connections = [];
+    }
+
+    return descriptor;
+}
+
+function getCharacterByAvatar(avatarId) {
+    if (!avatarId) {
+        return null;
+    }
+
+    return characters.find(character => character?.avatar === avatarId) ?? null;
+}
+
+function getDedicatedPersonaEntriesFromCharacter(character) {
+    const entries = character?.data?.extensions?.luker?.dedicated_personas;
+    return Array.isArray(entries) ? entries : [];
+}
+
+function buildDedicatedPersonaCardEntry(avatarId) {
+    if (!avatarId || !power_user.personas?.[avatarId]) {
+        return null;
+    }
+
+    const descriptor = power_user.persona_descriptions?.[avatarId] ?? {};
+    return {
+        avatar: avatarId,
+        name: power_user.personas[avatarId],
+        description: descriptor.description ?? '',
+        position: Number.isInteger(Number(descriptor.position)) ? Number(descriptor.position) : persona_description_positions.IN_PROMPT,
+        depth: Number.isInteger(Number(descriptor.depth)) ? Number(descriptor.depth) : DEFAULT_DEPTH,
+        role: Number.isInteger(Number(descriptor.role)) ? Number(descriptor.role) : DEFAULT_ROLE,
+        lorebook: descriptor.lorebook ?? '',
+        title: descriptor.title ?? '',
+    };
+}
+
+async function syncDedicatedPersonasToCharacter(characterAvatar) {
+    const character = getCharacterByAvatar(characterAvatar);
+    if (!character) {
+        return;
+    }
+
+    const connectedPersonas = getConnectedPersonas(characterAvatar, 'character');
+    const dedicatedPersonas = connectedPersonas
+        .map(avatarId => buildDedicatedPersonaCardEntry(avatarId))
+        .filter(Boolean);
+
+    const currentEntries = getDedicatedPersonaEntriesFromCharacter(character);
+    if (JSON.stringify(currentEntries) === JSON.stringify(dedicatedPersonas)) {
+        return;
+    }
+
+    const nextExtensions = structuredClone(character?.data?.extensions ?? {});
+    nextExtensions.luker = nextExtensions.luker && typeof nextExtensions.luker === 'object'
+        ? nextExtensions.luker
+        : {};
+
+    if (dedicatedPersonas.length > 0) {
+        nextExtensions.luker.dedicated_personas = dedicatedPersonas;
+    } else {
+        delete nextExtensions.luker.dedicated_personas;
+    }
+
+    if (Object.keys(nextExtensions.luker).length === 0) {
+        delete nextExtensions.luker;
+    }
+
+    character.data = character.data || {};
+    character.data.extensions = nextExtensions;
+
+    const mergeResponse = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            avatar: character.avatar,
+            data: { extensions: nextExtensions },
+        }),
+    });
+
+    if (!mergeResponse.ok) {
+        console.error('Failed to sync dedicated personas to character card', mergeResponse.statusText);
+    }
+}
+
+function buildDedicatedPersonaAvatarId(characterAvatar, personaName = '') {
+    const characterPart = String(characterAvatar || 'character')
+        .replace(/\.png$/i, '')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 40) || 'character';
+    const personaPart = String(personaName || 'persona')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 24) || 'persona';
+    return `${characterPart}__${personaPart}.png`;
+}
+
+function resolveDedicatedPersonaAvatarId(characterAvatar, entry, usedAvatars) {
+    const preferred = String(entry?.avatar ?? '').trim();
+    let avatarId = preferred || buildDedicatedPersonaAvatarId(characterAvatar, entry?.name);
+    if (!avatarId.endsWith('.png')) {
+        avatarId = `${avatarId}.png`;
+    }
+
+    if (!usedAvatars.has(avatarId) && !power_user.personas?.[avatarId]) {
+        usedAvatars.add(avatarId);
+        return avatarId;
+    }
+
+    if (!usedAvatars.has(avatarId) && power_user.personas?.[avatarId]) {
+        usedAvatars.add(avatarId);
+        return avatarId;
+    }
+
+    let suffix = 1;
+    const base = avatarId.replace(/\.png$/i, '');
+    while (usedAvatars.has(`${base}_${suffix}.png`) || power_user.personas?.[`${base}_${suffix}.png`]) {
+        suffix++;
+    }
+    avatarId = `${base}_${suffix}.png`;
+    usedAvatars.add(avatarId);
+    return avatarId;
+}
+
+async function ensureDedicatedPersonasFromCharacter(character) {
+    if (!character?.avatar) {
+        return;
+    }
+
+    const dedicatedEntries = getDedicatedPersonaEntriesFromCharacter(character);
+    if (dedicatedEntries.length === 0) {
+        return;
+    }
+
+    let changed = false;
+    const existingAvatars = new Set(await getUserAvatars(false));
+
+    for (const rawEntry of dedicatedEntries) {
+        const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : null;
+        const name = String(entry?.name ?? '').trim();
+        if (!entry || !name) {
+            continue;
+        }
+
+        const avatarId = resolveDedicatedPersonaAvatarId(character.avatar, entry, existingAvatars);
+        if (!power_user.personas?.[avatarId]) {
+            if (!existingAvatars.has(avatarId)) {
+                try {
+                    await uploadUserAvatar(default_user_avatar, avatarId, { render: false });
+                    existingAvatars.add(avatarId);
+                } catch (error) {
+                    console.warn('Failed to create dedicated persona avatar. Skipping.', error);
+                    continue;
+                }
+            }
+
+            initPersona(avatarId, name, String(entry.description ?? ''), String(entry.title ?? ''));
+            changed = true;
+        }
+
+        if (power_user.personas[avatarId] !== name) {
+            power_user.personas[avatarId] = name;
+            changed = true;
+        }
+
+        const descriptor = getOrCreatePersonaDescriptorForAvatar(avatarId);
+        const nextDescription = String(entry.description ?? descriptor.description ?? '');
+        const nextPosition = Number.isInteger(Number(entry.position)) ? Number(entry.position) : (descriptor.position ?? persona_description_positions.IN_PROMPT);
+        const nextDepth = Number.isInteger(Number(entry.depth)) ? Number(entry.depth) : (descriptor.depth ?? DEFAULT_DEPTH);
+        const nextRole = Number.isInteger(Number(entry.role)) ? Number(entry.role) : (descriptor.role ?? DEFAULT_ROLE);
+        const nextLorebook = String(entry.lorebook ?? descriptor.lorebook ?? '');
+        const nextTitle = String(entry.title ?? descriptor.title ?? '');
+
+        if (descriptor.description !== nextDescription) {
+            descriptor.description = nextDescription;
+            changed = true;
+        }
+        if (descriptor.position !== nextPosition) {
+            descriptor.position = nextPosition;
+            changed = true;
+        }
+        if (descriptor.depth !== nextDepth) {
+            descriptor.depth = nextDepth;
+            changed = true;
+        }
+        if (descriptor.role !== nextRole) {
+            descriptor.role = nextRole;
+            changed = true;
+        }
+        if (descriptor.lorebook !== nextLorebook) {
+            descriptor.lorebook = nextLorebook;
+            changed = true;
+        }
+        if (descriptor.title !== nextTitle) {
+            descriptor.title = nextTitle;
+            changed = true;
+        }
+
+        const targetConnection = { type: 'character', id: character.avatar };
+        const hasConnection = descriptor.connections.some(connection =>
+            connection?.type === targetConnection.type && connection?.id === targetConnection.id);
+        if (!hasConnection) {
+            descriptor.connections = [...descriptor.connections, targetConnection];
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        saveSettingsDebounced();
+    }
+}
+
 /** Checks the state of the current search, and adds/removes the search sorting option accordingly */
 function verifyPersonaSearchSortRule() {
     const searchTerm = personasFilter.getFilterData(FILTER_TYPES.PERSONA_SEARCH);
@@ -252,7 +495,8 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         // Before printing the personas, we check if we should enable/disable search sorting
         verifyPersonaSearchSortRule();
 
-        let entities = personasFilter.applyFilters(allEntities);
+        const visibleEntities = allEntities.filter(avatarId => isPersonaVisibleForCurrentConnection(avatarId));
+        let entities = personasFilter.applyFilters(visibleEntities);
         entities = sortPersonas(entities);
 
         const storageKey = 'Personas_PerPage';
@@ -313,9 +557,11 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
  * Uploads an avatar file to the server
  * @param {string} url URL for the avatar file
  * @param {string} [name] Optional name for the avatar file
+ * @param {object} [options]
+ * @param {boolean} [options.render=true] Whether to re-render persona list after upload
  * @returns {Promise} Promise that resolves when the avatar is uploaded
  */
-async function uploadUserAvatar(url, name) {
+async function uploadUserAvatar(url, name, { render = true } = {}) {
     const fetchResult = await fetch(url);
     const blob = await fetchResult.blob();
     const file = new File([blob], 'avatar.png', { type: 'image/png' });
@@ -339,7 +585,7 @@ async function uploadUserAvatar(url, name) {
 
     // Get the actual path from the response
     const data = await response.json();
-    await getUserAvatars(true, data?.path || name);
+    await getUserAvatars(render, data?.path || name);
 }
 
 async function changeUserAvatar(e) {
@@ -711,7 +957,7 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
         customButtons.push({
             text: t`Remove All Connections`,
             result: 2,
-            action: () => {
+            action: async () => {
                 for (const [personaId, description] of Object.entries(power_user.persona_descriptions)) {
                     /** @type {PersonaConnection[]} */
                     const connections = description.connections;
@@ -725,6 +971,9 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
 
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
+                if (targetedChar.type === 'character' && targetedChar.id) {
+                    await syncDedicatedPersonasToCharacter(targetedChar.id);
+                }
                 if (power_user.persona_show_notifications) {
                     const name = targetedChar.type == 'character' ? characters[targetedChar.id]?.name : groups[targetedChar.id]?.name;
                     toastr.info(t`All connections to ${name} have been removed.`, t`Personas Unlocked`);
@@ -975,9 +1224,13 @@ async function unlockPersona(type = 'chat') {
             const connections = power_user.persona_descriptions[user_avatar]?.connections;
             if (connections) {
                 console.log(`Unlocking persona ${user_avatar} from this character ${name2}`);
+                const currentConnection = getCurrentConnectionObj();
                 power_user.persona_descriptions[user_avatar].connections = connections.filter(c => !isPersonaConnectionLocked(c));
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
+                if (currentConnection?.type === 'character' && currentConnection?.id) {
+                    await syncDedicatedPersonasToCharacter(currentConnection.id);
+                }
                 if (power_user.persona_show_notifications && !isPersonaPanelOpen()) {
                     toastr.info(t`Persona ${name1} is now unlocked from character ${name2}.`, t`Persona Unlocked`);
                 }
@@ -1051,6 +1304,9 @@ async function lockPersona(type = 'chat') {
 
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
+                if (newConnection.type === 'character') {
+                    await syncDedicatedPersonasToCharacter(newConnection.id);
+                }
                 if (power_user.persona_show_notifications) {
                     let additional = '';
                     if (unlinkedCharacters.length)
@@ -1096,6 +1352,14 @@ async function deleteUserAvatar() {
     });
 
     if (request.ok) {
+        const descriptor = power_user.persona_descriptions[avatarId];
+        const affectedCharacterAvatars = Array.isArray(descriptor?.connections)
+            ? descriptor.connections
+                .filter(connection => connection?.type === 'character' && connection?.id)
+                .map(connection => connection.id)
+                .filter(onlyUnique)
+            : [];
+
         console.log(`Deleted avatar ${avatarId}`);
         delete power_user.personas[avatarId];
         delete power_user.persona_descriptions[avatarId];
@@ -1112,6 +1376,10 @@ async function deleteUserAvatar() {
         }
 
         saveSettingsDebounced();
+
+        for (const characterAvatar of affectedCharacterAvatars) {
+            await syncDedicatedPersonasToCharacter(characterAvatar);
+        }
 
         // Use the existing mechanism to re-render the persona list and choose the next persona here
         await loadPersonaForCurrentChat({ doRender: true });
@@ -1442,6 +1710,12 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     if (currentChatId === personaLastLoadedChatId) return;
     personaLastLoadedChatId = currentChatId;
 
+    if (!selected_group && Number(this_chid) >= 0 && characters[Number(this_chid)]) {
+        const currentCharacter = characters[Number(this_chid)];
+        await ensureDedicatedPersonasFromCharacter(currentCharacter);
+        await syncDedicatedPersonasToCharacter(currentCharacter.avatar);
+    }
+
     // Cache persona list to check if they exist
     const userAvatars = await getUserAvatars(doRender);
 
@@ -1499,25 +1773,8 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     }
     */
 
-    // Check if we have any persona connected to the current character
-    if (!chatPersona) {
-        const connectedPersonas = getConnectedPersonas();
-
-        if (connectedPersonas.length > 0) {
-            if (connectedPersonas.length === 1) {
-                chatPersona = connectedPersonas[0];
-            } else if (!power_user.persona_allow_multi_connections) {
-                console.warn('More than one persona is connected to this character.Using the first available persona for this chat.');
-                chatPersona = connectedPersonas[0];
-            } else {
-                chatPersona = await askForPersonaSelection(t`Select Persona`,
-                    t`Multiple personas are connected to this character.\nSelect a persona to use for this chat.`,
-                    connectedPersonas, { highlightPersonas: true, targetedChar: getCurrentConnectionObj() });
-            }
-        }
-
-        if (chatPersona) connectType = 'character';
-    }
+    // Dedicated personas are surfaced in the list for this character only.
+    // We intentionally do not auto-switch to keep user control explicit.
 
     // Last check if default persona is set, select it
     if (!chatPersona && power_user.default_persona) {
@@ -1569,10 +1826,17 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
  * @param {string} [characterKey] - The character key to query
  * @returns {string[]} - An array of persona keys that are connected to the given character key
  */
-export function getConnectedPersonas(characterKey = undefined) {
-    characterKey ??= selected_group || characters[Number(this_chid)]?.avatar;
+export function getConnectedPersonas(characterKey = undefined, connectionType = undefined) {
+    if (!characterKey) {
+        characterKey = selected_group || characters[Number(this_chid)]?.avatar;
+    }
+
+    if (!connectionType) {
+        connectionType = selected_group ? 'group' : 'character';
+    }
+
     const connectedPersonas = Object.entries(power_user.persona_descriptions)
-        .filter(([_, { connections }]) => connections?.some(conn => conn.id === characterKey))
+        .filter(([_, { connections }]) => connections?.some(conn => conn.id === characterKey && conn.type === connectionType))
         .map(([key, _]) => key);
     return connectedPersonas;
 }
@@ -1592,7 +1856,7 @@ export async function showCharConnections() {
         okButton: t`Ok`,
         highlightPersonas: true,
         targetedChar: getCurrentConnectionObj(),
-        shiftClickHandler: (element, ev) => {
+        shiftClickHandler: async (element, ev) => {
 
             const personaId = $(element).attr('data-pid');
 
@@ -1607,6 +1871,9 @@ export async function showCharConnections() {
                 });
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
+                if (!selected_group && characters[Number(this_chid)]?.avatar) {
+                    await syncDedicatedPersonasToCharacter(characters[Number(this_chid)]?.avatar);
+                }
                 if (power_user.persona_show_notifications) {
                     toastr.info(t`User persona ${power_user.personas[personaId]} is now unlocked from the current character ${name2}.`, t`Persona unlocked`);
                 }
