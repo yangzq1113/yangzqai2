@@ -783,6 +783,16 @@ function ensureStyles() {
 #${UI_BLOCK_ID} .cea_item_meta { opacity:0.75; font-size:0.9em; }
 #${UI_BLOCK_ID} .cea_status { opacity:0.85; }
 #${UI_BLOCK_ID} .cea_item_actions { display:flex; gap:6px; flex-wrap:wrap; }
+#${UI_BLOCK_ID} .cea_row .menu_button {
+    display: inline-flex;
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    align-items: center;
+    justify-content: center;
+}
 `;
     document.head.append(style);
 }
