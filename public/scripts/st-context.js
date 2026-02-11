@@ -550,7 +550,25 @@ function resolvePluginMarkerPromptContent(promptIdentifier, envelope) {
     }
 }
 
-function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalizedMessages) {
+function formatPluginWorldInfoContent(value, completionCore) {
+    const content = cleanText(value || '');
+    if (!content) {
+        return '';
+    }
+    const wiFormat = cleanText(completionCore?.wi_format || '');
+    if (!wiFormat) {
+        return content;
+    }
+    if (wiFormat.includes('{{0}}')) {
+        return wiFormat.replaceAll('{{0}}', content);
+    }
+    if (wiFormat.includes('{0}')) {
+        return wiFormat.replaceAll('{0}', content);
+    }
+    return wiFormat;
+}
+
+function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalizedMessages, runtimePromptFields = {}) {
     const prompts = Array.isArray(completionCore?.prompts) ? completionCore.prompts : [];
     const promptMap = new Map(prompts
         .filter(prompt => prompt && typeof prompt === 'object' && typeof prompt.identifier === 'string')
@@ -576,6 +594,15 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
         const prompt = promptMap.get(identifier);
         if (!prompt || prompt.plugin_extra === true) {
             continue;
+        }
+
+        if (identifier === 'worldInfoBefore' || identifier === 'worldInfoAfter') {
+            const fieldKey = identifier === 'worldInfoBefore' ? 'worldInfoBefore' : 'worldInfoAfter';
+            const content = formatPluginWorldInfoContent(runtimePromptFields?.[fieldKey] || '', completionCore);
+            if (content) {
+                result.push({ role: 'system', content });
+                continue;
+            }
         }
 
         if (identifier === 'chatHistory') {
@@ -660,6 +687,7 @@ function buildPresetAwarePromptMessages({
     envelope = null,
     envelopeOptions = {},
     promptPresetName = '',
+    runtimePromptFields = {},
 } = {}) {
     const normalizedMessages = normalizePromptMessages(messages);
     const resolvedEnvelopeOptions = envelopeOptions && typeof envelopeOptions === 'object'
@@ -689,6 +717,7 @@ function buildPresetAwarePromptMessages({
         resolvedEnvelope?.promptCore?.completion,
         resolvedEnvelope,
         normalizedMessages,
+        runtimePromptFields,
     );
     if (Array.isArray(orderedMessages)) {
         return orderedMessages;
