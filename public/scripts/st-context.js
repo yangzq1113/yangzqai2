@@ -53,6 +53,7 @@ import {
     buildWorldInfoChatInput,
     buildWorldInfoGlobalScanData,
     simulateWorldInfoActivation,
+    getActiveWorldInfoPromptFields,
     appendChatMessages,
     patchChatMessages,
     saveChatMetadata,
@@ -568,7 +569,7 @@ function formatPluginWorldInfoContent(value, completionCore) {
     return wiFormat;
 }
 
-function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalizedMessages, runtimePromptFields = {}) {
+function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalizedMessages) {
     const prompts = Array.isArray(completionCore?.prompts) ? completionCore.prompts : [];
     const promptMap = new Map(prompts
         .filter(prompt => prompt && typeof prompt === 'object' && typeof prompt.identifier === 'string')
@@ -580,6 +581,7 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
 
     const result = [];
     let historyInjected = false;
+    const runtimePromptFields = getActiveWorldInfoPromptFields();
 
     for (const entry of orderEntries) {
         if (!entry || entry.enabled === false) {
@@ -687,7 +689,6 @@ function buildPresetAwarePromptMessages({
     envelope = null,
     envelopeOptions = {},
     promptPresetName = '',
-    runtimePromptFields = {},
 } = {}) {
     const normalizedMessages = normalizePromptMessages(messages);
     const resolvedEnvelopeOptions = envelopeOptions && typeof envelopeOptions === 'object'
@@ -717,7 +718,6 @@ function buildPresetAwarePromptMessages({
         resolvedEnvelope?.promptCore?.completion,
         resolvedEnvelope,
         normalizedMessages,
-        runtimePromptFields,
     );
     if (Array.isArray(orderedMessages)) {
         return orderedMessages;

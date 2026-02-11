@@ -817,6 +817,11 @@ export let online_status = 'no_connection';
 
 export let is_send_press = false; //Send generation
 export const isGenerating = () => (is_send_press || is_group_generating);
+let activeWorldInfoPromptSnapshot = {
+    chatId: '',
+    worldInfoBefore: '',
+    worldInfoAfter: '',
+};
 
 let this_del_mes = -1;
 
@@ -4446,6 +4451,33 @@ export function buildWorldInfoChatInput(messages, includeNames = world_info_incl
         .reverse();
 }
 
+function setActiveWorldInfoPromptSnapshot({ worldInfoBefore = '', worldInfoAfter = '' } = {}) {
+    activeWorldInfoPromptSnapshot = {
+        chatId: String(getCurrentChatId() || ''),
+        worldInfoBefore: String(worldInfoBefore || ''),
+        worldInfoAfter: String(worldInfoAfter || ''),
+    };
+}
+
+/**
+ * Returns runtime WI prompt fields for plugin preset assembly in the current generation cycle.
+ * The snapshot is only exposed while generation is active for the current chat.
+ * @returns {{ worldInfoBefore: string, worldInfoAfter: string }}
+ */
+export function getActiveWorldInfoPromptFields() {
+    const currentChatId = String(getCurrentChatId() || '');
+    if (!currentChatId || activeWorldInfoPromptSnapshot.chatId !== currentChatId) {
+        return { worldInfoBefore: '', worldInfoAfter: '' };
+    }
+    if (!is_send_press && !is_group_generating) {
+        return { worldInfoBefore: '', worldInfoAfter: '' };
+    }
+    return {
+        worldInfoBefore: String(activeWorldInfoPromptSnapshot.worldInfoBefore || ''),
+        worldInfoAfter: String(activeWorldInfoPromptSnapshot.worldInfoAfter || ''),
+    };
+}
+
 /**
  * Builds default WI global scan data for the current character context.
  * @param {string} type Generation type.
@@ -4542,6 +4574,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
+    setActiveWorldInfoPromptSnapshot({ worldInfoBefore: '', worldInfoAfter: '' });
 
     // Prevent generation from shallow characters
     await unshallowCharacter(this_chid);
@@ -5002,6 +5035,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         anBefore,
         anAfter,
     } = normalizeWorldInfoResolutionData(worldInfoResolution);
+
+    setActiveWorldInfoPromptSnapshot({
+        worldInfoBefore,
+        worldInfoAfter,
+    });
 
     await eventSource.emit(event_types.GENERATION_WORLD_INFO_FINALIZED, {
         ...wiAfterPayload,
