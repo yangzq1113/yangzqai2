@@ -651,6 +651,7 @@ const memoryStoreCache = new Map();
 const memoryStoreTargets = new Map();
 const memoryStorePersistedSnapshots = new Map();
 const memoryLoadTasks = new Map();
+const mutationReplayTasks = new Map();
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 
@@ -1059,13 +1060,14 @@ async function deleteMemoryStoreByTarget(context, target) {
 
 function createEmptyStore() {
     return {
-        version: 3,
+        version: 4,
         nodeSeq: 0,
         seqCounter: 0,
         nodes: {},
         edges: [],
         pendingMessages: [],
         messagesSinceUpdate: 0,
+        messageTransactions: [],
         lastRecallTrace: [],
         lastRecallProjection: null,
         layerSnapshots: [],
@@ -1073,6 +1075,194 @@ function createEmptyStore() {
         sourceDigest: '',
         updatedAt: Date.now(),
     };
+}
+
+function buildMessageReplayKey(message) {
+    const normalized = normalizeText(message?.mes || '');
+    return hashTextFNV1a([
+        message?.is_user ? 'u' : 'a',
+        normalizeText(message?.name || ''),
+        normalized,
+        normalizeText(message?.send_date || ''),
+    ].join('|'));
+}
+
+function snapshotGraphForReplay(store) {
+    return {
+        nodeSeq: Math.max(0, Number(store?.nodeSeq || 0)),
+        seqCounter: Math.max(0, Number(store?.seqCounter || 0)),
+        nodes: store?.nodes && typeof store.nodes === 'object' ? cloneDefault(store.nodes) : {},
+        edges: Array.isArray(store?.edges) ? cloneDefault(store.edges) : [],
+        layerSnapshots: Array.isArray(store?.layerSnapshots) ? cloneDefault(store.layerSnapshots) : [],
+    };
+}
+
+function normalizeReplayTransaction(transaction) {
+    if (!transaction || typeof transaction !== 'object') {
+        return null;
+    }
+    const sourceSeq = Number(transaction.sourceSeq);
+    const messageKey = String(transaction.messageKey || '').trim();
+    if (!Number.isFinite(sourceSeq) || sourceSeq <= 0 || !messageKey) {
+        return null;
+    }
+    const operations = Array.isArray(transaction.operations)
+        ? transaction.operations.filter(op => op && typeof op === 'object' && typeof op.op === 'string')
+        : [];
+    return {
+        sourceSeq: Math.floor(sourceSeq),
+        messageKey,
+        operations: cloneDefault(operations),
+    };
+}
+
+function appendMessageTransaction(store, frame, operations = []) {
+    const sourceSeq = Number(frame?.seq || 0);
+    if (!Number.isFinite(sourceSeq) || sourceSeq <= 0) {
+        return;
+    }
+    const messageKey = buildMessageReplayKey(frame);
+    if (!messageKey) {
+        return;
+    }
+    if (!Array.isArray(store.messageTransactions)) {
+        store.messageTransactions = [];
+    }
+    const normalized = normalizeReplayTransaction({
+        sourceSeq,
+        messageKey,
+        operations,
+    });
+    if (!normalized) {
+        return;
+    }
+    store.messageTransactions.push(normalized);
+}
+
+function setNestedPathValue(root, path, value) {
+    if (!root || typeof root !== 'object' || !Array.isArray(path) || path.length === 0) {
+        return root;
+    }
+    let cursor = root;
+    for (let i = 0; i < path.length - 1; i++) {
+        const key = String(path[i] || '');
+        if (!key) {
+            return root;
+        }
+        if (!cursor[key] || typeof cursor[key] !== 'object') {
+            cursor[key] = {};
+        }
+        cursor = cursor[key];
+    }
+    const leaf = String(path[path.length - 1] || '');
+    if (!leaf) {
+        return root;
+    }
+    cursor[leaf] = cloneDefault(value);
+    return root;
+}
+
+function deleteNestedPathValue(root, path) {
+    if (!root || typeof root !== 'object' || !Array.isArray(path) || path.length === 0) {
+        return root;
+    }
+    let cursor = root;
+    for (let i = 0; i < path.length - 1; i++) {
+        const key = String(path[i] || '');
+        if (!key || !cursor[key] || typeof cursor[key] !== 'object') {
+            return root;
+        }
+        cursor = cursor[key];
+    }
+    const leaf = String(path[path.length - 1] || '');
+    if (!leaf) {
+        return root;
+    }
+    if (Object.hasOwn(cursor, leaf)) {
+        delete cursor[leaf];
+    }
+    return root;
+}
+
+function applyObjectPatchOperations(baseState, operations) {
+    let state = cloneDefault(baseState && typeof baseState === 'object' ? baseState : {});
+    for (const operation of Array.isArray(operations) ? operations : []) {
+        if (!operation || typeof operation !== 'object') {
+            continue;
+        }
+        const opName = String(operation.op || '').trim();
+        if (opName === 'replace_root') {
+            state = cloneDefault(operation.value && typeof operation.value === 'object' ? operation.value : {});
+            continue;
+        }
+        if (opName === 'set') {
+            setNestedPathValue(state, Array.isArray(operation.path) ? operation.path : [], operation.value);
+            continue;
+        }
+        if (opName === 'delete') {
+            deleteNestedPathValue(state, Array.isArray(operation.path) ? operation.path : []);
+        }
+    }
+    return state;
+}
+
+function remapStoreSeqValues(store, removedSeqSet) {
+    if (!store || typeof store !== 'object' || !(removedSeqSet instanceof Set) || removedSeqSet.size === 0) {
+        return;
+    }
+    const removed = [...removedSeqSet].map(value => Number(value)).filter(Number.isFinite).sort((a, b) => a - b);
+    if (removed.length === 0) {
+        return;
+    }
+    const remap = (value) => {
+        const num = Number(value);
+        if (!Number.isFinite(num) || num <= 0) {
+            return value;
+        }
+        let shift = 0;
+        for (const removedSeq of removed) {
+            if (removedSeq <= num) {
+                shift += 1;
+                continue;
+            }
+            break;
+        }
+        const nextValue = num - shift;
+        return nextValue > 0 ? nextValue : 1;
+    };
+    const patchObject = (target) => {
+        if (!target || typeof target !== 'object') {
+            return;
+        }
+        for (const [key, value] of Object.entries(target)) {
+            if (value && typeof value === 'object') {
+                patchObject(value);
+                continue;
+            }
+            const normalizedKey = String(key || '').toLowerCase();
+            if (!normalizedKey.includes('seq')) {
+                continue;
+            }
+            target[key] = remap(value);
+        }
+    };
+
+    for (const node of Object.values(store.nodes || {})) {
+        node.seqFrom = remap(node.seqFrom);
+        node.seqTo = remap(node.seqTo);
+        patchObject(node.metadata);
+    }
+    if (Array.isArray(store.layerSnapshots)) {
+        for (const snapshot of store.layerSnapshots) {
+            snapshot.from_seq = remap(snapshot.from_seq);
+            snapshot.to_seq = remap(snapshot.to_seq);
+        }
+    }
+    if (Array.isArray(store.pendingMessages)) {
+        for (const frame of store.pendingMessages) {
+            frame.seq = remap(frame.seq);
+        }
+    }
 }
 
 function pruneUnsupportedLevels(store) {
@@ -1178,6 +1368,11 @@ function migrateLegacyStoreIfNeeded(store) {
     migrated.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? store.lastRecallProjection
         : null;
+    migrated.messageTransactions = Array.isArray(store.messageTransactions)
+        ? store.messageTransactions
+            .map(item => normalizeReplayTransaction(item))
+            .filter(Boolean)
+        : [];
 
     if (Array.isArray(store.layerSnapshots)) {
         migrated.layerSnapshots = store.layerSnapshots
@@ -2403,6 +2598,44 @@ async function runCompressionLoop(context, store, settings) {
     return await compressSemanticTypesIfNeeded(context, store, settings);
 }
 
+async function processPendingMessageFrameWithLLM(context, store, settings, schema, frame) {
+    const beforeGraph = snapshotGraphForReplay(store);
+    const upserts = await extractNodesWithLLM(context, settings, schema, [frame]);
+    if (upserts.length === 0) {
+        return false;
+    }
+
+    for (const item of upserts) {
+        const title = normalizeText(item?.title || '');
+        if (!title) {
+            continue;
+        }
+        const evidence = buildEvidenceSeqRange(item, [frame]);
+        const targetNode = upsertSemanticNode(store, {
+            type: String(item?.type || 'semantic').toLowerCase(),
+            title,
+            summary: normalizeText(item?.summary || ''),
+            fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
+            seqFrom: evidence.seqFrom,
+            seqTo: evidence.seqTo,
+        });
+        if (targetNode) {
+            applyExtractedLinks(
+                store,
+                targetNode,
+                Array.isArray(item?.links) ? item.links : [],
+                evidence,
+            );
+        }
+    }
+
+    await runCompressionLoop(context, store, settings);
+    const afterGraph = snapshotGraphForReplay(store);
+    const operations = buildObjectPatchOperations(beforeGraph, afterGraph, { maxOperations: 32000 });
+    appendMessageTransaction(store, frame, operations);
+    return true;
+}
+
 async function runExtractionForStore(context, store) {
     const settings = getSettings();
     if (store.messagesSinceUpdate < Number(settings.updateEvery || 1)) {
@@ -2417,43 +2650,16 @@ async function runExtractionForStore(context, store) {
     store.pendingMessages = [];
 
     const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
-    const batchSize = Math.max(2, Number(settings.extractBatchTurns || settings.updateEvery || 1));
     const failedQueue = [];
-    for (let offset = 0; offset < pendingQueue.length; offset += batchSize) {
-        const batch = pendingQueue.slice(offset, offset + batchSize);
-        const upserts = await extractNodesWithLLM(context, settings, schema, batch);
-        if (upserts.length === 0) {
-            failedQueue.push(...batch);
+    for (const frame of pendingQueue) {
+        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frame);
+        if (!success) {
+            failedQueue.push(frame);
             continue;
-        }
-        for (const item of upserts) {
-            const title = normalizeText(item?.title || '');
-            if (!title) {
-                continue;
-            }
-            const evidence = buildEvidenceSeqRange(item, batch);
-            const targetNode = upsertSemanticNode(store, {
-                type: String(item?.type || 'semantic').toLowerCase(),
-                title,
-                summary: normalizeText(item?.summary || ''),
-                fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
-                seqFrom: evidence.seqFrom,
-                seqTo: evidence.seqTo,
-            });
-            if (targetNode) {
-                applyExtractedLinks(
-                    store,
-                    targetNode,
-                    Array.isArray(item?.links) ? item.links : [],
-                    evidence,
-                );
-            }
         }
     }
     store.pendingMessages = failedQueue;
     store.messagesSinceUpdate = failedQueue.length;
-
-    await runCompressionLoop(context, store, settings);
     store.updatedAt = Date.now();
 }
 
@@ -3546,6 +3752,97 @@ async function rebuildStoreFromCurrentChat(context) {
     return rebuilt;
 }
 
+function buildPlayableFramesFromContext(context) {
+    const frames = [];
+    let seq = 0;
+    for (const message of getPlayableChatMessages(context)) {
+        const text = normalizeText(message?.mes || '');
+        if (!text) {
+            continue;
+        }
+        seq += 1;
+        frames.push({
+            seq,
+            is_user: Boolean(message?.is_user),
+            name: String(message?.name || ''),
+            mes: text,
+            send_date: String(message?.send_date || ''),
+        });
+    }
+    return frames;
+}
+
+async function rebuildStoreByReplayingTransactions(context, existingStore = null) {
+    const store = existingStore && typeof existingStore === 'object' ? existingStore : createEmptyStore();
+    const transactions = Array.isArray(store.messageTransactions)
+        ? store.messageTransactions.map(item => normalizeReplayTransaction(item)).filter(Boolean)
+        : [];
+    const frames = buildPlayableFramesFromContext(context);
+    const replayState = snapshotGraphForReplay(createEmptyStore());
+    const keptTransactions = [];
+    const removedSeqs = new Set();
+    const pendingFrames = [];
+
+    let txIndex = 0;
+    for (const frame of frames) {
+        const messageKey = buildMessageReplayKey(frame);
+        let foundIndex = -1;
+        for (let i = txIndex; i < transactions.length; i++) {
+            if (transactions[i].messageKey === messageKey) {
+                foundIndex = i;
+                break;
+            }
+        }
+        if (foundIndex < 0) {
+            pendingFrames.push(frame);
+            continue;
+        }
+        for (let i = txIndex; i < foundIndex; i++) {
+            removedSeqs.add(Number(transactions[i].sourceSeq));
+        }
+        const matched = transactions[foundIndex];
+        txIndex = foundIndex + 1;
+        const nextGraph = applyObjectPatchOperations(replayState, matched.operations);
+        replayState.nodeSeq = Math.max(0, Number(nextGraph.nodeSeq || replayState.nodeSeq || 0));
+        replayState.seqCounter = Math.max(0, Number(nextGraph.seqCounter || replayState.seqCounter || 0));
+        replayState.nodes = nextGraph.nodes && typeof nextGraph.nodes === 'object' ? nextGraph.nodes : {};
+        replayState.edges = Array.isArray(nextGraph.edges) ? nextGraph.edges : [];
+        replayState.layerSnapshots = Array.isArray(nextGraph.layerSnapshots) ? nextGraph.layerSnapshots : [];
+        keptTransactions.push({
+            sourceSeq: Number(frame.seq),
+            messageKey: matched.messageKey,
+            operations: matched.operations,
+        });
+    }
+    for (let i = txIndex; i < transactions.length; i++) {
+        removedSeqs.add(Number(transactions[i].sourceSeq));
+    }
+
+    const rebuilt = createEmptyStore();
+    rebuilt.nodeSeq = Math.max(0, Number(replayState.nodeSeq || 0));
+    rebuilt.seqCounter = Number(frames.length || 0);
+    rebuilt.nodes = replayState.nodes && typeof replayState.nodes === 'object' ? replayState.nodes : {};
+    rebuilt.edges = Array.isArray(replayState.edges) ? replayState.edges : [];
+    rebuilt.layerSnapshots = Array.isArray(replayState.layerSnapshots) ? replayState.layerSnapshots : [];
+    rebuilt.messageTransactions = keptTransactions.map(item => normalizeReplayTransaction(item)).filter(Boolean);
+    remapStoreSeqValues(rebuilt, removedSeqs);
+
+    if (pendingFrames.length > 0) {
+        rebuilt.pendingMessages = pendingFrames.map(frame => ({
+            ...frame,
+            seq: Number(frame.seq),
+        }));
+        rebuilt.messagesSinceUpdate = rebuilt.pendingMessages.length;
+    }
+
+    updateStoreSourceState(rebuilt, context);
+    rebuilt.updatedAt = Date.now();
+    return {
+        store: rebuilt,
+        missingCount: pendingFrames.length,
+    };
+}
+
 async function ensureStoreSyncedWithChat(context, { force = false } = {}) {
     const loaded = await ensureMemoryStoreLoaded(context);
     const store = getMemoryStore(context) || loaded || null;
@@ -3563,6 +3860,15 @@ async function ensureStoreSyncedWithChat(context, { force = false } = {}) {
             await persistMemoryStoreByChatKey(context, chatKey, store);
         }
         return store;
+    }
+    const replayResult = await rebuildStoreByReplayingTransactions(context, store);
+    if (replayResult?.store) {
+        const chatKey = getChatKey(context, { allowFallback: true });
+        memoryStoreCache.set(chatKey, replayResult.store);
+        await persistMemoryStoreByChatKey(context, chatKey, replayResult.store);
+        if (Number(replayResult.missingCount || 0) === 0) {
+            return replayResult.store;
+        }
     }
     return await rebuildStoreFromCurrentChat(context);
 }
@@ -5919,21 +6225,47 @@ jQuery(() => {
 
     context.eventSource.on(context.eventTypes.MESSAGE_SENT, captureMessage);
     context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, captureMessage);
-    const markStoreDirtyFromMutation = () => {
+    const replayStoreFromMutation = async () => {
         const chatKey = getChatKey(context, { allowFallback: true });
-        const store = memoryStoreCache.get(chatKey);
-        if (!store) {
+        if (mutationReplayTasks.has(chatKey)) {
+            await mutationReplayTasks.get(chatKey);
             return;
         }
-        store.sourceMessageCount = -1;
-        store.sourceDigest = '';
-        store.updatedAt = Date.now();
-        updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
-        refreshUiStats();
+        const task = (async () => {
+            await ensureMemoryStoreLoaded(context);
+            const store = memoryStoreCache.get(chatKey);
+            if (!store) {
+                return;
+            }
+            const replayResult = await rebuildStoreByReplayingTransactions(context, store);
+            if (!replayResult?.store) {
+                return;
+            }
+            memoryStoreCache.set(chatKey, replayResult.store);
+            await persistMemoryStoreByChatKey(context, chatKey, replayResult.store);
+            if (Number(replayResult.missingCount || 0) > 0) {
+                updateUiStatus(i18nFormat(
+                    'Chat mutation replayed locally. ${0} message(s) changed and are pending fresh extraction.',
+                    Number(replayResult.missingCount || 0),
+                ));
+            } else {
+                updateUiStatus(i18n('Chat mutation replayed locally. Memory graph updated immediately.'));
+            }
+            refreshUiStats();
+        })();
+        mutationReplayTasks.set(chatKey, task);
+        try {
+            await task;
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Local replay after chat mutation failed`, error);
+            updateUiStatus(i18n('Chat mutation detected, local replay failed. Will re-sync on next generation.'));
+        } finally {
+            mutationReplayTasks.delete(chatKey);
+        }
     };
-    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, markStoreDirtyFromMutation);
-    context.eventSource.on(context.eventTypes.MESSAGE_EDITED, markStoreDirtyFromMutation);
-    context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, markStoreDirtyFromMutation);
+    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, replayStoreFromMutation);
+    context.eventSource.on(context.eventTypes.MESSAGE_EDITED, replayStoreFromMutation);
+    context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, replayStoreFromMutation);
     if (context.eventTypes.PRESET_CHANGED) {
         context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
             if (String(event?.apiId || '') === 'openai') {
