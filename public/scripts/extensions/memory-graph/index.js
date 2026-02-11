@@ -271,6 +271,8 @@ function registerLocaleData() {
         'Run Recall Debug': '运行召回调试',
         'View Last Injection': '查看最近注入',
         'No recall injection result yet.': '当前还没有召回注入结果。',
+        'Memory recall running...': '记忆召回进行中...',
+        'Memory extraction running...': '记忆图更新进行中...',
         'No active chat selected.': '未选择有效聊天。',
         'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
         'Import': '导入',
@@ -456,6 +458,8 @@ function registerLocaleData() {
         'Run Recall Debug': '執行召回除錯',
         'View Last Injection': '查看最近注入',
         'No recall injection result yet.': '目前還沒有召回注入結果。',
+        'Memory recall running...': '記憶召回進行中...',
+        'Memory extraction running...': '記憶圖更新進行中...',
         'No active chat selected.': '未選擇有效聊天。',
         'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
         'Import': '匯入',
@@ -664,6 +668,7 @@ const memoryStoreCache = new Map();
 const memoryStoreTargets = new Map();
 const memoryStorePersistedSnapshots = new Map();
 const memoryLoadTasks = new Map();
+let activeRuntimeInfoToast = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 
@@ -2682,9 +2687,16 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     const frames = buildPlayableFramesFromContext(context);
     const latestSeq = Number(frames.length || 0);
     const appliedSeqTo = Math.max(0, Math.floor(Number(store.appliedSeqTo || 0)));
+    const maxNodeSeqTo = Object.values(store.nodes || {})
+        .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
+        .reduce((maxSeq, node) => Math.max(maxSeq, Math.max(0, Number(node.seqTo || 0))), 0);
+    const coveredSeqTo = Math.max(appliedSeqTo, maxNodeSeqTo);
+    if (coveredSeqTo !== appliedSeqTo) {
+        store.appliedSeqTo = coveredSeqTo;
+    }
     const beginSeq = Number.isFinite(Number(startSeq))
         ? Math.max(1, Math.floor(Number(startSeq)))
-        : appliedSeqTo + 1;
+        : coveredSeqTo + 1;
     if (beginSeq > latestSeq) {
         store.appliedSeqTo = latestSeq;
         store.seqCounter = latestSeq;
@@ -2692,7 +2704,7 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     }
 
     if (!force) {
-        const gap = latestSeq - appliedSeqTo;
+        const gap = latestSeq - coveredSeqTo;
         if (gap < Number(settings.updateEvery || 1)) {
             return false;
         }
@@ -3969,6 +3981,7 @@ async function injectMemoryPrompts(context, payload) {
 }
 
 async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world_info_scan') {
+    showRuntimeInfoToast(i18n('Memory recall running...'));
     try {
         const injected = await injectMemoryPrompts(context, payload);
         if (injected && payload && typeof payload === 'object') {
@@ -3983,10 +3996,12 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world
             String(error?.message || error),
         ));
         return false;
+    } finally {
+        clearRuntimeInfoToast();
     }
 }
 
-async function captureMessage(messageId) {
+async function captureMessage(messageId, messageType = '') {
     const context = getContext();
     const settings = getSettings();
     if (!settings.enabled) {
@@ -4000,6 +4015,13 @@ async function captureMessage(messageId) {
 
     const message = context.chat[index];
     if (!message || message.is_system || message.is_user) {
+        return;
+    }
+    if (String(messageType || '').trim().toLowerCase() === 'command') {
+        return;
+    }
+    // Skip partial/aborted assistant outputs: extraction only runs for completed assistant messages.
+    if (!message.gen_finished) {
         return;
     }
 
@@ -4019,13 +4041,21 @@ function scheduleExtraction(context) {
         if (!store) {
             return;
         }
-        alignStoreCoverageToChat(store, context);
-        const extracted = await runExtractionForStore(context, store);
-        if (extracted) {
-            store.updatedAt = Date.now();
+        showRuntimeInfoToast(i18n('Memory extraction running...'));
+        try {
+            alignStoreCoverageToChat(store, context);
+            const extracted = await runExtractionForStore(context, store);
+            if (extracted) {
+                store.updatedAt = Date.now();
+            }
+            await persistMemoryStoreByChatKey(context, chatKey, store);
+            refreshUiStats();
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Extraction failed`, error);
+            updateUiStatus(i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error)));
+        } finally {
+            clearRuntimeInfoToast();
         }
-        await persistMemoryStoreByChatKey(context, chatKey, store);
-        refreshUiStats();
     }, 0);
 
     extractionTimers.set(chatKey, timer);
@@ -5104,6 +5134,31 @@ function notifyError(message) {
     if (typeof toastr !== 'undefined') {
         toastr.error(String(message));
     }
+}
+
+function showRuntimeInfoToast(message) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    if (activeRuntimeInfoToast) {
+        toastr.clear(activeRuntimeInfoToast);
+        activeRuntimeInfoToast = null;
+    }
+    activeRuntimeInfoToast = toastr.info(String(message || ''), '', {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: false,
+        closeButton: false,
+        progressBar: false,
+    });
+}
+
+function clearRuntimeInfoToast() {
+    if (typeof toastr === 'undefined' || !activeRuntimeInfoToast) {
+        return;
+    }
+    toastr.clear(activeRuntimeInfoToast);
+    activeRuntimeInfoToast = null;
 }
 
 function updateUiStatus(text) {
