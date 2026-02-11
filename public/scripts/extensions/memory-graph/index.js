@@ -218,7 +218,6 @@ const defaultSettings = {
     lorebookNameOverride: '',
     lorebookEntryOrderBase: 9800,
     nodeTypeSchema: defaultNodeTypeSchema,
-    maxLayerSnapshots: 800,
 };
 
 function i18n(text) {
@@ -286,7 +285,7 @@ function registerLocaleData() {
         'Memory Graph': '记忆图',
         'Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}': '节点：${0} | 边：${1} | 消息：${2} | 源消息：${3}',
         'semantic=${0}': 'semantic=${0}',
-        'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步数：${0} | 层快照：${1}',
+        'Last recall steps: ${0}': '最近召回步数：${0}',
         'Visual graph ready. Click an edge to select it for editing.': '可视化图已就绪。点击边可选择并编辑。',
         'Fit View': '适配视图',
         'Re-layout': '重新布局',
@@ -362,7 +361,7 @@ function registerLocaleData() {
         'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
         'Recall ready. query="${0}" selected=${1}': '召回就绪。query="${0}" selected=${1}',
         'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
-        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}',
+        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
         'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定义节点表、抽取提示和压缩策略。这会控制记忆图存储内容及其随时间压缩方式。',
         'Hierarchical Compression': '分层压缩',
@@ -466,7 +465,7 @@ function registerLocaleData() {
         'Memory Graph': '記憶圖',
         'Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}': '節點：${0} | 邊：${1} | 訊息：${2} | 來源訊息：${3}',
         'semantic=${0}': 'semantic=${0}',
-        'Last recall steps: ${0} | Layer snapshots: ${1}': '最近召回步數：${0} | 層快照：${1}',
+        'Last recall steps: ${0}': '最近召回步數：${0}',
         'Visual graph ready. Click an edge to select it for editing.': '視覺化圖已就緒。點擊邊可選取並編輯。',
         'Fit View': '適配視圖',
         'Re-layout': '重新佈局',
@@ -542,7 +541,7 @@ function registerLocaleData() {
         'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
         'Recall ready. query="${0}" selected=${1}': '召回就緒。query="${0}" selected=${1}',
         'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
-        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}',
+        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
         'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定義節點資料表、抽取提示與壓縮策略。這會控制記憶圖儲存內容及其隨時間壓縮方式。',
         'Hierarchical Compression': '分層壓縮',
@@ -1070,7 +1069,6 @@ function createEmptyStore() {
         messageTransactions: [],
         lastRecallTrace: [],
         lastRecallProjection: null,
-        layerSnapshots: [],
         sourceMessageCount: 0,
         sourceDigest: '',
         updatedAt: Date.now(),
@@ -1083,7 +1081,6 @@ function snapshotGraphForReplay(store) {
         seqCounter: Math.max(0, Number(store?.seqCounter || 0)),
         nodes: store?.nodes && typeof store.nodes === 'object' ? cloneDefault(store.nodes) : {},
         edges: Array.isArray(store?.edges) ? cloneDefault(store.edges) : [],
-        layerSnapshots: Array.isArray(store?.layerSnapshots) ? cloneDefault(store.layerSnapshots) : [],
     };
 }
 
@@ -1235,12 +1232,6 @@ function remapStoreSeqValues(store, removedSeqSet) {
         node.seqTo = remap(node.seqTo);
         patchObject(node.metadata);
     }
-    if (Array.isArray(store.layerSnapshots)) {
-        for (const snapshot of store.layerSnapshots) {
-            snapshot.from_seq = remap(snapshot.from_seq);
-            snapshot.to_seq = remap(snapshot.to_seq);
-        }
-    }
     if (Array.isArray(store.pendingMessages)) {
         for (const frame of store.pendingMessages) {
             frame.seq = remap(frame.seq);
@@ -1356,18 +1347,6 @@ function migrateLegacyStoreIfNeeded(store) {
             .map(item => normalizeReplayTransaction(item))
             .filter(Boolean)
         : [];
-
-    if (Array.isArray(store.layerSnapshots)) {
-        migrated.layerSnapshots = store.layerSnapshots
-            .filter(item => item && typeof item === 'object')
-            .map((item) => ({
-                ...item,
-                level: String(item.level || LEVEL.SEMANTIC) === LEVEL.SEMANTIC ? LEVEL.SEMANTIC : LEVEL.SEMANTIC,
-                from_seq: Number(item.from_seq ?? item.from_turn ?? -1),
-                to_seq: Number(item.to_seq ?? item.to_turn ?? -1),
-            }))
-            .filter(item => item.level === LEVEL.SEMANTIC);
-    }
 
     let fallbackSeq = 0;
     if (store.nodes && typeof store.nodes === 'object') {
@@ -1799,30 +1778,6 @@ function reparentNode(store, childId, parentId) {
     parent.updatedAt = Date.now();
     child.updatedAt = Date.now();
     addEdge(store, parentId, childId, 'contains');
-}
-
-function saveLayerSnapshot(store, level, node, extra = {}) {
-    const settings = getSettings();
-    const maxSnapshots = Math.max(100, Number(settings.maxLayerSnapshots || 800));
-    if (!Array.isArray(store.layerSnapshots)) {
-        store.layerSnapshots = [];
-    }
-
-    store.layerSnapshots.push({
-        at: Date.now(),
-        level: String(level || ''),
-        node_id: String(node?.id || ''),
-        title: String(node?.title || ''),
-        summary: String(node?.summary || ''),
-        from_seq: Number(node?.seqFrom ?? node?.seqTo ?? -1),
-        to_seq: Number(node?.seqTo ?? node?.seqFrom ?? -1),
-        ...extra,
-    });
-
-    if (store.layerSnapshots.length > maxSnapshots) {
-        const overflow = store.layerSnapshots.length - maxSnapshots;
-        store.layerSnapshots.splice(0, overflow);
-    }
 }
 
 function listNodesByLevel(store, level) {
@@ -2374,7 +2329,6 @@ function upsertSemanticNode(store, item) {
             seqFrom: Number.isFinite(Number(item.seqFrom)) ? Number(item.seqFrom) : undefined,
             seqTo: Number.isFinite(Number(item.seqTo)) ? Number(item.seqTo) : undefined,
         });
-        saveLayerSnapshot(store, LEVEL.SEMANTIC, target, { action: 'create' });
     } else {
         target.summary = normalizeText(item.summary || target.summary || '');
         target.count = Number(target.count || 1) + 1;
@@ -2399,7 +2353,6 @@ function upsertSemanticNode(store, item) {
             target.seqTo = Math.max(currentTo, inputTo);
         }
         target.updatedAt = Date.now();
-        saveLayerSnapshot(store, LEVEL.SEMANTIC, target, { action: 'update' });
     }
 
     return target;
@@ -2538,11 +2491,6 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 reparentNode(store, child.id, parent.id);
                 addEdge(store, parent.id, child.id, 'semantic_contains');
             }
-            saveLayerSnapshot(store, LEVEL.SEMANTIC, parent, {
-                source: 'semantic_rollup',
-                semantic_type: type,
-                semantic_depth: depth + 1,
-            });
             changed = true;
         }
     }
@@ -3887,7 +3835,6 @@ async function rebuildStoreByReplayingTransactions(context, existingStore = null
         replayState.seqCounter = Math.max(0, Number(nextGraph.seqCounter || replayState.seqCounter || 0));
         replayState.nodes = nextGraph.nodes && typeof nextGraph.nodes === 'object' ? nextGraph.nodes : {};
         replayState.edges = Array.isArray(nextGraph.edges) ? nextGraph.edges : [];
-        replayState.layerSnapshots = Array.isArray(nextGraph.layerSnapshots) ? nextGraph.layerSnapshots : [];
         keptTransactions.push({
             sourceSeq: frameSeq,
             operations: matched.operations,
@@ -3909,7 +3856,6 @@ async function rebuildStoreByReplayingTransactions(context, existingStore = null
     rebuilt.seqCounter = Number(frames.length || 0);
     rebuilt.nodes = replayState.nodes && typeof replayState.nodes === 'object' ? replayState.nodes : {};
     rebuilt.edges = Array.isArray(replayState.edges) ? replayState.edges : [];
-    rebuilt.layerSnapshots = Array.isArray(replayState.layerSnapshots) ? replayState.layerSnapshots : [];
     rebuilt.messageTransactions = keptTransactions.map(item => normalizeReplayTransaction(item)).filter(Boolean);
     remapStoreSeqValues(rebuilt, removedSeqs);
 
@@ -4093,7 +4039,6 @@ function getStoreStats(store) {
         sourceMessageCount: Number(store.sourceMessageCount || 0),
         levelCount,
         lastRecallSteps: Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace.length : 0,
-        layerSnapshots: Array.isArray(store.layerSnapshots) ? store.layerSnapshots.length : 0,
     };
 }
 
@@ -4131,7 +4076,7 @@ function renderGraphInspectorHtml(store) {
     <h3 class="margin0">${escapeHtml(i18n('Memory Graph'))}</h3>
     <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Messages: ${2} | Source messages: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
     <div>${escapeHtml(i18nFormat('semantic=${0}', stats.levelCount.semantic))}</div>
-    <div>${escapeHtml(i18nFormat('Last recall steps: ${0} | Layer snapshots: ${1}', stats.lastRecallSteps, stats.layerSnapshots))}</div>
+    <div>${escapeHtml(i18nFormat('Last recall steps: ${0}', stats.lastRecallSteps))}</div>
     <div class="luker-rpg-memory-graph-canvas-wrap">
         <div class="luker-rpg-memory-graph-cy"></div>
     </div>
@@ -5177,13 +5122,12 @@ function refreshUiStats() {
 
     root.find('#luker_rpg_memory_stats').text(
         i18nFormat(
-            'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}, snapshots=${5}',
+            'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
             stats.nodeCount,
             stats.edgeCount,
             stats.messageCount,
             stats.sourceMessageCount,
             stats.levelCount.semantic,
-            stats.layerSnapshots,
         ),
     );
 }
