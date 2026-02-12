@@ -2295,13 +2295,23 @@ async function runAiCharacterProfileBuild(context, settings) {
                 content: 'Previous tool calls were incomplete. Return COMPLETE tool calls in one response (not one call). MUST include luker_orch_append_stage and luker_orch_finalize_profile, with finalize as the last call.',
             }]
             : [];
-        const toolCalls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
-            tools,
-            allowedNames,
-            llmPresetName: suggestPresetName,
-            apiSettingsOverride,
-            retriesOverride: 0,
-        });
+        let toolCalls = [];
+        try {
+            toolCalls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
+                tools,
+                allowedNames,
+                llmPresetName: suggestPresetName,
+                apiSettingsOverride,
+                retriesOverride: 0,
+            });
+        } catch (error) {
+            lastBuildError = error instanceof Error ? error : new Error(String(error || 'unknown error'));
+            if (!isRetryableToolCallError(error) || attempt >= semanticRetries) {
+                throw lastBuildError;
+            }
+            console.warn(`[${MODULE_NAME}] AI orchestration build request failed. Retrying semantic pass (${attempt + 1}/${semanticRetries})...`, error);
+            continue;
+        }
         if (!Array.isArray(toolCalls) || toolCalls.length < 2) {
             lastBuildError = new Error(i18n('AI build must return multiple tool calls in one response.'));
             continue;

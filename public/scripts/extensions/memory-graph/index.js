@@ -1964,8 +1964,31 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
 }
 
 function isRetryableToolCallError(error) {
+    const statusCode = Number(
+        error?.status
+        || error?.response?.status
+        || error?.cause?.status
+        || error?.error?.status
+        || 0,
+    );
+    if ([408, 409, 425, 429, 500, 502, 503, 504].includes(statusCode)) {
+        return true;
+    }
     const message = String(error?.message || error || '').toLowerCase();
-    return message.includes('tool call');
+    return (
+        message.includes('tool call')
+        || message.includes('network')
+        || message.includes('timeout')
+        || message.includes('timed out')
+        || message.includes('fetch failed')
+        || message.includes('bad gateway')
+        || message.includes('gateway timeout')
+        || message.includes('service unavailable')
+        || message.includes('too many requests')
+        || message.includes('502')
+        || message.includes('503')
+        || message.includes('504')
+    );
 }
 
 async function requestToolCallWithRetry(settings, promptMessages, {
@@ -2591,49 +2614,51 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
         return [];
     }
 
-    try {
-        const resolvedApiPresetName = String(settings.extractApiPresetName || '').trim();
-        const requestApi = resolveRequestApiFromConnectionProfileName(context, resolvedApiPresetName);
-        const promptPresetName = String(settings.extractPresetName || '').trim();
-        const forceUpdateTypes = new Set(
-            schema
-                .filter(item => item && typeof item === 'object' && item.forceUpdate)
-                .map(item => String(item.id || '').trim().toLowerCase())
-                .filter(Boolean),
-        );
-        const promptMessages = buildPresetAwareLLMMessages(context, settings, {
-            api: requestApi,
-            systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
-            userPrompt: JSON.stringify({
-                required_types: Array.from(forceUpdateTypes),
-                editable_nodes: buildEditableExtractNodeHints(store, schema, 120),
-                messages,
-            }),
-            includeCharacterCard: true,
-            promptPresetName,
-        });
-        const { tools, specByToolName } = buildDynamicExtractTools(schema);
-        const allowedNames = new Set(['luker_rpg_extract_done', ...specByToolName.keys()]);
-        const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(
-            resolvedApiPresetName,
-            String(context?.chatCompletionSettings?.chat_completion_source || ''),
-        );
-        const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
-        const editableNodes = new Map(
-            listNodesByLevel(store, LEVEL.SEMANTIC)
-                .filter(node => !node.archived && node?.id)
-                .map(node => [String(node.id), node]),
-        );
-        let validatedOps = [];
-        let retryReason = '';
-        for (let attempt = 0; attempt <= semanticRetries; attempt++) {
-            const reminder = attempt > 0
-                ? [{
-                    role: 'user',
-                    content: `Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one type tool call and exactly one final luker_rpg_extract_done as the last call.${retryReason ? ` Fix: ${retryReason}` : ''}`,
-                }]
-                : [];
-            const calls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
+    const resolvedApiPresetName = String(settings.extractApiPresetName || '').trim();
+    const requestApi = resolveRequestApiFromConnectionProfileName(context, resolvedApiPresetName);
+    const promptPresetName = String(settings.extractPresetName || '').trim();
+    const forceUpdateTypes = new Set(
+        schema
+            .filter(item => item && typeof item === 'object' && item.forceUpdate)
+            .map(item => String(item.id || '').trim().toLowerCase())
+            .filter(Boolean),
+    );
+    const promptMessages = buildPresetAwareLLMMessages(context, settings, {
+        api: requestApi,
+        systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
+        userPrompt: JSON.stringify({
+            required_types: Array.from(forceUpdateTypes),
+            editable_nodes: buildEditableExtractNodeHints(store, schema, 120),
+            messages,
+        }),
+        includeCharacterCard: true,
+        promptPresetName,
+    });
+    const { tools, specByToolName } = buildDynamicExtractTools(schema);
+    const allowedNames = new Set(['luker_rpg_extract_done', ...specByToolName.keys()]);
+    const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(
+        resolvedApiPresetName,
+        String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    );
+    const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const editableNodes = new Map(
+        listNodesByLevel(store, LEVEL.SEMANTIC)
+            .filter(node => !node.archived && node?.id)
+            .map(node => [String(node.id), node]),
+    );
+    let validatedOps = [];
+    let retryReason = '';
+    let lastRetryableError = null;
+    for (let attempt = 0; attempt <= semanticRetries; attempt++) {
+        const reminder = attempt > 0
+            ? [{
+                role: 'user',
+                content: `Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one type tool call and exactly one final luker_rpg_extract_done as the last call.${retryReason ? ` Fix: ${retryReason}` : ''}`,
+            }]
+            : [];
+        let calls = [];
+        try {
+            calls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
                 tools,
                 allowedNames,
                 responseLength: Number(settings.extractResponseLength || 360),
@@ -2641,6 +2666,15 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 retriesOverride: 0,
             });
+        } catch (error) {
+            if (!isRetryableToolCallError(error) || attempt >= semanticRetries) {
+                throw error;
+            }
+            lastRetryableError = error;
+            retryReason = `request_error: ${String(error?.message || error)}`;
+            console.warn(`[${MODULE_NAME}] Extract request failed. Retrying semantic pass (${attempt + 1}/${semanticRetries})...`, error);
+            continue;
+        }
             if (!Array.isArray(calls) || calls.length < 2) {
                 continue;
             }
@@ -2739,14 +2773,14 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                 retryReason = 'No valid extraction operations found.';
                 continue;
             }
-            validatedOps = ops;
-            break;
-        }
-        if (validatedOps.length > 0) {
-            return validatedOps;
-        }
-    } catch (error) {
-        console.warn(`[${MODULE_NAME}] extract llm failed`, error);
+        validatedOps = ops;
+        break;
+    }
+    if (validatedOps.length > 0) {
+        return validatedOps;
+    }
+    if (lastRetryableError) {
+        console.warn(`[${MODULE_NAME}] extract llm ended without valid ops after retries`, lastRetryableError);
     }
 
     return [];
@@ -3281,12 +3315,33 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
 
     const schema = getEffectiveNodeTypeSchema(context, settings);
     const compressionStats = createCompressionStats();
+    const frameErrorRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
     let extractedAny = false;
     for (let i = beginSeq - 1; i < frames.length; i++) {
         const frame = frames[i];
-        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frames, i, {
-            compressionStats,
-        });
+        let success = false;
+        let lastFrameError = null;
+        for (let attempt = 0; attempt <= frameErrorRetries; attempt++) {
+            try {
+                success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frames, i, {
+                    compressionStats,
+                });
+                lastFrameError = null;
+                break;
+            } catch (error) {
+                lastFrameError = error;
+                if (!isRetryableToolCallError(error) || attempt >= frameErrorRetries) {
+                    throw error;
+                }
+                console.warn(
+                    `[${MODULE_NAME}] Extraction frame failed (seq=${Number(frame?.seq || 0)}). Retrying (${attempt + 1}/${frameErrorRetries})...`,
+                    error,
+                );
+            }
+        }
+        if (lastFrameError) {
+            throw lastFrameError;
+        }
         if (!success) {
             break;
         }
