@@ -2663,6 +2663,21 @@ function escapeXmlText(value) {
         .replaceAll("'", '&apos;');
 }
 
+function encodeXmlCdata(value) {
+    return String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
+}
+
+function buildJsonXmlSection(tag, value) {
+    const name = String(tag || '').trim();
+    const safeTag = name || 'data';
+    const jsonText = encodeXmlCdata(JSON.stringify(value ?? {}));
+    return [
+        `  <${safeTag}>`,
+        `    <![CDATA[${jsonText}]]>`,
+        `  </${safeTag}>`,
+    ].join('\n');
+}
+
 function buildExtractInputXml(requiredTypes, graphData, messages) {
     const safeRequiredTypes = Array.isArray(requiredTypes)
         ? requiredTypes.map(item => normalizeText(item).toLowerCase()).filter(Boolean)
@@ -2673,7 +2688,6 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
     const requiredTypeXml = safeRequiredTypes.length > 0
         ? safeRequiredTypes.map(type => `    <type>${escapeXmlText(type)}</type>`).join('\n')
         : '    <type>(none)</type>';
-    const graphDataJson = escapeXmlText(JSON.stringify(safeGraphData));
 
     const messageXml = safeMessages.map(message => {
         const seq = escapeXmlText(String(Number(message?.seq || 0)));
@@ -2698,9 +2712,7 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
         '  <input_guide>If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
         '  <input_guide>required_types are hard-required types for this batch.</input_guide>',
         '  <input_guide>dialogue_batch is the current source dialogue to extract from.</input_guide>',
-        '  <graph_data>',
-        graphDataJson,
-        '  </graph_data>',
+        buildJsonXmlSection('graph_data', safeGraphData),
         '  <required_types>',
         requiredTypeXml,
         '  </required_types>',
@@ -2722,21 +2734,11 @@ function buildRecallRouteInputXml({
         '<recall_route_input>',
         '  <input_guide>Plan recall route from the data blocks below. Use node ids from candidate_nodes only.</input_guide>',
         '  <input_guide>always_inject_node_ids are injected separately; never include them in selected_node_ids.</input_guide>',
-        '  <recall_query_context>',
-        escapeXmlText(JSON.stringify(recallQueryContext)),
-        '  </recall_query_context>',
-        '  <candidate_nodes>',
-        escapeXmlText(JSON.stringify(candidateNodes)),
-        '  </candidate_nodes>',
-        '  <always_inject_node_ids>',
-        escapeXmlText(JSON.stringify(alwaysInjectNodeIds)),
-        '  </always_inject_node_ids>',
-        '  <schema_overview>',
-        escapeXmlText(JSON.stringify(schemaOverview)),
-        '  </schema_overview>',
-        '  <selection_constraints>',
-        escapeXmlText(JSON.stringify(selectionConstraints)),
-        '  </selection_constraints>',
+        buildJsonXmlSection('recall_query_context', recallQueryContext),
+        buildJsonXmlSection('candidate_nodes', candidateNodes),
+        buildJsonXmlSection('always_inject_node_ids', alwaysInjectNodeIds),
+        buildJsonXmlSection('schema_overview', schemaOverview),
+        buildJsonXmlSection('selection_constraints', selectionConstraints),
         '</recall_route_input>',
     ].join('\n');
 }
@@ -2752,21 +2754,11 @@ function buildRecallFinalizeInputXml({
         '<recall_finalize_input>',
         '  <input_guide>Finalize selected node ids for injection from candidate_nodes.</input_guide>',
         '  <input_guide>always_inject_node_ids are injected separately; never include them in selected_node_ids.</input_guide>',
-        '  <recall_query_context>',
-        escapeXmlText(JSON.stringify(recallQueryContext)),
-        '  </recall_query_context>',
-        '  <candidate_nodes>',
-        escapeXmlText(JSON.stringify(candidateNodes)),
-        '  </candidate_nodes>',
-        '  <always_inject_node_ids>',
-        escapeXmlText(JSON.stringify(alwaysInjectNodeIds)),
-        '  </always_inject_node_ids>',
-        '  <route_result>',
-        escapeXmlText(JSON.stringify(routeResult)),
-        '  </route_result>',
-        '  <selection_constraints>',
-        escapeXmlText(JSON.stringify(selectionConstraints)),
-        '  </selection_constraints>',
+        buildJsonXmlSection('recall_query_context', recallQueryContext),
+        buildJsonXmlSection('candidate_nodes', candidateNodes),
+        buildJsonXmlSection('always_inject_node_ids', alwaysInjectNodeIds),
+        buildJsonXmlSection('route_result', routeResult),
+        buildJsonXmlSection('selection_constraints', selectionConstraints),
         '</recall_finalize_input>',
     ].join('\n');
 }

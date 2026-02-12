@@ -881,10 +881,11 @@ function toCompactJsonText(value, fallback = '{}') {
 }
 
 function buildJsonXmlBlock(tag, note, value) {
+    const jsonText = encodeCdata(toCompactJsonText(value));
     return [
         `<${tag}>`,
         `  <note>${escapeXml(String(note || ''))}</note>`,
-        `  <json>${escapeXml(toCompactJsonText(value))}</json>`,
+        `  <json><![CDATA[${jsonText}]]></json>`,
         `</${tag}>`,
     ].join('\n');
 }
@@ -946,13 +947,13 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
     const previousOutputs = [
         '<previous_node_outputs>',
         '  <note>Outputs from completed nodes in prior stages. Use as upstream context only.</note>',
-        `  <json>${escapeXml(toCompactJsonText(Object.fromEntries(previousNodeOutputs)))}</json>`,
+        `  <json><![CDATA[${encodeCdata(toCompactJsonText(Object.fromEntries(previousNodeOutputs)))}]]></json>`,
         '</previous_node_outputs>',
     ].join('\n');
     const distillerOutput = [
         '<distiller_output>',
         '  <note>Output from distiller node if available.</note>',
-        `  <json>${escapeXml(toCompactJsonText(previousNodeOutputs.get('distiller') || {}))}</json>`,
+        `  <json><![CDATA[${encodeCdata(toCompactJsonText(previousNodeOutputs.get('distiller') || {}))}]]></json>`,
         '</distiller_output>',
     ].join('\n');
     const userPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
