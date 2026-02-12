@@ -177,6 +177,7 @@ const defaultNodeTypeSchema = [
 const DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT = [
     'You are a memory recall planner focused on relevance, continuity, and efficiency.',
     'You may output one short <thought>...</thought> before tool call to explain your plan.',
+    'Input format: XML blocks (recall_query_context, candidate_nodes, always_inject_node_ids, schema_overview, selection_constraints). Read all blocks before deciding.',
     'Primary goal: pick the smallest high-value set that best supports the CURRENT scene and next reply.',
     'Rank candidates by practical usefulness now: (1) direct relevance to current event, (2) causality continuity, (3) unresolved commitments/constraints, (4) key character/location support.',
     'Use edge_summary to follow relation chains and avoid isolated picks.',
@@ -190,6 +191,7 @@ const DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT = [
 const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
     'You are finalizing memory recall node selection after optional drill expansion.',
     'You may output one short <thought>...</thought> before tool call to explain your final tradeoff.',
+    'Input format: XML blocks (recall_query_context, candidate_nodes, always_inject_node_ids, route_result, selection_constraints). Read all blocks before deciding.',
     'Select nodes that maximize practical value for the immediate next reply.',
     'Keep storyline continuity first, then add essential support nodes (character/location/rule/thread) only when they materially improve correctness.',
     'Output selected_node_ids in priority order (highest value first).',
@@ -2665,6 +2667,66 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
     ].join('\n');
 }
 
+function buildRecallRouteInputXml({
+    recallQueryContext = {},
+    candidateNodes = [],
+    alwaysInjectNodeIds = [],
+    schemaOverview = [],
+    selectionConstraints = {},
+} = {}) {
+    return [
+        '<recall_route_input>',
+        '  <input_guide>Plan recall route from the data blocks below. Use node ids from candidate_nodes only.</input_guide>',
+        '  <input_guide>always_inject_node_ids are injected separately; never include them in selected_node_ids.</input_guide>',
+        '  <recall_query_context>',
+        escapeXmlText(JSON.stringify(recallQueryContext)),
+        '  </recall_query_context>',
+        '  <candidate_nodes>',
+        escapeXmlText(JSON.stringify(candidateNodes)),
+        '  </candidate_nodes>',
+        '  <always_inject_node_ids>',
+        escapeXmlText(JSON.stringify(alwaysInjectNodeIds)),
+        '  </always_inject_node_ids>',
+        '  <schema_overview>',
+        escapeXmlText(JSON.stringify(schemaOverview)),
+        '  </schema_overview>',
+        '  <selection_constraints>',
+        escapeXmlText(JSON.stringify(selectionConstraints)),
+        '  </selection_constraints>',
+        '</recall_route_input>',
+    ].join('\n');
+}
+
+function buildRecallFinalizeInputXml({
+    recallQueryContext = {},
+    candidateNodes = [],
+    alwaysInjectNodeIds = [],
+    routeResult = {},
+    selectionConstraints = {},
+} = {}) {
+    return [
+        '<recall_finalize_input>',
+        '  <input_guide>Finalize selected node ids for injection from candidate_nodes.</input_guide>',
+        '  <input_guide>always_inject_node_ids are injected separately; never include them in selected_node_ids.</input_guide>',
+        '  <recall_query_context>',
+        escapeXmlText(JSON.stringify(recallQueryContext)),
+        '  </recall_query_context>',
+        '  <candidate_nodes>',
+        escapeXmlText(JSON.stringify(candidateNodes)),
+        '  </candidate_nodes>',
+        '  <always_inject_node_ids>',
+        escapeXmlText(JSON.stringify(alwaysInjectNodeIds)),
+        '  </always_inject_node_ids>',
+        '  <route_result>',
+        escapeXmlText(JSON.stringify(routeResult)),
+        '  </route_result>',
+        '  <selection_constraints>',
+        escapeXmlText(JSON.stringify(selectionConstraints)),
+        '  </selection_constraints>',
+        '</recall_finalize_input>',
+    ].join('\n');
+}
+
 async function extractNodesWithLLM(context, store, settings, schema, messageBatch) {
     const messages = (Array.isArray(messageBatch) ? messageBatch : [])
         .map(item => ({
@@ -3814,21 +3876,24 @@ async function chooseRecallRoute(context, settings, recallState) {
     try {
         const parsed = await runFunctionCallTask(context, settings, {
             systemPrompt: routeSystemPrompt,
-            userPrompt: JSON.stringify({
-                query_bundle: recallState.queryBundle,
-                query: recallState.query,
-                candidates: candidateRows,
-                always_inject_ids: alwaysInjectIds,
-                node_type_schema: getEffectiveNodeTypeSchema(context, settings).map(item => ({
+            userPrompt: buildRecallRouteInputXml({
+                recallQueryContext: {
+                    query_bundle: recallState.queryBundle,
+                    query: recallState.query,
+                },
+                candidateNodes: candidateRows,
+                alwaysInjectNodeIds: alwaysInjectIds,
+                schemaOverview: getEffectiveNodeTypeSchema(context, settings).map(item => ({
                     id: item.id,
                     table_name: item.tableName,
                     table_columns: item.tableColumns,
                     required_columns: item.requiredColumns,
                     force_update: Boolean(item.forceUpdate),
                     always_inject: Boolean(item.alwaysInject),
+                    editable: Boolean(item.editable),
                     compression_mode: String(item?.compression?.mode || 'none'),
                 })),
-                constraints: {
+                selectionConstraints: {
                     recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
                     injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
                     recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
@@ -4009,13 +4074,15 @@ async function chooseFocusNodes(context, settings, recallState) {
     try {
         const parsed = await runFunctionCallTask(context, settings, {
             systemPrompt: finalizeSystemPrompt,
-            userPrompt: JSON.stringify({
-                query_bundle: recallState.queryBundle,
-                query: recallState.query,
-                candidates: detailRows,
-                always_inject_ids: alwaysInjectIds,
-                prior_plan: recallState.route || {},
-                constraints: {
+            userPrompt: buildRecallFinalizeInputXml({
+                recallQueryContext: {
+                    query_bundle: recallState.queryBundle,
+                    query: recallState.query,
+                },
+                candidateNodes: detailRows,
+                alwaysInjectNodeIds: alwaysInjectIds,
+                routeResult: recallState.route || {},
+                selectionConstraints: {
                     include_non_event_nodes: true,
                     require_event_continuity: true,
                     recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
