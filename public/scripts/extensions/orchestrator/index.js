@@ -204,6 +204,7 @@ function registerLocaleData() {
         'AI build did not provide any stage tool calls.': 'AI 构建未提供任何阶段工具调用。',
         'Orchestrator running...': '编排插件运行中...',
         'Orchestrator completed.': '编排插件运行完成。',
+        'Generation aborted. Skipped orchestration.': '生成已中断，已跳过编排。',
         'Orchestrator failed: ${0}': '编排插件运行失败：${0}',
         'Failed to persist character override.': '角色卡覆写写入失败。',
     });
@@ -311,6 +312,7 @@ function registerLocaleData() {
         'AI build did not provide any stage tool calls.': 'AI 建構未提供任何階段工具呼叫。',
         'Orchestrator running...': '編排插件運行中...',
         'Orchestrator completed.': '編排插件運行完成。',
+        'Generation aborted. Skipped orchestration.': '生成已中斷，已跳過編排。',
         'Orchestrator failed: ${0}': '編排插件運行失敗：${0}',
         'Failed to persist character override.': '角色卡覆寫寫入失敗。',
     });
@@ -771,12 +773,29 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
     return parsedCalls;
 }
 
+function isAbortSignalLike(value) {
+    return Boolean(value && typeof value === 'object' && 'aborted' in value);
+}
+
+function isAbortError(error, abortSignal = null) {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        return true;
+    }
+    const name = String(error?.name || '').toLowerCase();
+    if (name === 'aborterror') {
+        return true;
+    }
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('aborted') || message.includes('abort');
+}
+
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
     parameters = {},
     llmPresetName = '',
     apiSettingsOverride = null,
+    abortSignal = null,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
@@ -807,11 +826,14 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
             };
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 ...requestOptions,
             });
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
             lastError = error;
             if (attempt >= retries) {
                 throw error;
@@ -829,6 +851,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     llmPresetName = '',
     apiSettingsOverride = null,
     retriesOverride = null,
+    abortSignal = null,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
@@ -848,11 +871,14 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
             };
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 ...requestOptions,
             });
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
             lastError = error;
             if (attempt >= retries) {
                 throw error;
@@ -938,7 +964,7 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     });
 }
 
-async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint = '') {
+async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint = '', abortSignal = null) {
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
@@ -1011,6 +1037,7 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
         parameters: nodeOutputSchema,
         llmPresetName,
         apiSettingsOverride,
+        abortSignal,
     });
     if (toolOutput && typeof toolOutput === 'object') {
         return toolOutput;
@@ -1019,9 +1046,9 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
     throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
 }
 
-async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, wiHint = '') {
+async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, wiHint = '', abortSignal = null) {
     const preset = presets[nodeSpec.preset] || {};
-    return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint);
+    return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint, abortSignal);
 }
 
 async function runOrchestration(context, payload, messages, profile, wiHint = '') {
@@ -1029,8 +1056,12 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
     const stages = Array.isArray(spec?.stages) ? spec.stages : [];
     const stageOutputs = [];
     const previousNodeOutputs = new Map();
+    const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
 
     for (const stage of stages) {
+        if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+            throw new DOMException('Orchestration aborted.', 'AbortError');
+        }
         const mode = String(stage?.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
         const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
         const nodeOutputs = [];
@@ -1040,7 +1071,7 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 return {
                     node: nodeSpec.id,
-                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint),
+                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint, abortSignal),
                 };
             }));
             nodeOutputs.push(...outputs);
@@ -1049,7 +1080,7 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 nodeOutputs.push({
                     node: nodeSpec.id,
-                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint),
+                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint, abortSignal),
                 });
             }
         }
@@ -1329,6 +1360,12 @@ async function onWorldInfoFinalized(payload) {
     if (orchInFlight) {
         return;
     }
+    if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        clearCapsulePrompt(context);
+        clearLastCapsuleMetadata(context);
+        updateUiStatus(i18n('Generation aborted. Skipped orchestration.'));
+        return;
+    }
     orchInFlight = true;
 
     try {
@@ -1355,6 +1392,13 @@ async function onWorldInfoFinalized(payload) {
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
     } catch (error) {
+        if (isAbortError(error, payload?.signal)) {
+            clearCapsulePrompt(context);
+            clearLastCapsuleMetadata(context);
+            updateUiStatus(i18n('Generation aborted. Skipped orchestration.'));
+            clearRunInfoToast();
+            return;
+        }
         clearCapsulePrompt(context);
         clearLastCapsuleMetadata(context);
         console.warn(`[${MODULE_NAME}] Orchestration failed`, error);

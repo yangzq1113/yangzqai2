@@ -507,6 +507,7 @@ function registerLocaleData() {
         'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
         'Selected edge #${0}: ${1} -> ${2} [${3}]': '已选择边 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '检测到聊天变更。记忆图会在下次生成时重新同步。',
+        'Generation aborted. Skipped memory recall.': '生成已中断，已跳过记忆召回。',
     });
     addLocaleData('zh-tw', {
         'Memory': '記憶',
@@ -726,6 +727,7 @@ function registerLocaleData() {
         'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
         'Selected edge #${0}: ${1} -> ${2} [${3}]': '已選擇邊 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '偵測到聊天變更。記憶圖會在下次生成時重新同步。',
+        'Generation aborted. Skipped memory recall.': '生成已中斷，已跳過記憶召回。',
     });
 }
 
@@ -1993,6 +1995,22 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
     return parsedCalls;
 }
 
+function isAbortSignalLike(value) {
+    return Boolean(value && typeof value === 'object' && 'aborted' in value);
+}
+
+function isAbortError(error, abortSignal = null) {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        return true;
+    }
+    const name = String(error?.name || '').toLowerCase();
+    if (name === 'aborterror') {
+        return true;
+    }
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('aborted') || message.includes('abort');
+}
+
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
@@ -2000,6 +2018,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     responseLength = null,
     llmPresetName = '',
     apiSettingsOverride = null,
+    abortSignal = null,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
@@ -2023,7 +2042,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools,
                 toolChoice,
                 replaceTools: true,
@@ -2035,6 +2054,9 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             });
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
             lastError = error;
             if (attempt >= retries) {
                 throw error;
@@ -2053,6 +2075,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     llmPresetName = '',
     apiSettingsOverride = null,
     retriesOverride = null,
+    abortSignal = null,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
@@ -2065,7 +2088,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools,
                 toolChoice: 'auto',
                 replaceTools: true,
@@ -2075,6 +2098,9 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             });
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
             lastError = error;
             if (attempt >= retries) {
                 throw error;
@@ -2095,6 +2121,7 @@ async function runFunctionCallTask(context, settings, {
     functionDescription = '',
     parameters = {},
     responseLength = null,
+    abortSignal = null,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
@@ -2125,6 +2152,7 @@ async function runFunctionCallTask(context, settings, {
             : null,
         llmPresetName: String(promptPresetName || '').trim(),
         apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+        abortSignal,
     });
 }
 
@@ -4126,6 +4154,7 @@ async function chooseRecallRoute(context, settings, recallState) {
                 required: ['action'],
                 additionalProperties: true,
             },
+            abortSignal: recallState?.abortSignal || null,
         });
         return {
             action: String(parsed?.action || '').toLowerCase() === 'drill' ? 'drill' : 'finalize',
@@ -4296,6 +4325,7 @@ async function chooseFocusNodes(context, settings, recallState) {
                 required: ['selected_node_ids'],
                 additionalProperties: true,
             },
+            abortSignal: recallState?.abortSignal || null,
         });
 
         const selectedIds = Array.isArray(parsed?.selected_node_ids)
@@ -4659,6 +4689,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     if (!settings.recallEnabled) {
         return { selectedNodes: [], alwaysInjectNodes: [], trace: [], query: '' };
     }
+    const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
 
     const queryBundle = getRecallQueryBundle(payload, context, settings);
     const query = normalizeText(queryBundle.fullText || '');
@@ -4675,6 +4706,7 @@ async function runLLMDrivenRecall(context, store, payload) {
         queryBundle,
         candidates: rootCandidates,
         alwaysInjectIds,
+        abortSignal,
     });
     trace.push({
         step: 'plan_pass_1',
@@ -4707,6 +4739,7 @@ async function runLLMDrivenRecall(context, store, payload) {
             route,
             candidates: expandedCandidates,
             alwaysInjectIds,
+            abortSignal,
         });
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
         trace.push({
@@ -4724,6 +4757,7 @@ async function runLLMDrivenRecall(context, store, payload) {
             route,
             candidates: expandedCandidates,
             alwaysInjectIds,
+            abortSignal,
         });
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
         trace.push({
@@ -4989,6 +5023,10 @@ async function injectMemoryPrompts(context, payload) {
     if (!Array.isArray(payload?.coreChat)) {
         return false;
     }
+    if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        updateUiStatus(i18n('Generation aborted. Skipped memory recall.'));
+        return false;
+    }
     if (!settings.enabled) {
         await clearRuntimeLorebookProjection(context, settings);
         updateUiStatus(i18n('Memory disabled, runtime lorebook projection cleared.'));
@@ -5044,6 +5082,10 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world
         }
         return Boolean(injected);
     } catch (error) {
+        if (isAbortError(error, payload?.signal)) {
+            updateUiStatus(i18n('Generation aborted. Skipped memory recall.'));
+            return false;
+        }
         console.error(`[${MODULE_NAME}] Recall injection failed during ${trigger}`, error);
         updateUiStatus(i18nFormat(
             'Recall injection failed (${0}): ${1}',

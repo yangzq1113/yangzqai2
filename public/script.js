@@ -4953,6 +4953,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     const wiScanPayload = {
         type,
         dryRun,
+        signal: abortController?.signal || null,
         maxContext: this_max_context,
         coreChat,
         chatForWI,
