@@ -872,6 +872,48 @@ function renderTemplate(template, vars) {
         .replaceAll('{{wi_summary}}', String(vars.wi_summary || ''));
 }
 
+function toCompactJsonText(value, fallback = '{}') {
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return fallback;
+    }
+}
+
+function buildJsonXmlBlock(tag, note, value) {
+    return [
+        `<${tag}>`,
+        `  <note>${escapeXml(String(note || ''))}</note>`,
+        `  <json>${escapeXml(toCompactJsonText(value))}</json>`,
+        `</${tag}>`,
+    ].join('\n');
+}
+
+function buildAiSuggestInputXml({
+    character = {},
+    overrideGoal = '',
+    runtimeContextGuarantees = {},
+    injectionContract = {},
+    mandatoryQualityAxes = {},
+    globalOrchestrationSpec = {},
+    globalPresets = {},
+    toolProtocol = {},
+} = {}) {
+    return [
+        '<orchestration_build_input>',
+        '  <input_guide>Below are structured blocks for building a character-specific orchestration profile. Read all blocks before calling tools.</input_guide>',
+        buildJsonXmlBlock('character_profile', 'Current active character card snapshot.', character),
+        buildJsonXmlBlock('override_goal', 'Optional user goal override for this character profile.', { override_goal: String(overrideGoal || '') }),
+        buildJsonXmlBlock('runtime_context_guarantees', 'What runtime context is already guaranteed for both orchestration nodes and final generation.', runtimeContextGuarantees),
+        buildJsonXmlBlock('injection_contract', 'How final orchestration outputs are injected to generation.', injectionContract),
+        buildJsonXmlBlock('mandatory_quality_axes', 'Quality axes that must be covered by stage/preset design.', mandatoryQualityAxes),
+        buildJsonXmlBlock('global_orchestration_spec', 'Current global orchestration spec as reference baseline.', globalOrchestrationSpec),
+        buildJsonXmlBlock('global_presets', 'Current global preset map as reference baseline.', globalPresets),
+        buildJsonXmlBlock('tool_protocol', 'Function-call protocol and expected argument shapes.', toolProtocol),
+        '</orchestration_build_input>',
+    ].join('\n');
+}
+
 function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     api = '',
     promptPresetName = '',
@@ -901,12 +943,23 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
         .join('\n');
     const { message: lastUser } = extractLastUserMessage(messages);
-    const previousOutputs = JSON.stringify(Object.fromEntries(previousNodeOutputs), null, 2);
+    const previousOutputs = [
+        '<previous_node_outputs>',
+        '  <note>Outputs from completed nodes in prior stages. Use as upstream context only.</note>',
+        `  <json>${escapeXml(toCompactJsonText(Object.fromEntries(previousNodeOutputs)))}</json>`,
+        '</previous_node_outputs>',
+    ].join('\n');
+    const distillerOutput = [
+        '<distiller_output>',
+        '  <note>Output from distiller node if available.</note>',
+        `  <json>${escapeXml(toCompactJsonText(previousNodeOutputs.get('distiller') || {}))}</json>`,
+        '</distiller_output>',
+    ].join('\n');
     const userPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
         recent_chat: recent,
         last_user: String(lastUser?.mes || ''),
         previous_outputs: previousOutputs,
-        distiller: JSON.stringify(previousNodeOutputs.get('distiller') || {}, null, 2),
+        distiller: distillerOutput,
         wi_summary: wiHint,
     });
 
@@ -2126,26 +2179,26 @@ async function runAiCharacterProfileBuild(context, settings) {
         'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
         'luker_orch_finalize_profile must be last.',
     ].join('\n');
-    const suggestUserPrompt = JSON.stringify({
+    const suggestUserPrompt = buildAiSuggestInputXml({
         character: characterCard,
-        override_goal: String(uiState.aiGoal || ''),
-        runtime_context_guarantees: {
+        overrideGoal: String(uiState.aiGoal || ''),
+        runtimeContextGuarantees: {
             preset_assembly_is_applied: true,
             character_card_context_is_available: true,
             world_info_context_is_available: true,
             recent_messages_are_available: true,
             reminder: 'Do not duplicate static card data in every node; use behavior-focused checks.',
         },
-        injection_contract: {
+        injectionContract: {
             injected_stage: 'only_last_stage',
             expected_last_stage_mode: 'parallel',
             expected_guidance_format: 'runtime_assembled_xml_from_structured_fields',
             no_json_in_summary: true,
         },
-        mandatory_quality_axes: ORCH_AI_QUALITY_AXES,
-        global_orchestration_spec: currentSpec,
-        global_presets: currentPresets,
-        tool_protocol: {
+        mandatoryQualityAxes: ORCH_AI_QUALITY_AXES,
+        globalOrchestrationSpec: currentSpec,
+        globalPresets: currentPresets,
+        toolProtocol: {
             append_stage: {
                 function: 'luker_orch_append_stage',
                 shape: {
