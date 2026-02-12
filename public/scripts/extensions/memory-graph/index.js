@@ -2710,6 +2710,16 @@ function buildJsonXmlSection(tag, value) {
     ].join('\n');
 }
 
+function buildCdataXmlTag(tag, value, indent = '    ') {
+    const safeTag = String(tag || '').trim() || 'value';
+    const body = encodeXmlCdata(String(value ?? ''));
+    return [
+        `${indent}<${safeTag}>`,
+        `${indent}  <![CDATA[${body}]]>`,
+        `${indent}</${safeTag}>`,
+    ].join('\n');
+}
+
 function buildExtractInputXml(requiredTypes, graphData, messages) {
     const safeRequiredTypes = Array.isArray(requiredTypes)
         ? requiredTypes.map(item => normalizeText(item).toLowerCase()).filter(Boolean)
@@ -2726,12 +2736,11 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
         const roleRaw = String(message?.role || '').trim().toLowerCase() === 'assistant' ? 'Assistant' : 'User';
         const role = escapeXmlText(roleRaw);
         const name = escapeXmlText(String(message?.name || ''));
-        const text = escapeXmlText(String(message?.text || ''));
         const speaker = name ? `${roleRaw}: ${name}` : roleRaw;
         return [
             `    <message seq="${seq}" role="${role}" name="${name}">`,
-            `      <speaker>${escapeXmlText(speaker)}</speaker>`,
-            `      <text>${text}</text>`,
+            buildCdataXmlTag('speaker', speaker, '      '),
+            buildCdataXmlTag('text', String(message?.text || ''), '      '),
             '    </message>',
         ].join('\n');
     }).join('\n');
