@@ -1963,54 +1963,6 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
     return parsedCalls;
 }
 
-function isRetryableToolCallError(error) {
-    const statusCode = Number(
-        error?.status
-        || error?.response?.status
-        || error?.cause?.status
-        || error?.error?.status
-        || 0,
-    );
-    if ([408, 409, 425, 429, 500, 502, 503, 504].includes(statusCode)) {
-        return true;
-    }
-    let responseDataText = '';
-    try {
-        responseDataText = JSON.stringify(error?.response?.data || error?.error || {});
-    } catch {
-        responseDataText = '';
-    }
-    const message = [
-        String(error?.message || ''),
-        String(error?.cause?.message || ''),
-        String(error?.response?.data?.error?.message || ''),
-        String(error?.response?.data?.error?.type || ''),
-        String(error?.response?.data?.error?.code || ''),
-        responseDataText,
-        String(error || ''),
-    ].join(' ').toLowerCase();
-    return (
-        message.includes('tool call')
-        || message.includes('network')
-        || message.includes('timeout')
-        || message.includes('timed out')
-        || message.includes('fetch failed')
-        || message.includes('bad gateway')
-        || message.includes('gateway timeout')
-        || message.includes('service unavailable')
-        || message.includes('too many requests')
-        || message.includes('chat completion request error')
-        || message.includes('internal server error')
-        || message.includes('server_error')
-        || message.includes('internal_error')
-        || message.includes('overloaded')
-        || message.includes('temporarily unavailable')
-        || message.includes('502')
-        || message.includes('503')
-        || message.includes('504')
-    );
-}
-
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
@@ -2054,7 +2006,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
             lastError = error;
-            if (!isRetryableToolCallError(error) || attempt >= retries) {
+            if (attempt >= retries) {
                 throw error;
             }
             console.warn(`[${MODULE_NAME}] Tool call '${fnName}' failed. Retrying (${attempt + 1}/${retries})...`, error);
@@ -2094,7 +2046,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
             lastError = error;
-            if (!isRetryableToolCallError(error) || attempt >= retries) {
+            if (attempt >= retries) {
                 throw error;
             }
             console.warn(`[${MODULE_NAME}] Multi tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
@@ -2687,7 +2639,7 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                 retriesOverride: 0,
             });
         } catch (error) {
-            if (!isRetryableToolCallError(error) || attempt >= semanticRetries) {
+            if (attempt >= semanticRetries) {
                 throw error;
             }
             lastRetryableError = error;
@@ -3350,7 +3302,7 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
                 break;
             } catch (error) {
                 lastFrameError = error;
-                if (!isRetryableToolCallError(error) || attempt >= frameErrorRetries) {
+                if (attempt >= frameErrorRetries) {
                     throw error;
                 }
                 console.warn(
