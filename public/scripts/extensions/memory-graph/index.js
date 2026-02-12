@@ -3764,11 +3764,11 @@ function buildProjectedEdges(store, {
                 from: fromVisible,
                 to: toVisible,
                 type: edgeType,
-                support_count: 1,
+                weight: 1,
             });
             continue;
         }
-        current.support_count = Number(current.support_count || 0) + 1;
+        current.weight = Number(current.weight || 0) + 1;
     }
     return Array.from(merged.values());
 }
@@ -3816,7 +3816,7 @@ function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null,
         if (!store.nodes[neighborId] || store.nodes[neighborId].archived) {
             continue;
         }
-        const supportCount = Math.max(1, Number(edge?.support_count || 1));
+        const supportCount = Math.max(1, Number(edge?.weight || 1));
         degree += supportCount;
         neighborIds.add(neighborId);
         const key = `${edgeType}:${direction}`;
