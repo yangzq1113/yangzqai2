@@ -3699,6 +3699,80 @@ function getNodeRecallExposure(settings, node, context = null) {
     return 'full';
 }
 
+function getNearestVisibleAncestorId(store, nodeId, visibleSet) {
+    const target = String(nodeId || '').trim();
+    if (!target) {
+        return '';
+    }
+    const set = visibleSet instanceof Set ? visibleSet : new Set();
+    let currentId = target;
+    const guard = new Set();
+    while (currentId && !guard.has(currentId)) {
+        guard.add(currentId);
+        const node = store?.nodes?.[currentId];
+        if (!node || node.archived) {
+            return '';
+        }
+        if (set.has(currentId)) {
+            return currentId;
+        }
+        currentId = String(node.parentId || '').trim();
+    }
+    return '';
+}
+
+function buildProjectedEdges(store, {
+    visibleNodeIds = null,
+    relationTypes = null,
+    excludeInternal = false,
+} = {}) {
+    const visibleSet = visibleNodeIds instanceof Set
+        ? visibleNodeIds
+        : Array.isArray(visibleNodeIds)
+            ? new Set(visibleNodeIds.map(id => String(id || '').trim()).filter(Boolean))
+            : new Set(
+                Object.values(store?.nodes || {})
+                    .filter(node => node && !node.archived)
+                    .map(node => String(node.id || '').trim())
+                    .filter(Boolean),
+            );
+    const relationAllow = Array.isArray(relationTypes) && relationTypes.length > 0
+        ? new Set(relationTypes.map(type => normalizeText(type).toLowerCase()).filter(Boolean))
+        : null;
+    const internalEdgeTypes = new Set(['contains', 'semantic_contains']);
+    const merged = new Map();
+    for (const edge of store?.edges || []) {
+        if (!edge) {
+            continue;
+        }
+        const edgeType = normalizeText(edge.type || '').toLowerCase() || 'related';
+        if (excludeInternal && internalEdgeTypes.has(edgeType)) {
+            continue;
+        }
+        if (relationAllow && !relationAllow.has(edgeType)) {
+            continue;
+        }
+        const fromVisible = getNearestVisibleAncestorId(store, edge.from, visibleSet);
+        const toVisible = getNearestVisibleAncestorId(store, edge.to, visibleSet);
+        if (!fromVisible || !toVisible || fromVisible === toVisible) {
+            continue;
+        }
+        const key = `${fromVisible}::${toVisible}::${edgeType}`;
+        const current = merged.get(key);
+        if (!current) {
+            merged.set(key, {
+                from: fromVisible,
+                to: toVisible,
+                type: edgeType,
+                support_count: 1,
+            });
+            continue;
+        }
+        current.support_count = Number(current.support_count || 0) + 1;
+    }
+    return Array.from(merged.values());
+}
+
 function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null, limit = 10 } = {}) {
     if (!nodeId) {
         return {
@@ -3707,20 +3781,21 @@ function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null,
             sample_neighbors: [],
         };
     }
-    const relationAllow = Array.isArray(relationTypes) && relationTypes.length > 0
-        ? new Set(relationTypes.map(type => normalizeText(type).toLowerCase()).filter(Boolean))
-        : null;
+    const visibleSet = nodeSet instanceof Set
+        ? nodeSet
+        : Array.isArray(nodeSet)
+            ? new Set(nodeSet.map(id => String(id || '').trim()).filter(Boolean))
+            : null;
+    const projectedEdges = buildProjectedEdges(store, {
+        visibleNodeIds: visibleSet,
+        relationTypes,
+        excludeInternal: false,
+    });
     const byRelation = new Map();
     const neighborIds = new Set();
     let degree = 0;
-    for (const edge of store.edges || []) {
-        if (!edge) {
-            continue;
-        }
+    for (const edge of projectedEdges) {
         const edgeType = normalizeText(edge.type || '').toLowerCase() || 'related';
-        if (relationAllow && !relationAllow.has(edgeType)) {
-            continue;
-        }
         let neighborId = '';
         let direction = '';
         if (edge.from === nodeId) {
@@ -3735,16 +3810,17 @@ function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null,
         if (!neighborId) {
             continue;
         }
-        if (nodeSet && !nodeSet.has(neighborId)) {
+        if (visibleSet && !visibleSet.has(neighborId)) {
             continue;
         }
         if (!store.nodes[neighborId] || store.nodes[neighborId].archived) {
             continue;
         }
-        degree += 1;
+        const supportCount = Math.max(1, Number(edge?.support_count || 1));
+        degree += supportCount;
         neighborIds.add(neighborId);
         const key = `${edgeType}:${direction}`;
-        byRelation.set(key, Number(byRelation.get(key) || 0) + 1);
+        byRelation.set(key, Number(byRelation.get(key) || 0) + supportCount);
     }
     const relationRows = Array.from(byRelation.entries())
         .map(([key, count]) => {
@@ -4025,7 +4101,6 @@ function addCandidate(candidateMap, node) {
 function expandRouteCandidates(store, route, rootCandidates) {
     const candidateMap = new Map();
     const expandPlan = Array.isArray(route?.expand_plan) ? route.expand_plan : [];
-    const edges = Array.isArray(store?.edges) ? store.edges : [];
 
     for (const node of rootCandidates) {
         addCandidate(candidateMap, node);
@@ -4036,7 +4111,6 @@ function expandRouteCandidates(store, route, rootCandidates) {
             continue;
         }
         const relationTypes = normalizeEdgeTypeList(request?.relation_types);
-        const relationSet = relationTypes.length > 0 ? new Set(relationTypes) : null;
         const depth = Math.max(1, Math.floor(Number(request?.depth) || 1));
         const includeChildren = request?.include_children !== false;
         const seen = new Set([seedId]);
@@ -4046,6 +4120,12 @@ function expandRouteCandidates(store, route, rootCandidates) {
             if (frontier.length === 0) {
                 break;
             }
+            const visibleSet = new Set(candidateMap.keys());
+            const projectedEdges = buildProjectedEdges(store, {
+                visibleNodeIds: visibleSet,
+                relationTypes,
+                excludeInternal: false,
+            });
             const next = [];
             for (const currentId of frontier) {
                 const currentNode = store.nodes[currentId];
@@ -4062,12 +4142,8 @@ function expandRouteCandidates(store, route, rootCandidates) {
                         next.push(child.id);
                     }
                 }
-                for (const edge of edges) {
+                for (const edge of projectedEdges) {
                     if (!edge) {
-                        continue;
-                    }
-                    const edgeType = normalizeText(edge.type || '').toLowerCase();
-                    if (relationSet && !relationSet.has(edgeType)) {
                         continue;
                     }
                     let neighborId = '';
