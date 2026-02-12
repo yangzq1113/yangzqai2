@@ -1230,8 +1230,8 @@ function refreshOpenAIPresetSelectors(root, context, settings) {
     }
 }
 
-function getChatKey(context) {
-    const target = buildMemoryTargetFromContext(context);
+function getChatKey(context, explicitTarget = null) {
+    const target = buildMemoryTargetFromContext(context, explicitTarget);
     if (!target) {
         return 'invalid_target';
     }
@@ -1245,17 +1245,52 @@ function getChatKey(context) {
     return key;
 }
 
-function buildMemoryTargetFromContext(context) {
-    if (context.groupId) {
-        const groupChatId = String(context.chatId || '').trim();
+function normalizeExplicitChatStateTarget(target) {
+    if (!target || typeof target !== 'object') {
+        return null;
+    }
+    if (target.is_group) {
+        const id = String(target.id || '').trim();
+        return id ? { is_group: true, id } : null;
+    }
+    const avatar = String(target.avatar_url || '').trim();
+    const fileName = String(target.file_name || '').trim();
+    return avatar && fileName
+        ? { is_group: false, avatar_url: avatar, file_name: fileName }
+        : null;
+}
+
+function buildMemoryTargetFromContext(context, explicitTarget = null) {
+    const normalizedExplicit = normalizeExplicitChatStateTarget(explicitTarget);
+    if (normalizedExplicit) {
+        return normalizedExplicit;
+    }
+    const live = getContext();
+    const runtime = live && typeof live === 'object' ? live : context;
+    const groupId = runtime?.groupId ?? context?.groupId;
+    const hasGroupId = groupId !== null && groupId !== undefined && String(groupId).trim() !== '';
+    const chatId = String(
+        (typeof runtime?.getCurrentChatId === 'function'
+            ? runtime.getCurrentChatId()
+            : (typeof context?.getCurrentChatId === 'function' ? context.getCurrentChatId() : (runtime?.chatId ?? context?.chatId))) || '',
+    ).trim();
+
+    if (hasGroupId) {
+        const groupChatId = chatId;
         if (!groupChatId) {
             return null;
         }
         return { is_group: true, id: groupChatId };
     }
 
-    const avatar = String(context.characters?.[context.characterId]?.avatar || '').trim();
-    const fileName = String(context.characters?.[context.characterId]?.chat || context.chatId || '').trim();
+    const characterId = runtime?.characterId ?? context?.characterId;
+    const characters = Array.isArray(runtime?.characters)
+        ? runtime.characters
+        : (Array.isArray(context?.characters) ? context.characters : []);
+    const character = characters?.[characterId];
+    const avatar = String(character?.avatar || '').trim();
+    const metadataChatId = String(runtime?.chatMetadata?.main_chat || context?.chatMetadata?.main_chat || '').trim();
+    const fileName = String(character?.chat || chatId || metadataChatId || '').trim();
     if (!avatar || !fileName) {
         return null;
     }
@@ -1398,17 +1433,13 @@ function normalizeStoreForRuntime(store) {
     return normalized;
 }
 
-async function ensureMemoryStoreLoaded(context, { force = false } = {}) {
-    const target = buildMemoryTargetFromContext(context);
+async function ensureMemoryStoreLoaded(context, { force = false, targetHint = null } = {}) {
+    const target = buildMemoryTargetFromContext(context, targetHint);
     if (!target) {
-        const cachedKey = getChatKey(context);
-        if (cachedKey !== 'invalid_target' && memoryStoreCache.has(cachedKey)) {
-            return memoryStoreCache.get(cachedKey);
-        }
-        return createEmptyStore();
+        return null;
     }
 
-    const chatKey = getChatKey(context);
+    const chatKey = getChatKey(context, target);
     memoryStoreTargets.set(chatKey, target);
 
     if (!force && memoryStoreCache.has(chatKey)) {
@@ -1433,8 +1464,8 @@ async function ensureMemoryStoreLoaded(context, { force = false } = {}) {
     }
 }
 
-function getMemoryStore(context) {
-    const chatKey = getChatKey(context);
+function getMemoryStore(context, targetHint = null) {
+    const chatKey = getChatKey(context, targetHint);
     return memoryStoreCache.get(chatKey) || null;
 }
 
@@ -4890,19 +4921,19 @@ function alignStoreCoverageToChat(store, context) {
     return { changed, latestSeq };
 }
 
-async function ensureStoreSyncedWithChat(context) {
-    const loaded = await ensureMemoryStoreLoaded(context);
-    const store = getMemoryStore(context) || loaded || null;
+async function ensureStoreSyncedWithChat(context, targetHint = null) {
+    const loaded = await ensureMemoryStoreLoaded(context, { targetHint });
+    const store = getMemoryStore(context, targetHint) || loaded || null;
     if (!store) {
         return null;
     }
-    const target = buildMemoryTargetFromContext(context);
+    const target = buildMemoryTargetFromContext(context, targetHint);
     if (!target) {
         return store;
     }
     const { changed } = alignStoreCoverageToChat(store, context);
     if (changed) {
-        const chatKey = getChatKey(context);
+        const chatKey = getChatKey(context, target);
         await persistMemoryStoreByChatKey(context, chatKey, store);
     }
     return store;
@@ -4936,7 +4967,8 @@ async function injectMemoryPrompts(context, payload) {
         return false;
     }
 
-    const store = await ensureStoreSyncedWithChat(context);
+    const targetHint = normalizeExplicitChatStateTarget(payload?.chatStateTarget);
+    const store = await ensureStoreSyncedWithChat(context, targetHint);
     if (!store) {
         updateUiStatus(i18n('Memory store unavailable for current chat.'));
         return false;
@@ -4954,7 +4986,7 @@ async function injectMemoryPrompts(context, payload) {
         at: Date.now(),
         blocks,
     };
-    const chatKey = getChatKey(context);
+    const chatKey = getChatKey(context, targetHint);
     await persistMemoryStoreByChatKey(context, chatKey, store);
     updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query, selectedNodes.length));
     return true;
@@ -8024,11 +8056,13 @@ jQuery(() => {
 
     const wiBeforeEvent = context.eventTypes.GENERATION_BEFORE_WORLD_INFO_SCAN;
     context.eventSource.on(wiBeforeEvent, async (payload) => {
-        await safeInjectMemoryPrompts(context, payload, 'before_world_info_scan');
+        const runtimeContext = getContext();
+        await safeInjectMemoryPrompts(runtimeContext, payload, 'before_world_info_scan');
     });
     const clearRuntimeProjectionAfterGeneration = async () => {
+        const runtimeContext = getContext();
         try {
-            await clearRuntimeLorebookProjection(context, getSettings());
+            await clearRuntimeLorebookProjection(runtimeContext, getSettings());
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
         }
@@ -8047,9 +8081,10 @@ jQuery(() => {
         });
     }
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_messageCount, mutationMeta) => {
+        const runtimeContext = getContext();
         try {
-            await ensureMemoryStoreLoaded(context);
-            const chatKey = getChatKey(context);
+            await ensureMemoryStoreLoaded(runtimeContext);
+            const chatKey = getChatKey(runtimeContext);
             const store = memoryStoreCache.get(chatKey);
             if (!store) {
                 return;
@@ -8057,14 +8092,14 @@ jQuery(() => {
             const meta = normalizeMutationMeta(mutationMeta);
             const fromSeq = Number(meta?.deletedAssistantSeqFrom || 0);
             if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
-                alignStoreCoverageToChat(store, context);
-                await persistMemoryStoreByChatKey(context, chatKey, store);
+                alignStoreCoverageToChat(store, runtimeContext);
+                await persistMemoryStoreByChatKey(runtimeContext, chatKey, store);
                 refreshUiStats();
                 return;
             }
             truncateStoreFromSeq(store, fromSeq);
-            alignStoreCoverageToChat(store, context);
-            await persistMemoryStoreByChatKey(context, chatKey, store);
+            alignStoreCoverageToChat(store, runtimeContext);
+            await persistMemoryStoreByChatKey(runtimeContext, chatKey, store);
             refreshUiStats();
             updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
         } catch (error) {
@@ -8089,8 +8124,9 @@ jQuery(() => {
         context.eventSource.on(eventName, () => ensureUi());
     }
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
+        const runtimeContext = getContext();
         ensureUi();
-        ensureMemoryStoreLoaded(context)
+        ensureMemoryStoreLoaded(runtimeContext)
             .then(() => refreshUiStats())
             .catch(() => refreshUiStats());
     });
