@@ -3878,8 +3878,8 @@ async function chooseRecallRoute(context, settings, recallState) {
             systemPrompt: routeSystemPrompt,
             userPrompt: buildRecallRouteInputXml({
                 recallQueryContext: {
-                    query_bundle: recallState.queryBundle,
-                    query: recallState.query,
+                    user_query_text: recallState.query,
+                    recent_dialogue_context: recallState.queryBundle,
                 },
                 candidateNodes: candidateRows,
                 alwaysInjectNodeIds: alwaysInjectIds,
@@ -4076,8 +4076,8 @@ async function chooseFocusNodes(context, settings, recallState) {
             systemPrompt: finalizeSystemPrompt,
             userPrompt: buildRecallFinalizeInputXml({
                 recallQueryContext: {
-                    query_bundle: recallState.queryBundle,
-                    query: recallState.query,
+                    user_query_text: recallState.query,
+                    recent_dialogue_context: recallState.queryBundle,
                 },
                 candidateNodes: detailRows,
                 alwaysInjectNodeIds: alwaysInjectIds,
