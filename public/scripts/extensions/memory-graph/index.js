@@ -471,6 +471,7 @@ function registerLocaleData() {
         'No nodes are eligible for the selected scope.': '当前范围内没有可压缩节点。',
         'Manual compression completed. Created=${0}, archived=${1}': '手动压缩完成。新建=${0}，归档=${1}',
         'Manual compression made no changes.': '手动压缩未产生变化。',
+        'Event compression completed: ${0} round(s).': '事件压缩完成：本次 ${0} 轮。',
         'Current chat memory graph reset.': '已重置当前聊天记忆图。',
         'Reset memory graph for current chat.': '已重置当前聊天的记忆图。',
         'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
@@ -685,6 +686,7 @@ function registerLocaleData() {
         'No nodes are eligible for the selected scope.': '目前範圍內沒有可壓縮節點。',
         'Manual compression completed. Created=${0}, archived=${1}': '手動壓縮完成。新建=${0}，歸檔=${1}',
         'Manual compression made no changes.': '手動壓縮未產生變化。',
+        'Event compression completed: ${0} round(s).': '事件壓縮完成：本次 ${0} 輪。',
         'Current chat memory graph reset.': '已重設目前聊天記憶圖。',
         'Reset memory graph for current chat.': '已重設目前聊天記憶圖。',
         'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
@@ -2955,6 +2957,37 @@ function getSemanticNodesForType(store, type) {
         .filter(node => String(node.type || '').toLowerCase() === targetType);
 }
 
+function createCompressionStats() {
+    return {
+        totalRounds: 0,
+        byType: {},
+    };
+}
+
+function recordCompressionRound(stats, type, rounds = 1) {
+    if (!stats || typeof stats !== 'object') {
+        return;
+    }
+    const safeType = String(type || '').trim().toLowerCase();
+    const safeRounds = Math.max(0, Math.floor(Number(rounds) || 0));
+    if (!safeType || safeRounds <= 0) {
+        return;
+    }
+    stats.totalRounds = Math.max(0, Math.floor(Number(stats.totalRounds || 0))) + safeRounds;
+    if (!stats.byType || typeof stats.byType !== 'object') {
+        stats.byType = {};
+    }
+    stats.byType[safeType] = Math.max(0, Math.floor(Number(stats.byType[safeType] || 0))) + safeRounds;
+}
+
+function getCompressionRoundsByType(stats, type) {
+    const safeType = String(type || '').trim().toLowerCase();
+    if (!safeType || !stats || typeof stats !== 'object' || !stats.byType || typeof stats.byType !== 'object') {
+        return 0;
+    }
+    return Math.max(0, Math.floor(Number(stats.byType[safeType] || 0)));
+}
+
 function collectSemanticRootsByDepth(store, type, depth, options = {}) {
     const maxSeq = Number.isFinite(Number(options?.maxSeq)) ? Math.max(0, Math.floor(Number(options.maxSeq))) : null;
     return getSemanticNodesForType(store, type)
@@ -3027,6 +3060,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
             }
             changed = true;
             compressedRounds += 1;
+            recordCompressionRound(options?.compressionStats, type, 1);
         }
         if (compressedRounds >= maxRoundsPerType) {
             break;
@@ -3106,7 +3140,7 @@ function buildExtractBatchFromFrames(frames, frameIndex, contextTurns = 1) {
     return batch;
 }
 
-async function processPendingMessageFrameWithLLM(context, store, settings, schema, frames, frameIndex) {
+async function processPendingMessageFrameWithLLM(context, store, settings, schema, frames, frameIndex, options = {}) {
     const frame = Array.isArray(frames) ? frames[frameIndex] : null;
     if (!frame || typeof frame !== 'object') {
         return false;
@@ -3188,11 +3222,13 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
         }
     }
 
-    await runCompressionLoop(context, store, settings);
+    await runCompressionLoop(context, store, settings, {
+        compressionStats: options?.compressionStats,
+    });
     return true;
 }
 
-async function runExtractionForStore(context, store, { force = false, startSeq = null } = {}) {
+async function runExtractionForStore(context, store, { force = false, startSeq = null, showCompressionToast = true } = {}) {
     const settings = getSettings();
     const window = computeExtractionWindow(context, store, startSeq);
     const frames = window.frames;
@@ -3232,10 +3268,13 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     }
 
     const schema = getEffectiveNodeTypeSchema(context, settings);
+    const compressionStats = createCompressionStats();
     let extractedAny = false;
     for (let i = beginSeq - 1; i < frames.length; i++) {
         const frame = frames[i];
-        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frames, i);
+        const success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frames, i, {
+            compressionStats,
+        });
         if (!success) {
             break;
         }
@@ -3251,8 +3290,12 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
         coveredSeqTo,
         extracted: extractedAny,
         reason: extractedAny ? 'ok' : 'no_upserts',
+        compression: compressionStats,
         at: Date.now(),
     };
+    if (showCompressionToast) {
+        notifyEventCompressionIfAny(compressionStats);
+    }
     return extractedAny;
 }
 
@@ -4361,7 +4404,7 @@ async function rebuildStoreFromCurrentChat(context) {
     }
 
     const rebuilt = createEmptyStore();
-    await runExtractionForStore(context, rebuilt, { force: true, startSeq: 1 });
+    await runExtractionForStore(context, rebuilt, { force: true, startSeq: 1, showCompressionToast: false });
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
     memoryStoreCache.set(chatKey, rebuilt);
@@ -5931,6 +5974,20 @@ function notifyError(message) {
     }
 }
 
+function notifyInfo(message) {
+    if (typeof toastr !== 'undefined') {
+        toastr.info(String(message));
+    }
+}
+
+function notifyEventCompressionIfAny(compressionStats) {
+    const eventRounds = getCompressionRoundsByType(compressionStats, 'event');
+    if (eventRounds <= 0) {
+        return;
+    }
+    notifyInfo(i18nFormat('Event compression completed: ${0} round(s).', eventRounds));
+}
+
 function showRuntimeInfoToast(message) {
     if (typeof toastr === 'undefined') {
         return;
@@ -7230,6 +7287,7 @@ async function openManualCompressionPopup(context, settings) {
     const beforeNodes = Object.values(store.nodes || {});
     const beforeNodeCount = beforeNodes.length;
     const beforeArchivedCount = beforeNodes.filter(node => Boolean(node?.archived)).length;
+    const compressionStats = createCompressionStats();
     showRuntimeInfoToast(i18n('Memory graph update running...'));
     try {
         const changed = await runCompressionLoop(context, store, settings, {
@@ -7237,6 +7295,7 @@ async function openManualCompressionPopup(context, settings) {
             force: values.mode === 'force',
             maxRoundsPerType: values.maxRoundsPerType,
             maxSeq,
+            compressionStats,
         });
         if (!changed) {
             notifySuccess(i18n('Manual compression made no changes.'));
@@ -7251,6 +7310,7 @@ async function openManualCompressionPopup(context, settings) {
         refreshUiStats();
         const summary = i18nFormat('Manual compression completed. Created=${0}, archived=${1}', createdDelta, archivedDelta);
         notifySuccess(summary);
+        notifyEventCompressionIfAny(compressionStats);
         updateUiStatus(summary);
     } finally {
         clearRuntimeInfoToast();
@@ -7422,10 +7482,14 @@ function bindUi() {
                 notifyError(i18n('No active chat selected.'));
                 return;
             }
-            await runCompressionLoop(context, store, settings);
+            const extractionEventRounds = getCompressionRoundsByType(store?.lastExtractionDebug?.compression, 'event');
+            const compressionStats = createCompressionStats();
+            await runCompressionLoop(context, store, settings, { compressionStats });
             await persistMemoryStoreByChatKey(context, getChatKey(context), store);
             refreshUiStats();
             notifySuccess(i18n('Memory graph rebuilt from current chat.'));
+            recordCompressionRound(compressionStats, 'event', extractionEventRounds);
+            notifyEventCompressionIfAny(compressionStats);
             updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
         } finally {
             clearRuntimeInfoToast();
