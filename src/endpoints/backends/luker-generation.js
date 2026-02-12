@@ -8,6 +8,23 @@ const LUKER_GENERATION_JOB_MAX_ITEMS = 128;
 const LUKER_GENERATION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
 const LUKER_GENERATION_JOB_MAX_EVENTS = 8000;
 
+function normalizePersistJsonlFileName(fileName) {
+    const raw = String(fileName || '').trim();
+    if (!raw) {
+        return '';
+    }
+    const withExt = path.extname(raw) ? raw : `${raw}.jsonl`;
+    return sanitize(path.basename(withExt));
+}
+
+function normalizePersistAvatarDirectory(avatarUrl) {
+    const raw = String(avatarUrl || '').replace('.png', '').trim();
+    if (!raw) {
+        return '';
+    }
+    return sanitize(path.basename(raw));
+}
+
 function extractTextFromOpenAIMessageContent(content) {
     if (typeof content === 'string') {
         return content;
@@ -281,8 +298,8 @@ async function persistGeneratedReply(request, persistTarget, text, generationId 
     }
 
     if (persistTarget.kind === 'character') {
-        const avatar = String(persistTarget.avatar_url || '').replace('.png', '');
-        const fileName = String(persistTarget.file_name || '');
+        const avatar = normalizePersistAvatarDirectory(persistTarget.avatar_url);
+        const fileName = normalizePersistJsonlFileName(persistTarget.file_name);
         if (!avatar || !fileName) {
             return false;
         }
@@ -290,7 +307,7 @@ async function persistGeneratedReply(request, persistTarget, text, generationId 
         const chatFilePath = path.join(
             request.user.directories.chats,
             avatar,
-            sanitize(`${fileName}.jsonl`),
+            fileName,
         );
         await appendMessagesToChatFile({
             filePath: chatFilePath,
