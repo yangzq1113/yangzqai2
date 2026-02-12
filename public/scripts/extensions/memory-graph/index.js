@@ -502,6 +502,7 @@ function registerLocaleData() {
         'Event compression completed: ${0} round(s).': '事件压缩完成：本次 ${0} 轮。',
         'Current chat memory graph reset.': '已重置当前聊天记忆图。',
         'Reset memory graph for current chat.': '已重置当前聊天的记忆图。',
+        'Reset current chat memory graph? This cannot be undone.': '确认重置当前聊天记忆图吗？此操作不可撤销。',
         'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
         'Selected node: ${0}. Tip: click an edge to edit relation.': '已选择节点：${0}。提示：点击边可编辑关系。',
         'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
@@ -722,6 +723,7 @@ function registerLocaleData() {
         'Event compression completed: ${0} round(s).': '事件壓縮完成：本次 ${0} 輪。',
         'Current chat memory graph reset.': '已重設目前聊天記憶圖。',
         'Reset memory graph for current chat.': '已重設目前聊天記憶圖。',
+        'Reset current chat memory graph? This cannot be undone.': '確認重設目前聊天記憶圖嗎？此操作不可撤銷。',
         'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
         'Selected node: ${0}. Tip: click an edge to edit relation.': '已選擇節點：${0}。提示：點擊邊可編輯關係。',
         'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
@@ -7854,6 +7856,15 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_reset').off('click').on('click', async function () {
+        const confirm = await context.callGenericPopup(
+            i18n('Reset current chat memory graph? This cannot be undone.'),
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: i18n('Reset'), cancelButton: i18n('Cancel') },
+        );
+        if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
         const chatKey = getChatKey(context);
         const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
         if (target) {
