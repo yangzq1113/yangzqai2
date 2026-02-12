@@ -35,13 +35,14 @@ const defaultNodeTypeSchema = [
         extractHint: 'Critical plot events, turning points, commitments, betrayals, and irreversible outcomes.',
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
         alwaysInject: true,
+        latestOnly: false,
+        latestOnlyKey: '',
         compression: {
             mode: 'hierarchical',
             threshold: 9,
             fanIn: 3,
             maxDepth: 10,
             keepRecentLeaves: 6,
-            keepLatest: 1,
             summarizeInstruction: 'Compress event nodes into high-value storyline milestones. Preserve causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit).',
         },
     },
@@ -61,13 +62,14 @@ const defaultNodeTypeSchema = [
         extractHint: 'Unresolved clues, foreshadowing, quests, promises, and long-term hooks.',
         keywords: ['quest', 'clue', 'mystery', 'promise', 'goal', 'thread'],
         alwaysInject: false,
+        latestOnly: false,
+        latestOnlyKey: '',
         compression: {
             mode: 'hierarchical',
             threshold: 8,
             fanIn: 3,
             maxDepth: 8,
             keepRecentLeaves: 4,
-            keepLatest: 1,
             summarizeInstruction: 'Compress thread nodes into actionable quest/foreshadowing tracks. Preserve current status, blocker, and next likely progression. Keep each summary compact, target within 150 Chinese characters (soft limit).',
         },
     },
@@ -93,13 +95,14 @@ const defaultNodeTypeSchema = [
         extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: identity/status/goal/inventory/relationships/core notes.',
         keywords: ['character', 'status', 'relationship', 'inventory', 'goal', 'core note'],
         alwaysInject: false,
+        latestOnly: true,
+        latestOnlyKey: 'name',
         compression: {
-            mode: 'latest_only',
+            mode: 'none',
             threshold: 2,
             fanIn: 2,
             maxDepth: 1,
             keepRecentLeaves: 1,
-            keepLatest: 1,
             summarizeInstruction: '',
         },
     },
@@ -122,13 +125,14 @@ const defaultNodeTypeSchema = [
         extractHint: 'Location status, ownership/control, danger level, and environmental/resource changes. Prefer structured JSON-like content.',
         keywords: ['location', 'control', 'danger', 'resource', 'region', 'base'],
         alwaysInject: false,
+        latestOnly: true,
+        latestOnlyKey: 'name',
         compression: {
-            mode: 'latest_only',
+            mode: 'none',
             threshold: 2,
             fanIn: 2,
             maxDepth: 1,
             keepRecentLeaves: 1,
-            keepLatest: 1,
             summarizeInstruction: '',
         },
     },
@@ -149,13 +153,14 @@ const defaultNodeTypeSchema = [
         extractHint: 'World rules, magic limits, taboos, hard constraints, and never-break conditions.',
         keywords: ['rule', 'constraint', 'law', 'taboo', 'limit'],
         alwaysInject: true,
+        latestOnly: false,
+        latestOnlyKey: '',
         compression: {
             mode: 'none',
             threshold: 2,
             fanIn: 2,
             maxDepth: 1,
             keepRecentLeaves: 1,
-            keepLatest: 1,
             summarizeInstruction: '',
         },
     },
@@ -281,6 +286,7 @@ function registerLocaleData() {
         'Save Settings': '保存设置',
         'View Graph': '查看图',
         'Rebuild From Chat': '从聊天重建',
+        'Manual Compress': '手动压缩',
         'Reset Current Chat': '重置当前聊天',
         'Export Current Chat Graph': '导出当前聊天图',
         'Import Current Chat Graph': '导入当前聊天图',
@@ -389,7 +395,7 @@ function registerLocaleData() {
         'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定义节点表、抽取提示和压缩策略。这会控制记忆图存储内容及其随时间压缩方式。',
         'Hierarchical Compression': '分层压缩',
-        'Latest Snapshot': '最新快照',
+        'Latest-only Merge': 'Latest-only 合并',
         'Always Inject': '常驻注入',
         'Current type count: ${0}': '当前类型数量：${0}',
         'Add Type': '新增类型',
@@ -406,12 +412,12 @@ function registerLocaleData() {
         'Column Hints (one per line: column=meaning)': '列含义（每行一个：列名=含义）',
         'Keywords (comma separated)': '关键词（逗号分隔）',
         'Force Update (must appear each extraction batch)': '强制更新（每次抽取必须出现）',
+        'Latest Only Upsert': 'Latest-only 覆写',
+        'Latest Only Key': 'Latest-only 键',
         'Extract Hint': '抽取提示',
-        'Compression Mode': '压缩模式',
+        'Enable Hierarchical Compression': '启用层级压缩',
         'none': 'none',
-        'latest_only': 'latest_only',
         'hierarchical': 'hierarchical',
-        'Keep Latest': '保留最新',
         'Threshold': '阈值',
         'Fan-In': '扇入',
         'Max Depth': '最大深度',
@@ -427,6 +433,22 @@ function registerLocaleData() {
         'Memory settings save failed.': '记忆设置保存失败。',
         'Memory graph rebuilt from current chat.': '已从当前聊天重建记忆图。',
         'Rebuilt memory graph and compression from chat.': '已从聊天重建记忆图并完成压缩。',
+        'Manual Compression': '手动压缩',
+        'Compression scope': '压缩范围',
+        'All nodes': '全图节点',
+        'Older nodes only (exclude recent N assistant turns)': '仅旧节点（排除最近 N 条 Assistant）',
+        'Exclude recent assistant turns': '排除最近 Assistant 条数',
+        'Compression mode': '压缩模式',
+        'Use schema thresholds': '按 Schema 阈值压缩',
+        'Force compress (ignore threshold)': '强制压缩（忽略阈值）',
+        'Max rounds per type': '每种类型最大轮数',
+        'Types to compress': '要压缩的类型',
+        'Apply Manual Compression': '执行手动压缩',
+        'No compressible types in current schema.': '当前 Schema 没有可压缩类型。',
+        'Select at least one type to compress.': '请至少选择一种要压缩的类型。',
+        'No nodes are eligible for the selected scope.': '当前范围内没有可压缩节点。',
+        'Manual compression completed. Created=${0}, archived=${1}': '手动压缩完成。新建=${0}，归档=${1}',
+        'Manual compression made no changes.': '手动压缩未产生变化。',
         'Current chat memory graph reset.': '已重置当前聊天记忆图。',
         'Reset memory graph for current chat.': '已重置当前聊天的记忆图。',
         'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
@@ -467,6 +489,7 @@ function registerLocaleData() {
         'Save Settings': '儲存設定',
         'View Graph': '查看圖譜',
         'Rebuild From Chat': '從聊天重建',
+        'Manual Compress': '手動壓縮',
         'Reset Current Chat': '重設目前聊天',
         'Export Current Chat Graph': '匯出目前聊天圖',
         'Import Current Chat Graph': '匯入目前聊天圖',
@@ -575,7 +598,7 @@ function registerLocaleData() {
         'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
         'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定義節點資料表、抽取提示與壓縮策略。這會控制記憶圖儲存內容及其隨時間壓縮方式。',
         'Hierarchical Compression': '分層壓縮',
-        'Latest Snapshot': '最新快照',
+        'Latest-only Merge': 'Latest-only 合併',
         'Always Inject': '常駐注入',
         'Current type count: ${0}': '目前類型數量：${0}',
         'Add Type': '新增類型',
@@ -592,12 +615,12 @@ function registerLocaleData() {
         'Column Hints (one per line: column=meaning)': '欄位說明（每行一個：欄位=說明）',
         'Keywords (comma separated)': '關鍵字（逗號分隔）',
         'Force Update (must appear each extraction batch)': '強制更新（每次抽取必須出現）',
+        'Latest Only Upsert': 'Latest-only 覆寫',
+        'Latest Only Key': 'Latest-only 鍵',
         'Extract Hint': '抽取提示',
-        'Compression Mode': '壓縮模式',
+        'Enable Hierarchical Compression': '啟用分層壓縮',
         'none': 'none',
-        'latest_only': 'latest_only',
         'hierarchical': 'hierarchical',
-        'Keep Latest': '保留最新',
         'Threshold': '閾值',
         'Fan-In': '扇入',
         'Max Depth': '最大深度',
@@ -613,6 +636,22 @@ function registerLocaleData() {
         'Memory settings save failed.': '記憶設定儲存失敗。',
         'Memory graph rebuilt from current chat.': '已從目前聊天重建記憶圖。',
         'Rebuilt memory graph and compression from chat.': '已從聊天重建記憶圖並完成壓縮。',
+        'Manual Compression': '手動壓縮',
+        'Compression scope': '壓縮範圍',
+        'All nodes': '全圖節點',
+        'Older nodes only (exclude recent N assistant turns)': '僅舊節點（排除最近 N 條 Assistant）',
+        'Exclude recent assistant turns': '排除最近 Assistant 條數',
+        'Compression mode': '壓縮模式',
+        'Use schema thresholds': '按 Schema 閾值壓縮',
+        'Force compress (ignore threshold)': '強制壓縮（忽略閾值）',
+        'Max rounds per type': '每種類型最大輪數',
+        'Types to compress': '要壓縮的類型',
+        'Apply Manual Compression': '執行手動壓縮',
+        'No compressible types in current schema.': '目前 Schema 沒有可壓縮類型。',
+        'Select at least one type to compress.': '請至少選擇一種要壓縮的類型。',
+        'No nodes are eligible for the selected scope.': '目前範圍內沒有可壓縮節點。',
+        'Manual compression completed. Created=${0}, archived=${1}': '手動壓縮完成。新建=${0}，歸檔=${1}',
+        'Manual compression made no changes.': '手動壓縮未產生變化。',
         'Current chat memory graph reset.': '已重設目前聊天記憶圖。',
         'Reset memory graph for current chat.': '已重設目前聊天記憶圖。',
         'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
@@ -694,7 +733,7 @@ function normalizeNodeTypeSchema(schema) {
     const list = Array.isArray(schema) ? schema : defaultNodeTypeSchema;
     const normalizeCompressionMode = (mode) => {
         const value = String(mode || '').trim().toLowerCase();
-        return ['none', 'hierarchical', 'latest_only'].includes(value) ? value : 'none';
+        return ['none', 'hierarchical'].includes(value) ? value : 'none';
     };
     const normalized = list
         .filter(item => item && typeof item === 'object')
@@ -714,6 +753,11 @@ function normalizeNodeTypeSchema(schema) {
             const forceUpdate = item.forceUpdate === undefined
                 ? rawId === 'event'
                 : Boolean(item.forceUpdate);
+            const rawCompressionMode = String(item?.compression?.mode || '').trim().toLowerCase();
+            const latestOnly = item.latestOnly === undefined
+                ? rawCompressionMode === 'latest_only'
+                : Boolean(item.latestOnly);
+            const latestOnlyKey = String(item.latestOnlyKey || '').trim();
             return {
                 id: rawId,
                 label: String(item.label || item.id || `Type ${index + 1}`).trim(),
@@ -728,13 +772,14 @@ function normalizeNodeTypeSchema(schema) {
                 requiredColumns,
                 forceUpdate,
                 alwaysInject: Boolean(item.alwaysInject),
+                latestOnly,
+                latestOnlyKey,
                 compression: {
-                    mode: normalizeCompressionMode(item?.compression?.mode),
+                    mode: normalizeCompressionMode(rawCompressionMode),
                     threshold: Math.max(2, Number(item?.compression?.threshold) || 6),
                     fanIn: Math.max(2, Number(item?.compression?.fanIn) || 3),
                     maxDepth: Math.max(1, Number(item?.compression?.maxDepth) || 6),
                     keepRecentLeaves: Math.max(0, Number(item?.compression?.keepRecentLeaves) || 0),
-                    keepLatest: Math.max(1, Number(item?.compression?.keepLatest) || 1),
                     summarizeInstruction: String(item?.compression?.summarizeInstruction || '').trim(),
                 },
             };
@@ -1456,7 +1501,7 @@ function getSemanticTypeSpec(settings, type) {
 function getSemanticCompressionConfig(settings, type) {
     const spec = getSemanticTypeSpec(settings, type);
     const raw = spec?.compression && typeof spec.compression === 'object' ? spec.compression : {};
-    const mode = ['none', 'hierarchical', 'latest_only'].includes(String(raw.mode || '').toLowerCase())
+    const mode = ['none', 'hierarchical'].includes(String(raw.mode || '').toLowerCase())
         ? String(raw.mode).toLowerCase()
         : 'none';
     return {
@@ -1465,9 +1510,16 @@ function getSemanticCompressionConfig(settings, type) {
         fanIn: Math.max(2, Number(raw.fanIn) || 3),
         maxDepth: Math.max(1, Number(raw.maxDepth) || 6),
         keepRecentLeaves: Math.max(0, Number(raw.keepRecentLeaves) || 0),
-        keepLatest: Math.max(1, Number(raw.keepLatest) || 1),
         summarizeInstruction: String(raw.summarizeInstruction || '').trim(),
         label: String(spec?.label || type || 'Semantic'),
+    };
+}
+
+function getSemanticLatestOnlyConfig(settings, type) {
+    const spec = getSemanticTypeSpec(settings, type);
+    return {
+        enabled: Boolean(spec?.latestOnly),
+        keyField: String(spec?.latestOnlyKey || '').trim(),
     };
 }
 
@@ -2247,7 +2299,7 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
     return [];
 }
 
-function upsertSemanticNode(store, item) {
+function upsertSemanticNode(store, item, settings = null) {
     const type = String(item.type || 'semantic').toLowerCase();
     let title = normalizeText(item.title || '');
     const parseEventSummaryIndex = (value) => {
@@ -2281,10 +2333,32 @@ function upsertSemanticNode(store, item) {
     const seqTo = Number.isFinite(Number(item.seqTo))
         ? Math.max(0, Math.floor(Number(item.seqTo)))
         : Math.max(0, Number(store.seqCounter || 0));
+    const incomingFields = item?.fields && typeof item.fields === 'object' && !Array.isArray(item.fields)
+        ? { ...item.fields }
+        : {};
     const itemSummary = normalizeText(
-        (item?.fields && typeof item.fields === 'object' && !Array.isArray(item.fields) ? item.fields.summary : undefined)
+        incomingFields.summary
         ?? '',
     );
+    const latestOnlyConfig = settings ? getSemanticLatestOnlyConfig(settings, type) : { enabled: false, keyField: '' };
+    const deriveLatestOnlyKey = (fieldsObject, fallbackTitle = '') => {
+        const fields = fieldsObject && typeof fieldsObject === 'object' && !Array.isArray(fieldsObject)
+            ? fieldsObject
+            : {};
+        const explicitKey = normalizeText(latestOnlyConfig.keyField || '');
+        if (explicitKey) {
+            const value = normalizeText(toDisplayScalar(fields[explicitKey]));
+            if (value) {
+                return value.toLowerCase();
+            }
+        }
+        const nameValue = normalizeText(toDisplayScalar(fields.name));
+        if (nameValue) {
+            return nameValue.toLowerCase();
+        }
+        const fallbackValue = normalizeText(fallbackTitle);
+        return fallbackValue ? fallbackValue.toLowerCase() : '';
+    };
 
     if (type === 'event') {
         const generatedTitle = nextEventSummaryTitle();
@@ -2292,7 +2366,7 @@ function upsertSemanticNode(store, item) {
             type,
             level: LEVEL.SEMANTIC,
             title: generatedTitle,
-            fields: item?.fields && typeof item.fields === 'object' ? { ...item.fields } : {},
+            fields: incomingFields,
             semanticDepth: 0,
             semanticRollup: false,
             seqTo,
@@ -2301,23 +2375,47 @@ function upsertSemanticNode(store, item) {
 
     if (!title) {
         const derivedTitle = normalizeText(
-            item?.fields?.name
-            || item?.fields?.id
-            || item?.fields?.key
-            || item?.fields?.label
+            incomingFields?.name
+            || incomingFields?.id
+            || incomingFields?.key
+            || incomingFields?.label
             || '',
         );
         title = derivedTitle || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
     }
-    const normalizedKey = `${type}::${title.toLowerCase()}`;
-    let target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
+    let target = null;
+    if (latestOnlyConfig.enabled) {
+        const incomingLatestKey = deriveLatestOnlyKey(incomingFields, title);
+        const candidates = Object.values(store.nodes)
+            .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
+            .filter(node => String(node.type || '').toLowerCase() === type)
+            .filter(node => deriveLatestOnlyKey(node?.fields, node?.title) === incomingLatestKey)
+            .sort((a, b) => {
+                const aSeq = Number(a?.seqTo ?? -1);
+                const bSeq = Number(b?.seqTo ?? -1);
+                if (aSeq !== bSeq) {
+                    return bSeq - aSeq;
+                }
+                return String(a?.id || '').localeCompare(String(b?.id || ''));
+            });
+        target = candidates[0] || null;
+        for (let i = 1; i < candidates.length; i++) {
+            archiveNode(store, candidates[i].id);
+        }
+        if (!title) {
+            title = incomingLatestKey || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
+        }
+    } else {
+        const normalizedKey = `${type}::${title.toLowerCase()}`;
+        target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
+    }
 
     if (!target) {
         target = createNode(store, {
             type,
             level: LEVEL.SEMANTIC,
             title,
-            fields: item?.fields && typeof item.fields === 'object' ? { ...item.fields } : {},
+            fields: incomingFields,
             semanticDepth: 0,
             semanticRollup: false,
             seqTo,
@@ -2333,8 +2431,8 @@ function upsertSemanticNode(store, item) {
         if (target.semanticRollup === undefined) {
             target.semanticRollup = false;
         }
-        if (item?.fields && typeof item.fields === 'object') {
-            Object.assign(target.fields, item.fields);
+        if (incomingFields && typeof incomingFields === 'object') {
+            Object.assign(target.fields, incomingFields);
         }
         target.seqTo = Math.max(Number(target.seqTo || 0), seqTo);
     }
@@ -2360,7 +2458,7 @@ function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { se
                 summary: normalizeText(link?.target_summary || ''),
             },
             seqTo: Number.isFinite(Number(defaultSeqRange?.seqTo)) ? Number(defaultSeqRange.seqTo) : undefined,
-        });
+        }, null);
         if (!targetNode) {
             continue;
         }
@@ -2389,42 +2487,12 @@ function getSemanticNodesForType(store, type) {
         .filter(node => String(node.type || '').toLowerCase() === targetType);
 }
 
-function compactSemanticLatestOnly(store, type, keepLatest = 1) {
-    const nodes = getSemanticNodesForType(store, type)
-        .filter(node => !node.semanticRollup)
-        .sort((a, b) => {
-            const aSeq = Number(a?.seqTo ?? -1);
-            const bSeq = Number(b?.seqTo ?? -1);
-            if (aSeq !== bSeq) {
-                return bSeq - aSeq;
-            }
-            return String(a?.id || '').localeCompare(String(b?.id || ''));
-        });
-    const byTitle = new Map();
-    let changed = false;
-
-    for (const node of nodes) {
-        const key = String(node.title || '').trim().toLowerCase() || node.id;
-        if (!byTitle.has(key)) {
-            byTitle.set(key, []);
-        }
-        byTitle.get(key).push(node);
-    }
-
-    for (const [, bucket] of byTitle.entries()) {
-        for (let i = Math.max(1, Number(keepLatest || 1)); i < bucket.length; i++) {
-            archiveNode(store, bucket[i].id);
-            changed = true;
-        }
-    }
-
-    return changed;
-}
-
-function collectSemanticRootsByDepth(store, type, depth) {
+function collectSemanticRootsByDepth(store, type, depth, options = {}) {
+    const maxSeq = Number.isFinite(Number(options?.maxSeq)) ? Math.max(0, Math.floor(Number(options.maxSeq))) : null;
     return getSemanticNodesForType(store, type)
         .filter(node => Number(node?.semanticDepth ?? 0) === Number(depth))
         .filter(node => !String(node.parentId || '').trim())
+        .filter(node => maxSeq === null || Number(node?.seqTo ?? 0) <= maxSeq)
         .sort((a, b) => {
             const aTo = Number(a.seqTo ?? 0);
             const bTo = Number(b.seqTo ?? 0);
@@ -2435,23 +2503,32 @@ function collectSemanticRootsByDepth(store, type, depth) {
         });
 }
 
-async function compressSemanticHierarchical(context, store, settings, type, config) {
+async function compressSemanticHierarchical(context, store, settings, type, config, options = {}) {
     let changed = false;
     let guard = 0;
+    let compressedRounds = 0;
+    const forceMode = Boolean(options?.force);
+    const maxRoundsPerType = Number.isFinite(Number(options?.maxRoundsPerType))
+        ? Math.max(1, Math.floor(Number(options.maxRoundsPerType)))
+        : Number.POSITIVE_INFINITY;
+    const threshold = forceMode
+        ? 2
+        : Math.max(2, Number(config.threshold || 2));
+    const fanIn = Math.max(2, Number(config.fanIn || 2));
 
     for (let depth = 0; depth < Number(config.maxDepth || 1); depth++) {
-        while (guard < 120) {
+        while (guard < 120 && compressedRounds < maxRoundsPerType) {
             guard += 1;
-            let candidates = collectSemanticRootsByDepth(store, type, depth);
+            let candidates = collectSemanticRootsByDepth(store, type, depth, options);
             if (depth === 0 && Number(config.keepRecentLeaves || 0) > 0 && candidates.length > Number(config.keepRecentLeaves || 0)) {
                 candidates = candidates.slice(0, Math.max(0, candidates.length - Number(config.keepRecentLeaves || 0)));
             }
-            if (candidates.length < Number(config.threshold || 2)) {
+            if (candidates.length < threshold) {
                 break;
             }
 
-            const group = candidates.slice(0, Number(config.fanIn || 2));
-            if (group.length < Number(config.fanIn || 2)) {
+            const group = candidates.slice(0, fanIn);
+            if (group.length < fanIn) {
                 break;
             }
 
@@ -2469,7 +2546,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 type: String(type || 'semantic'),
                 level: LEVEL.SEMANTIC,
                 title: `${String(config.label || type || 'Semantic')} Summary L${depth + 1} #${Date.now()}`,
-                summary,
+                fields: { summary },
                 archived: false,
                 semanticRollup: true,
                 semanticDepth: depth + 1,
@@ -2481,32 +2558,36 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 addEdge(store, parent.id, child.id, 'semantic_contains');
             }
             changed = true;
+            compressedRounds += 1;
+        }
+        if (compressedRounds >= maxRoundsPerType) {
+            break;
         }
     }
 
     return changed;
 }
 
-async function compressSemanticTypesIfNeeded(context, store, settings) {
+async function compressSemanticTypesIfNeeded(context, store, settings, options = {}) {
     const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
+    const selectedTypeSet = Array.isArray(options?.typeIds)
+        ? new Set(options.typeIds.map(item => String(item || '').trim().toLowerCase()).filter(Boolean))
+        : null;
     let changed = false;
     for (const spec of schema) {
         const type = String(spec.id || '').toLowerCase();
         if (!type) {
             continue;
         }
+        if (selectedTypeSet && !selectedTypeSet.has(type)) {
+            continue;
+        }
         const config = getSemanticCompressionConfig(settings, type);
         if (config.mode === 'none') {
             continue;
         }
-        if (config.mode === 'latest_only') {
-            if (compactSemanticLatestOnly(store, type, config.keepLatest)) {
-                changed = true;
-            }
-            continue;
-        }
         if (config.mode === 'hierarchical') {
-            if (await compressSemanticHierarchical(context, store, settings, type, config)) {
+            if (await compressSemanticHierarchical(context, store, settings, type, config, options)) {
                 changed = true;
             }
         }
@@ -2514,8 +2595,8 @@ async function compressSemanticTypesIfNeeded(context, store, settings) {
     return changed;
 }
 
-async function runCompressionLoop(context, store, settings) {
-    return await compressSemanticTypesIfNeeded(context, store, settings);
+async function runCompressionLoop(context, store, settings, options = {}) {
+    return await compressSemanticTypesIfNeeded(context, store, settings, options);
 }
 
 function buildExtractBatchFromFrames(frames, frameIndex, contextTurns = 1) {
@@ -2582,7 +2663,7 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
             title,
             fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
             seqTo: evidence.seqTo,
-        });
+        }, settings);
         if (targetNode) {
             applyExtractedLinks(
                 store,
@@ -2802,9 +2883,6 @@ function getNodeRecallExposure(settings, node) {
     const config = getSemanticCompressionConfig(settings, node.type);
     if (config.mode === 'hierarchical') {
         return 'high_only';
-    }
-    if (config.mode === 'latest_only') {
-        return 'latest';
     }
     return 'full';
 }
@@ -3320,7 +3398,7 @@ function collectAlwaysInjectNodes(store, settings) {
             continue;
         }
         const sortedTimeline = nodes.slice().sort(compareNodesByTimeline);
-        if (spec.compression.mode === 'hierarchical' || spec.compression.mode === 'latest_only') {
+        if (spec.compression.mode === 'hierarchical') {
             const leaves = sortedTimeline.filter(node => !hasActiveSemanticChildOfType(store, node, spec.type));
             for (const leaf of leaves) {
                 const parent = getActiveSemanticParentOfType(store, leaf, spec.type);
@@ -5427,13 +5505,14 @@ function getSchemaTypeTemplate(index = 1) {
         requiredColumns: [],
         forceUpdate: false,
         alwaysInject: false,
+        latestOnly: false,
+        latestOnlyKey: '',
         compression: {
             mode: 'none',
             threshold: 6,
             fanIn: 3,
             maxDepth: 6,
             keepRecentLeaves: 0,
-            keepLatest: 1,
             summarizeInstruction: '',
         },
     };
@@ -5592,10 +5671,6 @@ function ensureStyles() {
 
 .luker-rpg-schema-popup .luker-schema-card.mode-none {
     border-left-color: rgba(140, 140, 140, 0.9);
-}
-
-.luker-rpg-schema-popup .luker-schema-card.mode-latest_only {
-    border-left-color: rgba(77, 144, 226, 0.9);
 }
 
 .luker-rpg-schema-popup .luker-schema-card.mode-hierarchical {
@@ -5952,8 +6027,9 @@ function renderNodeTypeSchemaCard(spec, index) {
     const fanIn = Number(spec?.compression?.fanIn || 3);
     const maxDepth = Number(spec?.compression?.maxDepth || 6);
     const keepRecentLeaves = Number(spec?.compression?.keepRecentLeaves || 0);
-    const keepLatest = Number(spec?.compression?.keepLatest || 1);
     const summarizeInstruction = String(spec?.compression?.summarizeInstruction || '');
+    const latestOnly = Boolean(spec?.latestOnly);
+    const latestOnlyKey = String(spec?.latestOnlyKey || '');
     const cardTitle = String(spec?.label || `Type ${index + 1}`).trim();
     const tableName = String(spec?.tableName || spec?.id || '').trim();
     const cardClass = `mode-${mode}${spec.alwaysInject ? ' is-always' : ''}${spec.forceUpdate ? ' is-force' : ''}`;
@@ -5967,6 +6043,7 @@ function renderNodeTypeSchemaCard(spec, index) {
         <div class="luker-schema-badges">
             <span class="luker-schema-badge">${escapeHtml(i18nFormat('mode: ${0}', mode))}</span>
             ${spec.alwaysInject ? `<span class="luker-schema-badge">${escapeHtml(i18n('always inject'))}</span>` : ''}
+            ${spec.latestOnly ? `<span class="luker-schema-badge">${escapeHtml(i18n('Latest Only Upsert'))}</span>` : ''}
             ${spec.forceUpdate ? `<span class="luker-schema-badge">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}</span>` : ''}
         </div>
     </div>
@@ -5989,6 +6066,14 @@ function renderNodeTypeSchemaCard(spec, index) {
     <label class="luker-schema-checkbox">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}
         <input data-field="forceUpdate" type="checkbox" ${spec.forceUpdate ? 'checked' : ''} />
     </label>
+    <div class="luker-schema-grid-2">
+        <label class="luker-schema-checkbox">${escapeHtml(i18n('Latest Only Upsert'))}
+            <input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />
+        </label>
+        <label>${escapeHtml(i18n('Latest Only Key'))}
+            <input data-field="latestOnlyKey" class="text_pole" type="text" value="${escapeHtml(latestOnlyKey)}" />
+        </label>
+    </div>
     <label>${escapeHtml(i18n('Table Columns (comma separated)'))}
         <input data-field="tableColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.tableColumns))}" />
     </label>
@@ -6004,18 +6089,9 @@ function renderNodeTypeSchemaCard(spec, index) {
     <label>${escapeHtml(i18n('Extract Hint'))}
         <textarea data-field="extractHint" class="text_pole textarea_compact" rows="2">${escapeHtml(spec.extractHint || '')}</textarea>
     </label>
-    <div class="luker-schema-grid-2">
-        <label>${escapeHtml(i18n('Compression Mode'))}
-            <select data-field="compression.mode" class="text_pole">
-                <option value="none"${mode === 'none' ? ' selected' : ''}>${escapeHtml(i18n('none'))}</option>
-                <option value="latest_only"${mode === 'latest_only' ? ' selected' : ''}>${escapeHtml(i18n('latest_only'))}</option>
-                <option value="hierarchical"${mode === 'hierarchical' ? ' selected' : ''}>${escapeHtml(i18n('hierarchical'))}</option>
-            </select>
-        </label>
-        <label class="luker-schema-compression-latest">${escapeHtml(i18n('Keep Latest'))}
-            <input data-field="compression.keepLatest" class="text_pole" type="number" min="1" step="1" value="${keepLatest}" />
-        </label>
-    </div>
+    <label class="luker-schema-checkbox">${escapeHtml(i18n('Enable Hierarchical Compression'))}
+        <input data-field="compression.enabled" type="checkbox" ${mode === 'hierarchical' ? 'checked' : ''} />
+    </label>
     <div class="luker-schema-grid-2 luker-schema-compression-hier">
         <label>${escapeHtml(i18n('Threshold'))}
             <input data-field="compression.threshold" class="text_pole" type="number" min="2" step="1" value="${threshold}" />
@@ -6044,9 +6120,8 @@ function renderNodeTypeSchemaCard(spec, index) {
 
 function updateSchemaCardModeUi(card) {
     const root = jQuery(card);
-    const mode = String(root.find('[data-field="compression.mode"]').val() || 'none');
-    root.find('.luker-schema-compression-hier').toggle(mode === 'hierarchical');
-    root.find('.luker-schema-compression-latest').toggle(mode === 'latest_only');
+    const enabled = Boolean(root.find('[data-field="compression.enabled"]').prop('checked'));
+    root.find('.luker-schema-compression-hier').toggle(enabled);
 }
 
 function readSchemaCard(card) {
@@ -6063,13 +6138,14 @@ function readSchemaCard(card) {
         keywords: splitCommaList(root.find('[data-field="keywords"]').val()),
         forceUpdate: Boolean(root.find('[data-field="forceUpdate"]').prop('checked')),
         alwaysInject: Boolean(root.find('[data-field="alwaysInject"]').prop('checked')),
+        latestOnly: Boolean(root.find('[data-field="latestOnly"]').prop('checked')),
+        latestOnlyKey: String(root.find('[data-field="latestOnlyKey"]').val() || '').trim(),
         compression: {
-            mode: String(root.find('[data-field="compression.mode"]').val() || 'none').trim(),
+            mode: Boolean(root.find('[data-field="compression.enabled"]').prop('checked')) ? 'hierarchical' : 'none',
             threshold: Math.max(2, Number(root.find('[data-field="compression.threshold"]').val()) || 6),
             fanIn: Math.max(2, Number(root.find('[data-field="compression.fanIn"]').val()) || 3),
             maxDepth: Math.max(1, Number(root.find('[data-field="compression.maxDepth"]').val()) || 6),
             keepRecentLeaves: Math.max(0, Number(root.find('[data-field="compression.keepRecentLeaves"]').val()) || 0),
-            keepLatest: Math.max(1, Number(root.find('[data-field="compression.keepLatest"]').val()) || 1),
             summarizeInstruction: String(root.find('[data-field="compression.summarizeInstruction"]').val() || '').trim(),
         },
     };
@@ -6090,7 +6166,7 @@ function renderNodeTypeSchemaEditor(root, schema, listSelector = '#luker_rpg_mem
     const normalized = normalizeNodeTypeSchema(schema);
     list.html(normalized.map((spec, index) => renderNodeTypeSchemaCard(spec, index)).join(''));
     list.find('.luker-schema-card').each((_, card) => updateSchemaCardModeUi(card));
-    list.off('change.lukerSchemaMode').on('change.lukerSchemaMode', '[data-field="compression.mode"]', function () {
+    list.off('change.lukerSchemaMode').on('change.lukerSchemaMode', '[data-field="compression.enabled"]', function () {
         updateSchemaCardModeUi(jQuery(this).closest('.luker-schema-card'));
     });
 }
@@ -6122,7 +6198,7 @@ function buildSchemaEditorPopupHtml(popupId, schema) {
         </div>
         <div class="luker-schema-chip-row">
             <span class="luker-schema-chip hier">${escapeHtml(i18n('Hierarchical Compression'))}</span>
-            <span class="luker-schema-chip latest">${escapeHtml(i18n('Latest Snapshot'))}</span>
+            <span class="luker-schema-chip latest">${escapeHtml(i18n('Latest-only Merge'))}</span>
             <span class="luker-schema-chip inject">${escapeHtml(i18n('Always Inject'))}</span>
         </div>
     </div>
@@ -6179,7 +6255,7 @@ async function openSchemaEditorPopup(context, settings, root) {
     );
 
     jQuery(document).off(namespace);
-    jQuery(document).on(`change${namespace}`, `${selector} [data-field="compression.mode"]`, function () {
+    jQuery(document).on(`change${namespace}`, `${selector} [data-field="compression.enabled"]`, function () {
         updateSchemaCardModeUi(jQuery(this).closest('.luker-schema-card'));
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-add`, function () {
@@ -6393,6 +6469,168 @@ async function openAdvancedSettingsPopup(context, settings, root) {
     }
 }
 
+function getCompressibleTypeSpecs(settings) {
+    const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
+    const specs = [];
+    for (const item of schema) {
+        const typeId = String(item?.id || '').trim().toLowerCase();
+        if (!typeId) {
+            continue;
+        }
+        const config = getSemanticCompressionConfig(settings, typeId);
+        if (config.mode === 'none') {
+            continue;
+        }
+        specs.push({
+            id: typeId,
+            label: String(item?.label || typeId),
+            mode: config.mode,
+        });
+    }
+    return specs;
+}
+
+function buildManualCompressionPopupHtml(popupId, settings, compressibleTypes) {
+    const excludeRecentDefault = Math.max(0, Number(settings.recentRawTurns || 0));
+    const maxRoundsDefault = 3;
+    const typeRows = compressibleTypes.map(item => `
+        <label class="checkbox_label">
+            <input type="checkbox" data-field="type" value="${escapeHtml(item.id)}" checked />
+            ${escapeHtml(`${item.label} (${item.id}, ${item.mode})`)}
+        </label>
+    `).join('');
+    return `
+<div id="${popupId}" class="luker-rpg-memory-advanced-popup">
+    <h3 class="margin0">${escapeHtml(i18n('Manual Compression'))}</h3>
+    <label>${escapeHtml(i18n('Compression scope'))}
+        <select id="${popupId}_scope" class="text_pole">
+            <option value="all">${escapeHtml(i18n('All nodes'))}</option>
+            <option value="older" selected>${escapeHtml(i18n('Older nodes only (exclude recent N assistant turns)'))}</option>
+        </select>
+    </label>
+    <label>${escapeHtml(i18n('Exclude recent assistant turns'))}
+        <input id="${popupId}_exclude_recent" class="text_pole" type="number" min="0" step="1" value="${excludeRecentDefault}" />
+    </label>
+    <label>${escapeHtml(i18n('Compression mode'))}
+        <select id="${popupId}_mode" class="text_pole">
+            <option value="schema" selected>${escapeHtml(i18n('Use schema thresholds'))}</option>
+            <option value="force">${escapeHtml(i18n('Force compress (ignore threshold)'))}</option>
+        </select>
+    </label>
+    <label>${escapeHtml(i18n('Max rounds per type'))}
+        <input id="${popupId}_max_rounds" class="text_pole" type="number" min="1" step="1" value="${maxRoundsDefault}" />
+    </label>
+    <label>${escapeHtml(i18n('Types to compress'))}</label>
+    <div id="${popupId}_types" style="max-height: 200px; overflow: auto; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; padding: 8px;">
+        ${typeRows}
+    </div>
+</div>`;
+}
+
+async function openManualCompressionPopup(context, settings) {
+    const compressibleTypes = getCompressibleTypeSpecs(settings);
+    if (compressibleTypes.length === 0) {
+        notifyError(i18n('No compressible types in current schema.'));
+        return;
+    }
+    await ensureMemoryStoreLoaded(context);
+    const store = getMemoryStore(context);
+    if (!store) {
+        notifyError(i18n('No active chat selected.'));
+        return;
+    }
+
+    const popupId = `luker_rpg_memory_manual_compress_${Date.now()}`;
+    const html = buildManualCompressionPopupHtml(popupId, settings, compressibleTypes);
+    const readValues = () => {
+        const popupRoot = jQuery(`#${popupId}`);
+        if (!popupRoot.length) {
+            return null;
+        }
+        const selectedTypeIds = popupRoot
+            .find('input[data-field="type"]:checked')
+            .map((_, el) => String(jQuery(el).val() || '').trim().toLowerCase())
+            .get()
+            .filter(Boolean);
+        return {
+            scope: String(popupRoot.find(`#${popupId}_scope`).val() || 'all').trim(),
+            mode: String(popupRoot.find(`#${popupId}_mode`).val() || 'schema').trim(),
+            excludeRecent: Math.max(0, Math.floor(Number(popupRoot.find(`#${popupId}_exclude_recent`).val()) || 0)),
+            maxRoundsPerType: Math.max(1, Math.floor(Number(popupRoot.find(`#${popupId}_max_rounds`).val()) || 1)),
+            selectedTypeIds,
+        };
+    };
+
+    let captured = null;
+    const result = await context.callGenericPopup(
+        html,
+        context.POPUP_TYPE.CONFIRM,
+        '',
+        {
+            okButton: i18n('Apply Manual Compression'),
+            cancelButton: i18n('Cancel'),
+            wide: true,
+            large: false,
+            allowVerticalScrolling: true,
+            onClosing: () => {
+                captured = readValues();
+                return true;
+            },
+        },
+    );
+    if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
+        return;
+    }
+    const values = captured || readValues();
+    if (!values) {
+        notifyError(i18n('Failed to read advanced settings.'));
+        return;
+    }
+    if (!Array.isArray(values.selectedTypeIds) || values.selectedTypeIds.length === 0) {
+        notifyError(i18n('Select at least one type to compress.'));
+        return;
+    }
+
+    let maxSeq = null;
+    if (values.scope === 'older') {
+        const latestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+        maxSeq = Math.max(0, latestSeq - Math.max(0, values.excludeRecent));
+        if (maxSeq <= 0) {
+            notifyError(i18n('No nodes are eligible for the selected scope.'));
+            return;
+        }
+    }
+
+    const beforeNodes = Object.values(store.nodes || {});
+    const beforeNodeCount = beforeNodes.length;
+    const beforeArchivedCount = beforeNodes.filter(node => Boolean(node?.archived)).length;
+    showRuntimeInfoToast(i18n('Memory graph update running...'));
+    try {
+        const changed = await runCompressionLoop(context, store, settings, {
+            typeIds: values.selectedTypeIds,
+            force: values.mode === 'force',
+            maxRoundsPerType: values.maxRoundsPerType,
+            maxSeq,
+        });
+        if (!changed) {
+            notifySuccess(i18n('Manual compression made no changes.'));
+            return;
+        }
+        const afterNodes = Object.values(store.nodes || {});
+        const afterNodeCount = afterNodes.length;
+        const afterArchivedCount = afterNodes.filter(node => Boolean(node?.archived)).length;
+        const createdDelta = Math.max(0, afterNodeCount - beforeNodeCount);
+        const archivedDelta = Math.max(0, afterArchivedCount - beforeArchivedCount);
+        await persistMemoryStoreByChatKey(context, getChatKey(context), store);
+        refreshUiStats();
+        const summary = i18nFormat('Manual compression completed. Created=${0}, archived=${1}', createdDelta, archivedDelta);
+        notifySuccess(summary);
+        updateUiStatus(summary);
+    } finally {
+        clearRuntimeInfoToast();
+    }
+}
+
 function bindUi() {
     const context = getContext();
     const settings = getSettings();
@@ -6518,6 +6756,10 @@ function bindUi() {
         }
     });
 
+    root.find('#luker_rpg_memory_manual_compress').off('click').on('click', async function () {
+        await openManualCompressionPopup(context, settings);
+    });
+
     root.find('#luker_rpg_memory_reset').off('click').on('click', async function () {
         const chatKey = getChatKey(context);
         const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
@@ -6638,6 +6880,7 @@ function ensureUi() {
             <div class="flex-container">
                 <div id="luker_rpg_memory_view_graph" class="menu_button">${escapeHtml(i18n('View Graph'))}</div>
                 <div id="luker_rpg_memory_rebuild" class="menu_button">${escapeHtml(i18n('Rebuild From Chat'))}</div>
+                <div id="luker_rpg_memory_manual_compress" class="menu_button">${escapeHtml(i18n('Manual Compress'))}</div>
                 <div id="luker_rpg_memory_reset" class="menu_button">${escapeHtml(i18n('Reset Current Chat'))}</div>
             </div>
             <div class="flex-container">
