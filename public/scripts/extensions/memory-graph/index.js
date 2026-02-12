@@ -318,7 +318,6 @@ function registerLocaleData() {
         'Last recall steps: ${0}': '最近召回步数：${0}',
         'Visual graph ready. Click a node or edge to select it for editing.': '可视化图已就绪。点击节点或边可选择并编辑。',
         'Fit View': '适配视图',
-        'Re-layout': '重新布局',
         'Add Edge': '新增边',
         'Edit Selected Edge': '编辑所选边',
         'Delete Selected Edge': '删除所选边',
@@ -376,7 +375,6 @@ function registerLocaleData() {
         'Node updated: ${0}': '节点已更新：${0}',
         'Node edit failed: ${0}': '节点编辑失败：${0}',
         'Fitted graph view.': '图视图已适配。',
-        'Graph re-layout completed.': '图重新布局完成。',
         'No edge selected. Click an edge in graph first.': '未选择边。请先在图中点击一条边。',
         'Delete edge #${0}: ${1} -> ${2} [${3}]?': '删除边 #${0}：${1} -> ${2} [${3}]？',
         'Deleted edge #${0}.': '已删除边 #${0}。',
@@ -511,7 +509,6 @@ function registerLocaleData() {
         'Last recall steps: ${0}': '最近召回步數：${0}',
         'Visual graph ready. Click a node or edge to select it for editing.': '視覺化圖已就緒。點擊節點或邊可選取並編輯。',
         'Fit View': '適配視圖',
-        'Re-layout': '重新佈局',
         'Add Edge': '新增邊',
         'Edit Selected Edge': '編輯所選邊',
         'Delete Selected Edge': '刪除所選邊',
@@ -569,7 +566,6 @@ function registerLocaleData() {
         'Node updated: ${0}': '節點已更新：${0}',
         'Node edit failed: ${0}': '節點編輯失敗：${0}',
         'Fitted graph view.': '圖視圖已適配。',
-        'Graph re-layout completed.': '圖重新佈局完成。',
         'No edge selected. Click an edge in graph first.': '未選擇邊。請先在圖中點擊一條邊。',
         'Delete edge #${0}: ${1} -> ${2} [${3}]?': '刪除邊 #${0}：${1} -> ${2} [${3}]？',
         'Deleted edge #${0}.': '已刪除邊 #${0}。',
@@ -4311,7 +4307,6 @@ function renderGraphInspectorHtml(store) {
     </div>
     <div class="flex-container luker-rpg-memory-graph-toolbar">
         <div class="menu_button luker-rpg-memory-graph-fit">${escapeHtml(i18n('Fit View'))}</div>
-        <div class="menu_button luker-rpg-memory-graph-relayout">${escapeHtml(i18n('Re-layout'))}</div>
         <div class="menu_button luker-rpg-memory-edge-add">${escapeHtml(i18n('Add Edge'))}</div>
         <div class="menu_button luker-rpg-memory-edge-edit">${escapeHtml(i18n('Edit Selected Edge'))}</div>
         <div class="menu_button luker-rpg-memory-edge-delete">${escapeHtml(i18n('Delete Selected Edge'))}</div>
@@ -4733,7 +4728,7 @@ async function openGraphInspectorPopup(context) {
         popupHtml,
         context.POPUP_TYPE.TEXT,
         '',
-        { wide: true, large: true, allowVerticalScrolling: true },
+        { wide: true, wider: true, large: true, allowVerticalScrolling: true, allowHorizontalScrolling: true },
     );
 
     const getStore = () => memoryStoreCache.get(chatKey) || store;
@@ -4840,9 +4835,9 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                         selector: 'node',
                         style: {
                             label: 'data(label)',
-                            'font-size': 10,
+                            'font-size': 12,
                             'text-wrap': 'wrap',
-                            'text-max-width': 180,
+                            'text-max-width': 220,
                             'text-valign': 'center',
                             'text-halign': 'center',
                             color: '#f5f5f5',
@@ -4852,7 +4847,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                             shape: 'round-rectangle',
                             width: 'label',
                             height: 'label',
-                            padding: '12px',
+                            padding: '14px',
                         },
                     },
                     { selector: 'node[level = "semantic"]', style: { 'background-color': '#3c9b7b' } },
@@ -4902,6 +4897,20 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                     },
                 ],
             });
+            const applyViewportFit = () => {
+                if (!cy) {
+                    return;
+                }
+                const nodeCount = Number(cy.nodes().length || 0);
+                const padding = nodeCount <= 10 ? 20 : nodeCount <= 24 ? 32 : nodeCount <= 48 ? 48 : 64;
+                const minComfortZoom = nodeCount <= 8 ? 1.2 : nodeCount <= 16 ? 1.0 : nodeCount <= 32 ? 0.85 : 0.65;
+                cy.resize();
+                cy.fit(cy.elements(), padding);
+                if (cy.zoom() < minComfortZoom) {
+                    cy.zoom(minComfortZoom);
+                }
+                cy.center();
+            };
             runLayout = () => {
                 if (!cy) {
                     return;
@@ -4922,31 +4931,17 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                     }
                 });
                 cy.endBatch();
-                cy.resize();
-                cy.fit(cy.elements(), 64);
-                cy.center();
+                applyViewportFit();
             };
             runLayout();
             setTimeout(() => {
-                if (!cy) {
-                    return;
-                }
-                cy.resize();
-                cy.fit(cy.elements(), 64);
+                applyViewportFit();
             }, 0);
             setTimeout(() => {
-                if (!cy) {
-                    return;
-                }
-                cy.resize();
-                cy.fit(cy.elements(), 64);
+                applyViewportFit();
             }, 60);
             setTimeout(() => {
-                if (!cy) {
-                    return;
-                }
-                cy.resize();
-                cy.fit(cy.elements(), 64);
+                applyViewportFit();
             }, 220);
 
             cy.on('tap', 'node', (event) => {
@@ -5074,8 +5069,10 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                 okButton: isEdit ? i18n('Apply Edge') : i18n('Create Edge'),
                 cancelButton: i18n('Cancel'),
                 wide: true,
+                wider: true,
                 large: false,
                 allowVerticalScrolling: true,
+                allowHorizontalScrolling: true,
             },
         );
         if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
@@ -5312,18 +5309,16 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (!cy) {
             return;
         }
+        const nodeCount = Number(cy.nodes().length || 0);
+        const padding = nodeCount <= 10 ? 20 : nodeCount <= 24 ? 32 : nodeCount <= 48 ? 48 : 64;
+        const minComfortZoom = nodeCount <= 8 ? 1.2 : nodeCount <= 16 ? 1.0 : nodeCount <= 32 ? 0.85 : 0.65;
         cy.resize();
-        cy.fit(cy.elements(), 64);
+        cy.fit(cy.elements(), padding);
+        if (cy.zoom() < minComfortZoom) {
+            cy.zoom(minComfortZoom);
+        }
         cy.center();
         updateSelectionText(i18n('Fitted graph view.'));
-    });
-
-    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-relayout`, function () {
-        if (!runLayout) {
-            return;
-        }
-        runLayout();
-        updateSelectionText(i18n('Graph re-layout completed.'));
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-edit`, async function () {
@@ -5622,8 +5617,9 @@ function getSchemaTypeTemplate(index = 1) {
 }
 
 function ensureStyles() {
-    if (jQuery(`#${STYLE_ID}`).length) {
-        return;
+    const existingStyle = jQuery(`#${STYLE_ID}`);
+    if (existingStyle.length) {
+        existingStyle.remove();
     }
 
     jQuery('head').append(`
@@ -5668,6 +5664,21 @@ function ensureStyles() {
     display: inline-flex;
     writing-mode: horizontal-tb;
     text-orientation: mixed;
+}
+
+.luker-rpg-memory-graph-popup .menu_button,
+.luker-rpg-memory-graph-popup .menu_button_small {
+    min-width: 0;
+    white-space: normal;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) {
+    width: min(96vw, 1480px) !important;
+    max-width: min(96vw, 1480px) !important;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) .popup-content {
+    overflow: auto !important;
 }
 
 .luker-rpg-schema-popup .luker-schema-topbar {
@@ -5871,26 +5882,49 @@ function ensureStyles() {
 }
 
 .luker-rpg-memory-graph-popup {
-    min-width: min(1300px, 94vw);
+    width: min(1380px, calc(100vw - 48px));
+    max-width: min(1380px, calc(100vw - 48px));
+    min-width: 0;
+    box-sizing: border-box;
+    overflow-x: auto;
 }
 
 .luker-rpg-memory-graph-popup-inner {
     gap: 8px;
     align-items: stretch;
     text-align: left;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    overflow-x: auto;
 }
 
 .luker-rpg-memory-graph-workspace {
     display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 10px;
     align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
 }
 
 .luker-rpg-memory-graph-toolbar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 8px;
     margin-top: 6px;
-    flex-wrap: wrap;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.luker-rpg-memory-graph-toolbar .menu_button,
+.luker-rpg-memory-graph-toolbar .menu_button_small {
+    width: 100%;
+    text-align: center;
 }
 
 .luker-rpg-memory-graph-canvas-wrap {
@@ -5957,6 +5991,8 @@ function ensureStyles() {
 
 .luker-rpg-memory-graph-sidepanel .luker-rpg-memory-node-form {
     min-width: 0;
+    width: 100%;
+    max-width: 100%;
 }
 
 .luker-rpg-memory-graph-sidepanel .luker-rpg-memory-node-form-grid {
@@ -5974,11 +6010,34 @@ function ensureStyles() {
     border-radius: 8px;
     padding: 4px;
     background: rgba(0, 0, 0, 0.08);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.luker-rpg-memory-graph-table-wrap table {
+    width: 100%;
+    table-layout: fixed;
+}
+
+.luker-rpg-memory-graph-table-wrap th,
+.luker-rpg-memory-graph-table-wrap td {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+@media (min-width: 1500px) {
+    .luker-rpg-memory-graph-workspace {
+        grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+    }
 }
 
 .luker-rpg-memory-node-form {
     gap: 8px;
-    min-width: min(980px, 92vw);
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
 }
 
 .luker-rpg-memory-advanced-popup {
