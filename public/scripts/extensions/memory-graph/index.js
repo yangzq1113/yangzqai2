@@ -11,6 +11,7 @@ const STYLE_ID = 'memory_graph_style';
 const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
+const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
 
 const LEVEL = {
     SEMANTIC: 'semantic',
@@ -292,7 +293,18 @@ function registerLocaleData() {
         'Update every N assistant turns': '每 N 条 Assistant 楼层更新',
         'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆表类型、抽取提示与压缩策略。',
+        'Schema scope: character override (${0})': 'Schema 作用域：角色卡覆写（${0}）',
+        'Schema scope: global': 'Schema 作用域：全局',
         'Open Schema Editor': '打开 Schema 编辑器',
+        'Save Schema to Global': '将 Schema 保存到全局',
+        'Save Schema to Character': '将 Schema 保存到角色卡',
+        'Clear Character Schema Override': '清除角色卡 Schema 覆写',
+        'Schema saved to global settings.': 'Schema 已保存到全局设置。',
+        'No active character selected.': '当前未选择角色卡。',
+        'Schema saved to character override: ${0}.': 'Schema 已保存到角色卡覆写：${0}。',
+        'Failed to persist character schema override.': '角色卡 Schema 覆写保存失败。',
+        'Failed to clear character schema override.': '清除角色卡 Schema 覆写失败。',
+        'Cleared character schema override: ${0}.': '已清除角色卡 Schema 覆写：${0}。',
         'Save Settings': '保存设置',
         'View Graph': '查看图',
         'Rebuild From Chat': '从聊天重建',
@@ -495,7 +507,18 @@ function registerLocaleData() {
         'Update every N assistant turns': '每 N 條 Assistant 樓層更新',
         'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶表類型、抽取提示與壓縮策略。',
+        'Schema scope: character override (${0})': 'Schema 作用域：角色卡覆寫（${0}）',
+        'Schema scope: global': 'Schema 作用域：全域',
         'Open Schema Editor': '開啟 Schema 編輯器',
+        'Save Schema to Global': '將 Schema 儲存到全域',
+        'Save Schema to Character': '將 Schema 儲存到角色卡',
+        'Clear Character Schema Override': '清除角色卡 Schema 覆寫',
+        'Schema saved to global settings.': 'Schema 已儲存到全域設定。',
+        'No active character selected.': '目前未選擇角色卡。',
+        'Schema saved to character override: ${0}.': 'Schema 已儲存到角色卡覆寫：${0}。',
+        'Failed to persist character schema override.': '角色卡 Schema 覆寫儲存失敗。',
+        'Failed to clear character schema override.': '清除角色卡 Schema 覆寫失敗。',
+        'Cleared character schema override: ${0}.': '已清除角色卡 Schema 覆寫：${0}。',
         'Save Settings': '儲存設定',
         'View Graph': '查看圖譜',
         'Rebuild From Chat': '從聊天重建',
@@ -877,6 +900,116 @@ function ensureSettings() {
 
 function getSettings() {
     return extension_settings[MODULE_NAME];
+}
+
+function getCurrentAvatar(context) {
+    const ctx = context || getContext();
+    return String(ctx?.characters?.[ctx?.characterId]?.avatar || '').trim();
+}
+
+function getCharacterByAvatar(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target) {
+        return null;
+    }
+    return (context?.characters || []).find((item) => String(item?.avatar || '').trim() === target) || null;
+}
+
+function getCharacterIndexByAvatar(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target) {
+        return -1;
+    }
+    return (context?.characters || []).findIndex((item) => String(item?.avatar || '').trim() === target);
+}
+
+function getCharacterDisplayNameByAvatar(context, avatar) {
+    const character = getCharacterByAvatar(context, avatar);
+    return String(character?.name || avatar || '').trim();
+}
+
+function getCharacterExtensionDataByAvatar(context, avatar) {
+    const character = getCharacterByAvatar(context, avatar);
+    const payload = character?.data?.extensions?.[MODULE_NAME];
+    return payload && typeof payload === 'object' ? payload : {};
+}
+
+function getCharacterSchemaOverrideByAvatar(context, avatar) {
+    const extensionData = getCharacterExtensionDataByAvatar(context, avatar);
+    const schema = extensionData?.[CHARACTER_SCHEMA_OVERRIDE_KEY];
+    if (!Array.isArray(schema) || schema.length === 0) {
+        return null;
+    }
+    return normalizeNodeTypeSchema(schema);
+}
+
+function getEffectiveNodeTypeSchema(context = null, settings = null) {
+    const ctx = context || getContext();
+    const currentSettings = settings || getSettings();
+    const avatar = getCurrentAvatar(ctx);
+    const overrideSchema = getCharacterSchemaOverrideByAvatar(ctx, avatar);
+    if (overrideSchema && overrideSchema.length > 0) {
+        return overrideSchema;
+    }
+    return normalizeNodeTypeSchema(currentSettings?.nodeTypeSchema);
+}
+
+function getSchemaScopeInfo(context = null, settings = null) {
+    const ctx = context || getContext();
+    const currentSettings = settings || getSettings();
+    const avatar = getCurrentAvatar(ctx);
+    const hasAvatar = Boolean(avatar);
+    const characterName = hasAvatar ? getCharacterDisplayNameByAvatar(ctx, avatar) : '';
+    const overrideSchema = hasAvatar ? getCharacterSchemaOverrideByAvatar(ctx, avatar) : null;
+    const hasOverride = Array.isArray(overrideSchema) && overrideSchema.length > 0;
+    const effectiveSchema = hasOverride
+        ? overrideSchema
+        : normalizeNodeTypeSchema(currentSettings?.nodeTypeSchema);
+    return {
+        avatar,
+        hasAvatar,
+        characterName,
+        hasOverride,
+        scope: hasOverride ? 'character' : 'global',
+        schema: effectiveSchema,
+    };
+}
+
+async function persistCharacterSchemaOverride(context, avatar, schema) {
+    const target = String(avatar || '').trim();
+    if (!target || typeof context?.writeExtensionField !== 'function') {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    const next = {
+        ...previous,
+        [CHARACTER_SCHEMA_OVERRIDE_KEY]: normalizeNodeTypeSchema(schema),
+    };
+    await context.writeExtensionField(characterIndex, MODULE_NAME, next);
+    return true;
+}
+
+async function removeCharacterSchemaOverride(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target || typeof context?.writeExtensionField !== 'function') {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    if (!Object.prototype.hasOwnProperty.call(previous, CHARACTER_SCHEMA_OVERRIDE_KEY)) {
+        return true;
+    }
+    const next = { ...previous };
+    delete next[CHARACTER_SCHEMA_OVERRIDE_KEY];
+    await context.writeExtensionField(characterIndex, MODULE_NAME, next);
+    return true;
 }
 
 function escapeHtml(value) {
@@ -1504,21 +1637,21 @@ function updateStoreSourceState(store, context) {
     store.sourceDigest = String(source.digest || '');
 }
 
-function getNodeTypeSchemaMap(settings) {
+function getNodeTypeSchemaMap(settings, context = null) {
     const map = new Map();
-    for (const entry of normalizeNodeTypeSchema(settings.nodeTypeSchema)) {
+    for (const entry of getEffectiveNodeTypeSchema(context, settings)) {
         map.set(String(entry.id || '').toLowerCase(), entry);
     }
     return map;
 }
 
-function getSemanticTypeSpec(settings, type) {
-    const map = getNodeTypeSchemaMap(settings);
+function getSemanticTypeSpec(settings, type, context = null) {
+    const map = getNodeTypeSchemaMap(settings, context);
     return map.get(String(type || '').toLowerCase()) || null;
 }
 
-function getSemanticCompressionConfig(settings, type) {
-    const spec = getSemanticTypeSpec(settings, type);
+function getSemanticCompressionConfig(settings, type, context = null) {
+    const spec = getSemanticTypeSpec(settings, type, context);
     const raw = spec?.compression && typeof spec.compression === 'object' ? spec.compression : {};
     const mode = ['none', 'hierarchical'].includes(String(raw.mode || '').toLowerCase())
         ? String(raw.mode).toLowerCase()
@@ -1534,8 +1667,8 @@ function getSemanticCompressionConfig(settings, type) {
     };
 }
 
-function getSemanticLatestOnlyConfig(settings, type) {
-    const spec = getSemanticTypeSpec(settings, type);
+function getSemanticLatestOnlyConfig(settings, type, context = null) {
+    const spec = getSemanticTypeSpec(settings, type, context);
     return {
         enabled: Boolean(spec?.latestOnly),
         keyFields: Array.isArray(spec?.primaryKeyColumns)
@@ -2904,7 +3037,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
 }
 
 async function compressSemanticTypesIfNeeded(context, store, settings, options = {}) {
-    const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
+    const schema = getEffectiveNodeTypeSchema(context, settings);
     const selectedTypeSet = Array.isArray(options?.typeIds)
         ? new Set(options.typeIds.map(item => String(item || '').trim().toLowerCase()).filter(Boolean))
         : null;
@@ -2917,7 +3050,7 @@ async function compressSemanticTypesIfNeeded(context, store, settings, options =
         if (selectedTypeSet && !selectedTypeSet.has(type)) {
             continue;
         }
-        const config = getSemanticCompressionConfig(settings, type);
+        const config = getSemanticCompressionConfig(settings, type, context);
         if (config.mode === 'none') {
             continue;
         }
@@ -3098,7 +3231,7 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
         }
     }
 
-    const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
+    const schema = getEffectiveNodeTypeSchema(context, settings);
     let extractedAny = false;
     for (let i = beginSeq - 1; i < frames.length; i++) {
         const frame = frames[i];
@@ -3254,14 +3387,14 @@ function getRecallQueryBundle(payload, context, settings = null) {
     };
 }
 
-function getNodeRecallExposure(settings, node) {
+function getNodeRecallExposure(settings, node, context = null) {
     if (!node) {
         return 'high_only';
     }
     if (node.level !== LEVEL.SEMANTIC) {
         return 'high_only';
     }
-    const config = getSemanticCompressionConfig(settings, node.type);
+    const config = getSemanticCompressionConfig(settings, node.type, context);
     if (config.mode === 'hierarchical') {
         return 'high_only';
     }
@@ -3396,12 +3529,12 @@ function isRecallDiagnosticNode(node) {
     return type === 'recall' || type.startsWith('recall_');
 }
 
-function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = []) {
+function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = [], context = null) {
     const query = normalizeText(queryBundle?.fullText || '');
     const semantic = listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => !node.archived)
         .filter(node => !isRecallDiagnosticNode(node));
-    const schemaMap = getNodeTypeSchemaMap(settings);
+    const schemaMap = getNodeTypeSchemaMap(settings, context);
     const merged = [
         ...getSortedNodesByRecency(alwaysInjectNodes.filter(Boolean)),
         ...getSortedNodesByRecency(semantic),
@@ -3478,9 +3611,8 @@ async function chooseRecallRoute(context, settings, recallState) {
         };
     }
     const candidateRows = (recallState.candidates || []).map(node => {
-        const exposure = getNodeRecallExposure(settings, node);
         const row = formatNodeBrief(node, {
-            exposure,
+            exposure: getNodeRecallExposure(settings, node, context),
             edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 8 }),
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
             fields: node?.fields && typeof node.fields === 'object' ? node.fields : {},
@@ -3495,7 +3627,7 @@ async function chooseRecallRoute(context, settings, recallState) {
                 query: recallState.query,
                 candidates: candidateRows,
                 always_inject_ids: alwaysInjectIds,
-                node_type_schema: normalizeNodeTypeSchema(settings.nodeTypeSchema).map(item => ({
+                node_type_schema: getEffectiveNodeTypeSchema(context, settings).map(item => ({
                     id: item.id,
                     table_name: item.tableName,
                     table_columns: item.tableColumns,
@@ -3675,9 +3807,8 @@ async function chooseFocusNodes(context, settings, recallState) {
         };
     }
     const detailRows = (recallState.candidates || []).map(node => {
-        const exposure = getNodeRecallExposure(settings, node);
         const row = formatNodeDetail(node, {
-            exposure,
+            exposure: getNodeRecallExposure(settings, node, context),
             edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 12 }),
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
         });
@@ -3777,8 +3908,8 @@ function hasActiveSemanticChildOfType(store, node, type) {
     return false;
 }
 
-function collectAlwaysInjectNodes(store, settings) {
-    const alwaysSpecs = normalizeNodeTypeSchema(settings.nodeTypeSchema)
+function collectAlwaysInjectNodes(store, settings, context = null) {
+    const alwaysSpecs = getEffectiveNodeTypeSchema(context, settings)
         .filter((spec) => {
             const tableName = String(spec?.tableName || '').trim().toLowerCase();
             // `event_table` is always considered core storyline context and must stay injected.
@@ -3786,7 +3917,7 @@ function collectAlwaysInjectNodes(store, settings) {
         })
         .map(spec => ({
             type: String(spec.id || '').toLowerCase(),
-            compression: getSemanticCompressionConfig(settings, String(spec.id || '').toLowerCase()),
+            compression: getSemanticCompressionConfig(settings, String(spec.id || '').toLowerCase(), context),
         }))
         .filter(spec => spec.type);
     if (alwaysSpecs.length === 0) {
@@ -3910,11 +4041,11 @@ function getTableCellValueFromNode(node, columnName) {
     return String(node?.fields?.[key] ?? '');
 }
 
-function buildFocusTablesText(nodes, settings, options = {}) {
+function buildFocusTablesText(nodes, settings, options = {}, context = null) {
     const byBucket = new Map();
     const sourceNodes = Array.isArray(nodes) ? nodes : [];
     const tablePrefix = String(options?.tablePrefix || 'Focus').trim() || 'Focus';
-    const schemaMap = getNodeTypeSchemaMap(settings);
+    const schemaMap = getNodeTypeSchemaMap(settings, context);
     for (const node of sourceNodes) {
         if (!node) {
             continue;
@@ -4084,8 +4215,8 @@ async function runLLMDrivenRecall(context, store, payload) {
 
     const queryBundle = getRecallQueryBundle(payload, context, settings);
     const query = normalizeText(queryBundle.fullText || '');
-    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings);
-    const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes);
+    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
+    const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context);
     const maxIterations = Math.max(2, Math.min(6, Number(settings.recallMaxIterations || 3)));
     const trace = [];
     const alwaysInjectIds = alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean);
@@ -4432,8 +4563,8 @@ async function injectMemoryPrompts(context, payload) {
     store.lastRecallTrace = trace;
 
     const blocks = {
-        corePacket: buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }),
-        focusPacket: buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }),
+        corePacket: buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }, context),
+        focusPacket: buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }, context),
     };
     await syncLorebookProjection(context, settings, blocks);
     store.lastRecallProjection = {
@@ -4732,7 +4863,7 @@ function decodeFieldsFromLines(text) {
 
 function getNodeTypeOptionsHtml(settings, store, currentType = '') {
     const candidates = new Set();
-    for (const entry of normalizeNodeTypeSchema(settings.nodeTypeSchema)) {
+    for (const entry of getEffectiveNodeTypeSchema(null, settings)) {
         candidates.add(String(entry.id || '').trim());
     }
     for (const node of Object.values(store.nodes || {})) {
@@ -6633,6 +6764,39 @@ function updateSchemaSummary(root, schema) {
     ));
 }
 
+function updateSchemaScopeIndicator(root, scopeInfo) {
+    const scopeText = scopeInfo?.hasOverride
+        ? i18nFormat('Schema scope: character override (${0})', scopeInfo.characterName || scopeInfo.avatar || i18n('(unset)'))
+        : i18n('Schema scope: global');
+    root.find('#luker_rpg_memory_schema_scope').text(scopeText);
+}
+
+async function persistSchemaToGlobal(settings, schema) {
+    settings.nodeTypeSchema = normalizeNodeTypeSchema(schema);
+    await saveSettings();
+}
+
+async function persistSchemaToCharacter(context, avatar, schema) {
+    const targetAvatar = String(avatar || '').trim();
+    if (!targetAvatar) {
+        return false;
+    }
+    return await persistCharacterSchemaOverride(context, targetAvatar, schema);
+}
+
+async function persistSchemaToEffectiveScope(context, settings, schema) {
+    const info = getSchemaScopeInfo(context, settings);
+    if (info.hasOverride && info.hasAvatar) {
+        const ok = await persistSchemaToCharacter(context, info.avatar, schema);
+        if (!ok) {
+            return { ok: false, scope: 'character' };
+        }
+        return { ok: true, scope: 'character', avatar: info.avatar, characterName: info.characterName };
+    }
+    await persistSchemaToGlobal(settings, schema);
+    return { ok: true, scope: 'global' };
+}
+
 function buildSchemaEditorPopupHtml(popupId, schema) {
     const normalized = normalizeNodeTypeSchema(schema);
     const cardsHtml = normalized.map((spec, index) => renderNodeTypeSchemaCard(spec, index)).join('');
@@ -6663,7 +6827,8 @@ function buildSchemaEditorPopupHtml(popupId, schema) {
 async function openSchemaEditorPopup(context, settings, root) {
     ensureStyles();
     const popupId = `luker_rpg_memory_schema_popup_${Date.now()}`;
-    const popupHtml = buildSchemaEditorPopupHtml(popupId, settings.nodeTypeSchema);
+    const scopeInfo = getSchemaScopeInfo(context, settings);
+    const popupHtml = buildSchemaEditorPopupHtml(popupId, scopeInfo.schema);
     const namespace = `.lukerSchemaPopup_${popupId}`;
     const selector = `#${popupId}`;
     const listSelector = '.luker-schema-editor-list';
@@ -6767,11 +6932,17 @@ async function openSchemaEditorPopup(context, settings, root) {
             notifyError(i18n('Failed to read schema from editor.'));
             return;
         }
-        settings.nodeTypeSchema = nextSchema;
-        await saveSettings();
-        updateSchemaSummary(root, settings.nodeTypeSchema);
+        const resultInfo = await persistSchemaToEffectiveScope(context, settings, nextSchema);
+        if (!resultInfo.ok) {
+            notifyError(i18n('Failed to persist character schema override.'));
+            return;
+        }
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        updateSchemaSummary(root, nextScopeInfo.schema);
+        updateSchemaScopeIndicator(root, nextScopeInfo);
         notifySuccess(i18n('Memory schema updated.'));
         updateUiStatus(i18n('Applied memory schema from popup editor.'));
+        bindUi();
     } finally {
         jQuery(document).off(namespace);
     }
@@ -6918,19 +7089,21 @@ async function openAdvancedSettingsPopup(context, settings, root) {
     updateUiStatus(i18n('Saved advanced settings.'));
     bindUi();
     if (root?.length) {
-        updateSchemaSummary(root, settings.nodeTypeSchema);
+        const scopeInfo = getSchemaScopeInfo(context, settings);
+        updateSchemaSummary(root, scopeInfo.schema);
+        updateSchemaScopeIndicator(root, scopeInfo);
     }
 }
 
-function getCompressibleTypeSpecs(settings) {
-    const schema = normalizeNodeTypeSchema(settings.nodeTypeSchema);
+function getCompressibleTypeSpecs(settings, context = null) {
+    const schema = getEffectiveNodeTypeSchema(context, settings);
     const specs = [];
     for (const item of schema) {
         const typeId = String(item?.id || '').trim().toLowerCase();
         if (!typeId) {
             continue;
         }
-        const config = getSemanticCompressionConfig(settings, typeId);
+        const config = getSemanticCompressionConfig(settings, typeId, context);
         if (config.mode === 'none') {
             continue;
         }
@@ -6981,7 +7154,7 @@ function buildManualCompressionPopupHtml(popupId, settings, compressibleTypes) {
 }
 
 async function openManualCompressionPopup(context, settings) {
-    const compressibleTypes = getCompressibleTypeSpecs(settings);
+    const compressibleTypes = getCompressibleTypeSpecs(settings, context);
     if (compressibleTypes.length === 0) {
         notifyError(i18n('No compressible types in current schema.'));
         return;
@@ -7101,7 +7274,11 @@ function bindUi() {
     root.find('#luker_rpg_memory_extract_preset').val(String(settings.extractPresetName || ''));
     root.find('#luker_rpg_memory_projection_enabled').prop('checked', Boolean(settings.lorebookProjectionEnabled));
     root.find('#luker_rpg_memory_update_every').val(String(settings.updateEvery));
-    updateSchemaSummary(root, settings.nodeTypeSchema);
+    const schemaScopeInfo = getSchemaScopeInfo(context, settings);
+    updateSchemaSummary(root, schemaScopeInfo.schema);
+    updateSchemaScopeIndicator(root, schemaScopeInfo);
+    root.find('#luker_rpg_memory_schema_save_character').prop('disabled', !schemaScopeInfo.hasAvatar);
+    root.find('#luker_rpg_memory_schema_clear_character_override').prop('disabled', !(schemaScopeInfo.hasAvatar && schemaScopeInfo.hasOverride));
     refreshOpenAIPresetSelectors(root, context, settings);
 
     ensureMemoryStoreLoaded(context)
@@ -7152,6 +7329,52 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_open_schema_editor').off('click').on('click', async function () {
         await openSchemaEditorPopup(context, settings, root);
+    });
+    root.find('#luker_rpg_memory_schema_save_global').off('click').on('click', async function () {
+        const info = getSchemaScopeInfo(context, settings);
+        await persistSchemaToGlobal(settings, info.schema);
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        updateSchemaSummary(root, nextScopeInfo.schema);
+        updateSchemaScopeIndicator(root, nextScopeInfo);
+        notifySuccess(i18n('Schema saved to global settings.'));
+        updateUiStatus(i18n('Schema saved to global settings.'));
+        bindUi();
+    });
+    root.find('#luker_rpg_memory_schema_save_character').off('click').on('click', async function () {
+        const info = getSchemaScopeInfo(context, settings);
+        if (!info.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await persistSchemaToCharacter(context, info.avatar, info.schema);
+        if (!ok) {
+            notifyError(i18n('Failed to persist character schema override.'));
+            return;
+        }
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        updateSchemaSummary(root, nextScopeInfo.schema);
+        updateSchemaScopeIndicator(root, nextScopeInfo);
+        notifySuccess(i18nFormat('Schema saved to character override: ${0}.', nextScopeInfo.characterName || info.characterName || info.avatar));
+        updateUiStatus(i18nFormat('Schema saved to character override: ${0}.', nextScopeInfo.characterName || info.characterName || info.avatar));
+        bindUi();
+    });
+    root.find('#luker_rpg_memory_schema_clear_character_override').off('click').on('click', async function () {
+        const info = getSchemaScopeInfo(context, settings);
+        if (!info.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await removeCharacterSchemaOverride(context, info.avatar);
+        if (!ok) {
+            notifyError(i18n('Failed to clear character schema override.'));
+            return;
+        }
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        updateSchemaSummary(root, nextScopeInfo.schema);
+        updateSchemaScopeIndicator(root, nextScopeInfo);
+        notifySuccess(i18nFormat('Cleared character schema override: ${0}.', info.characterName || info.avatar));
+        updateUiStatus(i18nFormat('Cleared character schema override: ${0}.', info.characterName || info.avatar));
+        bindUi();
     });
     root.find('#luker_rpg_memory_open_advanced').off('click').on('click', async function () {
         await openAdvancedSettingsPopup(context, settings, root);
@@ -7324,10 +7547,16 @@ function ensureUi() {
 
             <label>${escapeHtml(i18n('Node Type Schema (Visual Editor)'))}</label>
             <small style="opacity:0.8">${escapeHtml(i18n('Configure memory table types, extraction hints, and compression strategy in a popup editor.'))}</small>
+            <small id="luker_rpg_memory_schema_scope" style="opacity:0.85"></small>
             <small id="luker_rpg_memory_schema_summary" style="opacity:0.85"></small>
             <div class="flex-container">
                 <div id="luker_rpg_memory_open_schema_editor" class="menu_button">${escapeHtml(i18n('Open Schema Editor'))}</div>
                 <div id="luker_rpg_memory_open_advanced" class="menu_button">${escapeHtml(i18n('Open Advanced Settings'))}</div>
+            </div>
+            <div class="flex-container">
+                <div id="luker_rpg_memory_schema_save_global" class="menu_button">${escapeHtml(i18n('Save Schema to Global'))}</div>
+                <div id="luker_rpg_memory_schema_save_character" class="menu_button">${escapeHtml(i18n('Save Schema to Character'))}</div>
+                <div id="luker_rpg_memory_schema_clear_character_override" class="menu_button">${escapeHtml(i18n('Clear Character Schema Override'))}</div>
             </div>
 
             <div class="flex-container">
