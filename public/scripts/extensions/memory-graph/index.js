@@ -6706,7 +6706,7 @@ function renderNodeTypeSchemaCard(spec, index) {
     <div class="luker-schema-grid-2">
         <label class="checkbox_label luker-schema-checkbox"><input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />${escapeHtml(i18n('Latest Only Upsert'))}
         </label>
-        <div class="luker-schema-latestonly-keys">
+        <div class="luker-schema-latestonly-keys" style="${latestOnly ? '' : 'display:none;'}">
             <label>${escapeHtml(i18n('Primary Key Columns'))}</label>
             <div class="luker-schema-primary-key-options">${renderPrimaryKeyOptions(spec.tableColumns, primaryKeyColumns)}</div>
         </div>
@@ -6728,7 +6728,7 @@ function renderNodeTypeSchemaCard(spec, index) {
     </label>
     <label class="checkbox_label luker-schema-checkbox"><input data-field="compression.enabled" type="checkbox" ${mode === 'hierarchical' ? 'checked' : ''} />${escapeHtml(i18n('Enable Hierarchical Compression'))}
     </label>
-    <div class="luker-schema-grid-2 luker-schema-compression-hier">
+    <div class="luker-schema-grid-2 luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">
         <label>${escapeHtml(i18n('Threshold'))}
             <input data-field="compression.threshold" class="text_pole" type="number" min="2" step="1" value="${threshold}" />
         </label>
@@ -6736,7 +6736,7 @@ function renderNodeTypeSchemaCard(spec, index) {
             <input data-field="compression.fanIn" class="text_pole" type="number" min="2" step="1" value="${fanIn}" />
         </label>
     </div>
-    <div class="luker-schema-grid-2 luker-schema-compression-hier">
+    <div class="luker-schema-grid-2 luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">
         <label>${escapeHtml(i18n('Max Depth'))}
             <input data-field="compression.maxDepth" class="text_pole" type="number" min="1" step="1" value="${maxDepth}" />
         </label>
@@ -6744,7 +6744,7 @@ function renderNodeTypeSchemaCard(spec, index) {
             <input data-field="compression.keepRecentLeaves" class="text_pole" type="number" min="0" step="1" value="${keepRecentLeaves}" />
         </label>
     </div>
-    <label class="luker-schema-compression-hier">${escapeHtml(i18n('Summarize Instruction'))}
+    <label class="luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">${escapeHtml(i18n('Summarize Instruction'))}
         <textarea data-field="compression.summarizeInstruction" class="text_pole textarea_compact" rows="2">${escapeHtml(summarizeInstruction)}</textarea>
     </label>
     <div class="luker-schema-actions">
