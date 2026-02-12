@@ -2547,9 +2547,12 @@ function buildDeleteFromDynamicToolCall(call, spec) {
     };
 }
 
-function buildEditableGraphNodeHints(store, schema, limit = 120) {
-    const safeLimit = Math.max(0, Math.min(500, Math.floor(Number(limit) || 0)));
-    if (!store || typeof store !== 'object' || safeLimit === 0) {
+function buildGraphNodeHints(store, schema, limit = 0) {
+    const numericLimit = Number(limit);
+    const safeLimit = Number.isFinite(numericLimit) && numericLimit > 0
+        ? Math.max(1, Math.min(5000, Math.floor(numericLimit)))
+        : Number.POSITIVE_INFINITY;
+    if (!store || typeof store !== 'object') {
         return [];
     }
     const schemaMap = new Map(
@@ -2557,14 +2560,7 @@ function buildEditableGraphNodeHints(store, schema, limit = 120) {
             .map(item => [String(item?.id || '').trim().toLowerCase(), item]),
     );
     const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter((node) => {
-            if (!node || node.archived) {
-                return false;
-            }
-            const type = String(node?.type || '').trim().toLowerCase();
-            const spec = schemaMap.get(type);
-            return Boolean(spec?.editable);
-        })
+        .filter(node => !node?.archived)
         .sort((a, b) => {
             const aSeq = Number(a?.seqTo ?? -1);
             const bSeq = Number(b?.seqTo ?? -1);
@@ -2607,6 +2603,10 @@ function buildEditableGraphNodeHints(store, schema, limit = 120) {
             type,
             title: String(node?.title || ''),
             to_seq: Number(node?.seqTo ?? 0),
+            semantic_depth: Number(node?.semanticDepth ?? node?.metadata?.semantic_depth ?? 0),
+            parent_id: String(node?.parentId || ''),
+            child_count: Array.isArray(node?.childrenIds) ? node.childrenIds.length : 0,
+            editable: Boolean(spec?.editable),
             key_values: keyValues,
         });
     }
@@ -2651,7 +2651,7 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
 
     return [
         '<extract_input>',
-        '  <input_guide>Below are the extraction inputs. graph_data is current memory graph state for editable node types only. If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
+        '  <input_guide>Below are the extraction inputs. graph_data is the current semantic memory graph state (all semantic types). If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
         '  <input_guide>required_types are hard-required types for this batch.</input_guide>',
         '  <input_guide>dialogue_batch is the current source dialogue to extract from.</input_guide>',
         '  <graph_data>',
@@ -2755,11 +2755,11 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             .map(item => String(item.id || '').trim().toLowerCase())
             .filter(Boolean),
     );
-    const editableGraphNodes = buildEditableGraphNodeHints(store, schema, 120);
+    const graphNodes = buildGraphNodeHints(store, schema, 0);
     const graphDataPayload = {
-        initialized: Object.keys(store?.nodes || {}).length > 0,
+        initialized: graphNodes.length > 0,
         editable_type_ids: Array.from(editableTypeSet.values()),
-        nodes: editableGraphNodes,
+        nodes: graphNodes,
     };
     const promptMessages = buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
