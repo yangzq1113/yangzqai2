@@ -97,7 +97,7 @@ const defaultNodeTypeSchema = [
         keywords: ['character', 'alias', 'status', 'relationship', 'inventory', 'goal', 'core note'],
         alwaysInject: false,
         latestOnly: true,
-        primaryKeyColumns: ['name'],
+        primaryKeyColumns: ['name', 'aliases'],
         compression: {
             mode: 'none',
             threshold: 2,
@@ -128,7 +128,7 @@ const defaultNodeTypeSchema = [
         keywords: ['location', 'alias', 'control', 'danger', 'resource', 'region', 'base'],
         alwaysInject: false,
         latestOnly: true,
-        primaryKeyColumns: ['name'],
+        primaryKeyColumns: ['name', 'aliases'],
         compression: {
             mode: 'none',
             threshold: 2,
@@ -196,11 +196,18 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Extract structured memory nodes from dialogue messages into a high-utility memory graph.',
     'You may output one short <thought>...</thought> before tool calls. Do not output plain JSON text.',
-    'Tool set is dynamic. Each semantic type has one tool. Treat tool descriptions as the source of truth.',
+    'Tool set is dynamic. Each semantic type has create/edit/delete tools. Treat tool descriptions as the source of truth.',
     'Call type tools to emit concrete updates, then call luker_rpg_extract_done as the final call.',
     'Hard rule: one response must contain COMPLETE extraction tool calls; do not stop after a single tool call.',
     'Hard rule: return at least 2 tool calls in one response: >=1 type tool call + 1 luker_rpg_extract_done (done must be last).',
-    'Use flattened top-level parameters (table columns as direct keys). Do not pack payload into a nested arguments object.',
+    'Type tools are split by intent: create / edit / delete.',
+    'Use create for new nodes, edit for existing node_id patch updates, delete for explicit removals.',
+    'Create tool uses flattened top-level table columns. Edit tool uses set_fields for sparse patch updates.',
+    'Node edit rule: when updating an existing node, set node_id explicitly using an id from editable_nodes in the user payload.',
+    'Edit payload rule: put only changed columns in set_fields; do not resend the full row unless needed.',
+    'Never fabricate node_id. If no suitable existing node is listed, create a new node without node_id.',
+    'If an existing node clearly matches, prefer node_id update over duplicate creation.',
+    'Delete rule: use delete tool only when a listed node is clearly wrong/duplicate/stale and must be removed.',
     'Coverage goal: when evidence exists for a semantic type in this batch, actively update that type instead of only emitting minimal name-only skeletons.',
     'Alias quality rule: when dialogue uses nicknames/short names/titles, fill aliases for character/location nodes.',
     'Fill optional columns whenever evidence is present; if unknown, omit conservatively.',
@@ -215,7 +222,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Summary quality: emphasize causality, turning points, commitments, outcomes, and unresolved hooks.',
     'Length guide for summary: target around 300 Chinese characters (soft limit).',
     'Never paste long dialogue, narration, or quotes into summary.',
-    'If information is large, split into multiple focused node upserts instead of one oversized summary.',
+    'If information is large, split into multiple focused create/edit operations instead of one oversized summary.',
     'For non-event types, summary is optional unless schema requires it.',
     'Title policy: non-event nodes should use short stable human-readable titles.',
     'Reuse the exact same title for the same ongoing entity/thread/location to keep updates merged.',
@@ -760,7 +767,7 @@ function normalizeNodeTypeSchema(schema) {
             const tableColumns = Array.isArray(item.tableColumns)
                 ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
                 : ['title'];
-            const latestOnly = Boolean(item.latestOnly);
+            const requestedLatestOnly = Boolean(item.latestOnly);
             const rawPrimaryKeyColumns = Array.isArray(item.primaryKeyColumns)
                 ? item.primaryKeyColumns
                 : [];
@@ -771,13 +778,7 @@ function normalizeNodeTypeSchema(schema) {
                     .filter(Boolean)
                     .filter(column => allowedKeyColumns.has(column)),
             ));
-            if (latestOnly && primaryKeyColumns.length === 0) {
-                if (allowedKeyColumns.has('name')) {
-                    primaryKeyColumns.push('name');
-                } else if (tableColumns.length > 0) {
-                    primaryKeyColumns.push(tableColumns[0]);
-                }
-            }
+            const latestOnly = requestedLatestOnly;
             return {
                 id: rawId,
                 label: String(item.label || item.id || `Type ${index + 1}`).trim(),
@@ -1990,7 +1991,7 @@ function sanitizeExtractToolNameSuffix(typeId = '') {
         .replace(/^_+|_+$/g, '') || 'semantic';
 }
 
-function buildDynamicToolDescription(spec = {}) {
+function buildDynamicToolDescription(spec = {}, mode = 'create') {
     const typeId = String(spec?.id || '').trim().toLowerCase();
     const tableName = String(spec?.tableName || typeId || '').trim();
     const hint = normalizeText(spec?.extractHint || '');
@@ -2000,9 +2001,15 @@ function buildDynamicToolDescription(spec = {}) {
         : {};
     const required = Array.isArray(spec?.requiredColumns) ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
     const forceUpdate = Boolean(spec?.forceUpdate);
-    const chunks = [
-        `Upsert semantic node for type "${typeId}" (table "${tableName || typeId}").`,
-    ];
+    const normalizedMode = String(mode || 'create').trim().toLowerCase();
+    const chunks = [];
+    if (normalizedMode === 'edit') {
+        chunks.push(`Edit semantic node for type "${typeId}" (table "${tableName || typeId}") by node_id.`);
+        chunks.push('Provide only changed fields in set_fields. Existing fields not mentioned will stay unchanged.');
+    } else {
+        chunks.push(`Create semantic node for type "${typeId}" (table "${tableName || typeId}").`);
+        chunks.push('Use this tool only for creating new nodes.');
+    }
     if (hint) {
         chunks.push(`Meaning: ${hint}`);
     }
@@ -2039,13 +2046,27 @@ function buildDynamicExtractTools(schema = []) {
             continue;
         }
         const baseName = `luker_rpg_extract_${sanitizeExtractToolNameSuffix(typeId)}`;
-        let toolName = baseName;
+        let createToolName = `${baseName}_create`;
         let suffix = 2;
-        while (usedNames.has(toolName)) {
-            toolName = `${baseName}_${suffix}`;
+        while (usedNames.has(createToolName)) {
+            createToolName = `${baseName}_create_${suffix}`;
             suffix += 1;
         }
-        usedNames.add(toolName);
+        usedNames.add(createToolName);
+        let editToolName = `${baseName}_edit`;
+        suffix = 2;
+        while (usedNames.has(editToolName)) {
+            editToolName = `${baseName}_edit_${suffix}`;
+            suffix += 1;
+        }
+        usedNames.add(editToolName);
+        let deleteToolName = `${baseName}_delete`;
+        suffix = 2;
+        while (usedNames.has(deleteToolName)) {
+            deleteToolName = `${baseName}_delete_${suffix}`;
+            suffix += 1;
+        }
+        usedNames.add(deleteToolName);
 
         const isEventType = typeId === 'event';
         const fields = Array.isArray(spec.tableColumns)
@@ -2069,7 +2090,7 @@ function buildDynamicExtractTools(schema = []) {
                 .filter(([key, value]) => key && value && filteredFields.includes(key)),
         );
         const fieldSet = new Set(filteredFields);
-        const properties = {
+        const createProperties = {
             evidence_seqs: {
                 type: 'array',
                 items: { type: 'integer' },
@@ -2099,40 +2120,112 @@ function buildDynamicExtractTools(schema = []) {
             },
         };
         if (!isEventType) {
-            properties.title = { type: 'string' };
+            createProperties.title = { type: 'string' };
         }
         for (const field of fieldSet) {
-            if (properties[field]) {
+            if (createProperties[field]) {
                 continue;
             }
-            properties[field] = { type: 'string' };
+            createProperties[field] = { type: 'string' };
+        }
+        const editFieldProperties = {};
+        for (const field of fieldSet) {
+            editFieldProperties[field] = { type: 'string' };
         }
 
         tools.push({
             type: 'function',
             function: {
-                name: toolName,
+                name: createToolName,
                 description: buildDynamicToolDescription({
                     ...spec,
                     id: typeId,
                     tableColumns: filteredFields,
                     requiredColumns: filteredRequiredColumns,
                     columnHints: filteredColumnHints,
-                }),
+                }, 'create'),
                 parameters: {
                     type: 'object',
-                    properties,
+                    properties: createProperties,
                     required: filteredRequiredColumns.filter(field => fieldSet.has(field) || field === 'title'),
                     additionalProperties: false,
                 },
             },
         });
-        specByToolName.set(toolName, {
+        tools.push({
+            type: 'function',
+            function: {
+                name: editToolName,
+                description: buildDynamicToolDescription({
+                    ...spec,
+                    id: typeId,
+                    tableColumns: filteredFields,
+                    requiredColumns: filteredRequiredColumns,
+                    columnHints: filteredColumnHints,
+                }, 'edit'),
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        node_id: { type: 'string' },
+                        ...(isEventType ? {} : { title: { type: 'string' } }),
+                        set_fields: {
+                            type: 'object',
+                            properties: editFieldProperties,
+                            additionalProperties: false,
+                        },
+                        clear_fields: {
+                            type: 'array',
+                            items: {
+                                type: 'string',
+                                enum: filteredFields,
+                            },
+                        },
+                        reason: { type: 'string' },
+                    },
+                    required: ['node_id'],
+                    additionalProperties: false,
+                },
+            },
+        });
+        tools.push({
+            type: 'function',
+            function: {
+                name: deleteToolName,
+                description: `Delete semantic node for type "${typeId}" by node_id.`,
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        node_id: { type: 'string' },
+                        reason: { type: 'string' },
+                    },
+                    required: ['node_id'],
+                    additionalProperties: false,
+                },
+            },
+        });
+        specByToolName.set(createToolName, {
             ...spec,
             id: typeId,
             tableColumns: filteredFields,
             requiredColumns: filteredRequiredColumns,
             columnHints: filteredColumnHints,
+            op: 'create',
+        });
+        specByToolName.set(editToolName, {
+            ...spec,
+            id: typeId,
+            tableColumns: filteredFields,
+            requiredColumns: filteredRequiredColumns,
+            columnHints: filteredColumnHints,
+            op: 'edit',
+        });
+        specByToolName.set(deleteToolName, {
+            ...spec,
+            id: typeId,
+            tableColumns: filteredFields,
+            requiredColumns: filteredRequiredColumns,
+            columnHints: filteredColumnHints,
+            op: 'delete',
         });
     }
 
@@ -2154,7 +2247,7 @@ function buildDynamicExtractTools(schema = []) {
     return { tools, specByToolName };
 }
 
-function buildUpsertFromDynamicToolCall(call, spec) {
+function buildCreateFromDynamicToolCall(call, spec) {
     if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
         return { payload: null, missingRequired: [] };
     }
@@ -2168,8 +2261,14 @@ function buildUpsertFromDynamicToolCall(call, spec) {
         if (key === 'title') {
             continue;
         }
+        if (!Object.prototype.hasOwnProperty.call(args, key)) {
+            continue;
+        }
         const rawValue = args[key];
-        fields[key] = rawValue === undefined || rawValue === null ? '' : rawValue;
+        if (rawValue === undefined || rawValue === null) {
+            continue;
+        }
+        fields[key] = rawValue;
     }
     const titleValue = args.title ?? '';
     const missingRequired = [];
@@ -2200,7 +2299,139 @@ function buildUpsertFromDynamicToolCall(call, spec) {
     };
 }
 
-async function extractNodesWithLLM(context, settings, schema, messageBatch) {
+function buildEditFromDynamicToolCall(call, spec) {
+    if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
+        return { payload: null, invalidReason: 'Invalid call.' };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const nodeId = normalizeText(args.node_id || '');
+    if (!nodeId) {
+        return { payload: null, invalidReason: 'node_id is required.' };
+    }
+    const allowedFields = new Set(
+        (Array.isArray(spec.tableColumns) ? spec.tableColumns : [])
+            .map(column => String(column || '').trim())
+            .filter(key => key && key !== 'title'),
+    );
+    const rawSetFields = args.set_fields && typeof args.set_fields === 'object' && !Array.isArray(args.set_fields)
+        ? args.set_fields
+        : {};
+    const setFields = {};
+    for (const [key, value] of Object.entries(rawSetFields)) {
+        const normalizedKey = String(key || '').trim();
+        if (!normalizedKey || !allowedFields.has(normalizedKey)) {
+            continue;
+        }
+        if (value === undefined || value === null) {
+            continue;
+        }
+        setFields[normalizedKey] = value;
+    }
+    const clearFields = Array.isArray(args.clear_fields)
+        ? args.clear_fields
+            .map(key => String(key || '').trim())
+            .filter(key => key && allowedFields.has(key))
+        : [];
+    const titleValue = Object.prototype.hasOwnProperty.call(args, 'title')
+        ? normalizeText(args.title || '')
+        : '';
+    const hasTitlePatch = Object.prototype.hasOwnProperty.call(args, 'title');
+    if (!hasTitlePatch && Object.keys(setFields).length === 0 && clearFields.length === 0) {
+        return { payload: null, invalidReason: 'No effective edit fields provided.' };
+    }
+    return {
+        payload: {
+            op: 'edit',
+            type: String(spec.id || '').trim().toLowerCase(),
+            nodeId,
+            hasTitlePatch,
+            title: titleValue,
+            setFields,
+            clearFields,
+        },
+        invalidReason: '',
+    };
+}
+
+function buildDeleteFromDynamicToolCall(call, spec) {
+    if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
+        return { payload: null, invalidReason: 'Invalid call.' };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const nodeId = normalizeText(args.node_id || '');
+    if (!nodeId) {
+        return { payload: null, invalidReason: 'node_id is required.' };
+    }
+    return {
+        payload: {
+            op: 'delete',
+            type: String(spec.id || '').trim().toLowerCase(),
+            nodeId,
+        },
+        invalidReason: '',
+    };
+}
+
+function buildEditableExtractNodeHints(store, schema, limit = 120) {
+    const safeLimit = Math.max(0, Math.min(500, Math.floor(Number(limit) || 0)));
+    if (!store || typeof store !== 'object' || safeLimit === 0) {
+        return [];
+    }
+    const schemaMap = new Map(
+        (Array.isArray(schema) ? schema : [])
+            .map(item => [String(item?.id || '').trim().toLowerCase(), item]),
+    );
+    const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+        .filter(node => !node.archived)
+        .sort((a, b) => {
+            const aSeq = Number(a?.seqTo ?? -1);
+            const bSeq = Number(b?.seqTo ?? -1);
+            if (aSeq !== bSeq) {
+                return bSeq - aSeq;
+            }
+            return String(a?.id || '').localeCompare(String(b?.id || ''));
+        });
+    const rows = [];
+    for (const node of nodes) {
+        if (rows.length >= safeLimit) {
+            break;
+        }
+        const type = String(node?.type || '').trim().toLowerCase();
+        const spec = schemaMap.get(type);
+        const fields = node?.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+            ? node.fields
+            : {};
+        const keyColumns = Array.from(new Set([
+            ...(
+                Array.isArray(spec?.primaryKeyColumns)
+                    ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+                    : []
+            ),
+            ...(
+                Array.isArray(spec?.requiredColumns)
+                    ? spec.requiredColumns.map(column => String(column || '').trim()).filter(Boolean)
+                    : []
+            ),
+        ]));
+        const keyValues = {};
+        for (const column of keyColumns) {
+            const value = toDisplayScalar(fields[column]);
+            if (value) {
+                keyValues[column] = value;
+            }
+        }
+        rows.push({
+            id: String(node?.id || ''),
+            type,
+            title: String(node?.title || ''),
+            to_seq: Number(node?.seqTo ?? 0),
+            key_values: keyValues,
+        });
+    }
+    return rows;
+}
+
+async function extractNodesWithLLM(context, store, settings, schema, messageBatch) {
     const messages = (Array.isArray(messageBatch) ? messageBatch : [])
         .map(item => ({
             seq: Number(item?.seq || 0),
@@ -2228,6 +2459,7 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
             systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
             userPrompt: JSON.stringify({
                 required_types: Array.from(forceUpdateTypes),
+                editable_nodes: buildEditableExtractNodeHints(store, schema, 120),
                 messages,
             }),
             includeCharacterCard: true,
@@ -2240,7 +2472,12 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
             String(context?.chatCompletionSettings?.chat_completion_source || ''),
         );
         const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
-        let validatedUpserts = [];
+        const editableNodes = new Map(
+            listNodesByLevel(store, LEVEL.SEMANTIC)
+                .filter(node => !node.archived && node?.id)
+                .map(node => [String(node.id), node]),
+        );
+        let validatedOps = [];
         let retryReason = '';
         for (let attempt = 0; attempt <= semanticRetries; attempt++) {
             const reminder = attempt > 0
@@ -2269,21 +2506,67 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
                 retryReason = 'luker_rpg_extract_done must be the last call.';
                 continue;
             }
-            const upsertCalls = calls.filter(call => specByToolName.has(String(call?.name || '')));
-            if (upsertCalls.length < 1) {
+            const typeCalls = calls.filter(call => specByToolName.has(String(call?.name || '')));
+            if (typeCalls.length < 1) {
                 retryReason = 'No semantic type tool call found.';
                 continue;
             }
-            const upserts = [];
+            const ops = [];
             const calledTypes = new Set();
             let invalid = false;
-            for (const call of upsertCalls) {
+            for (const call of typeCalls) {
                 const toolName = String(call?.name || '');
-                const spec = specByToolName.get(toolName);
-                if (!spec) {
+                const specEntry = specByToolName.get(toolName);
+                if (!specEntry) {
                     continue;
                 }
-                const mapped = buildUpsertFromDynamicToolCall(call, spec);
+                const spec = { ...specEntry };
+                if (spec.op === 'delete') {
+                    const deletion = buildDeleteFromDynamicToolCall(call, spec);
+                    if (!deletion.payload) {
+                        invalid = true;
+                        retryReason = `Delete call invalid for "${spec.id}": ${deletion.invalidReason}`;
+                        break;
+                    }
+                    const mappedNodeId = String(deletion.payload.nodeId || '').trim();
+                    const targetNode = editableNodes.get(mappedNodeId);
+                    if (!targetNode) {
+                        invalid = true;
+                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from editable_nodes.`;
+                        break;
+                    }
+                    if (String(targetNode?.type || '').trim().toLowerCase() !== String(spec.id || '').trim().toLowerCase()) {
+                        invalid = true;
+                        retryReason = `node_id "${mappedNodeId}" type mismatch: expected "${spec.id}".`;
+                        break;
+                    }
+                    ops.push(deletion.payload);
+                    continue;
+                }
+                if (spec.op === 'edit') {
+                    const editOp = buildEditFromDynamicToolCall(call, spec);
+                    if (!editOp.payload) {
+                        invalid = true;
+                        retryReason = `Edit call invalid for "${spec.id}": ${editOp.invalidReason}`;
+                        break;
+                    }
+                    const mappedNodeId = String(editOp.payload.nodeId || '').trim();
+                    const targetNode = editableNodes.get(mappedNodeId);
+                    if (!targetNode) {
+                        invalid = true;
+                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from editable_nodes.`;
+                        break;
+                    }
+                    if (String(targetNode?.type || '').trim().toLowerCase() !== String(spec.id || '').trim().toLowerCase()) {
+                        invalid = true;
+                        retryReason = `node_id "${mappedNodeId}" type mismatch: expected "${spec.id}".`;
+                        break;
+                    }
+                    calledTypes.add(String(spec.id || '').trim().toLowerCase());
+                    ops.push(editOp.payload);
+                    continue;
+                }
+                const mapped = buildCreateFromDynamicToolCall(call, spec);
                 if (mapped.missingRequired.length > 0) {
                     invalid = true;
                     retryReason = `Type "${spec.id}" missing required columns: ${mapped.missingRequired.join(', ')}.`;
@@ -2291,7 +2574,10 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
                 }
                 if (mapped.payload) {
                     calledTypes.add(String(spec.id || '').trim().toLowerCase());
-                    upserts.push(mapped.payload);
+                    ops.push({
+                        op: 'create',
+                        ...mapped.payload,
+                    });
                 }
             }
             if (invalid) {
@@ -2302,15 +2588,15 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
                 retryReason = `Missing force-update type tool calls: ${missingForceTypes.join(', ')}.`;
                 continue;
             }
-            if (upserts.length < 1) {
-                retryReason = 'No valid upsert payload found.';
+            if (ops.length < 1) {
+                retryReason = 'No valid extraction operations found.';
                 continue;
             }
-            validatedUpserts = upserts;
+            validatedOps = ops;
             break;
         }
-        if (validatedUpserts.length > 0) {
-            return validatedUpserts;
+        if (validatedOps.length > 0) {
+            return validatedOps;
         }
     } catch (error) {
         console.warn(`[${MODULE_NAME}] extract llm failed`, error);
@@ -2322,6 +2608,7 @@ async function extractNodesWithLLM(context, settings, schema, messageBatch) {
 function upsertSemanticNode(store, item, settings = null) {
     const type = String(item.type || 'semantic').toLowerCase();
     let title = normalizeText(item.title || '');
+    const explicitNodeId = normalizeText(item?.nodeId || item?.node_id || '');
     const parseEventSummaryIndex = (value) => {
         const text = normalizeText(value || '');
         if (!text) {
@@ -2361,33 +2648,55 @@ function upsertSemanticNode(store, item, settings = null) {
         ?? '',
     );
     const latestOnlyConfig = settings ? getSemanticLatestOnlyConfig(settings, type) : { enabled: false, keyFields: [] };
-    const deriveLatestOnlyKey = (fieldsObject, fallbackTitle = '') => {
+    const latestOnlyKeyFields = Array.isArray(latestOnlyConfig.keyFields)
+        ? latestOnlyConfig.keyFields.map(column => String(column || '').trim()).filter(Boolean)
+        : [];
+    const tokenizePrimaryKeyField = (fieldsObject, key) => {
         const fields = fieldsObject && typeof fieldsObject === 'object' && !Array.isArray(fieldsObject)
             ? fieldsObject
             : {};
-        const explicitKeys = Array.isArray(latestOnlyConfig.keyFields)
-            ? latestOnlyConfig.keyFields.map(column => String(column || '').trim()).filter(Boolean)
-            : [];
-        if (explicitKeys.length > 0) {
-            const parts = [];
-            for (const key of explicitKeys) {
-                const value = normalizeText(toDisplayScalar(fields[key]));
-                if (!value) {
-                    return '';
-                }
-                parts.push(`${key}=${value.toLowerCase()}`);
+        const raw = toDisplayScalar(fields[key]);
+        if (!raw) {
+            return [];
+        }
+        return String(raw)
+            .split(/[,，;；|]/g)
+            .map(part => normalizeText(part).toLowerCase())
+            .filter(Boolean);
+    };
+    const computeLatestOnlyMatchScore = (candidateFields) => {
+        if (latestOnlyKeyFields.length === 0) {
+            return 0;
+        }
+        let score = 0;
+        for (const key of latestOnlyKeyFields) {
+            const incomingTokens = tokenizePrimaryKeyField(incomingFields, key);
+            const candidateTokens = tokenizePrimaryKeyField(candidateFields, key);
+            if (incomingTokens.length === 0 || candidateTokens.length === 0) {
+                continue;
             }
-            return parts.join('|');
+            const candidateSet = new Set(candidateTokens);
+            if (incomingTokens.some(token => candidateSet.has(token))) {
+                score += 1;
+            }
         }
-        const nameValue = normalizeText(toDisplayScalar(fields.name));
-        if (nameValue) {
-            return nameValue.toLowerCase();
-        }
-        const fallbackValue = normalizeText(fallbackTitle);
-        return fallbackValue ? fallbackValue.toLowerCase() : '';
+        return score;
     };
 
-    if (type === 'event') {
+    let target = null;
+    if (explicitNodeId) {
+        const explicitTarget = store?.nodes?.[explicitNodeId];
+        if (
+            explicitTarget
+            && !explicitTarget.archived
+            && explicitTarget.level === LEVEL.SEMANTIC
+            && String(explicitTarget.type || '').toLowerCase() === type
+        ) {
+            target = explicitTarget;
+        }
+    }
+
+    if (type === 'event' && !target) {
         const generatedTitle = nextEventSummaryTitle();
         return createNode(store, {
             type,
@@ -2410,35 +2719,28 @@ function upsertSemanticNode(store, item, settings = null) {
         );
         title = derivedTitle || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
     }
-    let target = null;
-    if (latestOnlyConfig.enabled) {
-        const incomingLatestKey = deriveLatestOnlyKey(incomingFields, title);
+    if (!target && latestOnlyConfig.enabled) {
         const candidates = Object.values(store.nodes)
             .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
             .filter(node => String(node.type || '').toLowerCase() === type)
-            .filter(node => {
-                if (incomingLatestKey) {
-                    return deriveLatestOnlyKey(node?.fields, node?.title) === incomingLatestKey;
-                }
-                const candidateTitle = normalizeText(node?.title || '').toLowerCase();
-                return candidateTitle && candidateTitle === normalizeText(title || '').toLowerCase();
-            })
+            .map(node => ({ node, score: computeLatestOnlyMatchScore(node?.fields) }))
+            .filter(entry => entry.score > 0)
             .sort((a, b) => {
-                const aSeq = Number(a?.seqTo ?? -1);
-                const bSeq = Number(b?.seqTo ?? -1);
+                if (a.score !== b.score) {
+                    return b.score - a.score;
+                }
+                const aSeq = Number(a?.node?.seqTo ?? -1);
+                const bSeq = Number(b?.node?.seqTo ?? -1);
                 if (aSeq !== bSeq) {
                     return bSeq - aSeq;
                 }
-                return String(a?.id || '').localeCompare(String(b?.id || ''));
+                return String(a?.node?.id || '').localeCompare(String(b?.node?.id || ''));
             });
-        target = candidates[0] || null;
+        target = candidates[0]?.node || null;
         for (let i = 1; i < candidates.length; i++) {
-            archiveNode(store, candidates[i].id);
+            archiveNode(store, candidates[i]?.node?.id);
         }
-        if (!title) {
-            title = incomingLatestKey || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
-        }
-    } else {
+    } else if (!target) {
         const normalizedKey = `${type}::${title.toLowerCase()}`;
         target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
     }
@@ -2679,12 +2981,57 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
     const extractBatch = [];
     const contextTurns = Math.max(1, Math.min(32, Number(settings?.extractContextTurns || 1)));
     extractBatch.push(...buildExtractBatchFromFrames(frames, frameIndex, contextTurns));
-    const upserts = await extractNodesWithLLM(context, settings, schema, extractBatch);
-    if (upserts.length === 0) {
+    const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch);
+    if (operations.length === 0) {
         return false;
     }
 
-    for (const item of upserts) {
+    for (const item of operations) {
+        const op = String(item?.op || 'create').trim().toLowerCase();
+        if (op === 'delete') {
+            const nodeId = String(item?.nodeId || '').trim();
+            if (nodeId && store?.nodes?.[nodeId]) {
+                dropNode(store, nodeId, true);
+            }
+            continue;
+        }
+        if (op === 'edit') {
+            const nodeId = String(item?.nodeId || '').trim();
+            const targetNode = nodeId ? store?.nodes?.[nodeId] : null;
+            if (!targetNode || targetNode.archived || targetNode.level !== LEVEL.SEMANTIC) {
+                continue;
+            }
+            if (String(targetNode.type || '').toLowerCase() !== String(item?.type || '').toLowerCase()) {
+                continue;
+            }
+            const setFields = item?.setFields && typeof item.setFields === 'object' && !Array.isArray(item.setFields)
+                ? item.setFields
+                : {};
+            const clearFields = Array.isArray(item?.clearFields)
+                ? item.clearFields.map(key => String(key || '').trim()).filter(Boolean)
+                : [];
+            const evidence = buildEvidenceSeqRange(item, extractBatch);
+            if (!targetNode.fields || typeof targetNode.fields !== 'object' || Array.isArray(targetNode.fields)) {
+                targetNode.fields = {};
+            }
+            if (Boolean(item?.hasTitlePatch) && String(targetNode?.type || '').toLowerCase() !== 'event') {
+                const patchedTitle = normalizeText(item?.title || '');
+                if (patchedTitle) {
+                    targetNode.title = patchedTitle;
+                }
+            }
+            for (const [key, value] of Object.entries(setFields)) {
+                if (value === undefined || value === null) {
+                    continue;
+                }
+                targetNode.fields[key] = value;
+            }
+            for (const key of clearFields) {
+                delete targetNode.fields[key];
+            }
+            targetNode.seqTo = Math.max(Number(targetNode.seqTo || 0), Number(evidence.seqTo || 0));
+            continue;
+        }
         const type = String(item?.type || 'semantic').toLowerCase();
         const title = normalizeText(item?.title || '');
         if (!type) {
@@ -2693,6 +3040,7 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
         const evidence = buildEvidenceSeqRange(item, extractBatch);
         const targetNode = upsertSemanticNode(store, {
             type,
+            nodeId: String(item?.nodeId || ''),
             title,
             fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
             seqTo: evidence.seqTo,
@@ -3020,6 +3368,29 @@ function getNodeRecallKeywords(node) {
     return Array.from(new Set(values));
 }
 
+function getNodePrimaryKeyKeywords(node, spec) {
+    const fields = node?.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+        ? node.fields
+        : {};
+    const keys = Array.isArray(spec?.primaryKeyColumns)
+        ? spec.primaryKeyColumns.map(key => String(key || '').trim()).filter(Boolean)
+        : [];
+    const values = [];
+    for (const key of keys) {
+        const raw = toDisplayScalar(fields[key]);
+        if (!raw) {
+            continue;
+        }
+        for (const token of String(raw).split(/[,，;；|]/g)) {
+            const normalized = normalizeText(token).toLowerCase();
+            if (normalized) {
+                values.push(normalized);
+            }
+        }
+    }
+    return Array.from(new Set(values));
+}
+
 function isRecallDiagnosticNode(node) {
     const type = String(node?.type || '').trim().toLowerCase();
     return type === 'recall' || type.startsWith('recall_');
@@ -3071,8 +3442,10 @@ function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, 
         const spec = schemaMap.get(type);
         const schemaKeywords = Array.isArray(spec?.keywords) ? spec.keywords : [];
         const nodeKeywords = getNodeRecallKeywords(node);
+        const nodePrimaryKeyKeywords = getNodePrimaryKeyKeywords(node, spec);
         const keywordHit = hasQueryKeywordHit(query, schemaKeywords)
-            || hasQueryKeywordHit(query, nodeKeywords);
+            || hasQueryKeywordHit(query, nodeKeywords)
+            || hasQueryKeywordHit(query, nodePrimaryKeyKeywords);
         if (!keywordHit) {
             continue;
         }
@@ -6079,10 +6452,6 @@ function refreshPrimaryKeyOptionsForCard(card) {
         .get()
         .filter(Boolean);
     const validChecked = checked.filter(column => columns.includes(column));
-    const latestOnlyEnabled = Boolean(root.find('[data-field="latestOnly"]').prop('checked'));
-    if (latestOnlyEnabled && validChecked.length === 0 && columns.length > 0) {
-        validChecked.push(columns[0]);
-    }
     root.find('.luker-schema-primary-key-options').html(renderPrimaryKeyOptions(columns, validChecked));
 }
 
