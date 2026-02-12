@@ -436,7 +436,7 @@ function registerLocaleData() {
         'Memory disabled, runtime lorebook projection cleared.': '记忆已禁用，已清理运行时 Lorebook 投影。',
         'Lorebook projection disabled.': 'Lorebook 投影已禁用。',
         'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
-        'Recall ready. query="${0}" selected=${1}': '召回就绪。query="${0}" selected=${1}',
+        'Recall ready. selected=${0}': '召回就绪。selected=${0}',
         'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
         'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
         'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
@@ -657,7 +657,7 @@ function registerLocaleData() {
         'Memory disabled, runtime lorebook projection cleared.': '記憶已停用，已清理執行期 Lorebook 投影。',
         'Lorebook projection disabled.': 'Lorebook 投影已停用。',
         'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
-        'Recall ready. query="${0}" selected=${1}': '召回就緒。query="${0}" selected=${1}',
+        'Recall ready. selected=${0}': '召回就緒。selected=${0}',
         'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
         'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
         'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
@@ -5008,7 +5008,7 @@ async function injectMemoryPrompts(context, payload) {
     };
     const chatKey = getChatKey(context, targetHint);
     await persistMemoryStoreByChatKey(context, chatKey, store);
-    updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query, selectedNodes.length));
+    updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
     return true;
 }
 
@@ -7863,7 +7863,7 @@ function bindUi() {
 
         const result = await runLLMDrivenRecall(context, store, payload);
         store.lastRecallTrace = result.trace;
-        updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query, result.selectedNodes.length));
+        updateUiStatus(i18nFormat('Recall ready. selected=${0}', result.selectedNodes.length));
         refreshUiStats();
     });
 
