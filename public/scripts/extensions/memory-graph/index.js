@@ -6321,7 +6321,7 @@ function ensureStyles() {
     gap: 8px;
 }
 
-.luker-rpg-schema-popup .luker-schema-card label {
+.luker-rpg-schema-popup .luker-schema-card label:not(.checkbox_label) {
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -6331,7 +6331,7 @@ function ensureStyles() {
 
 .luker-rpg-schema-popup .text_pole,
 .luker-rpg-schema-popup textarea,
-.luker-rpg-schema-popup input,
+.luker-rpg-schema-popup input:not([type="checkbox"]),
 .luker-rpg-schema-popup select {
     width: 100%;
     max-width: 100%;
@@ -6339,13 +6339,21 @@ function ensureStyles() {
     box-sizing: border-box;
 }
 
-.luker-rpg-schema-popup .luker-schema-checkbox {
-    justify-content: flex-end;
+.luker-rpg-schema-popup .luker-schema-card label.checkbox_label {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    justify-content: flex-start;
 }
 
-.luker-rpg-schema-popup .luker-schema-checkbox input[type="checkbox"] {
-    margin-top: 8px;
-    align-self: flex-start;
+.luker-rpg-schema-popup .luker-schema-card label.checkbox_label input[type="checkbox"] {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+    align-self: center;
 }
 
 .luker-rpg-schema-popup .luker-schema-actions {
@@ -6690,16 +6698,13 @@ function renderNodeTypeSchemaCard(spec, index) {
         <label>${escapeHtml(i18n('Table Name'))}
             <input data-field="tableName" class="text_pole" type="text" value="${escapeHtml(spec.tableName || spec.id)}" />
         </label>
-        <label class="luker-schema-checkbox">${escapeHtml(i18n('Always Inject'))}
-            <input data-field="alwaysInject" type="checkbox" ${spec.alwaysInject ? 'checked' : ''} />
+        <label class="checkbox_label luker-schema-checkbox"><input data-field="alwaysInject" type="checkbox" ${spec.alwaysInject ? 'checked' : ''} />${escapeHtml(i18n('Always Inject'))}
         </label>
     </div>
-    <label class="luker-schema-checkbox">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}
-        <input data-field="forceUpdate" type="checkbox" ${spec.forceUpdate ? 'checked' : ''} />
+    <label class="checkbox_label luker-schema-checkbox"><input data-field="forceUpdate" type="checkbox" ${spec.forceUpdate ? 'checked' : ''} />${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}
     </label>
     <div class="luker-schema-grid-2">
-        <label class="luker-schema-checkbox">${escapeHtml(i18n('Latest Only Upsert'))}
-            <input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />
+        <label class="checkbox_label luker-schema-checkbox"><input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />${escapeHtml(i18n('Latest Only Upsert'))}
         </label>
         <div class="luker-schema-latestonly-keys">
             <label>${escapeHtml(i18n('Primary Key Columns'))}</label>
@@ -6721,8 +6726,7 @@ function renderNodeTypeSchemaCard(spec, index) {
     <label>${escapeHtml(i18n('Extract Hint'))}
         <textarea data-field="extractHint" class="text_pole textarea_compact" rows="2">${escapeHtml(spec.extractHint || '')}</textarea>
     </label>
-    <label class="luker-schema-checkbox">${escapeHtml(i18n('Enable Hierarchical Compression'))}
-        <input data-field="compression.enabled" type="checkbox" ${mode === 'hierarchical' ? 'checked' : ''} />
+    <label class="checkbox_label luker-schema-checkbox"><input data-field="compression.enabled" type="checkbox" ${mode === 'hierarchical' ? 'checked' : ''} />${escapeHtml(i18n('Enable Hierarchical Compression'))}
     </label>
     <div class="luker-schema-grid-2 luker-schema-compression-hier">
         <label>${escapeHtml(i18n('Threshold'))}
