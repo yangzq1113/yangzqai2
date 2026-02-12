@@ -574,6 +574,27 @@ function normalizeChatStateNamespace(namespace) {
 }
 
 /**
+ * Resolves a file path constrained to a base directory.
+ * @param {string} baseDirectory Base directory path.
+ * @param {string} requestedFileName Requested file name (possibly unsafe).
+ * @returns {string} Safe resolved file path or empty string.
+ */
+function resolvePathInsideDirectory(baseDirectory, requestedFileName) {
+    const base = path.resolve(String(baseDirectory || ''));
+    const safeName = sanitize(path.basename(String(requestedFileName || '').trim()));
+    if (!base || !safeName) {
+        return '';
+    }
+
+    const resolved = path.resolve(base, safeName);
+    const baseWithSep = base.endsWith(path.sep) ? base : `${base}${path.sep}`;
+    if (resolved !== base && !resolved.startsWith(baseWithSep)) {
+        return '';
+    }
+    return resolved;
+}
+
+/**
  * Gets chat state sidecar path for a chat jsonl file path and namespace.
  * @param {string} chatFilePath Chat jsonl file path.
  * @param {string} namespace State namespace.
@@ -1676,7 +1697,10 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
     const pathToFolder = request.body.is_group
         ? request.user.directories.groupChats
         : path.join(request.user.directories.chats, String(request.body.avatar_url).replace('.png', ''));
-    let filename = path.join(pathToFolder, request.body.file);
+    const filename = resolvePathInsideDirectory(pathToFolder, request.body.file);
+    if (!filename) {
+        return response.sendStatus(400);
+    }
     let exportfilename = request.body.exportfilename;
     if (!fs.existsSync(filename)) {
         const errorMessage = {
