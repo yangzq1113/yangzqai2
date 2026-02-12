@@ -2547,11 +2547,14 @@ function buildDeleteFromDynamicToolCall(call, spec) {
     };
 }
 
-function buildGraphNodeHints(store, schema, limit = 0) {
+function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
     const numericLimit = Number(limit);
     const safeLimit = Number.isFinite(numericLimit) && numericLimit > 0
         ? Math.max(1, Math.min(5000, Math.floor(numericLimit)))
         : Number.POSITIVE_INFINITY;
+    const maxSeq = Number.isFinite(Number(options?.maxSeq))
+        ? Math.max(0, Math.floor(Number(options.maxSeq)))
+        : null;
     if (!store || typeof store !== 'object') {
         return [];
     }
@@ -2561,7 +2564,14 @@ function buildGraphNodeHints(store, schema, limit = 0) {
     );
     const allSemanticNodes = listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => !node?.archived)
-        .filter(node => !isRecallDiagnosticNode(node));
+        .filter(node => !isRecallDiagnosticNode(node))
+        .filter((node) => {
+            if (maxSeq === null) {
+                return true;
+            }
+            const seq = Number(node?.seqTo ?? NaN);
+            return !Number.isFinite(seq) || seq <= maxSeq;
+        });
     const typeIds = new Set(
         allSemanticNodes
             .map(node => String(node?.type || '').trim().toLowerCase())
@@ -2761,7 +2771,7 @@ function buildRecallFinalizeInputXml({
     ].join('\n');
 }
 
-async function extractNodesWithLLM(context, store, settings, schema, messageBatch) {
+async function extractNodesWithLLM(context, store, settings, schema, messageBatch, options = {}) {
     const messages = (Array.isArray(messageBatch) ? messageBatch : [])
         .map(item => ({
             seq: Number(item?.seq || 0),
@@ -2789,10 +2799,20 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             .map(item => String(item.id || '').trim().toLowerCase())
             .filter(Boolean),
     );
-    const graphNodes = buildGraphNodeHints(store, schema, 0);
+    const extractionMaxSeq = Number.isFinite(Number(options?.maxSeq))
+        ? Math.max(0, Math.floor(Number(options.maxSeq)))
+        : null;
+    const graphNodes = buildGraphNodeHints(store, schema, 0, { maxSeq: extractionMaxSeq });
     const semanticNodeTotal = listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => !node?.archived)
         .filter(node => !isRecallDiagnosticNode(node))
+        .filter((node) => {
+            if (extractionMaxSeq === null) {
+                return true;
+            }
+            const seq = Number(node?.seqTo ?? NaN);
+            return !Number.isFinite(seq) || seq <= extractionMaxSeq;
+        })
         .length;
     const graphDataPayload = {
         initialized: graphNodes.length > 0,
@@ -2828,6 +2848,12 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             .filter((node) => {
                 if (!node || node.archived || !node.id) {
                     return false;
+                }
+                if (extractionMaxSeq !== null) {
+                    const seq = Number(node?.seqTo ?? NaN);
+                    if (Number.isFinite(seq) && seq > extractionMaxSeq) {
+                        return false;
+                    }
                 }
                 const type = String(node?.type || '').trim().toLowerCase();
                 return editableTypeSet.has(type);
@@ -2974,10 +3000,26 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     return [];
 }
 
-function upsertSemanticNode(store, item, settings = null) {
+function upsertSemanticNode(store, item, settings = null, options = {}) {
     const type = String(item.type || 'semantic').toLowerCase();
     let title = normalizeText(item.title || '');
     const explicitNodeId = normalizeText(item?.nodeId || item?.node_id || '');
+    const maxSeqLimit = Number.isFinite(Number(options?.maxSeq))
+        ? Math.max(0, Math.floor(Number(options.maxSeq)))
+        : null;
+    const isNodeVisibleAtSeq = (node) => {
+        if (!node || node.archived || node.level !== LEVEL.SEMANTIC) {
+            return false;
+        }
+        if (maxSeqLimit === null) {
+            return true;
+        }
+        const nodeSeq = Number(node?.seqTo ?? NaN);
+        if (!Number.isFinite(nodeSeq)) {
+            return true;
+        }
+        return nodeSeq <= maxSeqLimit;
+    };
     const parseEventSummaryIndex = (value) => {
         const text = normalizeText(value || '');
         if (!text) {
@@ -3056,9 +3098,7 @@ function upsertSemanticNode(store, item, settings = null) {
     if (explicitNodeId) {
         const explicitTarget = store?.nodes?.[explicitNodeId];
         if (
-            explicitTarget
-            && !explicitTarget.archived
-            && explicitTarget.level === LEVEL.SEMANTIC
+            isNodeVisibleAtSeq(explicitTarget)
             && String(explicitTarget.type || '').toLowerCase() === type
         ) {
             target = explicitTarget;
@@ -3090,7 +3130,7 @@ function upsertSemanticNode(store, item, settings = null) {
     }
     if (!target && latestOnlyConfig.enabled) {
         const candidates = Object.values(store.nodes)
-            .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
+            .filter(node => isNodeVisibleAtSeq(node))
             .filter(node => String(node.type || '').toLowerCase() === type)
             .map(node => ({ node, score: computeLatestOnlyMatchScore(node?.fields) }))
             .filter(entry => entry.score > 0)
@@ -3111,7 +3151,7 @@ function upsertSemanticNode(store, item, settings = null) {
         }
     } else if (!target) {
         const normalizedKey = `${type}::${title.toLowerCase()}`;
-        target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
+        target = Object.values(store.nodes).find(node => isNodeVisibleAtSeq(node) && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
     }
 
     if (!target) {
@@ -3144,7 +3184,7 @@ function upsertSemanticNode(store, item, settings = null) {
     return target;
 }
 
-function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqTo: 0 }) {
+function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqTo: 0 }, options = {}) {
     if (!sourceNode || !Array.isArray(rawLinks) || rawLinks.length === 0) {
         return;
     }
@@ -3162,7 +3202,7 @@ function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { se
                 summary: normalizeText(link?.target_summary || ''),
             },
             seqTo: Number.isFinite(Number(defaultSeqRange?.seqTo)) ? Number(defaultSeqRange.seqTo) : undefined,
-        }, null);
+        }, null, options);
         if (!targetNode) {
             continue;
         }
@@ -3238,6 +3278,30 @@ function collectSemanticRootsByDepth(store, type, depth, options = {}) {
         });
 }
 
+function getNextSemanticRollupOrdinal(store, type, depth) {
+    const targetDepth = Math.max(1, Math.floor(Number(depth || 0)));
+    const nodes = getSemanticNodesForType(store, type)
+        .filter(node => !node.archived)
+        .filter(node => Number(node?.semanticDepth ?? 0) === targetDepth);
+    let maxOrdinal = 0;
+    const suffixPattern = /#(\d+)\s*$/;
+    for (const node of nodes) {
+        const title = String(node?.title || '');
+        const match = title.match(suffixPattern);
+        if (!match) {
+            continue;
+        }
+        const value = Number(match[1]);
+        if (Number.isFinite(value) && value > maxOrdinal) {
+            maxOrdinal = value;
+        }
+    }
+    if (maxOrdinal > 0) {
+        return maxOrdinal + 1;
+    }
+    return nodes.length + 1;
+}
+
 async function compressSemanticHierarchical(context, store, settings, type, config, options = {}) {
     let changed = false;
     let guard = 0;
@@ -3277,14 +3341,16 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 break;
             }
 
+            const rollupDepth = depth + 1;
+            const rollupOrdinal = getNextSemanticRollupOrdinal(store, type, rollupDepth);
             const parent = createNode(store, {
                 type: String(type || 'semantic'),
                 level: LEVEL.SEMANTIC,
-                title: `${String(config.label || type || 'Semantic')} Summary L${depth + 1} #${Date.now()}`,
+                title: `${String(config.label || type || 'Semantic')} Summary L${rollupDepth} #${rollupOrdinal}`,
                 fields: { summary },
                 archived: false,
                 semanticRollup: true,
-                semanticDepth: depth + 1,
+                semanticDepth: rollupDepth,
                 seqTo: Math.max(...group.map(node => Number(node.seqTo ?? 0))),
             });
 
@@ -3382,7 +3448,11 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
     const extractBatch = [];
     const contextTurns = Math.max(1, Math.min(32, Number(settings?.extractContextTurns || 1)));
     extractBatch.push(...buildExtractBatchFromFrames(frames, frameIndex, contextTurns));
-    const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch);
+    const frameSeq = Number(frame?.seq || 0);
+    const extractionMaxSeq = Number.isFinite(frameSeq) ? Math.max(0, Math.floor(frameSeq)) : null;
+    const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch, {
+        maxSeq: extractionMaxSeq,
+    });
     if (operations.length === 0) {
         return false;
     }
@@ -3445,19 +3515,21 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
             title,
             fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
             seqTo: evidence.seqTo,
-        }, settings);
+        }, settings, { maxSeq: extractionMaxSeq });
         if (targetNode) {
             applyExtractedLinks(
                 store,
                 targetNode,
                 Array.isArray(item?.links) ? item.links : [],
                 evidence,
+                { maxSeq: extractionMaxSeq },
             );
         }
     }
 
     await runCompressionLoop(context, store, settings, {
         compressionStats: options?.compressionStats,
+        maxSeq: extractionMaxSeq,
     });
     return true;
 }
