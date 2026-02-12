@@ -3311,15 +3311,19 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
         while (guard < 120 && compressedRounds < maxRoundsPerType) {
             guard += 1;
             let candidates = collectSemanticRootsByDepth(store, type, depth, options);
-            if (depth === 0 && Number(config.keepRecentLeaves || 0) > 0 && candidates.length > Number(config.keepRecentLeaves || 0)) {
+            if (!forceMode && depth === 0 && Number(config.keepRecentLeaves || 0) > 0 && candidates.length > Number(config.keepRecentLeaves || 0)) {
                 candidates = candidates.slice(0, Math.max(0, candidates.length - Number(config.keepRecentLeaves || 0)));
             }
             if (candidates.length < threshold) {
                 break;
             }
 
-            const group = candidates.slice(0, fanIn);
-            if (group.length < fanIn) {
+            const groupSize = forceMode ? Math.min(fanIn, candidates.length) : fanIn;
+            if (groupSize < 2) {
+                break;
+            }
+            const group = candidates.slice(0, groupSize);
+            if (group.length < groupSize || group.length < 2) {
                 break;
             }
 
