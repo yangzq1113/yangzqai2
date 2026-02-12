@@ -197,11 +197,11 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Extract structured memory nodes from dialogue messages into a high-utility memory graph.',
     'You may output one short <thought>...</thought> before tool calls. Do not output plain JSON text.',
-    'Tool set is dynamic. Each semantic type has create/edit/delete tools. Treat tool descriptions as the source of truth.',
+    'Tool set is dynamic. Semantic types expose create/edit/delete tools as needed; some types can be create-only. Treat tool descriptions as the source of truth.',
     'Call type tools to emit concrete updates, then call luker_rpg_extract_done as the final call.',
     'Hard rule: one response must contain COMPLETE extraction tool calls; do not stop after a single tool call.',
     'Hard rule: return at least 2 tool calls in one response: >=1 type tool call + 1 luker_rpg_extract_done (done must be last).',
-    'Type tools are split by intent: create / edit / delete.',
+    'Type tools are split by intent: create / edit / delete (if available for that type).',
     'Use create for new nodes, edit for existing node_id patch updates, delete for explicit removals.',
     'Create tool uses flattened top-level table columns. Edit tool uses set_fields for sparse patch updates.',
     'Node edit rule: when updating an existing node, set node_id explicitly using an id from editable_nodes in the user payload.',
@@ -227,6 +227,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'For non-event types, summary is optional unless schema requires it.',
     'Title policy: non-event nodes should use short stable human-readable titles.',
     'Reuse the exact same title for the same ongoing entity/thread/location to keep updates merged.',
+    'Event type policy: create-only updates. Do not edit existing event nodes.',
     'Event titles are assigned by system in strict sequence labels (Summary N), so you may omit event title.',
 ].join('\n');
 
@@ -2181,6 +2182,7 @@ function buildDynamicExtractTools(schema = []) {
             continue;
         }
         const baseName = `luker_rpg_extract_${sanitizeExtractToolNameSuffix(typeId)}`;
+        const isEventType = typeId === 'event';
         let createToolName = `${baseName}_create`;
         let suffix = 2;
         while (usedNames.has(createToolName)) {
@@ -2188,13 +2190,16 @@ function buildDynamicExtractTools(schema = []) {
             suffix += 1;
         }
         usedNames.add(createToolName);
-        let editToolName = `${baseName}_edit`;
-        suffix = 2;
-        while (usedNames.has(editToolName)) {
-            editToolName = `${baseName}_edit_${suffix}`;
-            suffix += 1;
+        let editToolName = '';
+        if (!isEventType) {
+            editToolName = `${baseName}_edit`;
+            suffix = 2;
+            while (usedNames.has(editToolName)) {
+                editToolName = `${baseName}_edit_${suffix}`;
+                suffix += 1;
+            }
+            usedNames.add(editToolName);
         }
-        usedNames.add(editToolName);
         let deleteToolName = `${baseName}_delete`;
         suffix = 2;
         while (usedNames.has(deleteToolName)) {
@@ -2202,8 +2207,6 @@ function buildDynamicExtractTools(schema = []) {
             suffix += 1;
         }
         usedNames.add(deleteToolName);
-
-        const isEventType = typeId === 'event';
         const fields = Array.isArray(spec.tableColumns)
             ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean)
             : [];
@@ -2287,41 +2290,43 @@ function buildDynamicExtractTools(schema = []) {
                 },
             },
         });
-        tools.push({
-            type: 'function',
-            function: {
-                name: editToolName,
-                description: buildDynamicToolDescription({
-                    ...spec,
-                    id: typeId,
-                    tableColumns: filteredFields,
-                    requiredColumns: filteredRequiredColumns,
-                    columnHints: filteredColumnHints,
-                }, 'edit'),
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        node_id: { type: 'string' },
-                        ...(isEventType ? {} : { title: { type: 'string' } }),
-                        set_fields: {
-                            type: 'object',
-                            properties: editFieldProperties,
-                            additionalProperties: false,
-                        },
-                        clear_fields: {
-                            type: 'array',
-                            items: {
-                                type: 'string',
-                                enum: filteredFields,
+        if (!isEventType) {
+            tools.push({
+                type: 'function',
+                function: {
+                    name: editToolName,
+                    description: buildDynamicToolDescription({
+                        ...spec,
+                        id: typeId,
+                        tableColumns: filteredFields,
+                        requiredColumns: filteredRequiredColumns,
+                        columnHints: filteredColumnHints,
+                    }, 'edit'),
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            node_id: { type: 'string' },
+                            title: { type: 'string' },
+                            set_fields: {
+                                type: 'object',
+                                properties: editFieldProperties,
+                                additionalProperties: false,
                             },
+                            clear_fields: {
+                                type: 'array',
+                                items: {
+                                    type: 'string',
+                                    enum: filteredFields,
+                                },
+                            },
+                            reason: { type: 'string' },
                         },
-                        reason: { type: 'string' },
+                        required: ['node_id'],
+                        additionalProperties: false,
                     },
-                    required: ['node_id'],
-                    additionalProperties: false,
                 },
-            },
-        });
+            });
+        }
         tools.push({
             type: 'function',
             function: {
@@ -2346,14 +2351,16 @@ function buildDynamicExtractTools(schema = []) {
             columnHints: filteredColumnHints,
             op: 'create',
         });
-        specByToolName.set(editToolName, {
-            ...spec,
-            id: typeId,
-            tableColumns: filteredFields,
-            requiredColumns: filteredRequiredColumns,
-            columnHints: filteredColumnHints,
-            op: 'edit',
-        });
+        if (!isEventType) {
+            specByToolName.set(editToolName, {
+                ...spec,
+                id: typeId,
+                tableColumns: filteredFields,
+                requiredColumns: filteredRequiredColumns,
+                columnHints: filteredColumnHints,
+                op: 'edit',
+            });
+        }
         specByToolName.set(deleteToolName, {
             ...spec,
             id: typeId,
