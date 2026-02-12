@@ -116,6 +116,15 @@ const lukerPromptStates = new Map();
 const LUKER_PROMPT_STATE_MAX_ITEMS = 256;
 const LUKER_PROMPT_STATE_TTL_MS = 30 * 60 * 1000;
 
+function getPromptStateStorageKey(handle, stateId) {
+    const safeHandle = String(handle || '').trim();
+    const safeStateId = String(stateId || '').trim();
+    if (!safeHandle || !safeStateId) {
+        return '';
+    }
+    return `${safeHandle}\u0000${safeStateId}`;
+}
+
 function pruneLukerPromptStates() {
     const now = Date.now();
     for (const [key, value] of lukerPromptStates.entries()) {
@@ -130,15 +139,16 @@ function pruneLukerPromptStates() {
     }
 }
 
-function commitLukerPromptState(stateId, messages) {
-    if (!stateId || !Array.isArray(messages)) {
+function commitLukerPromptState(handle, stateId, messages) {
+    const storageKey = getPromptStateStorageKey(handle, stateId);
+    if (!storageKey || !Array.isArray(messages)) {
         return null;
     }
 
     pruneLukerPromptStates();
-    const previous = lukerPromptStates.get(stateId);
+    const previous = lukerPromptStates.get(storageKey);
     const revision = previous ? Number(previous.revision || 0) + 1 : 1;
-    lukerPromptStates.set(stateId, {
+    lukerPromptStates.set(storageKey, {
         revision,
         messages: structuredClone(messages),
         touched: Date.now(),
@@ -147,7 +157,8 @@ function commitLukerPromptState(stateId, messages) {
     return revision;
 }
 
-function resolveLukerPromptMessages(requestBody) {
+function resolveLukerPromptMessages(request, requestBody) {
+    const handle = String(request?.user?.profile?.handle || '').trim();
     const explicitStateId = typeof requestBody?.luker_prompt_state_id === 'string'
         ? requestBody.luker_prompt_state_id.trim()
         : '';
@@ -175,12 +186,13 @@ function resolveLukerPromptMessages(requestBody) {
     }
 
     const stateId = typeof delta.state_id === 'string' ? delta.state_id.trim() : '';
+    const storageKey = getPromptStateStorageKey(handle, stateId);
     const baseRevision = Number(delta.base_revision);
     const prefixLength = Number(delta.prefix_length);
     const suffixLength = Number.isInteger(Number(delta.suffix_length)) ? Number(delta.suffix_length) : 0;
     const middleMessages = Array.isArray(delta.messages) ? delta.messages : null;
 
-    if (!stateId || !Number.isInteger(baseRevision) || !Number.isInteger(prefixLength) || !Number.isInteger(suffixLength) || !Array.isArray(middleMessages)) {
+    if (!storageKey || !Number.isInteger(baseRevision) || !Number.isInteger(prefixLength) || !Number.isInteger(suffixLength) || !Array.isArray(middleMessages)) {
         return {
             ok: false,
             statusCode: 400,
@@ -191,7 +203,7 @@ function resolveLukerPromptMessages(requestBody) {
     }
 
     pruneLukerPromptStates();
-    const state = lukerPromptStates.get(stateId);
+    const state = lukerPromptStates.get(storageKey);
     if (!state || !Array.isArray(state.messages)) {
         return {
             ok: false,
@@ -2241,7 +2253,7 @@ router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
 
-        const lukerPromptResolution = resolveLukerPromptMessages(request.body);
+        const lukerPromptResolution = resolveLukerPromptMessages(request, request.body);
         if (!lukerPromptResolution.ok) {
             return response.status(lukerPromptResolution.statusCode).send({
                 error: {
@@ -2630,7 +2642,7 @@ router.post('/generate', async function (request, response) {
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (fetchResponse.ok) {
-            const promptRevision = commitLukerPromptState(lukerPromptStateId, lukerPromptMessagesSnapshot);
+            const promptRevision = commitLukerPromptState(request.user?.profile?.handle, lukerPromptStateId, lukerPromptMessagesSnapshot);
             if (Number.isInteger(promptRevision) && promptRevision > 0) {
                 response.setHeader('x-luker-prompt-revision', String(promptRevision));
             }
