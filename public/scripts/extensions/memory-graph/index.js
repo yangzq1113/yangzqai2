@@ -1974,7 +1974,21 @@ function isRetryableToolCallError(error) {
     if ([408, 409, 425, 429, 500, 502, 503, 504].includes(statusCode)) {
         return true;
     }
-    const message = String(error?.message || error || '').toLowerCase();
+    let responseDataText = '';
+    try {
+        responseDataText = JSON.stringify(error?.response?.data || error?.error || {});
+    } catch {
+        responseDataText = '';
+    }
+    const message = [
+        String(error?.message || ''),
+        String(error?.cause?.message || ''),
+        String(error?.response?.data?.error?.message || ''),
+        String(error?.response?.data?.error?.type || ''),
+        String(error?.response?.data?.error?.code || ''),
+        responseDataText,
+        String(error || ''),
+    ].join(' ').toLowerCase();
     return (
         message.includes('tool call')
         || message.includes('network')
@@ -1985,6 +1999,12 @@ function isRetryableToolCallError(error) {
         || message.includes('gateway timeout')
         || message.includes('service unavailable')
         || message.includes('too many requests')
+        || message.includes('chat completion request error')
+        || message.includes('internal server error')
+        || message.includes('server_error')
+        || message.includes('internal_error')
+        || message.includes('overloaded')
+        || message.includes('temporarily unavailable')
         || message.includes('502')
         || message.includes('503')
         || message.includes('504')
