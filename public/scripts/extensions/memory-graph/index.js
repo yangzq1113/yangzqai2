@@ -2632,20 +2632,8 @@ function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
         if (typeNodes.length === 0) {
             continue;
         }
-        if (compressionMode === 'hierarchical') {
-            const leaves = typeNodes.filter(node => !hasActiveSemanticChildOfType(store, node, type));
-            for (const leaf of leaves) {
-                const parent = getActiveSemanticParentOfType(store, leaf, type);
-                const candidate = parent || leaf;
-                if (!candidate?.id || visibleNodeIds.has(candidate.id)) {
-                    continue;
-                }
-                visibleNodeIds.add(candidate.id);
-                visibleNodes.push(candidate);
-            }
-            continue;
-        }
-        for (const node of typeNodes) {
+        const selectedTypeNodes = selectVisibleNodesForType(store, typeNodes, type, compressionMode);
+        for (const node of selectedTypeNodes) {
             if (!node?.id || visibleNodeIds.has(node.id)) {
                 continue;
             }
@@ -4297,6 +4285,26 @@ function getActiveSemanticParentOfType(store, node, type) {
     return parent;
 }
 
+function getTopActiveSemanticAncestorOfType(store, node, type) {
+    if (!node) {
+        return null;
+    }
+    const targetType = String(type || '').toLowerCase();
+    let current = node;
+    let top = node;
+    const guard = new Set();
+    while (current && current.id && !guard.has(current.id)) {
+        guard.add(current.id);
+        const parent = getActiveSemanticParentOfType(store, current, targetType);
+        if (!parent) {
+            break;
+        }
+        top = parent;
+        current = parent;
+    }
+    return top;
+}
+
 function hasActiveSemanticChildOfType(store, node, type) {
     if (!node || !Array.isArray(node.childrenIds) || node.childrenIds.length === 0) {
         return false;
@@ -4312,6 +4320,31 @@ function hasActiveSemanticChildOfType(store, node, type) {
         }
     }
     return false;
+}
+
+function selectVisibleNodesForType(store, typeNodes, type, compressionMode = 'none') {
+    const sorted = Array.isArray(typeNodes)
+        ? typeNodes.slice().sort(compareNodesByTimeline)
+        : [];
+    if (sorted.length === 0) {
+        return [];
+    }
+    if (String(compressionMode || '').toLowerCase() !== 'hierarchical') {
+        return sorted;
+    }
+
+    const leaves = sorted.filter(node => !hasActiveSemanticChildOfType(store, node, type));
+    const picked = [];
+    const seen = new Set();
+    for (const leaf of leaves) {
+        const candidate = getTopActiveSemanticAncestorOfType(store, leaf, type) || leaf;
+        if (!candidate?.id || seen.has(candidate.id)) {
+            continue;
+        }
+        seen.add(candidate.id);
+        picked.push(candidate);
+    }
+    return picked.sort(compareNodesByTimeline);
 }
 
 function collectAlwaysInjectNodes(store, settings, context = null) {
@@ -4340,21 +4373,8 @@ function collectAlwaysInjectNodes(store, settings, context = null) {
         if (nodes.length === 0) {
             continue;
         }
-        const sortedTimeline = nodes.slice().sort(compareNodesByTimeline);
-        if (spec.compression.mode === 'hierarchical') {
-            const leaves = sortedTimeline.filter(node => !hasActiveSemanticChildOfType(store, node, spec.type));
-            for (const leaf of leaves) {
-                const parent = getActiveSemanticParentOfType(store, leaf, spec.type);
-                const candidate = parent || leaf;
-                if (!candidate?.id || seen.has(candidate.id)) {
-                    continue;
-                }
-                seen.add(candidate.id);
-                picked.push(candidate);
-            }
-            continue;
-        }
-        for (const node of sortedTimeline) {
+        const selectedTypeNodes = selectVisibleNodesForType(store, nodes, spec.type, spec.compression.mode);
+        for (const node of selectedTypeNodes) {
             if (!node?.id || seen.has(node.id)) {
                 continue;
             }
