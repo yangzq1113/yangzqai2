@@ -197,6 +197,15 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Extract structured memory nodes from dialogue messages into a high-utility memory graph.',
     'Before tool calls, output one detailed <thought>...</thought> analysis. Do not output plain JSON text.',
+    'Hard output format for <thought> (must follow exactly this order):',
+    '<thought>',
+    '[1] Type-by-type decision scan: for EACH schema type, state create/edit/delete/skip with evidence.',
+    '[2] Character consistency check: list mentioned characters and whether character_sheet create/edit is needed.',
+    '[3] Optional-column fill plan: list which optional columns will be filled for each type and why.',
+    '[4] Event progression check: confirm event status progression and whether a new event row will be created.',
+    '[5] Planned tool calls: list call names in execution order (done must be last).',
+    '</thought>',
+    'If <thought> misses any of the 5 sections above, treat your own response as invalid and regenerate fully.',
     'In <thought>, review EACH schema type one-by-one and decide: create / edit / delete / skip, with brief evidence.',
     'Your <thought> must be generic to schema, not hardcoded to specific table names (except event policy rules below).',
     'For each type, explicitly check whether any optional columns can be updated from evidence in this batch.',
@@ -207,7 +216,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Type tools are split by intent: create / edit / delete (if available for that type).',
     'Use create for new nodes, edit for existing node_id patch updates, delete for explicit removals.',
     'Create tool uses flattened top-level table columns. Edit tool uses set_fields for sparse patch updates.',
-    'Node edit rule: when updating an existing node, set node_id explicitly using an id from editable_nodes in the user payload.',
+    'Node edit rule: when updating an existing node, set node_id explicitly using an id from the <editable_nodes> section in the XML payload.',
     'Edit payload rule: put only changed columns in set_fields; do not resend the full row unless needed.',
     'Never fabricate node_id. If no suitable existing node is listed, create a new node without node_id.',
     'If an existing node clearly matches, prefer node_id update over duplicate creation.',
@@ -2576,6 +2585,75 @@ function buildEditableExtractNodeHints(store, schema, limit = 120) {
     return rows;
 }
 
+function escapeXmlText(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
+}
+
+function buildExtractInputXml(requiredTypes, editableNodes, messages) {
+    const safeRequiredTypes = Array.isArray(requiredTypes)
+        ? requiredTypes.map(item => normalizeText(item).toLowerCase()).filter(Boolean)
+        : [];
+    const safeEditableNodes = Array.isArray(editableNodes) ? editableNodes : [];
+    const safeMessages = Array.isArray(messages) ? messages : [];
+
+    const requiredTypeXml = safeRequiredTypes.length > 0
+        ? safeRequiredTypes.map(type => `    <type>${escapeXmlText(type)}</type>`).join('\n')
+        : '    <type>(none)</type>';
+
+    const editableNodeXml = safeEditableNodes.length > 0
+        ? safeEditableNodes.map(node => {
+            const nodeId = escapeXmlText(String(node?.id || ''));
+            const nodeType = escapeXmlText(String(node?.type || ''));
+            const nodeTitle = escapeXmlText(String(node?.title || ''));
+            const toSeq = escapeXmlText(String(Number(node?.to_seq || 0)));
+            const keyValues = node?.key_values && typeof node.key_values === 'object'
+                ? Object.entries(node.key_values)
+                    .map(([key, val]) => `        <key name="${escapeXmlText(String(key || ''))}">${escapeXmlText(String(val || ''))}</key>`)
+                    .join('\n')
+                : '';
+            return [
+                `    <node id="${nodeId}" type="${nodeType}" title="${nodeTitle}" to_seq="${toSeq}">`,
+                keyValues ? '      <keys>\n' + keyValues + '\n      </keys>' : '      <keys />',
+                '    </node>',
+            ].join('\n');
+        }).join('\n')
+        : '    <node id="" type="" title="" to_seq="0"><keys /></node>';
+
+    const messageXml = safeMessages.map(message => {
+        const seq = escapeXmlText(String(Number(message?.seq || 0)));
+        const roleRaw = String(message?.role || '').trim().toLowerCase() === 'assistant' ? 'Assistant' : 'User';
+        const role = escapeXmlText(roleRaw);
+        const name = escapeXmlText(String(message?.name || ''));
+        const text = escapeXmlText(String(message?.text || ''));
+        const speaker = name ? `${roleRaw}: ${name}` : roleRaw;
+        return [
+            `    <message seq="${seq}" role="${role}" name="${name}">`,
+            `      <speaker>${escapeXmlText(speaker)}</speaker>`,
+            `      <text>${text}</text>`,
+            '    </message>',
+        ].join('\n');
+    }).join('\n');
+
+    return [
+        '<extract_input>',
+        '  <required_types>',
+        requiredTypeXml,
+        '  </required_types>',
+        '  <editable_nodes>',
+        editableNodeXml,
+        '  </editable_nodes>',
+        '  <dialogue_batch>',
+        messageXml,
+        '  </dialogue_batch>',
+        '</extract_input>',
+    ].join('\n');
+}
+
 async function extractNodesWithLLM(context, store, settings, schema, messageBatch) {
     const messages = (Array.isArray(messageBatch) ? messageBatch : [])
         .map(item => ({
@@ -2601,11 +2679,11 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     const promptMessages = buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
         systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
-        userPrompt: JSON.stringify({
-            required_types: Array.from(forceUpdateTypes),
-            editable_nodes: buildEditableExtractNodeHints(store, schema, 120),
+        userPrompt: buildExtractInputXml(
+            Array.from(forceUpdateTypes),
+            buildEditableExtractNodeHints(store, schema, 120),
             messages,
-        }),
+        ),
         includeCharacterCard: true,
         promptPresetName,
     });
