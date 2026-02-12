@@ -1123,6 +1123,16 @@ function encodeCdata(value) {
     return String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
 }
 
+function buildXmlCdataTag(tagName, value, indent = '      ') {
+    const tag = String(tagName || '').trim() || 'value';
+    const body = encodeCdata(String(value ?? ''));
+    return [
+        `${indent}<${tag}>`,
+        `${indent}  <![CDATA[${body}]]>`,
+        `${indent}</${tag}>`,
+    ].join('\n');
+}
+
 function tryParseJsonObject(value) {
     if (typeof value !== 'string') {
         return null;
@@ -1209,7 +1219,7 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
     lines.push(`    <agent id="${escapeXml(nodeId)}">`);
 
     if (typeof output.summary === 'string' && output.summary.trim()) {
-        lines.push(`      <summary>${escapeXml(output.summary.trim())}</summary>`);
+        lines.push(buildXmlCdataTag('summary', output.summary.trim(), '      '));
     }
 
     const pushList = (tagName, itemTagName, items) => {
@@ -1220,7 +1230,7 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
         for (const item of items) {
             const text = String(item || '').trim();
             if (text) {
-                lines.push(`        <${itemTagName}>${escapeXml(text)}</${itemTagName}>`);
+                lines.push(buildXmlCdataTag(itemTagName, text, '        '));
             }
         }
         lines.push(`      </${tagName}>`);
@@ -1231,7 +1241,7 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
     pushList('tags', 'tag', output.tags);
 
     if (typeof output.patch_last_user === 'string' && output.patch_last_user.trim()) {
-        lines.push(`      <patch_last_user>${escapeXml(output.patch_last_user.trim())}</patch_last_user>`);
+        lines.push(buildXmlCdataTag('patch_last_user', output.patch_last_user.trim(), '      '));
     }
 
     const extraPayload = {};
