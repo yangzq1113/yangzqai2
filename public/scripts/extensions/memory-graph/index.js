@@ -196,7 +196,10 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
 
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Extract structured memory nodes from dialogue messages into a high-utility memory graph.',
-    'You may output one short <thought>...</thought> before tool calls. Do not output plain JSON text.',
+    'Before tool calls, output one detailed <thought>...</thought> analysis. Do not output plain JSON text.',
+    'In <thought>, review EACH schema type one-by-one and decide: create / edit / delete / skip, with brief evidence.',
+    'Your <thought> must be generic to schema, not hardcoded to specific table names (except event policy rules below).',
+    'For each type, explicitly check whether any optional columns can be updated from evidence in this batch.',
     'Tool set is dynamic. Semantic types expose create/edit/delete tools as needed; some types can be create-only. Treat tool descriptions as the source of truth.',
     'Call type tools to emit concrete updates, then call luker_rpg_extract_done as the final call.',
     'Hard rule: one response must contain COMPLETE extraction tool calls; do not stop after a single tool call.',
@@ -215,7 +218,9 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Respect required columns and force-update types declared in tool descriptions.',
     'If a type is marked force-update, emit at least one grounded node for it in this batch.',
     'Grounding rule: do not hallucinate. Every field should be inferable from the batch or stable continuity.',
+    'Coverage rule: avoid event-only outputs when other schema types have clear evidence; update them in the same batch.',
     'Event quality rule: keep event status updated as progression changes (e.g. ongoing/resolved/blocked).',
+    'Event policy rule: events are append-only in this schema. Never try to edit old event rows; create the next event row instead.',
     'Link quality rule: include links for involved entities/locations/threads when evidence exists.',
     'When providing links, set target_type whenever you can infer it from schema semantics; do not default everything to entity.',
     'If link target title matches a known character/location/thread concept, use that specific type to avoid duplicate same-title nodes.',
