@@ -1717,23 +1717,6 @@ function getSemanticLatestOnlyConfig(settings, type, context = null) {
     };
 }
 
-function hasQueryKeywordHit(query, keywords) {
-    const normalizedQuery = normalizeText(query).toLowerCase();
-    if (!normalizedQuery || !Array.isArray(keywords) || keywords.length === 0) {
-        return false;
-    }
-    for (const keyword of keywords) {
-        const token = normalizeText(keyword).toLowerCase();
-        if (!token) {
-            continue;
-        }
-        if (normalizedQuery.includes(token)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 function nextNodeId(store) {
     store.nodeSeq = Number(store.nodeSeq || 0) + 1;
     return `n_${store.nodeSeq}`;
@@ -3943,120 +3926,33 @@ function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null,
     };
 }
 
-function getNodeRecallKeywords(node) {
-    const values = [];
-    const pushValue = (value) => {
-        if (Array.isArray(value)) {
-            for (const item of value) {
-                pushValue(item);
-            }
-            return;
-        }
-        const text = String(value || '').trim();
-        if (!text) {
-            return;
-        }
-        for (const token of text.split(/[,，;；|]/g)) {
-            const normalized = normalizeText(token).toLowerCase();
-            if (normalized) {
-                values.push(normalized);
-            }
-        }
-    };
-    pushValue(node?.fields?.keywords);
-    pushValue(node?.fields?.keyword);
-    pushValue(node?.fields?.aliases);
-    pushValue(node?.fields?.alias);
-    pushValue(node?.fields?.tags);
-    return Array.from(new Set(values));
-}
-
-function getNodePrimaryKeyKeywords(node, spec) {
-    const fields = node?.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
-        ? node.fields
-        : {};
-    const keys = Array.isArray(spec?.primaryKeyColumns)
-        ? spec.primaryKeyColumns.map(key => String(key || '').trim()).filter(Boolean)
-        : [];
-    const values = [];
-    for (const key of keys) {
-        const raw = toDisplayScalar(fields[key]);
-        if (!raw) {
-            continue;
-        }
-        for (const token of String(raw).split(/[,，;；|]/g)) {
-            const normalized = normalizeText(token).toLowerCase();
-            if (normalized) {
-                values.push(normalized);
-            }
-        }
-    }
-    return Array.from(new Set(values));
-}
-
 function isRecallDiagnosticNode(node) {
     const type = String(node?.type || '').trim().toLowerCase();
     return type === 'recall' || type.startsWith('recall_');
 }
 
 function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = [], context = null) {
-    const query = normalizeText(queryBundle?.fullText || '');
-    const semantic = listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter(node => !node.archived)
-        .filter(node => !isRecallDiagnosticNode(node));
-    const schemaMap = getNodeTypeSchemaMap(settings, context);
+    void queryBundle;
+    const schema = getEffectiveNodeTypeSchema(context, settings);
+    const visibleRows = buildGraphNodeHints(store, schema, 0);
+    const visibleNodes = visibleRows
+        .map((row) => store?.nodes?.[String(row?.id || '')] || null)
+        .filter((node) => Boolean(node) && !node.archived && !isRecallDiagnosticNode(node));
     const merged = [
         ...getSortedNodesByRecency(alwaysInjectNodes.filter(Boolean)),
-        ...getSortedNodesByRecency(semantic),
+        ...getSortedNodesByRecency(visibleNodes),
     ];
-
-    const uniqueNodes = [];
+    const deduped = [];
     const seen = new Set();
     for (const node of merged) {
-        if (!node?.id || seen.has(node.id)) {
-            continue;
-        }
-        seen.add(node.id);
-        uniqueNodes.push(node);
-    }
-
-    const alwaysSet = new Set(alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean));
-    const picked = [];
-    const pickedIds = new Set();
-
-    for (const node of uniqueNodes) {
         const nodeId = String(node?.id || '');
-        if (!nodeId || pickedIds.has(nodeId)) {
+        if (!nodeId || seen.has(nodeId)) {
             continue;
         }
-        if (!alwaysSet.has(nodeId)) {
-            continue;
-        }
-        pickedIds.add(nodeId);
-        picked.push(node);
+        seen.add(nodeId);
+        deduped.push(node);
     }
-
-    for (const node of uniqueNodes) {
-        const nodeId = String(node?.id || '');
-        if (!nodeId || pickedIds.has(nodeId)) {
-            continue;
-        }
-        const type = String(node.type || '').toLowerCase();
-        const spec = schemaMap.get(type);
-        const schemaKeywords = Array.isArray(spec?.keywords) ? spec.keywords : [];
-        const nodeKeywords = getNodeRecallKeywords(node);
-        const nodePrimaryKeyKeywords = getNodePrimaryKeyKeywords(node, spec);
-        const keywordHit = hasQueryKeywordHit(query, schemaKeywords)
-            || hasQueryKeywordHit(query, nodeKeywords)
-            || hasQueryKeywordHit(query, nodePrimaryKeyKeywords);
-        if (!keywordHit) {
-            continue;
-        }
-        pickedIds.add(nodeId);
-        picked.push(node);
-    }
-
-    return picked;
+    return deduped;
 }
 
 function normalizeEdgeTypeList(rawTypes) {
