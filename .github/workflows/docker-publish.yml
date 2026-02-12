@@ -1,18 +1,12 @@
-# This workflow will publish a docker image for every full release to the GitHub package repository
+# This workflow publishes a docker image on tag push or manual dispatch.
 
 name: Create Docker Image (Release and Staging)
 
 on:
-  release:
-    # Allow pre-releases
-    types: [published]
-  schedule:
-    # Build the staging image everyday at 00:00 UTC
-    - cron: "0 0 * * *"
+  workflow_dispatch:
   push:
-    # Temporary workaround
-    branches:
-      - release
+    tags:
+      - '*'
 
 env:
   # This should allow creation of docker images even in forked repositories
@@ -25,33 +19,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Workaround for GitHub repo names containing uppercase characters
       - name: Set lowercase repo name
         run: |
           echo "IMAGE_NAME=${REPO,,}" >> ${GITHUB_ENV}
 
-      # Using the following workaround because currently GitHub Actions
-      # does not support logical AND/OR operations on triggers
-      # It's currently not possible to have `branches` under the `schedule` trigger
-      - name: Checkout the release branch (on release)
-        if: ${{ github.event_name == 'release' || github.event_name == 'push' }}
+      - name: Checkout
         uses: actions/checkout@v4.1.2
-        with:
-          ref: "release"
-
-      - name: Checkout the staging branch
-        if: ${{ github.event_name == 'schedule' }}
-        uses: actions/checkout@v4.1.2
-        with:
-          ref: "staging"
-
-      # Get current branch name
-      # This is also part of the workaround for Actions not allowing logical
-      # AND/OR operators on triggers
-      # Otherwise the action triggered by schedule always has ref_name = release
-      - name: Get the current branch name
-        run: |
-          echo "BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)" >> ${GITHUB_ENV}
 
       # Setting up QEMU for multi-arch image build
       - name: Set up QEMU
@@ -65,12 +38,9 @@ jobs:
         id: metadata
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Release version tag if the workflow is triggered by a release
-          # Branch name tag if the workflow is triggered by a push
-          # Latest tag if the branch is release and the workflow is triggered by a push
           tags: |
-            ${{ github.event_name == 'release' && github.ref_name || env.BRANCH_NAME }}
-            ${{ github.event_name == 'push' && env.BRANCH_NAME == 'release' && 'latest' || '' }}
+            type=ref,event=tag
+            type=raw,value=manual,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       # Login into package repository as the person who created the release
       - name: Log in to the Container registry

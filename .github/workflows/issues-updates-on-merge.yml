@@ -1,10 +1,7 @@
 name: 🔄 Update Issues on Push
 
 on:
-  push:
-    branches:
-      - staging
-      - release
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -1,10 +1,7 @@
 name: 🚪 Issues/PRs On Close Handler
 
 on:
-  issues:
-    types: [closed]
-  pull_request_target:
-    types: [closed]
+  workflow_dispatch:
 
 permissions:
   contents: read

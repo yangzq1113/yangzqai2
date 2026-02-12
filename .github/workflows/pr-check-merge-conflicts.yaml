@@ -1,11 +1,7 @@
 name: ⚔️ Check Merge Conflicts
 
 on:
-  # So that PRs touching the same files as the push are updated
-  push:
-  # So that the `dirtyLabel` is removed if conflicts are resolved
-  pull_request_target:
-    types: [synchronize]
+  workflow_dispatch:
 
 permissions:
   contents: read

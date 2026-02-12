@@ -1,11 +1,7 @@
 name: 🔀 Pull Request Manager
 
 on:
-  workflow_dispatch: # Allow to manually call this workflow
-  pull_request_target:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled, closed]
-  pull_request_review_comment:
-    types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read

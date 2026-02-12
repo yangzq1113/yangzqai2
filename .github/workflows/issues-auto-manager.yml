@@ -1,11 +1,7 @@
 name: 🛠️ Issues Manager
 
 on:
-  issues:
-    types: [opened, edited, labeled, unlabeled]
-  # Re also listen to comments, to remove stale labels right away
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read
