@@ -32,6 +32,7 @@ const defaultNodeTypeSchema = [
         },
         requiredColumns: ['summary'],
         forceUpdate: true,
+        editable: false,
         level: LEVEL.SEMANTIC,
         extractHint: 'Critical plot events, turning points, commitments, betrayals, and irreversible outcomes.',
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
@@ -59,6 +60,7 @@ const defaultNodeTypeSchema = [
         },
         requiredColumns: ['title'],
         forceUpdate: false,
+        editable: true,
         level: LEVEL.SEMANTIC,
         extractHint: 'Unresolved clues, foreshadowing, quests, promises, and long-term hooks.',
         keywords: ['quest', 'clue', 'mystery', 'promise', 'goal', 'thread'],
@@ -93,6 +95,7 @@ const defaultNodeTypeSchema = [
         },
         requiredColumns: ['name'],
         forceUpdate: false,
+        editable: true,
         level: LEVEL.SEMANTIC,
         extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: aliases/identity/status/goal/inventory/relationships/core notes.',
         keywords: ['character', 'alias', 'status', 'relationship', 'inventory', 'goal', 'core note'],
@@ -124,6 +127,7 @@ const defaultNodeTypeSchema = [
         },
         requiredColumns: ['name'],
         forceUpdate: false,
+        editable: true,
         level: LEVEL.SEMANTIC,
         extractHint: 'Location status, aliases, ownership/control, danger level, and environmental/resource changes. Prefer structured JSON-like content.',
         keywords: ['location', 'alias', 'control', 'danger', 'resource', 'region', 'base'],
@@ -152,6 +156,7 @@ const defaultNodeTypeSchema = [
         },
         requiredColumns: ['title', 'constraint'],
         forceUpdate: false,
+        editable: true,
         level: LEVEL.SEMANTIC,
         extractHint: 'World rules, magic limits, taboos, hard constraints, and never-break conditions.',
         keywords: ['rule', 'constraint', 'law', 'taboo', 'limit'],
@@ -216,7 +221,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Type tools are split by intent: create / edit / delete (if available for that type).',
     'Use create for new nodes, edit for existing node_id patch updates, delete for explicit removals.',
     'Create tool uses flattened top-level table columns. Edit tool uses set_fields for sparse patch updates.',
-    'Node edit rule: when updating an existing node, set node_id explicitly using an id from the <editable_nodes> section in the XML payload.',
+    'Node edit rule: when updating an existing node, set node_id explicitly using an id present in graph_data.nodes.',
     'Edit payload rule: put only changed columns in set_fields; do not resend the full row unless needed.',
     'Never fabricate node_id. If no suitable existing node is listed, create a new node without node_id.',
     'If an existing node clearly matches, prefer node_id update over duplicate creation.',
@@ -231,8 +236,8 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Character consistency hard rule: for any mentioned character grounded by card/world-info baseline, if no character_sheet node exists, create one; if an existing character_sheet conflicts with baseline facts, emit edit to align it.',
     'Grounding rule: do not hallucinate. Every field should be inferable from the batch or stable continuity.',
     'Coverage rule: avoid event-only outputs when other schema types have clear evidence; update them in the same batch.',
-    'Event quality rule: keep event status updated as progression changes (e.g. ongoing/resolved/blocked).',
-    'Event policy rule: events are append-only in this schema. Never try to edit old event rows; create the next event row instead.',
+    'State quality rule: keep state/status fields updated when progression changes (e.g. ongoing/resolved/blocked).',
+    'Editability rule: only types listed in graph_data.editable_type_ids may use edit/delete tools. For non-editable types, use create tools only.',
     'Link quality rule: include links for involved entities/locations/threads when evidence exists.',
     'When providing links, set target_type whenever you can infer it from schema semantics; do not default everything to entity.',
     'If link target title matches a known character/location/thread concept, use that specific type to avoid duplicate same-title nodes.',
@@ -244,8 +249,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'For non-event types, summary is optional unless schema requires it.',
     'Title policy: non-event nodes should use short stable human-readable titles.',
     'Reuse the exact same title for the same ongoing entity/thread/location to keep updates merged.',
-    'Event type policy: create-only updates. Do not edit existing event nodes.',
-    'Event titles are assigned by system in strict sequence labels (Summary N), so you may omit event title.',
+    'Type-specific titles: when a type does not define title column in tool schema, omit title.',
 ].join('\n');
 
 const defaultSettings = {
@@ -347,6 +351,7 @@ function registerLocaleData() {
         'Memory graph import failed.': '记忆图导入失败。',
         'Import failed: ${0}': '导入失败：${0}',
         'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '类型：${0} | 常驻注入：${1} | 强制更新：${2} | 分层压缩：${3}',
+        'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}': '类型：${0} | 可编辑：${1} | 常驻注入：${2} | 强制更新：${3} | 分层压缩：${4}',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
@@ -453,6 +458,9 @@ function registerLocaleData() {
         'Keywords (comma separated)': '关键词（逗号分隔）',
         'Force Update (must appear each extraction batch)': '强制更新（每次抽取必须出现）',
         'Latest Only Upsert': 'Latest-only 覆写',
+        'Editable': '可编辑',
+        'Create-only': '仅创建',
+        'Editable (enable edit/delete tools and graph edit context)': '可编辑（启用编辑/删除工具与图编辑上下文）',
         'Primary Key Columns': '主键列',
         'Extract Hint': '抽取提示',
         'Enable Hierarchical Compression': '启用层级压缩',
@@ -562,6 +570,7 @@ function registerLocaleData() {
         'Memory graph import failed.': '記憶圖匯入失敗。',
         'Import failed: ${0}': '匯入失敗：${0}',
         'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '類型：${0} | 常駐注入：${1} | 強制更新：${2} | 分層壓縮：${3}',
+        'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}': '類型：${0} | 可編輯：${1} | 常駐注入：${2} | 強制更新：${3} | 分層壓縮：${4}',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 設定）',
         '(missing)': '（缺失）',
@@ -668,6 +677,9 @@ function registerLocaleData() {
         'Keywords (comma separated)': '關鍵字（逗號分隔）',
         'Force Update (must appear each extraction batch)': '強制更新（每次抽取必須出現）',
         'Latest Only Upsert': 'Latest-only 覆寫',
+        'Editable': '可編輯',
+        'Create-only': '僅建立',
+        'Editable (enable edit/delete tools and graph edit context)': '可編輯（啟用編輯/刪除工具與圖編輯上下文）',
         'Primary Key Columns': '主鍵列',
         'Extract Hint': '抽取提示',
         'Enable Hierarchical Compression': '啟用分層壓縮',
@@ -806,6 +818,9 @@ function normalizeNodeTypeSchema(schema) {
             const forceUpdate = item.forceUpdate === undefined
                 ? rawId === 'event'
                 : Boolean(item.forceUpdate);
+            const editable = item.editable === undefined
+                ? rawId !== 'event'
+                : Boolean(item.editable);
             const rawCompressionMode = String(item?.compression?.mode || '').trim().toLowerCase();
             const tableColumns = Array.isArray(item.tableColumns)
                 ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
@@ -833,6 +848,7 @@ function normalizeNodeTypeSchema(schema) {
                 columnHints,
                 requiredColumns,
                 forceUpdate,
+                editable,
                 alwaysInject: Boolean(item.alwaysInject),
                 latestOnly,
                 primaryKeyColumns,
@@ -2194,7 +2210,7 @@ function buildDynamicExtractTools(schema = []) {
             continue;
         }
         const baseName = `luker_rpg_extract_${sanitizeExtractToolNameSuffix(typeId)}`;
-        const isEventType = typeId === 'event';
+        const isEditableType = Boolean(spec?.editable);
         let createToolName = `${baseName}_create`;
         let suffix = 2;
         while (usedNames.has(createToolName)) {
@@ -2203,7 +2219,7 @@ function buildDynamicExtractTools(schema = []) {
         }
         usedNames.add(createToolName);
         let editToolName = '';
-        if (!isEventType) {
+        if (isEditableType) {
             editToolName = `${baseName}_edit`;
             suffix = 2;
             while (usedNames.has(editToolName)) {
@@ -2212,25 +2228,24 @@ function buildDynamicExtractTools(schema = []) {
             }
             usedNames.add(editToolName);
         }
-        let deleteToolName = `${baseName}_delete`;
-        suffix = 2;
-        while (usedNames.has(deleteToolName)) {
-            deleteToolName = `${baseName}_delete_${suffix}`;
-            suffix += 1;
+        let deleteToolName = '';
+        if (isEditableType) {
+            deleteToolName = `${baseName}_delete`;
+            suffix = 2;
+            while (usedNames.has(deleteToolName)) {
+                deleteToolName = `${baseName}_delete_${suffix}`;
+                suffix += 1;
+            }
+            usedNames.add(deleteToolName);
         }
-        usedNames.add(deleteToolName);
         const fields = Array.isArray(spec.tableColumns)
             ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean)
             : [];
-        const filteredFields = isEventType
-            ? fields.filter(field => String(field || '').trim().toLowerCase() !== 'title')
-            : fields;
+        const filteredFields = fields;
         const requiredColumns = Array.isArray(spec.requiredColumns)
             ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean)
             : [];
-        const filteredRequiredColumns = isEventType
-            ? requiredColumns.filter(field => String(field || '').trim().toLowerCase() !== 'title')
-            : requiredColumns;
+        const filteredRequiredColumns = requiredColumns;
         const rawColumnHints = spec.columnHints && typeof spec.columnHints === 'object' && !Array.isArray(spec.columnHints)
             ? spec.columnHints
             : {};
@@ -2269,7 +2284,7 @@ function buildDynamicExtractTools(schema = []) {
                 },
             },
         };
-        if (!isEventType) {
+        if (fieldSet.has('title')) {
             createProperties.title = { type: 'string' };
         }
         for (const field of fieldSet) {
@@ -2302,7 +2317,7 @@ function buildDynamicExtractTools(schema = []) {
                 },
             },
         });
-        if (!isEventType) {
+        if (isEditableType) {
             tools.push({
                 type: 'function',
                 function: {
@@ -2339,22 +2354,24 @@ function buildDynamicExtractTools(schema = []) {
                 },
             });
         }
-        tools.push({
-            type: 'function',
-            function: {
-                name: deleteToolName,
-                description: `Delete semantic node for type "${typeId}" by node_id.`,
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        node_id: { type: 'string' },
-                        reason: { type: 'string' },
+        if (isEditableType) {
+            tools.push({
+                type: 'function',
+                function: {
+                    name: deleteToolName,
+                    description: `Delete semantic node for type "${typeId}" by node_id.`,
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            node_id: { type: 'string' },
+                            reason: { type: 'string' },
+                        },
+                        required: ['node_id'],
+                        additionalProperties: false,
                     },
-                    required: ['node_id'],
-                    additionalProperties: false,
                 },
-            },
-        });
+            });
+        }
         specByToolName.set(createToolName, {
             ...spec,
             id: typeId,
@@ -2363,7 +2380,7 @@ function buildDynamicExtractTools(schema = []) {
             columnHints: filteredColumnHints,
             op: 'create',
         });
-        if (!isEventType) {
+        if (isEditableType) {
             specByToolName.set(editToolName, {
                 ...spec,
                 id: typeId,
@@ -2373,14 +2390,16 @@ function buildDynamicExtractTools(schema = []) {
                 op: 'edit',
             });
         }
-        specByToolName.set(deleteToolName, {
-            ...spec,
-            id: typeId,
-            tableColumns: filteredFields,
-            requiredColumns: filteredRequiredColumns,
-            columnHints: filteredColumnHints,
-            op: 'delete',
-        });
+        if (isEditableType) {
+            specByToolName.set(deleteToolName, {
+                ...spec,
+                id: typeId,
+                tableColumns: filteredFields,
+                requiredColumns: filteredRequiredColumns,
+                columnHints: filteredColumnHints,
+                op: 'delete',
+            });
+        }
     }
 
     tools.push({
@@ -2526,7 +2545,7 @@ function buildDeleteFromDynamicToolCall(call, spec) {
     };
 }
 
-function buildEditableExtractNodeHints(store, schema, limit = 120) {
+function buildEditableGraphNodeHints(store, schema, limit = 120) {
     const safeLimit = Math.max(0, Math.min(500, Math.floor(Number(limit) || 0)));
     if (!store || typeof store !== 'object' || safeLimit === 0) {
         return [];
@@ -2536,7 +2555,14 @@ function buildEditableExtractNodeHints(store, schema, limit = 120) {
             .map(item => [String(item?.id || '').trim().toLowerCase(), item]),
     );
     const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter(node => !node.archived)
+        .filter((node) => {
+            if (!node || node.archived) {
+                return false;
+            }
+            const type = String(node?.type || '').trim().toLowerCase();
+            const spec = schemaMap.get(type);
+            return Boolean(spec?.editable);
+        })
         .sort((a, b) => {
             const aSeq = Number(a?.seqTo ?? -1);
             const bSeq = Number(b?.seqTo ?? -1);
@@ -2594,35 +2620,17 @@ function escapeXmlText(value) {
         .replaceAll("'", '&apos;');
 }
 
-function buildExtractInputXml(requiredTypes, editableNodes, messages) {
+function buildExtractInputXml(requiredTypes, graphData, messages) {
     const safeRequiredTypes = Array.isArray(requiredTypes)
         ? requiredTypes.map(item => normalizeText(item).toLowerCase()).filter(Boolean)
         : [];
-    const safeEditableNodes = Array.isArray(editableNodes) ? editableNodes : [];
+    const safeGraphData = graphData && typeof graphData === 'object' ? graphData : { initialized: false, nodes: [] };
     const safeMessages = Array.isArray(messages) ? messages : [];
 
     const requiredTypeXml = safeRequiredTypes.length > 0
         ? safeRequiredTypes.map(type => `    <type>${escapeXmlText(type)}</type>`).join('\n')
         : '    <type>(none)</type>';
-
-    const editableNodeXml = safeEditableNodes.length > 0
-        ? safeEditableNodes.map(node => {
-            const nodeId = escapeXmlText(String(node?.id || ''));
-            const nodeType = escapeXmlText(String(node?.type || ''));
-            const nodeTitle = escapeXmlText(String(node?.title || ''));
-            const toSeq = escapeXmlText(String(Number(node?.to_seq || 0)));
-            const keyValues = node?.key_values && typeof node.key_values === 'object'
-                ? Object.entries(node.key_values)
-                    .map(([key, val]) => `        <key name="${escapeXmlText(String(key || ''))}">${escapeXmlText(String(val || ''))}</key>`)
-                    .join('\n')
-                : '';
-            return [
-                `    <node id="${nodeId}" type="${nodeType}" title="${nodeTitle}" to_seq="${toSeq}">`,
-                keyValues ? '      <keys>\n' + keyValues + '\n      </keys>' : '      <keys />',
-                '    </node>',
-            ].join('\n');
-        }).join('\n')
-        : '    <node id="" type="" title="" to_seq="0"><keys /></node>';
+    const graphDataJson = escapeXmlText(JSON.stringify(safeGraphData));
 
     const messageXml = safeMessages.map(message => {
         const seq = escapeXmlText(String(Number(message?.seq || 0)));
@@ -2641,12 +2649,15 @@ function buildExtractInputXml(requiredTypes, editableNodes, messages) {
 
     return [
         '<extract_input>',
+        '  <input_guide>Below are the extraction inputs. graph_data is current memory graph state for editable node types only. If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
+        '  <input_guide>required_types are hard-required types for this batch.</input_guide>',
+        '  <input_guide>dialogue_batch is the current source dialogue to extract from.</input_guide>',
+        '  <graph_data>',
+        graphDataJson,
+        '  </graph_data>',
         '  <required_types>',
         requiredTypeXml,
         '  </required_types>',
-        '  <editable_nodes>',
-        editableNodeXml,
-        '  </editable_nodes>',
         '  <dialogue_batch>',
         messageXml,
         '  </dialogue_batch>',
@@ -2676,12 +2687,24 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             .map(item => String(item.id || '').trim().toLowerCase())
             .filter(Boolean),
     );
+    const editableTypeSet = new Set(
+        schema
+            .filter(item => item && typeof item === 'object' && item.editable)
+            .map(item => String(item.id || '').trim().toLowerCase())
+            .filter(Boolean),
+    );
+    const editableGraphNodes = buildEditableGraphNodeHints(store, schema, 120);
+    const graphDataPayload = {
+        initialized: Object.keys(store?.nodes || {}).length > 0,
+        editable_type_ids: Array.from(editableTypeSet.values()),
+        nodes: editableGraphNodes,
+    };
     const promptMessages = buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
         systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
         userPrompt: buildExtractInputXml(
             Array.from(forceUpdateTypes),
-            buildEditableExtractNodeHints(store, schema, 120),
+            graphDataPayload,
             messages,
         ),
         includeCharacterCard: true,
@@ -2696,7 +2719,13 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
     const editableNodes = new Map(
         listNodesByLevel(store, LEVEL.SEMANTIC)
-            .filter(node => !node.archived && node?.id)
+            .filter((node) => {
+                if (!node || node.archived || !node.id) {
+                    return false;
+                }
+                const type = String(node?.type || '').trim().toLowerCase();
+                return editableTypeSet.has(type);
+            })
             .map(node => [String(node.id), node]),
     );
     let validatedOps = [];
@@ -2766,7 +2795,7 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                     const targetNode = editableNodes.get(mappedNodeId);
                     if (!targetNode) {
                         invalid = true;
-                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from editable_nodes.`;
+                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from graph_data.nodes (editable nodes only).`;
                         break;
                     }
                     if (String(targetNode?.type || '').trim().toLowerCase() !== String(spec.id || '').trim().toLowerCase()) {
@@ -2788,7 +2817,7 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                     const targetNode = editableNodes.get(mappedNodeId);
                     if (!targetNode) {
                         invalid = true;
-                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from editable_nodes.`;
+                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from graph_data.nodes (editable nodes only).`;
                         break;
                     }
                     if (String(targetNode?.type || '').trim().toLowerCase() !== String(spec.id || '').trim().toLowerCase()) {
@@ -3280,7 +3309,7 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
             if (!targetNode.fields || typeof targetNode.fields !== 'object' || Array.isArray(targetNode.fields)) {
                 targetNode.fields = {};
             }
-            if (Boolean(item?.hasTitlePatch) && String(targetNode?.type || '').toLowerCase() !== 'event') {
+            if (Boolean(item?.hasTitlePatch)) {
                 const patchedTitle = normalizeText(item?.title || '');
                 if (patchedTitle) {
                     targetNode.title = patchedTitle;
@@ -6218,6 +6247,7 @@ function getSchemaTypeTemplate(index = 1) {
         columnHints: {},
         requiredColumns: [],
         forceUpdate: false,
+        editable: true,
         alwaysInject: false,
         latestOnly: false,
         primaryKeyColumns: [],
@@ -6772,7 +6802,7 @@ function refreshPrimaryKeyOptionsForCard(card) {
 }
 
 function renderNodeTypeSchemaCard(spec, index) {
-    const mode = String(spec?.compression?.mode || 'none');
+        const mode = String(spec?.compression?.mode || 'none');
     const threshold = Number(spec?.compression?.threshold || 6);
     const fanIn = Number(spec?.compression?.fanIn || 3);
     const maxDepth = Number(spec?.compression?.maxDepth || 6);
@@ -6794,6 +6824,7 @@ function renderNodeTypeSchemaCard(spec, index) {
         </div>
         <div class="luker-schema-badges">
             <span class="luker-schema-badge">${escapeHtml(i18nFormat('mode: ${0}', mode))}</span>
+            ${spec.editable ? `<span class="luker-schema-badge">${escapeHtml(i18n('Editable'))}</span>` : `<span class="luker-schema-badge">${escapeHtml(i18n('Create-only'))}</span>`}
             ${spec.alwaysInject ? `<span class="luker-schema-badge">${escapeHtml(i18n('always inject'))}</span>` : ''}
             ${spec.latestOnly ? `<span class="luker-schema-badge">${escapeHtml(i18n('Latest Only Upsert'))}</span>` : ''}
             ${spec.forceUpdate ? `<span class="luker-schema-badge">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}</span>` : ''}
@@ -6815,6 +6846,8 @@ function renderNodeTypeSchemaCard(spec, index) {
         </label>
     </div>
     <label class="checkbox_label luker-schema-checkbox"><input data-field="forceUpdate" type="checkbox" ${spec.forceUpdate ? 'checked' : ''} />${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}
+    </label>
+    <label class="checkbox_label luker-schema-checkbox"><input data-field="editable" type="checkbox" ${spec.editable ? 'checked' : ''} />${escapeHtml(i18n('Editable (enable edit/delete tools and graph edit context)'))}
     </label>
     <div class="luker-schema-grid-2">
         <label class="checkbox_label luker-schema-checkbox"><input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />${escapeHtml(i18n('Latest Only Upsert'))}
@@ -6888,6 +6921,7 @@ function readSchemaCard(card) {
         extractHint: String(root.find('[data-field="extractHint"]').val() || '').trim(),
         keywords: splitCommaList(root.find('[data-field="keywords"]').val()),
         forceUpdate: Boolean(root.find('[data-field="forceUpdate"]').prop('checked')),
+        editable: Boolean(root.find('[data-field="editable"]').prop('checked')),
         alwaysInject: Boolean(root.find('[data-field="alwaysInject"]').prop('checked')),
         latestOnly: Boolean(root.find('[data-field="latestOnly"]').prop('checked')),
         primaryKeyColumns: root.find('[data-field="primaryKeyColumns"]:checked')
@@ -6935,10 +6969,12 @@ function updateSchemaSummary(root, schema) {
     const total = normalized.length;
     const alwaysInject = normalized.filter(item => item.alwaysInject).length;
     const forceUpdate = normalized.filter(item => item.forceUpdate).length;
+    const editable = normalized.filter(item => item.editable).length;
     const hierarchical = normalized.filter(item => String(item?.compression?.mode || '') === 'hierarchical').length;
     root.find('#luker_rpg_memory_schema_summary').text(i18nFormat(
-        'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}',
+        'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}',
         total,
+        editable,
         alwaysInject,
         forceUpdate,
         hierarchical,
