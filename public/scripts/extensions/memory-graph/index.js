@@ -334,8 +334,6 @@ function registerLocaleData() {
         'Recent Edges': '最近边',
         'From': '起点',
         'To': '终点',
-        'Weight': '权重',
-        'Updated': '更新时间',
         'Edit': '编辑',
         'Last Projection': '最近投影',
         'View': '查看',
@@ -346,9 +344,7 @@ function registerLocaleData() {
         'Sequence': '序号',
         'From Sequence': '起始序号',
         'To Sequence': '结束序号',
-        'Finalized': '已定稿',
         'Archived': '已归档',
-        'Links (comma separated node ids)': '链接（逗号分隔节点 ID）',
         'Fields (one key=value per line)': '字段（每行一个 key=value）',
         'Edge ${0}: configure relation between two nodes.': '边 ${0}：配置两个节点之间的关系。',
         'From Node': '起点节点',
@@ -433,7 +429,6 @@ function registerLocaleData() {
         'Rebuilt memory graph and compression from chat.': '已从聊天重建记忆图并完成压缩。',
         'Current chat memory graph reset.': '已重置当前聊天记忆图。',
         'Reset memory graph for current chat.': '已重置当前聊天的记忆图。',
-        'Recall injected via fallback after WI scan. Requested WI rescan for this generation.': '通过 WI 扫描后回退流程注入了召回内容，并请求本次生成重新扫描 WI。',
         'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
         'Selected node: ${0}. Tip: click an edge to edit relation.': '已选择节点：${0}。提示：点击边可编辑关系。',
         'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
@@ -525,8 +520,6 @@ function registerLocaleData() {
         'Recent Edges': '最近邊',
         'From': '起點',
         'To': '終點',
-        'Weight': '權重',
-        'Updated': '更新時間',
         'Edit': '編輯',
         'Last Projection': '最近投影',
         'View': '查看',
@@ -537,9 +530,7 @@ function registerLocaleData() {
         'Sequence': '序號',
         'From Sequence': '起始序號',
         'To Sequence': '結束序號',
-        'Finalized': '已定稿',
         'Archived': '已封存',
-        'Links (comma separated node ids)': '連結（以逗號分隔節點 ID）',
         'Fields (one key=value per line)': '字段（每行一個 key=value）',
         'Edge ${0}: configure relation between two nodes.': '邊 ${0}：設定兩個節點之間的關係。',
         'From Node': '起點節點',
@@ -624,7 +615,6 @@ function registerLocaleData() {
         'Rebuilt memory graph and compression from chat.': '已從聊天重建記憶圖並完成壓縮。',
         'Current chat memory graph reset.': '已重設目前聊天記憶圖。',
         'Reset memory graph for current chat.': '已重設目前聊天記憶圖。',
-        'Recall injected via fallback after WI scan. Requested WI rescan for this generation.': '透過 WI 掃描後回退流程注入了召回內容，並要求本次生成重新掃描 WI。',
         'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
         'Selected node: ${0}. Tip: click an edge to edit relation.': '已選擇節點：${0}。提示：點擊邊可編輯關係。',
         'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
@@ -783,25 +773,6 @@ function ensureSettings() {
         }
     }
 
-    if (!String(extension_settings[MODULE_NAME].recallPresetName || '').trim()) {
-        extension_settings[MODULE_NAME].recallPresetName = String(
-            extension_settings[MODULE_NAME].recallPromptPresetName
-            || extension_settings[MODULE_NAME].recallLlmPresetName
-            || '',
-        ).trim();
-    }
-    if (!String(extension_settings[MODULE_NAME].extractPresetName || '').trim()) {
-        extension_settings[MODULE_NAME].extractPresetName = String(
-            extension_settings[MODULE_NAME].extractPromptPresetName
-            || extension_settings[MODULE_NAME].extractLlmPresetName
-            || '',
-        ).trim();
-    }
-    delete extension_settings[MODULE_NAME].recallPromptPresetName;
-    delete extension_settings[MODULE_NAME].recallLlmPresetName;
-    delete extension_settings[MODULE_NAME].extractPromptPresetName;
-    delete extension_settings[MODULE_NAME].extractLlmPresetName;
-
     extension_settings[MODULE_NAME].toolCallRetryMax = Math.max(
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
@@ -837,15 +808,6 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].extractSystemPrompt = String(extension_settings[MODULE_NAME].extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallRouteSystemPrompt = String(extension_settings[MODULE_NAME].recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallFinalizeSystemPrompt = String(extension_settings[MODULE_NAME].recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
-    delete extension_settings[MODULE_NAME].recallMaxSelection;
-    delete extension_settings[MODULE_NAME].recallRootCandidates;
-    delete extension_settings[MODULE_NAME].recallExpandedCandidates;
-    delete extension_settings[MODULE_NAME].recallNeighborLimit;
-    delete extension_settings[MODULE_NAME].turnsPerEpisode;
-    delete extension_settings[MODULE_NAME].episodesPerArc;
-    delete extension_settings[MODULE_NAME].arcsPerCanon;
-    delete extension_settings[MODULE_NAME].rollupFanIn;
-    delete extension_settings[MODULE_NAME].keepRecentEpisodeTurns;
     extension_settings[MODULE_NAME].nodeTypeSchema = normalizeNodeTypeSchema(extension_settings[MODULE_NAME].nodeTypeSchema);
 }
 
@@ -912,10 +874,10 @@ function renderConnectionProfileOptions(selectedName = '') {
     return options.join('');
 }
 
-function resolveChatSourceFromApiAlias(value, fallbackSource = '') {
+function resolveChatSourceFromApiAlias(value, defaultSource = '') {
     const normalized = String(value || '').trim().toLowerCase();
     if (!normalized) {
-        return String(fallbackSource || '').trim();
+        return String(defaultSource || '').trim();
     }
 
     if (API_ALIAS_TO_CHAT_SOURCE[normalized]) {
@@ -928,7 +890,7 @@ function resolveChatSourceFromApiAlias(value, fallbackSource = '') {
         return String(mapEntry.source);
     }
 
-    return String(fallbackSource || '').trim();
+    return String(defaultSource || '').trim();
 }
 
 function getConnectionProfileByName(name = '') {
@@ -940,15 +902,15 @@ function getConnectionProfileByName(name = '') {
 }
 
 function resolveRequestApiFromConnectionProfileName(context, profileName = '') {
-    const fallbackApi = String(context?.mainApi || 'openai').trim() || 'openai';
+    const defaultApi = String(context?.mainApi || 'openai').trim() || 'openai';
     const profile = getConnectionProfileByName(profileName);
     if (!profile) {
-        return fallbackApi;
+        return defaultApi;
     }
 
     const alias = String(profile.api || '').trim().toLowerCase();
     if (!alias) {
-        return fallbackApi;
+        return defaultApi;
     }
 
     const mapEntry = CONNECT_API_MAP?.[alias];
@@ -960,22 +922,22 @@ function resolveRequestApiFromConnectionProfileName(context, profileName = '') {
     if (alias === 'koboldhorde') {
         return 'kobold';
     }
-    return fallbackApi;
+    return defaultApi;
 }
 
-function buildApiSettingsOverrideFromConnectionProfileName(profileName, fallbackSource = '') {
+function buildApiSettingsOverrideFromConnectionProfileName(profileName, defaultSource = '') {
     const profile = getConnectionProfileByName(profileName);
     if (!profile) {
         return null;
     }
 
     const overrides = {};
-    const source = resolveChatSourceFromApiAlias(profile.api, fallbackSource);
+    const source = resolveChatSourceFromApiAlias(profile.api, defaultSource);
     if (source) {
         overrides.chat_completion_source = source;
     }
 
-    const resolvedSource = String(source || fallbackSource || '').trim();
+    const resolvedSource = String(source || defaultSource || '').trim();
     const modelField = CHAT_MODEL_SETTING_BY_SOURCE[resolvedSource];
     const modelValue = String(profile.model || '').trim();
     if (modelField && modelValue) {
@@ -1029,37 +991,9 @@ function refreshOpenAIPresetSelectors(root, context, settings) {
     }
 }
 
-function findFallbackChatKeyBySourceState(context) {
-    const source = computeChatSourceState(context);
-    const exactMatches = [];
-    for (const [chatKey, store] of memoryStoreCache.entries()) {
-        if (!store || typeof store !== 'object') {
-            continue;
-        }
-        if (Number(store.sourceMessageCount || 0) === Number(source.messageCount || 0)
-            && String(store.sourceDigest || '') === String(source.digest || '')) {
-            exactMatches.push([chatKey, store]);
-        }
-    }
-    if (exactMatches.length > 0) {
-        exactMatches.sort((a, b) => Number(b?.[1]?.updatedAt || 0) - Number(a?.[1]?.updatedAt || 0));
-        return String(exactMatches[0]?.[0] || '').trim();
-    }
-    if (lastKnownChatKey && memoryStoreCache.has(lastKnownChatKey)) {
-        return lastKnownChatKey;
-    }
-    return '';
-}
-
-function getChatKey(context, { allowFallback = false } = {}) {
+function getChatKey(context) {
     const target = buildMemoryTargetFromContext(context);
     if (!target) {
-        if (allowFallback) {
-            const fallback = findFallbackChatKeyBySourceState(context);
-            if (fallback) {
-                return fallback;
-            }
-        }
         return 'invalid_target';
     }
     if (target.is_group) {
@@ -1098,7 +1032,7 @@ async function loadMemoryStoreByTarget(context, target) {
         throw new Error('Chat state API is unavailable in extension context.');
     }
     const data = await context.getChatState(CHAT_STATE_NAMESPACE, { target });
-    return migrateLegacyStoreIfNeeded(data || createEmptyStore());
+    return normalizeStoreForRuntime(data || createEmptyStore());
 }
 
 function buildMemoryStorePatchOperations(previousStore, nextStore) {
@@ -1141,197 +1075,96 @@ function createEmptyStore() {
         lastRecallProjection: null,
         sourceMessageCount: 0,
         sourceDigest: '',
-        updatedAt: Date.now(),
     };
 }
 
-function pruneUnsupportedLevels(store) {
-    if (!store || typeof store !== 'object' || !store.nodes || typeof store.nodes !== 'object') {
-        return;
-    }
-    const allowed = new Set([LEVEL.SEMANTIC]);
-    const removedIds = new Set();
-
-    for (const [id, node] of Object.entries(store.nodes)) {
-        const level = String(node?.level || '').trim();
-        if (!allowed.has(level)) {
-            removedIds.add(id);
-            delete store.nodes[id];
-        }
-    }
-    if (removedIds.size === 0) {
-        return;
-    }
-
-    for (const node of Object.values(store.nodes)) {
-        if (!node || typeof node !== 'object') {
-            continue;
-        }
-        if (Array.isArray(node.childrenIds)) {
-            node.childrenIds = node.childrenIds.filter(childId => !removedIds.has(String(childId || '')));
-        } else {
-            node.childrenIds = [];
-        }
-        if (String(node.parentId || '') && removedIds.has(String(node.parentId || ''))) {
-            node.parentId = '';
-        }
-        if (Array.isArray(node.links)) {
-            node.links = node.links.filter(linkId => !removedIds.has(String(linkId || '')));
-        } else {
-            node.links = [];
-        }
-    }
-
-    if (Array.isArray(store.edges)) {
-        store.edges = store.edges.filter(edge => !removedIds.has(String(edge?.from || '')) && !removedIds.has(String(edge?.to || '')));
-    } else {
-        store.edges = [];
-    }
-}
-
-function normalizeLegacyNodeForStore(node, fallbackSeq = 0) {
-    if (!node || typeof node !== 'object') {
-        return null;
-    }
-    const level = String(node.level || LEVEL.SEMANTIC);
-    if (level !== LEVEL.SEMANTIC) {
-        return null;
-    }
-    const seqTo = Number.isFinite(Number(node.seqTo))
-        ? Number(node.seqTo)
-        : Number.isFinite(Number(node.toTurn))
-            ? Number(node.toTurn)
-            : Number.isFinite(Number(node.turnIndex))
-                ? Number(node.turnIndex)
-                : Number.isFinite(Number(node.seqFrom))
-                    ? Number(node.seqFrom)
-                    : Number.isFinite(Number(node.fromTurn))
-                        ? Number(node.fromTurn)
-                        : fallbackSeq;
-    const summary = normalizeText(node.summary || node.content || '');
-    const legacyMetadata = node.metadata && typeof node.metadata === 'object' && !Array.isArray(node.metadata)
-        ? node.metadata
-        : {};
-    const nodeFields = node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
-        ? node.fields
-        : {};
-    const fields = {
-        ...legacyMetadata,
-        ...nodeFields,
-    };
-    delete fields.semantic_depth;
-    delete fields.semantic_rollup;
-    delete fields.semantic_source_type;
-    delete fields.merged_node_ids;
-    return {
-        id: String(node.id || ''),
-        type: String(node.type || 'semantic'),
-        level: LEVEL.SEMANTIC,
-        title: normalizeText(node.title || ''),
-        summary,
-        seqTo: Number.isFinite(seqTo) ? seqTo : fallbackSeq,
-        fields,
-        semanticDepth: Number.isFinite(Number(node.semanticDepth))
-            ? Number(node.semanticDepth)
-            : Number.isFinite(Number(legacyMetadata.semantic_depth))
-                ? Number(legacyMetadata.semantic_depth)
-                : 0,
-        semanticRollup: node.semanticRollup !== undefined
-            ? Boolean(node.semanticRollup)
-            : Boolean(legacyMetadata.semantic_rollup),
-        semanticSourceType: normalizeText(node.semanticSourceType || legacyMetadata.semantic_source_type || ''),
-        mergedNodeIds: Array.isArray(node.mergedNodeIds)
-            ? node.mergedNodeIds.map(id => String(id || '').trim()).filter(Boolean)
-            : Array.isArray(legacyMetadata.merged_node_ids)
-                ? legacyMetadata.merged_node_ids.map(id => String(id || '').trim()).filter(Boolean)
-                : [],
-        childrenIds: Array.isArray(node.childrenIds) ? node.childrenIds.map(id => String(id || '').trim()).filter(Boolean) : [],
-        links: Array.isArray(node.links) ? node.links.map(id => String(id || '').trim()).filter(Boolean) : [],
-        parentId: String(node.parentId || '').trim(),
-        archived: Boolean(node.archived),
-        finalized: Boolean(node.finalized),
-        count: Math.max(1, Number(node.count || 1)),
-        createdAt: Number(node.createdAt || Date.now()),
-        updatedAt: Number(node.updatedAt || node.createdAt || Date.now()),
-    };
-}
-
-function migrateLegacyStoreIfNeeded(store) {
+function normalizeStoreForRuntime(store) {
     if (!store || typeof store !== 'object') {
         return createEmptyStore();
     }
-    const migrated = createEmptyStore();
-    migrated.nodeSeq = Math.max(0, Number(store.nodeSeq || 0));
-    migrated.seqCounter = Math.max(0, Number(store.seqCounter || 0));
-    migrated.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
-    migrated.sourceDigest = String(store.sourceDigest || '');
-    migrated.updatedAt = Number(store.updatedAt || Date.now());
-    migrated.appliedSeqTo = Math.max(0, Number(store.appliedSeqTo || 0));
-    migrated.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
-    migrated.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+    const normalized = createEmptyStore();
+    normalized.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
+    normalized.sourceDigest = String(store.sourceDigest || '');
+    normalized.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
+    normalized.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? store.lastRecallProjection
         : null;
 
-    let fallbackSeq = 0;
     if (store.nodes && typeof store.nodes === 'object') {
         for (const [id, rawNode] of Object.entries(store.nodes)) {
-            const normalized = normalizeLegacyNodeForStore(rawNode, fallbackSeq);
-            fallbackSeq += 1;
-            if (!normalized) {
+            if (!rawNode || typeof rawNode !== 'object') {
                 continue;
             }
-            const nodeId = String(id || normalized.id || '').trim();
+            const nodeId = String(id || '').trim();
             if (!nodeId) {
                 continue;
             }
-            migrated.nodes[nodeId] = {
-                ...normalized,
+            const level = String(rawNode.level || LEVEL.SEMANTIC).trim();
+            if (level !== LEVEL.SEMANTIC) {
+                continue;
+            }
+            const seqTo = Number.isFinite(Number(rawNode.seqTo))
+                ? Math.max(0, Math.floor(Number(rawNode.seqTo)))
+                : 0;
+            const fields = rawNode.fields && typeof rawNode.fields === 'object' && !Array.isArray(rawNode.fields)
+                ? { ...rawNode.fields }
+                : {};
+            normalized.nodes[nodeId] = {
                 id: nodeId,
-                title: normalizeText(normalized.title || nodeId),
+                type: String(rawNode.type || 'semantic'),
+                level: LEVEL.SEMANTIC,
+                title: normalizeText(rawNode.title || nodeId),
+                seqTo,
+                fields,
+                semanticDepth: Number.isFinite(Number(rawNode.semanticDepth)) ? Number(rawNode.semanticDepth) : 0,
+                semanticRollup: Boolean(rawNode.semanticRollup),
+                childrenIds: Array.isArray(rawNode.childrenIds) ? rawNode.childrenIds.map(child => String(child || '').trim()).filter(Boolean) : [],
+                parentId: String(rawNode.parentId || '').trim(),
+                archived: Boolean(rawNode.archived),
             };
-            migrated.seqCounter = Math.max(migrated.seqCounter, Number(normalized.seqTo || 0));
+            normalized.seqCounter = Math.max(normalized.seqCounter, seqTo);
             const extractedNodeSeq = Number(String(nodeId).replace(/^n_/, ''));
             if (Number.isFinite(extractedNodeSeq)) {
-                migrated.nodeSeq = Math.max(migrated.nodeSeq, extractedNodeSeq);
+                normalized.nodeSeq = Math.max(normalized.nodeSeq, extractedNodeSeq);
             }
         }
     }
 
-    const validNodeIds = new Set(Object.keys(migrated.nodes));
-    for (const node of Object.values(migrated.nodes)) {
-        node.childrenIds = (Array.isArray(node.childrenIds) ? node.childrenIds : []).filter(id => validNodeIds.has(id));
-        node.links = (Array.isArray(node.links) ? node.links : []).filter(id => validNodeIds.has(id));
+    const validNodeIds = new Set(Object.keys(normalized.nodes));
+    for (const node of Object.values(normalized.nodes)) {
+        node.childrenIds = node.childrenIds.filter(id => validNodeIds.has(id));
         if (node.parentId && !validNodeIds.has(node.parentId)) {
             node.parentId = '';
         }
     }
 
-    migrated.edges = Array.isArray(store.edges)
+    normalized.edges = Array.isArray(store.edges)
         ? store.edges
             .filter(edge => edge && typeof edge === 'object')
             .map(edge => ({
                 from: String(edge.from || '').trim(),
                 to: String(edge.to || '').trim(),
                 type: normalizeText(edge.type || 'related') || 'related',
-                updatedAt: Number(edge.updatedAt || Date.now()),
             }))
             .filter(edge => edge.from && edge.to && edge.from !== edge.to && validNodeIds.has(edge.from) && validNodeIds.has(edge.to))
         : [];
 
-    migrated.appliedSeqTo = Math.max(
+    normalized.appliedSeqTo = Math.max(
         0,
-        Math.floor(Number.isFinite(Number(migrated.appliedSeqTo)) ? Number(migrated.appliedSeqTo) : migrated.seqCounter),
+        Math.min(
+            normalized.seqCounter,
+            Math.floor(Number.isFinite(Number(store.appliedSeqTo)) ? Number(store.appliedSeqTo) : normalized.seqCounter),
+        ),
     );
-    pruneUnsupportedLevels(migrated);
-    return migrated;
+    return normalized;
 }
 
 async function ensureMemoryStoreLoaded(context, { force = false } = {}) {
     const target = buildMemoryTargetFromContext(context);
     if (!target) {
-        const fallbackKey = getChatKey(context, { allowFallback: true });
-        if (fallbackKey !== 'invalid_target' && memoryStoreCache.has(fallbackKey)) {
-            return memoryStoreCache.get(fallbackKey);
+        const cachedKey = getChatKey(context);
+        if (cachedKey !== 'invalid_target' && memoryStoreCache.has(cachedKey)) {
+            return memoryStoreCache.get(cachedKey);
         }
         return createEmptyStore();
     }
@@ -1362,7 +1195,7 @@ async function ensureMemoryStoreLoaded(context, { force = false } = {}) {
 }
 
 function getMemoryStore(context) {
-    const chatKey = getChatKey(context, { allowFallback: true });
+    const chatKey = getChatKey(context);
     return memoryStoreCache.get(chatKey) || null;
 }
 
@@ -1382,6 +1215,16 @@ async function persistMemoryStoreByChatKey(context, chatKey, store) {
 
 function normalizeText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function ensureNodeFieldsObject(node) {
+    if (!node || typeof node !== 'object') {
+        return {};
+    }
+    if (!node.fields || typeof node.fields !== 'object' || Array.isArray(node.fields)) {
+        node.fields = {};
+    }
+    return node.fields;
 }
 
 function tryParseJsonObject(text) {
@@ -1434,6 +1277,35 @@ function toDisplayScalar(value) {
     return normalizeText(String(value));
 }
 
+function getNodeSummary(node) {
+    if (!node || typeof node !== 'object') {
+        return '';
+    }
+    const fields = node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+        ? node.fields
+        : {};
+    if (fields.summary !== undefined && fields.summary !== null) {
+        return normalizeText(toDisplayScalar(fields.summary));
+    }
+    return '';
+}
+
+function setNodeSummary(node, summaryText) {
+    if (!node || typeof node !== 'object') {
+        return;
+    }
+    const fields = ensureNodeFieldsObject(node);
+    const normalized = normalizeText(summaryText);
+    if (normalized) {
+        fields.summary = normalized;
+    } else {
+        delete fields.summary;
+    }
+    if (Object.prototype.hasOwnProperty.call(node, 'summary')) {
+        delete node.summary;
+    }
+}
+
 function getStructuredNodeFields(node) {
     const fields = {};
     const mergeObject = (obj) => {
@@ -1447,7 +1319,7 @@ function getStructuredNodeFields(node) {
     };
     mergeObject(node?.fields);
     mergeObject(tryParseJsonObject(node?.fields));
-    mergeObject(tryParseJsonObject(node?.summary));
+    mergeObject(tryParseJsonObject(getNodeSummary(node)));
     return fields;
 }
 
@@ -1623,7 +1495,6 @@ function nextNodeId(store) {
 
 function createNode(store, node) {
     const id = nextNodeId(store);
-    const now = Date.now();
     const seqToRaw = Number.isFinite(Number(node.seqTo))
         ? Number(node.seqTo)
         : Number.isFinite(Number(node.seq))
@@ -1636,28 +1507,20 @@ function createNode(store, node) {
         type: String(node.type || 'unknown'),
         level: String(node.level || LEVEL.SEMANTIC),
         title: normalizeText(node.title || id),
-        summary: normalizeText(node.summary || ''),
         parentId: node.parentId ? String(node.parentId) : '',
         childrenIds: [],
-        links: [],
         fields: node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields) ? node.fields : {},
         semanticDepth: Number.isFinite(Number(node.semanticDepth)) ? Number(node.semanticDepth) : 0,
         semanticRollup: Boolean(node.semanticRollup),
-        semanticSourceType: normalizeText(node.semanticSourceType || ''),
-        mergedNodeIds: Array.isArray(node.mergedNodeIds) ? node.mergedNodeIds.map(id => String(id || '').trim()).filter(Boolean) : [],
         seqTo: Number.isFinite(seqTo) ? seqTo : undefined,
-        finalized: Boolean(node.finalized),
         archived: Boolean(node.archived),
-        count: Number(node.count || 1),
-        createdAt: now,
-        updatedAt: now,
     };
+    setNodeSummary(store.nodes[id], node?.fields?.summary ?? '');
 
     if (store.nodes[id].parentId && store.nodes[store.nodes[id].parentId]) {
         const parent = store.nodes[store.nodes[id].parentId];
         if (!parent.childrenIds.includes(id)) {
             parent.childrenIds.push(id);
-            parent.updatedAt = now;
         }
         addEdge(store, parent.id, id, 'contains');
     }
@@ -1670,10 +1533,8 @@ function addEdge(store, from, to, type = 'related') {
         return;
     }
 
-    const now = Date.now();
     const found = store.edges.find(edge => edge.from === from && edge.to === to && edge.type === type);
     if (found) {
-        found.updatedAt = now;
         return;
     }
 
@@ -1681,7 +1542,6 @@ function addEdge(store, from, to, type = 'related') {
         from,
         to,
         type,
-        updatedAt: now,
     });
 }
 
@@ -1696,7 +1556,6 @@ function reparentNode(store, childId, parentId) {
     if (oldParentId && store.nodes[oldParentId]) {
         const oldParent = store.nodes[oldParentId];
         oldParent.childrenIds = (oldParent.childrenIds || []).filter(id => id !== childId);
-        oldParent.updatedAt = Date.now();
     }
 
     child.parentId = parentId;
@@ -1706,8 +1565,6 @@ function reparentNode(store, childId, parentId) {
     if (!parent.childrenIds.includes(childId)) {
         parent.childrenIds.push(childId);
     }
-    parent.updatedAt = Date.now();
-    child.updatedAt = Date.now();
     addEdge(store, parentId, childId, 'contains');
 }
 
@@ -1750,7 +1607,6 @@ function archiveNode(store, nodeId) {
         return;
     }
     node.archived = true;
-    node.updatedAt = Date.now();
 }
 
 function summarizeTextHeuristic(lines) {
@@ -1762,8 +1618,8 @@ function summarizeTextHeuristic(lines) {
 
 function buildCompressionSummaryInstruction(baseInstruction) {
     const base = normalizeText(baseInstruction || '');
-    const fallback = 'Compress semantic nodes into concise higher-level memory while preserving key causality and unresolved hooks.';
-    const instruction = base || fallback;
+    const defaultInstruction = 'Compress semantic nodes into concise higher-level memory while preserving key causality and unresolved hooks.';
+    const instruction = base || defaultInstruction;
     return [
         instruction,
         'Length guide: target within 150 Chinese characters (soft limit; slight overflow only if critical information would be lost).',
@@ -2046,9 +1902,9 @@ function buildEvidenceSeqRange(item, batch) {
         const to = Number.isFinite(toRaw) ? toRaw : fromRaw;
         return { seqTo: Number(to) };
     }
-    const fallbackTo = Number(batch?.[batch.length - 1]?.seq);
-    if (Number.isFinite(fallbackTo)) {
-        return { seqTo: Number(fallbackTo) };
+    const lastSeqInBatch = Number(batch?.[batch.length - 1]?.seq);
+    if (Number.isFinite(lastSeqInBatch)) {
+        return { seqTo: Number(lastSeqInBatch) };
     }
     return { seqTo: 0 };
 }
@@ -2141,9 +1997,6 @@ function buildDynamicExtractTools(schema = []) {
                 .filter(([key, value]) => key && value && filteredFields.includes(key)),
         );
         const fieldSet = new Set(filteredFields);
-        const needsSummaryField = isEventType
-            || fieldSet.has('summary')
-            || filteredRequiredColumns.includes('summary');
         const properties = {
             evidence_seqs: {
                 type: 'array',
@@ -2176,9 +2029,6 @@ function buildDynamicExtractTools(schema = []) {
         if (!isEventType) {
             properties.title = { type: 'string' };
         }
-        if (needsSummaryField) {
-            properties.summary = { type: 'string' };
-        }
         for (const field of fieldSet) {
             if (properties[field]) {
                 continue;
@@ -2200,7 +2050,7 @@ function buildDynamicExtractTools(schema = []) {
                 parameters: {
                     type: 'object',
                     properties,
-                    required: filteredRequiredColumns.filter(field => fieldSet.has(field) || field === 'title' || field === 'summary'),
+                    required: filteredRequiredColumns.filter(field => fieldSet.has(field) || field === 'title'),
                     additionalProperties: false,
                 },
             },
@@ -2243,15 +2093,13 @@ function buildUpsertFromDynamicToolCall(call, spec) {
         if (!key) {
             continue;
         }
-        // `title` and `summary` are first-class node properties, avoid duplicating them in `fields`.
-        if (key === 'title' || key === 'summary') {
+        if (key === 'title') {
             continue;
         }
         const rawValue = args[key];
         fields[key] = rawValue === undefined || rawValue === null ? '' : rawValue;
     }
     const titleValue = args.title ?? '';
-    const summaryValue = args.summary ?? '';
     const missingRequired = [];
     for (const requiredField of Array.isArray(spec.requiredColumns) ? spec.requiredColumns : []) {
         const key = String(requiredField || '').trim();
@@ -2260,9 +2108,7 @@ function buildUpsertFromDynamicToolCall(call, spec) {
         }
         const value = key === 'title'
             ? titleValue
-            : key === 'summary'
-                ? summaryValue
-                : fields[key];
+            : fields[key];
         if (!normalizeText(toDisplayScalar(value))) {
             missingRequired.push(key);
         }
@@ -2271,7 +2117,6 @@ function buildUpsertFromDynamicToolCall(call, spec) {
         payload: {
             type: String(spec.id || '').trim().toLowerCase(),
             title: normalizeText(titleValue),
-            summary: normalizeText(summaryValue),
             fields,
             links: Array.isArray(args.links) ? args.links : [],
             evidence_seqs: Array.isArray(args.evidence_seqs) ? args.evidence_seqs : [],
@@ -2436,6 +2281,10 @@ function upsertSemanticNode(store, item) {
     const seqTo = Number.isFinite(Number(item.seqTo))
         ? Math.max(0, Math.floor(Number(item.seqTo)))
         : Math.max(0, Number(store.seqCounter || 0));
+    const itemSummary = normalizeText(
+        (item?.fields && typeof item.fields === 'object' && !Array.isArray(item.fields) ? item.fields.summary : undefined)
+        ?? '',
+    );
 
     if (type === 'event') {
         const generatedTitle = nextEventSummaryTitle();
@@ -2443,9 +2292,7 @@ function upsertSemanticNode(store, item) {
             type,
             level: LEVEL.SEMANTIC,
             title: generatedTitle,
-            summary: normalizeText(item.summary || ''),
-            finalized: true,
-            fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
+            fields: item?.fields && typeof item.fields === 'object' ? { ...item.fields } : {},
             semanticDepth: 0,
             semanticRollup: false,
             seqTo,
@@ -2453,14 +2300,14 @@ function upsertSemanticNode(store, item) {
     }
 
     if (!title) {
-        const fallbackName = normalizeText(
+        const derivedTitle = normalizeText(
             item?.fields?.name
             || item?.fields?.id
             || item?.fields?.key
             || item?.fields?.label
             || '',
         );
-        title = fallbackName || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
+        title = derivedTitle || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
     }
     const normalizedKey = `${type}::${title.toLowerCase()}`;
     let target = Object.values(store.nodes).find(node => node.level === LEVEL.SEMANTIC && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
@@ -2470,16 +2317,13 @@ function upsertSemanticNode(store, item) {
             type,
             level: LEVEL.SEMANTIC,
             title,
-            summary: normalizeText(item.summary || ''),
-            finalized: true,
-            fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
+            fields: item?.fields && typeof item.fields === 'object' ? { ...item.fields } : {},
             semanticDepth: 0,
             semanticRollup: false,
             seqTo,
         });
     } else {
-        target.summary = normalizeText(item.summary || target.summary || '');
-        target.count = Number(target.count || 1) + 1;
+        setNodeSummary(target, itemSummary || getNodeSummary(target));
         if (!target.fields || typeof target.fields !== 'object' || Array.isArray(target.fields)) {
             target.fields = {};
         }
@@ -2493,7 +2337,6 @@ function upsertSemanticNode(store, item) {
             Object.assign(target.fields, item.fields);
         }
         target.seqTo = Math.max(Number(target.seqTo || 0), seqTo);
-        target.updatedAt = Date.now();
     }
 
     return target;
@@ -2513,7 +2356,9 @@ function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { se
         const targetNode = upsertSemanticNode(store, {
             type: String(link?.target_type || 'entity').toLowerCase(),
             title: targetTitle,
-            summary: normalizeText(link?.target_summary || ''),
+            fields: {
+                summary: normalizeText(link?.target_summary || ''),
+            },
             seqTo: Number.isFinite(Number(defaultSeqRange?.seqTo)) ? Number(defaultSeqRange.seqTo) : undefined,
         });
         if (!targetNode) {
@@ -2547,7 +2392,14 @@ function getSemanticNodesForType(store, type) {
 function compactSemanticLatestOnly(store, type, keepLatest = 1) {
     const nodes = getSemanticNodesForType(store, type)
         .filter(node => !node.semanticRollup)
-        .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+        .sort((a, b) => {
+            const aSeq = Number(a?.seqTo ?? -1);
+            const bSeq = Number(b?.seqTo ?? -1);
+            if (aSeq !== bSeq) {
+                return bSeq - aSeq;
+            }
+            return String(a?.id || '').localeCompare(String(b?.id || ''));
+        });
     const byTitle = new Map();
     let changed = false;
 
@@ -2574,9 +2426,12 @@ function collectSemanticRootsByDepth(store, type, depth) {
         .filter(node => Number(node?.semanticDepth ?? 0) === Number(depth))
         .filter(node => !String(node.parentId || '').trim())
         .sort((a, b) => {
-            const aTo = Number(a.seqTo ?? a.createdAt ?? 0);
-            const bTo = Number(b.seqTo ?? b.createdAt ?? 0);
-            return aTo - bTo;
+            const aTo = Number(a.seqTo ?? 0);
+            const bTo = Number(b.seqTo ?? 0);
+            if (aTo !== bTo) {
+                return aTo - bTo;
+            }
+            return String(a?.id || '').localeCompare(String(b?.id || ''));
         });
 }
 
@@ -2600,7 +2455,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 break;
             }
 
-            const lines = group.map(node => `${node.title}: ${node.summary}`);
+            const lines = group.map(node => `${node.title}: ${getNodeSummary(node)}`);
             const instruction = buildCompressionSummaryInstruction(
                 config.summarizeInstruction
                 || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
@@ -2615,12 +2470,9 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 level: LEVEL.SEMANTIC,
                 title: `${String(config.label || type || 'Semantic')} Summary L${depth + 1} #${Date.now()}`,
                 summary,
-                finalized: true,
                 archived: false,
                 semanticRollup: true,
                 semanticDepth: depth + 1,
-                semanticSourceType: String(type || ''),
-                mergedNodeIds: group.map(node => node.id),
                 seqTo: Math.max(...group.map(node => Number(node.seqTo ?? 0))),
             });
 
@@ -2728,7 +2580,6 @@ async function processPendingMessageFrameWithLLM(context, store, settings, schem
         const targetNode = upsertSemanticNode(store, {
             type,
             title,
-            summary: normalizeText(item?.summary || ''),
             fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
             seqTo: evidence.seqTo,
         });
@@ -2799,7 +2650,6 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     store.appliedSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
     store.seqCounter = store.appliedSeqTo;
     updateStoreSourceState(store, context);
-    store.updatedAt = Date.now();
     store.lastExtractionDebug = {
         beginSeq,
         latestSeq,
@@ -2817,7 +2667,7 @@ function formatNodeBrief(node, extra = {}) {
         level: node.level,
         type: node.type,
         title: node.title,
-        summary: String(node.summary || ''),
+        summary: getNodeSummary(node),
         child_count: Array.isArray(node.childrenIds) ? node.childrenIds.length : 0,
         to_seq: node.seqTo ?? null,
         ...extra,
@@ -2830,7 +2680,7 @@ function formatNodeDetail(node, extra = {}) {
         level: node.level,
         type: node.type,
         title: node.title,
-        summary: String(node.summary || ''),
+        summary: getNodeSummary(node),
         fields: node.fields || {},
         semantic_depth: Number(node.semanticDepth || 0),
         semantic_rollup: Boolean(node.semanticRollup),
@@ -2872,14 +2722,12 @@ function compareNodesByRecency(a, b) {
     if (aSeq !== bSeq) {
         return bSeq - aSeq;
     }
-    const aUpdated = Number(a?.updatedAt ?? a?.createdAt ?? 0);
-    const bUpdated = Number(b?.updatedAt ?? b?.createdAt ?? 0);
-    if (aUpdated !== bUpdated) {
-        return bUpdated - aUpdated;
-    }
     const aDepth = Number(a?.semanticDepth ?? 0);
     const bDepth = Number(b?.semanticDepth ?? 0);
-    return bDepth - aDepth;
+    if (aDepth !== bDepth) {
+        return bDepth - aDepth;
+    }
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
 }
 
 function getSortedNodesByRecency(nodes) {
@@ -3410,7 +3258,7 @@ function compareNodesByTimeline(a, b) {
     if (aTo !== bTo) {
         return aTo - bTo;
     }
-    return Number(a?.createdAt ?? 0) - Number(b?.createdAt ?? 0);
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
 }
 
 function getActiveSemanticParentOfType(store, node, type) {
@@ -3552,7 +3400,7 @@ function getTableCellValueFromNode(node, columnName) {
         return getNodeSeqRange(node);
     }
     if (key === 'summary') {
-        return normalizeText(node.summary || '');
+        return getNodeSummary(node);
     }
     if (key === 'details') {
         if (structured[key] !== undefined) {
@@ -3569,7 +3417,7 @@ function getTableCellValueFromNode(node, columnName) {
     if (structured[key] !== undefined) {
         return toDisplayScalar(structured[key]);
     }
-    const parsedSummary = tryParseJsonObject(node?.summary);
+    const parsedSummary = tryParseJsonObject(getNodeSummary(node));
     const deepHit = findValueByKeyDeep(node?.fields, key)
         ?? findValueByKeyDeep(parsedSummary, key);
     if (deepHit !== undefined) {
@@ -3603,7 +3451,7 @@ function buildFocusTablesText(nodes, settings, options = {}) {
             String(node.title || ''),
             String(node.type || ''),
             getNodeSeqRange(node),
-            normalizeText(node.summary || ''),
+            getNodeSummary(node),
         ]);
         let bucketTitle = `${tablePrefix} ${bucket}`;
 
@@ -3817,7 +3665,7 @@ async function runLLMDrivenRecall(context, store, payload) {
         });
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
         trace.push({
-            step: 'finalize_fallback',
+            step: 'finalize_pass_direct',
             selected_ids: selectedIds,
             reason: selectedRaw.reason || '',
         });
@@ -3900,7 +3748,6 @@ async function rebuildStoreFromCurrentChat(context) {
     const rebuilt = createEmptyStore();
     await runExtractionForStore(context, rebuilt, { force: true, startSeq: 1 });
     updateStoreSourceState(rebuilt, context);
-    rebuilt.updatedAt = Date.now();
     memoryStoreTargets.set(chatKey, target);
     memoryStoreCache.set(chatKey, rebuilt);
     await persistMemoryStoreByChatKey(context, chatKey, rebuilt);
@@ -3999,7 +3846,6 @@ function truncateStoreFromSeq(store, fromSeq) {
         const covered = getSemanticCoverageSeq(store);
         store.appliedSeqTo = covered;
         store.seqCounter = covered;
-        store.updatedAt = Date.now();
         return;
     }
 
@@ -4018,11 +3864,6 @@ function truncateStoreFromSeq(store, fromSeq) {
         if (String(node.parentId || '').trim() && removeIds.has(String(node.parentId || '').trim())) {
             node.parentId = '';
         }
-        if (Array.isArray(node.links)) {
-            node.links = node.links.filter(linkId => !removeIds.has(String(linkId || '')));
-        } else {
-            node.links = [];
-        }
     }
     if (Array.isArray(store.edges)) {
         store.edges = store.edges.filter(edge => {
@@ -4034,7 +3875,6 @@ function truncateStoreFromSeq(store, fromSeq) {
     const covered = getSemanticCoverageSeq(store);
     store.appliedSeqTo = covered;
     store.seqCounter = covered;
-    store.updatedAt = Date.now();
 }
 
 function alignStoreCoverageToChat(store, context) {
@@ -4068,7 +3908,7 @@ async function ensureStoreSyncedWithChat(context) {
     }
     const { changed } = alignStoreCoverageToChat(store, context);
     if (changed) {
-        const chatKey = getChatKey(context, { allowFallback: true });
+        const chatKey = getChatKey(context);
         await persistMemoryStoreByChatKey(context, chatKey, store);
     }
     return store;
@@ -4106,7 +3946,6 @@ async function injectMemoryPrompts(context, payload) {
 
     const { selectedNodes, alwaysInjectNodes, trace, query } = await runLLMDrivenRecall(context, store, payload);
     store.lastRecallTrace = trace;
-    store.updatedAt = Date.now();
 
     const blocks = {
         corePacket: buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }),
@@ -4117,7 +3956,7 @@ async function injectMemoryPrompts(context, payload) {
         at: Date.now(),
         blocks,
     };
-    const chatKey = getChatKey(context, { allowFallback: true });
+    const chatKey = getChatKey(context);
     await persistMemoryStoreByChatKey(context, chatKey, store);
     updateUiStatus(i18nFormat('Recall ready. query="${0}" selected=${1}', query, selectedNodes.length));
     return true;
@@ -4179,7 +4018,7 @@ async function captureLatestAssistantAfterGeneration() {
 }
 
 function scheduleExtraction(context) {
-    const chatKey = getChatKey(context, { allowFallback: true });
+    const chatKey = getChatKey(context);
     if (!chatKey || chatKey === 'invalid_target') {
         return;
     }
@@ -4218,10 +4057,7 @@ function scheduleExtraction(context) {
                 return;
             }
             showRuntimeInfoToast(i18n('Memory graph update running...'));
-            const extracted = await runExtractionForStore(context, store);
-            if (extracted) {
-                store.updatedAt = Date.now();
-            }
+            await runExtractionForStore(context, store);
             await persistMemoryStoreByChatKey(context, chatKey, store);
             const debug = store.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
@@ -4262,12 +4098,12 @@ function getStoreStats(store) {
 function renderGraphInspectorHtml(store) {
     const stats = getStoreStats(store);
     const nodes = Object.values(store.nodes || {})
-        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0))
+        .sort(compareNodesByTimeline)
         .slice(-220);
     const edges = Array.isArray(store.edges)
         ? store.edges
             .map((edge, index) => ({ ...edge, _index: index }))
-            .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+            .sort((a, b) => Number(b._index || 0) - Number(a._index || 0))
             .slice(0, 160)
         : [];
 
@@ -4277,7 +4113,7 @@ function renderGraphInspectorHtml(store) {
 <td>${node.level}</td>
 <td>${node.type}</td>
 <td>${String(node.title || '').replace(/</g, '&lt;')}</td>
-<td>${String(node.summary || '').replace(/</g, '&lt;')}</td>
+<td>${String(getNodeSummary(node) || '').replace(/</g, '&lt;')}</td>
 <td>${Array.isArray(node.childrenIds) ? node.childrenIds.length : 0}</td>
 <td>${node.seqTo ?? ''}</td>
 <td>
@@ -4322,8 +4158,8 @@ function renderGraphInspectorHtml(store) {
     <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Recent Edges'))}</h4>
     <div class="luker-rpg-memory-graph-table-wrap">
     <table class="table" style="font-size:12px; margin-top:6px;">
-        <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Updated'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
-        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge.updatedAt || 0)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">${escapeHtml(i18n('Edit'))}</div></td></tr>`).join('')}</tbody>
+        <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge._index)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">${escapeHtml(i18n('Edit'))}</div></td></tr>`).join('')}</tbody>
     </table>
     </div>
     <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Last Projection'))}</h4>
@@ -4370,6 +4206,7 @@ function encodeFieldsAsLines(fields) {
         return '';
     }
     return Object.entries(fields)
+        .filter(([key]) => String(key || '').trim().toLowerCase() !== 'summary')
         .map(([key, value]) => {
             let encoded = value;
             if (value && typeof value === 'object') {
@@ -4401,7 +4238,7 @@ function decodeFieldsFromLines(text) {
                 out[key] = JSON.parse(valueRaw);
                 continue;
             } catch {
-                // fallback to scalar parsing below
+                // scalar parsing below
             }
         }
         out[key] = parseLooseScalar(valueRaw);
@@ -4436,7 +4273,7 @@ function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
     const options = [`<option value="">${escapeHtml(i18n('(none)'))}</option>`];
     const nodes = Object.values(store.nodes || {})
         .filter(node => node && String(node.id || '') !== String(selfId || ''))
-        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+        .sort(compareNodesByTimeline);
     for (const node of nodes) {
         const id = String(node.id || '');
         const title = String(node.title || '').trim();
@@ -4474,17 +4311,13 @@ function renderNodeFormEditorHtml(node, store, settings, editorId) {
         </label>
     </div>
     <div class="luker-rpg-memory-node-form-flags">
-        <label class="checkbox_label"><input data-field="finalized" type="checkbox" ${node.finalized ? 'checked' : ''} /> ${escapeHtml(i18n('Finalized'))}</label>
         <label class="checkbox_label"><input data-field="archived" type="checkbox" ${node.archived ? 'checked' : ''} /> ${escapeHtml(i18n('Archived'))}</label>
     </div>
     <label>${escapeHtml(i18n('Title'))}
         <input data-field="title" class="text_pole" type="text" value="${escapeHtml(node.title || '')}" />
     </label>
     <label>${escapeHtml(i18n('Summary'))}
-        <textarea data-field="summary" class="text_pole textarea_compact" rows="3">${escapeHtml(node.summary || '')}</textarea>
-    </label>
-    <label>${escapeHtml(i18n('Links (comma separated node ids)'))}
-        <input data-field="links" class="text_pole" type="text" value="${escapeHtml(joinCommaList(node.links || []))}" />
+        <textarea data-field="summary" class="text_pole textarea_compact" rows="3">${escapeHtml(getNodeSummary(node))}</textarea>
     </label>
     <label>${escapeHtml(i18n('Fields (one key=value per line)'))}
         <textarea data-field="fieldsLines" class="text_pole textarea_compact" rows="6">${escapeHtml(encodeFieldsAsLines(node.fields || {}))}</textarea>
@@ -4552,7 +4385,7 @@ async function ensureCytoscapeLoaded() {
 
 function buildGraphCytoscapeElements(store) {
     const sortedNodes = Object.values(store.nodes || {})
-        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+        .sort(compareNodesByTimeline);
     const maxVisualNodes = 450;
     const scopedNodes = sortedNodes.slice(-maxVisualNodes);
     const scopedNodeIds = new Set(scopedNodes.map(node => String(node.id || '')));
@@ -4588,8 +4421,8 @@ function buildGraphCytoscapeElements(store) {
         const levelNodes = (nodesByLevel.get(level) || [])
             .slice()
             .sort((a, b) => {
-                const at = Number(a.seqTo ?? a.createdAt ?? 0);
-                const bt = Number(b.seqTo ?? b.createdAt ?? 0);
+                const at = Number(a.seqTo ?? 0);
+                const bt = Number(b.seqTo ?? 0);
                 if (at !== bt) {
                     return at - bt;
                 }
@@ -4651,7 +4484,7 @@ function getEdgeNodeOptionsHtml(store, selectedNodeId = '') {
     const selected = String(selectedNodeId || '').trim();
     const options = [`<option value="">${escapeHtml(i18n('(select node)'))}</option>`];
     const nodes = Object.values(store.nodes || {})
-        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+        .sort(compareNodesByTimeline);
     for (const node of nodes) {
         const id = String(node.id || '');
         if (!id) {
@@ -4788,7 +4621,6 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18n('Select a node or edge to edit.'))}</div>`);
     };
     const persistLatest = async (latest, successText, statusText) => {
-        latest.updatedAt = Date.now();
         memoryStoreCache.set(chatKey, latest);
         await persistMemoryStoreByChatKey(context, chatKey, latest);
         refreshUiStats();
@@ -5102,7 +4934,6 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                 from,
                 to,
                 type,
-                updatedAt: Date.now(),
             };
 
             if (isEdit) {
@@ -5152,24 +4983,19 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
 
         const target = latest.nodes[nodeId];
         const oldParentId = String(target.parentId || '').trim();
-        const now = Date.now();
 
         target.type = String(editorRoot.find('[data-field="type"]').val() || target.type || 'unknown').trim() || 'unknown';
         target.level = String(editorRoot.find('[data-field="level"]').val() || target.level || LEVEL.SEMANTIC).trim() || LEVEL.SEMANTIC;
         target.title = normalizeText(editorRoot.find('[data-field="title"]').val() || target.title || nodeId);
-        target.summary = normalizeText(editorRoot.find('[data-field="summary"]').val() || '');
         target.seqTo = parseOptionalNumber(editorRoot.find('[data-field="seqTo"]').val());
-        target.count = Math.max(1, Number(target.count || 1));
-        target.finalized = Boolean(editorRoot.find('[data-field="finalized"]').prop('checked'));
         target.archived = Boolean(editorRoot.find('[data-field="archived"]').prop('checked'));
-        target.links = splitCommaList(editorRoot.find('[data-field="links"]').val());
         target.fields = decodeFieldsFromLines(editorRoot.find('[data-field="fieldsLines"]').val());
+        setNodeSummary(target, editorRoot.find('[data-field="summary"]').val() || '');
 
         if (parsedParentId !== oldParentId) {
             if (oldParentId && latest.nodes[oldParentId]) {
                 const oldParent = latest.nodes[oldParentId];
                 oldParent.childrenIds = (oldParent.childrenIds || []).filter(id => id !== nodeId);
-                oldParent.updatedAt = now;
             }
             if (parsedParentId && latest.nodes[parsedParentId]) {
                 reparentNode(latest, nodeId, parsedParentId);
@@ -5186,7 +5012,6 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             }
         }
 
-        target.updatedAt = now;
         selectedNodeId = nodeId;
         selectedEdgeIndex = -1;
         await persistLatest(
@@ -5226,7 +5051,6 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             from,
             to,
             type,
-            updatedAt: Date.now(),
         };
         selectedEdgeIndex = edgeIndex;
         selectedNodeId = '';
@@ -5447,9 +5271,8 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         try {
             const raw = String(jQuery(`#${editorId}`).val() || '').trim();
             const parsed = JSON.parse(raw);
-            const migrated = migrateLegacyStoreIfNeeded(parsed);
+            const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
-            migrated.updatedAt = Date.now();
             memoryStoreCache.set(chatKey, migrated);
             await persistMemoryStoreByChatKey(context, chatKey, migrated);
             refreshUiStats();
@@ -5529,7 +5352,7 @@ function refreshUiStats() {
     }
 
     const context = getContext();
-    const chatKey = getChatKey(context, { allowFallback: true });
+    const chatKey = getChatKey(context);
     const store = memoryStoreCache.get(chatKey) || createEmptyStore();
     const stats = getStoreStats(store);
 
@@ -6753,7 +6576,7 @@ function bindUi() {
             if (target) {
                 memoryStoreTargets.set(chatKey, target);
             }
-            const migrated = migrateLegacyStoreIfNeeded(parsed);
+            const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
             memoryStoreCache.set(chatKey, migrated);
             await persistMemoryStoreByChatKey(context, chatKey, migrated);
@@ -6850,21 +6673,6 @@ jQuery(() => {
     context.eventSource.on(wiBeforeEvent, async (payload) => {
         await safeInjectMemoryPrompts(context, payload, 'before_world_info_scan');
     });
-    const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
-    context.eventSource.on(wiAfterEvent, async (payload) => {
-        const settings = getSettings();
-        if (!settings.enabled || !settings.lorebookProjectionEnabled) {
-            return;
-        }
-        if (payload?.__lukerRpgMemoryInjected === true) {
-            return;
-        }
-        const injected = await safeInjectMemoryPrompts(context, payload, 'after_world_info_scan_fallback');
-        if (injected && payload && typeof payload === 'object') {
-            payload.requestRescan = true;
-            updateUiStatus(i18n('Recall injected via fallback after WI scan. Requested WI rescan for this generation.'));
-        }
-    });
     const clearRuntimeProjectionAfterGeneration = async () => {
         try {
             await clearRuntimeLorebookProjection(context, getSettings());
@@ -6885,10 +6693,10 @@ jQuery(() => {
             await captureLatestAssistantAfterGeneration();
         });
     }
-    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_legacyLength, mutationMeta) => {
+    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_messageCount, mutationMeta) => {
         try {
             await ensureMemoryStoreLoaded(context);
-            const chatKey = getChatKey(context, { allowFallback: true });
+            const chatKey = getChatKey(context);
             const store = memoryStoreCache.get(chatKey);
             if (!store) {
                 return;
