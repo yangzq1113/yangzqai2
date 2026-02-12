@@ -2559,18 +2559,49 @@ function buildGraphNodeHints(store, schema, limit = 0) {
         (Array.isArray(schema) ? schema : [])
             .map(item => [String(item?.id || '').trim().toLowerCase(), item]),
     );
-    const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+    const allSemanticNodes = listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => !node?.archived)
-        .sort((a, b) => {
-            const aSeq = Number(a?.seqTo ?? -1);
-            const bSeq = Number(b?.seqTo ?? -1);
-            if (aSeq !== bSeq) {
-                return bSeq - aSeq;
+        .filter(node => !isRecallDiagnosticNode(node));
+    const typeIds = new Set(
+        allSemanticNodes
+            .map(node => String(node?.type || '').trim().toLowerCase())
+            .filter(Boolean),
+    );
+    const visibleNodes = [];
+    const visibleNodeIds = new Set();
+    for (const type of typeIds) {
+        const spec = schemaMap.get(type);
+        const compressionMode = String(spec?.compression?.mode || 'none').trim().toLowerCase();
+        const typeNodes = allSemanticNodes
+            .filter(node => String(node?.type || '').trim().toLowerCase() === type)
+            .sort(compareNodesByTimeline);
+        if (typeNodes.length === 0) {
+            continue;
+        }
+        if (compressionMode === 'hierarchical') {
+            const leaves = typeNodes.filter(node => !hasActiveSemanticChildOfType(store, node, type));
+            for (const leaf of leaves) {
+                const parent = getActiveSemanticParentOfType(store, leaf, type);
+                const candidate = parent || leaf;
+                if (!candidate?.id || visibleNodeIds.has(candidate.id)) {
+                    continue;
+                }
+                visibleNodeIds.add(candidate.id);
+                visibleNodes.push(candidate);
             }
-            return String(a?.id || '').localeCompare(String(b?.id || ''));
-        });
+            continue;
+        }
+        for (const node of typeNodes) {
+            if (!node?.id || visibleNodeIds.has(node.id)) {
+                continue;
+            }
+            visibleNodeIds.add(node.id);
+            visibleNodes.push(node);
+        }
+    }
+    visibleNodes.sort(compareNodesByTimeline);
     const rows = [];
-    for (const node of nodes) {
+    for (const node of visibleNodes) {
         if (rows.length >= safeLimit) {
             break;
         }
@@ -2651,7 +2682,10 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
 
     return [
         '<extract_input>',
-        '  <input_guide>Below are the extraction inputs. graph_data is the current semantic memory graph state (all semantic types). If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
+        '  <input_guide>Below are the extraction inputs. graph_data is the current semantic memory graph state for extraction.</input_guide>',
+        '  <input_guide>Visibility policy matches core injection for hierarchical types: when parent exists, expose parent instead of child leaf to avoid context explosion.</input_guide>',
+        '  <input_guide>Non-hierarchical types are exposed as full semantic nodes.</input_guide>',
+        '  <input_guide>If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
         '  <input_guide>required_types are hard-required types for this batch.</input_guide>',
         '  <input_guide>dialogue_batch is the current source dialogue to extract from.</input_guide>',
         '  <graph_data>',
@@ -2756,9 +2790,19 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             .filter(Boolean),
     );
     const graphNodes = buildGraphNodeHints(store, schema, 0);
+    const semanticNodeTotal = listNodesByLevel(store, LEVEL.SEMANTIC)
+        .filter(node => !node?.archived)
+        .filter(node => !isRecallDiagnosticNode(node))
+        .length;
     const graphDataPayload = {
         initialized: graphNodes.length > 0,
         editable_type_ids: Array.from(editableTypeSet.values()),
+        projection_policy: {
+            hierarchical_types: 'core_like_parent_preferred',
+            non_hierarchical_types: 'full',
+        },
+        semantic_node_total: semanticNodeTotal,
+        visible_node_count: graphNodes.length,
         nodes: graphNodes,
     };
     const promptMessages = buildPresetAwareLLMMessages(context, settings, {
