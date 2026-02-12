@@ -36,7 +36,7 @@ const defaultNodeTypeSchema = [
         keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
         alwaysInject: true,
         latestOnly: false,
-        latestOnlyKey: '',
+        primaryKeyColumns: [],
         compression: {
             mode: 'hierarchical',
             threshold: 9,
@@ -63,7 +63,7 @@ const defaultNodeTypeSchema = [
         keywords: ['quest', 'clue', 'mystery', 'promise', 'goal', 'thread'],
         alwaysInject: false,
         latestOnly: false,
-        latestOnlyKey: '',
+        primaryKeyColumns: [],
         compression: {
             mode: 'hierarchical',
             threshold: 8,
@@ -97,7 +97,7 @@ const defaultNodeTypeSchema = [
         keywords: ['character', 'alias', 'status', 'relationship', 'inventory', 'goal', 'core note'],
         alwaysInject: false,
         latestOnly: true,
-        latestOnlyKey: 'name',
+        primaryKeyColumns: ['name'],
         compression: {
             mode: 'none',
             threshold: 2,
@@ -128,7 +128,7 @@ const defaultNodeTypeSchema = [
         keywords: ['location', 'alias', 'control', 'danger', 'resource', 'region', 'base'],
         alwaysInject: false,
         latestOnly: true,
-        latestOnlyKey: 'name',
+        primaryKeyColumns: ['name'],
         compression: {
             mode: 'none',
             threshold: 2,
@@ -156,7 +156,7 @@ const defaultNodeTypeSchema = [
         keywords: ['rule', 'constraint', 'law', 'taboo', 'limit'],
         alwaysInject: true,
         latestOnly: false,
-        latestOnlyKey: '',
+        primaryKeyColumns: [],
         compression: {
             mode: 'none',
             threshold: 2,
@@ -416,7 +416,7 @@ function registerLocaleData() {
         'Keywords (comma separated)': '关键词（逗号分隔）',
         'Force Update (must appear each extraction batch)': '强制更新（每次抽取必须出现）',
         'Latest Only Upsert': 'Latest-only 覆写',
-        'Latest Only Key': 'Latest-only 键',
+        'Primary Key Columns': '主键列',
         'Extract Hint': '抽取提示',
         'Enable Hierarchical Compression': '启用层级压缩',
         'none': 'none',
@@ -619,7 +619,7 @@ function registerLocaleData() {
         'Keywords (comma separated)': '關鍵字（逗號分隔）',
         'Force Update (must appear each extraction batch)': '強制更新（每次抽取必須出現）',
         'Latest Only Upsert': 'Latest-only 覆寫',
-        'Latest Only Key': 'Latest-only 鍵',
+        'Primary Key Columns': '主鍵列',
         'Extract Hint': '抽取提示',
         'Enable Hierarchical Compression': '啟用分層壓縮',
         'none': 'none',
@@ -757,17 +757,32 @@ function normalizeNodeTypeSchema(schema) {
                 ? rawId === 'event'
                 : Boolean(item.forceUpdate);
             const rawCompressionMode = String(item?.compression?.mode || '').trim().toLowerCase();
-            const latestOnly = item.latestOnly === undefined
-                ? rawCompressionMode === 'latest_only'
-                : Boolean(item.latestOnly);
-            const latestOnlyKey = String(item.latestOnlyKey || '').trim();
+            const tableColumns = Array.isArray(item.tableColumns)
+                ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
+                : ['title'];
+            const latestOnly = Boolean(item.latestOnly);
+            const rawPrimaryKeyColumns = Array.isArray(item.primaryKeyColumns)
+                ? item.primaryKeyColumns
+                : [];
+            const allowedKeyColumns = new Set(tableColumns);
+            const primaryKeyColumns = Array.from(new Set(
+                rawPrimaryKeyColumns
+                    .map(x => String(x || '').trim())
+                    .filter(Boolean)
+                    .filter(column => allowedKeyColumns.has(column)),
+            ));
+            if (latestOnly && primaryKeyColumns.length === 0) {
+                if (allowedKeyColumns.has('name')) {
+                    primaryKeyColumns.push('name');
+                } else if (tableColumns.length > 0) {
+                    primaryKeyColumns.push(tableColumns[0]);
+                }
+            }
             return {
                 id: rawId,
                 label: String(item.label || item.id || `Type ${index + 1}`).trim(),
                 tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
-                tableColumns: Array.isArray(item.tableColumns)
-                    ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
-                    : ['title'],
+                tableColumns,
                 level: String(item.level || LEVEL.SEMANTIC),
                 extractHint: String(item.extractHint || '').trim(),
                 keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
@@ -776,7 +791,7 @@ function normalizeNodeTypeSchema(schema) {
                 forceUpdate,
                 alwaysInject: Boolean(item.alwaysInject),
                 latestOnly,
-                latestOnlyKey,
+                primaryKeyColumns,
                 compression: {
                     mode: normalizeCompressionMode(rawCompressionMode),
                     threshold: Math.max(2, Number(item?.compression?.threshold) || 6),
@@ -1522,7 +1537,9 @@ function getSemanticLatestOnlyConfig(settings, type) {
     const spec = getSemanticTypeSpec(settings, type);
     return {
         enabled: Boolean(spec?.latestOnly),
-        keyField: String(spec?.latestOnlyKey || '').trim(),
+        keyFields: Array.isArray(spec?.primaryKeyColumns)
+            ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+            : [],
     };
 }
 
@@ -2343,17 +2360,24 @@ function upsertSemanticNode(store, item, settings = null) {
         incomingFields.summary
         ?? '',
     );
-    const latestOnlyConfig = settings ? getSemanticLatestOnlyConfig(settings, type) : { enabled: false, keyField: '' };
+    const latestOnlyConfig = settings ? getSemanticLatestOnlyConfig(settings, type) : { enabled: false, keyFields: [] };
     const deriveLatestOnlyKey = (fieldsObject, fallbackTitle = '') => {
         const fields = fieldsObject && typeof fieldsObject === 'object' && !Array.isArray(fieldsObject)
             ? fieldsObject
             : {};
-        const explicitKey = normalizeText(latestOnlyConfig.keyField || '');
-        if (explicitKey) {
-            const value = normalizeText(toDisplayScalar(fields[explicitKey]));
-            if (value) {
-                return value.toLowerCase();
+        const explicitKeys = Array.isArray(latestOnlyConfig.keyFields)
+            ? latestOnlyConfig.keyFields.map(column => String(column || '').trim()).filter(Boolean)
+            : [];
+        if (explicitKeys.length > 0) {
+            const parts = [];
+            for (const key of explicitKeys) {
+                const value = normalizeText(toDisplayScalar(fields[key]));
+                if (!value) {
+                    return '';
+                }
+                parts.push(`${key}=${value.toLowerCase()}`);
             }
+            return parts.join('|');
         }
         const nameValue = normalizeText(toDisplayScalar(fields.name));
         if (nameValue) {
@@ -2392,7 +2416,13 @@ function upsertSemanticNode(store, item, settings = null) {
         const candidates = Object.values(store.nodes)
             .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC)
             .filter(node => String(node.type || '').toLowerCase() === type)
-            .filter(node => deriveLatestOnlyKey(node?.fields, node?.title) === incomingLatestKey)
+            .filter(node => {
+                if (incomingLatestKey) {
+                    return deriveLatestOnlyKey(node?.fields, node?.title) === incomingLatestKey;
+                }
+                const candidateTitle = normalizeText(node?.title || '').toLowerCase();
+                return candidateTitle && candidateTitle === normalizeText(title || '').toLowerCase();
+            })
             .sort((a, b) => {
                 const aSeq = Number(a?.seqTo ?? -1);
                 const bSeq = Number(b?.seqTo ?? -1);
@@ -5509,7 +5539,7 @@ function getSchemaTypeTemplate(index = 1) {
         forceUpdate: false,
         alwaysInject: false,
         latestOnly: false,
-        latestOnlyKey: '',
+        primaryKeyColumns: [],
         compression: {
             mode: 'none',
             threshold: 6,
@@ -6024,6 +6054,38 @@ function ensureStyles() {
 </style>`);
 }
 
+function renderPrimaryKeyOptions(columns = [], selected = []) {
+    const cols = Array.isArray(columns) ? columns.map(column => String(column || '').trim()).filter(Boolean) : [];
+    const selectedSet = new Set(Array.isArray(selected) ? selected.map(column => String(column || '').trim()).filter(Boolean) : []);
+    if (cols.length === 0) {
+        return `<small style="opacity:0.8">${escapeHtml(i18n('(empty)'))}</small>`;
+    }
+    return cols.map((column) => `
+        <label class="checkbox_label">
+            <input type="checkbox" data-field="primaryKeyColumns" value="${escapeHtml(column)}" ${selectedSet.has(column) ? 'checked' : ''} />
+            ${escapeHtml(column)}
+        </label>
+    `).join('');
+}
+
+function refreshPrimaryKeyOptionsForCard(card) {
+    const root = jQuery(card);
+    if (!root.length) {
+        return;
+    }
+    const columns = splitCommaList(root.find('[data-field="tableColumns"]').val());
+    const checked = root.find('[data-field="primaryKeyColumns"]:checked')
+        .map((_, el) => String(jQuery(el).val() || '').trim())
+        .get()
+        .filter(Boolean);
+    const validChecked = checked.filter(column => columns.includes(column));
+    const latestOnlyEnabled = Boolean(root.find('[data-field="latestOnly"]').prop('checked'));
+    if (latestOnlyEnabled && validChecked.length === 0 && columns.length > 0) {
+        validChecked.push(columns[0]);
+    }
+    root.find('.luker-schema-primary-key-options').html(renderPrimaryKeyOptions(columns, validChecked));
+}
+
 function renderNodeTypeSchemaCard(spec, index) {
     const mode = String(spec?.compression?.mode || 'none');
     const threshold = Number(spec?.compression?.threshold || 6);
@@ -6032,7 +6094,9 @@ function renderNodeTypeSchemaCard(spec, index) {
     const keepRecentLeaves = Number(spec?.compression?.keepRecentLeaves || 0);
     const summarizeInstruction = String(spec?.compression?.summarizeInstruction || '');
     const latestOnly = Boolean(spec?.latestOnly);
-    const latestOnlyKey = String(spec?.latestOnlyKey || '');
+    const primaryKeyColumns = Array.isArray(spec?.primaryKeyColumns)
+        ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+        : [];
     const cardTitle = String(spec?.label || `Type ${index + 1}`).trim();
     const tableName = String(spec?.tableName || spec?.id || '').trim();
     const cardClass = `mode-${mode}${spec.alwaysInject ? ' is-always' : ''}${spec.forceUpdate ? ' is-force' : ''}`;
@@ -6073,9 +6137,10 @@ function renderNodeTypeSchemaCard(spec, index) {
         <label class="luker-schema-checkbox">${escapeHtml(i18n('Latest Only Upsert'))}
             <input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />
         </label>
-        <label>${escapeHtml(i18n('Latest Only Key'))}
-            <input data-field="latestOnlyKey" class="text_pole" type="text" value="${escapeHtml(latestOnlyKey)}" />
-        </label>
+        <div class="luker-schema-latestonly-keys">
+            <label>${escapeHtml(i18n('Primary Key Columns'))}</label>
+            <div class="luker-schema-primary-key-options">${renderPrimaryKeyOptions(spec.tableColumns, primaryKeyColumns)}</div>
+        </div>
     </div>
     <label>${escapeHtml(i18n('Table Columns (comma separated)'))}
         <input data-field="tableColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.tableColumns))}" />
@@ -6124,7 +6189,9 @@ function renderNodeTypeSchemaCard(spec, index) {
 function updateSchemaCardModeUi(card) {
     const root = jQuery(card);
     const enabled = Boolean(root.find('[data-field="compression.enabled"]').prop('checked'));
+    const latestOnlyEnabled = Boolean(root.find('[data-field="latestOnly"]').prop('checked'));
     root.find('.luker-schema-compression-hier').toggle(enabled);
+    root.find('.luker-schema-latestonly-keys').toggle(latestOnlyEnabled);
 }
 
 function readSchemaCard(card) {
@@ -6142,7 +6209,10 @@ function readSchemaCard(card) {
         forceUpdate: Boolean(root.find('[data-field="forceUpdate"]').prop('checked')),
         alwaysInject: Boolean(root.find('[data-field="alwaysInject"]').prop('checked')),
         latestOnly: Boolean(root.find('[data-field="latestOnly"]').prop('checked')),
-        latestOnlyKey: String(root.find('[data-field="latestOnlyKey"]').val() || '').trim(),
+        primaryKeyColumns: root.find('[data-field="primaryKeyColumns"]:checked')
+            .map((_, el) => String(jQuery(el).val() || '').trim())
+            .get()
+            .filter(Boolean),
         compression: {
             mode: Boolean(root.find('[data-field="compression.enabled"]').prop('checked')) ? 'hierarchical' : 'none',
             threshold: Math.max(2, Number(root.find('[data-field="compression.threshold"]').val()) || 6),
@@ -6169,8 +6239,13 @@ function renderNodeTypeSchemaEditor(root, schema, listSelector = '#luker_rpg_mem
     const normalized = normalizeNodeTypeSchema(schema);
     list.html(normalized.map((spec, index) => renderNodeTypeSchemaCard(spec, index)).join(''));
     list.find('.luker-schema-card').each((_, card) => updateSchemaCardModeUi(card));
-    list.off('change.lukerSchemaMode').on('change.lukerSchemaMode', '[data-field="compression.enabled"]', function () {
+    list.off('change.lukerSchemaMode input.lukerSchemaMode');
+    list.on('change.lukerSchemaMode', '[data-field="compression.enabled"],[data-field="latestOnly"]', function () {
         updateSchemaCardModeUi(jQuery(this).closest('.luker-schema-card'));
+        refreshPrimaryKeyOptionsForCard(jQuery(this).closest('.luker-schema-card'));
+    });
+    list.on('input.lukerSchemaMode change.lukerSchemaMode', '[data-field="tableColumns"]', function () {
+        refreshPrimaryKeyOptionsForCard(jQuery(this).closest('.luker-schema-card'));
     });
 }
 
@@ -6258,8 +6333,14 @@ async function openSchemaEditorPopup(context, settings, root) {
     );
 
     jQuery(document).off(namespace);
-    jQuery(document).on(`change${namespace}`, `${selector} [data-field="compression.enabled"]`, function () {
-        updateSchemaCardModeUi(jQuery(this).closest('.luker-schema-card'));
+    jQuery(document).on(`change${namespace}`, `${selector} [data-field="compression.enabled"], ${selector} [data-field="latestOnly"]`, function () {
+        const card = jQuery(this).closest('.luker-schema-card');
+        updateSchemaCardModeUi(card);
+        refreshPrimaryKeyOptionsForCard(card);
+    });
+    jQuery(document).on(`input${namespace} change${namespace}`, `${selector} [data-field="tableColumns"]`, function () {
+        const card = jQuery(this).closest('.luker-schema-card');
+        refreshPrimaryKeyOptionsForCard(card);
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-add`, function () {
         const popupRoot = getPopupRoot();
