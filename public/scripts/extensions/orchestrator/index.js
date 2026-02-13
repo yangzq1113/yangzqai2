@@ -823,6 +823,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 replaceTools: true,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                requestScope: 'extension_internal',
             };
             const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 ...requestOptions,
@@ -868,6 +869,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 replaceTools: true,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                requestScope: 'extension_internal',
             };
             const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 ...requestOptions,

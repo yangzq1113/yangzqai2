@@ -3137,7 +3137,7 @@ export async function createGenerationParameters(settings, model, type, messages
  * @returns {Promise<unknown>}
  * @throws {Error}
  */
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, tools = null, toolChoice = null, replaceTools = false, responseLength = null, llmPresetName = '', apiPresetName = '', apiSettingsOverride = null } = {}) {
+async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, tools = null, toolChoice = null, replaceTools = false, responseLength = null, llmPresetName = '', apiPresetName = '', apiSettingsOverride = null, requestScope = 'chat' } = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
@@ -3152,7 +3152,10 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
         replaceTools,
         responseLength,
     });
-    await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
+    const shouldRunChatCompletionHooks = requestScope !== 'extension_internal';
+    if (shouldRunChatCompletionHooks) {
+        await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
+    }
 
     const generate_url = '/api/backends/chat-completions/generate';
     const deltaRequest = buildPromptDeltaRequest(generate_data, model);

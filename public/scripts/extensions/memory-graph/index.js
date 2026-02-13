@@ -2067,6 +2067,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                     : null,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                requestScope: 'extension_internal',
             });
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
@@ -2111,6 +2112,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 responseLength: Number(responseLength || 320),
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                requestScope: 'extension_internal',
             });
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
