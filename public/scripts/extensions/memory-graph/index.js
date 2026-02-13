@@ -302,7 +302,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '写入上下文 Assistant 楼层数',
         'Recall query recent messages': '召回查询最近消息条数',
-        'Manual rebuild batch assistant turns': '手动重建每轮 Assistant 楼层数',
+        'Extract batch assistant turns': '每次抽取请求处理的 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
         'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
@@ -523,7 +523,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '寫入上下文 Assistant 樓層數',
         'Recall query recent messages': '召回查詢最近訊息條數',
-        'Manual rebuild batch assistant turns': '手動重建每輪 Assistant 樓層數',
+        'Extract batch assistant turns': '每次抽取請求處理的 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
         'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
@@ -3436,14 +3436,17 @@ async function runCompressionLoop(context, store, settings, options = {}) {
     return await compressSemanticTypesIfNeeded(context, store, settings, options);
 }
 
-function buildExtractBatchFromFrames(frames, frameIndex, contextTurns = 1) {
+function buildExtractBatchFromFrames(frames, batchStartIndex, batchEndIndex, contextTurns = 1) {
     const source = Array.isArray(frames) ? frames : [];
-    const currentIndex = Math.max(0, Math.min(source.length - 1, Math.floor(Number(frameIndex) || 0)));
+    const safeStart = Math.max(0, Math.min(source.length - 1, Math.floor(Number(batchStartIndex) || 0)));
+    const safeEnd = Math.max(safeStart, Math.min(source.length - 1, Math.floor(Number(batchEndIndex) || safeStart)));
     const windowSize = Math.max(1, Math.min(32, Math.floor(Number(contextTurns) || 1)));
-    const startIndex = Math.max(0, currentIndex - windowSize + 1);
+    const contextStartIndex = Math.max(0, safeStart - windowSize);
+    const rangeStart = contextStartIndex;
+    const rangeEnd = safeEnd;
     const batch = [];
 
-    for (let i = startIndex; i <= currentIndex; i++) {
+    for (let i = rangeStart; i <= rangeEnd; i++) {
         const frame = source[i];
         if (!frame || typeof frame !== 'object') {
             continue;
@@ -3475,16 +3478,19 @@ function buildExtractBatchFromFrames(frames, frameIndex, contextTurns = 1) {
     return batch;
 }
 
-async function processPendingMessageFrameWithLLM(context, store, settings, schema, frames, frameIndex, options = {}) {
-    const frame = Array.isArray(frames) ? frames[frameIndex] : null;
-    if (!frame || typeof frame !== 'object') {
+async function processPendingMessageBatchWithLLM(context, store, settings, schema, frames, batchStartIndex, batchEndIndex, options = {}) {
+    const source = Array.isArray(frames) ? frames : [];
+    const safeStart = Math.max(0, Math.min(source.length - 1, Math.floor(Number(batchStartIndex) || 0)));
+    const safeEnd = Math.max(safeStart, Math.min(source.length - 1, Math.floor(Number(batchEndIndex) || safeStart)));
+    const endFrame = source[safeEnd];
+    if (!endFrame || typeof endFrame !== 'object') {
         return false;
     }
     const extractBatch = [];
     const contextTurns = Math.max(1, Math.min(32, Number(settings?.extractContextTurns || 1)));
-    extractBatch.push(...buildExtractBatchFromFrames(frames, frameIndex, contextTurns));
-    const frameSeq = Number(frame?.seq || 0);
-    const extractionMaxSeq = Number.isFinite(frameSeq) ? Math.max(0, Math.floor(frameSeq)) : null;
+    extractBatch.push(...buildExtractBatchFromFrames(frames, safeStart, safeEnd, contextTurns));
+    const endFrameSeq = Number(endFrame?.seq || 0);
+    const extractionMaxSeq = Number.isFinite(endFrameSeq) ? Math.max(0, Math.floor(endFrameSeq)) : null;
     const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch, {
         maxSeq: extractionMaxSeq,
     });
@@ -3611,16 +3617,32 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     const schema = getEffectiveNodeTypeSchema(context, settings);
     const compressionStats = createCompressionStats();
     const frameErrorRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const extractBatchTurns = Math.max(
+        1,
+        Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+    );
     let extractedAny = false;
-    for (let i = beginSeq - 1; i < frames.length; i++) {
-        const frame = frames[i];
+    for (let i = beginSeq - 1; i < frames.length; i += extractBatchTurns) {
+        const batchStartIndex = i;
+        const batchEndIndex = Math.min(frames.length - 1, i + extractBatchTurns - 1);
+        const startFrame = frames[batchStartIndex];
+        const endFrame = frames[batchEndIndex];
         let success = false;
         let lastFrameError = null;
         for (let attempt = 0; attempt <= frameErrorRetries; attempt++) {
             try {
-                success = await processPendingMessageFrameWithLLM(context, store, settings, schema, frames, i, {
+                success = await processPendingMessageBatchWithLLM(
+                    context,
+                    store,
+                    settings,
+                    schema,
+                    frames,
+                    batchStartIndex,
+                    batchEndIndex,
+                    {
                     compressionStats,
-                });
+                    },
+                );
                 lastFrameError = null;
                 break;
             } catch (error) {
@@ -3629,7 +3651,7 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
                     throw error;
                 }
                 console.warn(
-                    `[${MODULE_NAME}] Extraction frame failed (seq=${Number(frame?.seq || 0)}). Retrying (${attempt + 1}/${frameErrorRetries})...`,
+                    `[${MODULE_NAME}] Extraction batch failed (seq=${Number(startFrame?.seq || 0)}-${Number(endFrame?.seq || 0)}). Retrying (${attempt + 1}/${frameErrorRetries})...`,
                     error,
                 );
             }
@@ -3641,7 +3663,7 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
             break;
         }
         extractedAny = true;
-        store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(frame.seq || 0));
+        store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(endFrame?.seq || 0));
     }
     store.appliedSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
     store.seqCounter = store.appliedSeqTo;
@@ -7441,7 +7463,7 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Recall query recent messages'))}
         <input id="${popupId}_recall_query_messages" class="text_pole" type="number" min="1" max="64" step="1" value="${Math.max(1, Math.min(64, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages)))}" />
     </label>
-    <label>${escapeHtml(i18n('Manual rebuild batch assistant turns'))}
+    <label>${escapeHtml(i18n('Extract batch assistant turns'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
     </label>
     <label>${escapeHtml(i18n('Extract Table Fill Prompt'))}
