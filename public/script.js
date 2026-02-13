@@ -652,6 +652,7 @@ export const system_avatar = 'img/five.png';
 export const comment_avatar = 'img/quill.png';
 export const default_user_avatar = 'img/user-default.png';
 export let CLIENT_VERSION = 'Luker:UNKNOWN:Cohee#1207'; // For Horde header
+export let EXTENSIONS_CLIENT_VERSION = 'Luker:1.15.0:Cohee#1207';
 let optionsPopper = Popper.createPopper(document.getElementById('options_button'), document.getElementById('options'), {
     placement: 'top-start',
 });
@@ -722,6 +723,7 @@ async function getClientVersion() {
         const response = await fetch('/version');
         const data = await response.json();
         CLIENT_VERSION = data.agent;
+        EXTENSIONS_CLIENT_VERSION = data.compatAgent || data.agent || EXTENSIONS_CLIENT_VERSION;
         displayVersion = `Luker ${data.pkgVersion}`;
         currentVersion = data.pkgVersion;
 

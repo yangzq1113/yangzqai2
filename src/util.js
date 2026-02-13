@@ -131,7 +131,7 @@ export function getBasicAuthHeader(auth) {
 /**
  * Returns the version of the running instance. Get the version from the package.json file and the git revision.
  * Also returns the agent string for the Horde API.
- * @returns {Promise<{agent: string, pkgVersion: string, gitRevision: string | null, gitBranch: string | null, commitDate: string | null, isLatest: boolean}>} Version info object
+ * @returns {Promise<{agent: string, compatAgent: string, stCompatVersion: string, pkgVersion: string, gitRevision: string | null, gitBranch: string | null, commitDate: string | null, isLatest: boolean}>} Version info object
  */
 export async function getVersion() {
     let pkgVersion = 'UNKNOWN';
@@ -162,8 +162,10 @@ export async function getVersion() {
         // suppress exception
     }
 
+    const stCompatVersion = String(process.env.LUKER_ST_COMPAT_VERSION || '1.15.0').trim() || '1.15.0';
     const agent = `Luker:${pkgVersion}:Cohee#1207`;
-    return { agent, pkgVersion, gitRevision, gitBranch, commitDate: commitDate?.trim() ?? null, isLatest };
+    const compatAgent = `Luker:${stCompatVersion}:Cohee#1207`;
+    return { agent, compatAgent, stCompatVersion, pkgVersion, gitRevision, gitBranch, commitDate: commitDate?.trim() ?? null, isLatest };
 }
 
 /**

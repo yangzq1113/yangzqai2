@@ -1,6 +1,6 @@
 import { DOMPurify, Popper } from '../lib.js';
 
-import { eventSource, event_types, saveSettings, saveSettingsDebounced, getRequestHeaders, animation_duration, CLIENT_VERSION } from '../script.js';
+import { eventSource, event_types, saveSettings, saveSettingsDebounced, getRequestHeaders, animation_duration, EXTENSIONS_CLIENT_VERSION } from '../script.js';
 import { showLoader } from './loader.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { renderTemplate, renderTemplateAsync } from './templates.js';
@@ -369,7 +369,7 @@ async function getManifests(names) {
  */
 async function activateExtensions() {
     extensionLoadErrors.clear();
-    const clientVersion = CLIENT_VERSION.split(':')[1];
+    const clientVersion = EXTENSIONS_CLIENT_VERSION.split(':')[1];
     const extensions = Object.entries(manifests).sort((a, b) => sortManifestsByOrder(a[1], b[1]));
     const extensionNames = extensions.map(x => x[0]);
     const promises = [];
