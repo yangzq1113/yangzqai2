@@ -30,7 +30,7 @@ function getDefaultAiSuggestSystemPrompt() {
         'Therefore, design the last stage as PARALLEL multi-agent synthesis and put final actionable guidance there.',
         'Node outputs are returned via function fields. Do NOT embed JSON blobs inside summary.',
         'For last-stage nodes, use plain structured fields (summary, directives, risks, tags, patch_last_user).',
-        'Runtime will assemble the final injected XML from those structured fields.',
+        'Runtime will assemble the final injected YAML from those structured fields.',
         'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
         'Do NOT repeat full character biography in every node prompt. Prefer compact behavior policy and decision criteria.',
         'Each node must have a distinct role, concrete output focus, and minimal overlap.',
@@ -1163,16 +1163,6 @@ function encodeCdata(value) {
     return String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
 }
 
-function buildXmlCdataTag(tagName, value, indent = '      ') {
-    const tag = String(tagName || '').trim() || 'value';
-    const body = encodeCdata(String(value ?? ''));
-    return [
-        `${indent}<${tag}>`,
-        `${indent}  <![CDATA[${body}]]>`,
-        `${indent}</${tag}>`,
-    ].join('\n');
-}
-
 function tryParseJsonObject(value) {
     if (typeof value !== 'string') {
         return null;
@@ -1253,36 +1243,53 @@ function getFinalStageSnapshot(stageOutputs) {
     };
 }
 
-function formatNodeOutputAsXml(nodeOutput, nodeId) {
+function yamlInlineScalar(value) {
+    const text = String(value ?? '');
+    if (!text) {
+        return "''";
+    }
+    if (/^[A-Za-z0-9._-]+$/.test(text)) {
+        return text;
+    }
+    return JSON.stringify(text);
+}
+
+function pushYamlBlock(lines, indent, key, value) {
+    const text = String(value ?? '').trim();
+    if (!text) {
+        return;
+    }
+    lines.push(`${indent}${key}: |-`);
+    for (const line of text.split('\n')) {
+        lines.push(`${indent}  ${line}`);
+    }
+}
+
+function pushYamlList(lines, indent, key, items) {
+    if (!Array.isArray(items)) {
+        return;
+    }
+    const normalized = items
+        .map(item => String(item ?? '').trim())
+        .filter(Boolean);
+    if (normalized.length === 0) {
+        return;
+    }
+    lines.push(`${indent}${key}:`);
+    for (const item of normalized) {
+        lines.push(`${indent}  - ${yamlInlineScalar(item)}`);
+    }
+}
+
+function formatNodeOutputAsYaml(nodeOutput, nodeId) {
     const output = normalizeNodeOutputForCapsule(nodeOutput);
     const lines = [];
-    lines.push(`    <agent id="${escapeXml(nodeId)}">`);
-
-    if (typeof output.summary === 'string' && output.summary.trim()) {
-        lines.push(buildXmlCdataTag('summary', output.summary.trim(), '      '));
-    }
-
-    const pushList = (tagName, itemTagName, items) => {
-        if (!Array.isArray(items) || items.length === 0) {
-            return;
-        }
-        lines.push(`      <${tagName}>`);
-        for (const item of items) {
-            const text = String(item || '').trim();
-            if (text) {
-                lines.push(buildXmlCdataTag(itemTagName, text, '        '));
-            }
-        }
-        lines.push(`      </${tagName}>`);
-    };
-
-    pushList('directives', 'directive', output.directives);
-    pushList('risks', 'risk', output.risks);
-    pushList('tags', 'tag', output.tags);
-
-    if (typeof output.patch_last_user === 'string' && output.patch_last_user.trim()) {
-        lines.push(buildXmlCdataTag('patch_last_user', output.patch_last_user.trim(), '      '));
-    }
+    lines.push(`      - id: ${yamlInlineScalar(nodeId)}`);
+    pushYamlBlock(lines, '        ', 'summary', output.summary);
+    pushYamlList(lines, '        ', 'directives', output.directives);
+    pushYamlList(lines, '        ', 'risks', output.risks);
+    pushYamlList(lines, '        ', 'tags', output.tags);
+    pushYamlBlock(lines, '        ', 'patch_last_user', output.patch_last_user);
 
     const extraPayload = {};
     for (const [key, value] of Object.entries(output)) {
@@ -1307,14 +1314,12 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
         }
     }
     if (Object.keys(extraPayload).length > 0) {
-        lines.push(`      <structured_notes><![CDATA[${encodeCdata(JSON.stringify(extraPayload, null, 2))}]]></structured_notes>`);
+        pushYamlBlock(lines, '        ', 'structured_notes_json', JSON.stringify(extraPayload, null, 2));
     }
     const xmlGuidance = String(output.xml_guidance || '').trim();
     if (xmlGuidance) {
-        lines.push(`      <model_xml_hint><![CDATA[${encodeCdata(xmlGuidance)}]]></model_xml_hint>`);
+        pushYamlBlock(lines, '        ', 'model_hint', xmlGuidance);
     }
-
-    lines.push('    </agent>');
     return lines.join('\n');
 }
 
@@ -1324,18 +1329,24 @@ function buildCapsuleText(capsule, settings) {
     if (customInstruction) {
         lines.push(customInstruction);
     }
-    lines.push(`<luker_orchestration phase="${escapeXml(capsule.phase)}" trigger="${escapeXml(capsule.trigger)}">`);
-    lines.push('  <guidance_policy>Use this as high-priority planning context for the next roleplay reply.</guidance_policy>');
+    lines.push('luker_orchestration:');
+    lines.push(`  phase: ${yamlInlineScalar(capsule.phase)}`);
+    lines.push(`  trigger: ${yamlInlineScalar(capsule.trigger)}`);
+    lines.push('  guidance_policy: "Use this as high-priority planning context for the next roleplay reply."');
     if (capsule.final_stage) {
-        lines.push(`  <final_stage id="${escapeXml(capsule.final_stage.id)}" mode="${escapeXml(capsule.final_stage.mode)}">`);
+        lines.push('  final_stage:');
+        lines.push(`    id: ${yamlInlineScalar(capsule.final_stage.id)}`);
+        lines.push(`    mode: ${yamlInlineScalar(capsule.final_stage.mode)}`);
+        lines.push('    agents:');
         for (const node of capsule.final_stage.nodes || []) {
-            lines.push(formatNodeOutputAsXml(node.output, node.node));
+            lines.push(formatNodeOutputAsYaml(node.output, node.node));
         }
-        lines.push('  </final_stage>');
     } else {
-        lines.push('  <final_stage id="" mode="serial" />');
+        lines.push('  final_stage:');
+        lines.push('    id: \'\'');
+        lines.push('    mode: serial');
+        lines.push('    agents: []');
     }
-    lines.push('</luker_orchestration>');
     return lines.join('\n').trim();
 }
 
@@ -2326,7 +2337,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         injectionContract: {
             injected_stage: 'only_last_stage',
             expected_last_stage_mode: 'parallel',
-            expected_guidance_format: 'runtime_assembled_xml_from_structured_fields',
+            expected_guidance_format: 'runtime_assembled_yaml_from_structured_fields',
             no_json_in_summary: true,
         },
         mandatoryQualityAxes: ORCH_AI_QUALITY_AXES,
