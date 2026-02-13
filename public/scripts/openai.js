@@ -229,14 +229,16 @@ function isLukerServerPersistenceSupported(source) {
     return !lukerServerPersistenceUnsupportedSources.has(String(source || '').trim().toLowerCase());
 }
 
-function getPromptDeltaStateKey(model) {
+function getPromptDeltaStateKey(model, source, requestScope = 'chat') {
+    const safeScope = String(requestScope || 'chat').trim() || 'chat';
+    const safeSource = String(source || oai_settings.chat_completion_source || '').trim();
     if (selected_group) {
-        return `group:${selected_group}|${oai_settings.chat_completion_source}|${model}`;
+        return `group:${selected_group}|${safeScope}|${safeSource}|${model}`;
     }
 
     const avatar = characters[this_chid]?.avatar ?? 'unknown_avatar';
     const chatName = characters[this_chid]?.chat ?? 'unknown_chat';
-    return `char:${avatar}:${chatName}|${oai_settings.chat_completion_source}|${model}`;
+    return `char:${avatar}:${chatName}|${safeScope}|${safeSource}|${model}`;
 }
 
 function getCommonMessagePrefixLength(previousMessages, currentMessages) {
@@ -287,12 +289,14 @@ function upsertPromptDeltaState(key, revision, messages) {
     }
 }
 
-function buildPromptDeltaRequest(generateData, model) {
+function buildPromptDeltaRequest(generateData, model, { source = '', requestScope = 'chat' } = {}) {
     const fullRequestBody = structuredClone(generateData);
     const promptMessages = Array.isArray(fullRequestBody.messages) ? structuredClone(fullRequestBody.messages) : null;
-    const source = fullRequestBody.chat_completion_source;
+    const effectiveSource = String(source || fullRequestBody.chat_completion_source || '').trim();
+    const effectiveScope = String(requestScope || 'chat').trim() || 'chat';
+    const canUseDelta = effectiveScope === 'chat';
 
-    if (!Array.isArray(promptMessages) || !isLukerPromptDeltaSupported(source)) {
+    if (!Array.isArray(promptMessages) || !canUseDelta || !isLukerPromptDeltaSupported(effectiveSource)) {
         return {
             requestBody: fullRequestBody,
             fallbackBody: null,
@@ -302,7 +306,7 @@ function buildPromptDeltaRequest(generateData, model) {
         };
     }
 
-    const stateKey = getPromptDeltaStateKey(model);
+    const stateKey = getPromptDeltaStateKey(model, effectiveSource, effectiveScope);
     const previousState = promptDeltaStates.get(stateKey);
 
     if (!previousState || !Array.isArray(previousState.messages) || !Number.isInteger(previousState.revision)) {
@@ -3158,7 +3162,10 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
     }
 
     const generate_url = '/api/backends/chat-completions/generate';
-    const deltaRequest = buildPromptDeltaRequest(generate_data, model);
+    const deltaRequest = buildPromptDeltaRequest(generate_data, model, {
+        source: requestSettings.chat_completion_source,
+        requestScope,
+    });
     let requestBody = deltaRequest.requestBody;
     lastOpenAIReplyPersistedByServer = false;
     lastOpenAIGenerationId = '';
@@ -3187,15 +3194,23 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
         if (!deltaRequest.usedDelta || !deltaRequest.fallbackBody) {
             return false;
         }
-        if (resp.status === 409) {
-            return true;
-        }
-        if (resp.status !== 400) {
+        if (resp.status !== 400 && resp.status !== 409) {
             return false;
         }
         try {
-            const errorText = await resp.clone().text();
-            return /prompt delta (prefix_length|suffix_length) is out of bounds\./i.test(String(errorText || ''));
+            const raw = await resp.clone().text();
+            let parsed = null;
+            try {
+                parsed = JSON.parse(raw);
+            } catch {
+                // ignore parse failure and fallback to text matching below
+            }
+            const errorType = String(parsed?.error?.type || '');
+            const errorMessage = String(parsed?.error?.message || raw || '');
+            if (errorType === 'luker_prompt_delta') {
+                return true;
+            }
+            return /prompt delta/i.test(errorMessage);
         } catch {
             return false;
         }
