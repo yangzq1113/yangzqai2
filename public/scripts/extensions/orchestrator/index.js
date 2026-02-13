@@ -8,7 +8,7 @@ const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
-const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'wi_summary'];
+const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const ORCH_AI_QUALITY_AXES = {
     user_intent: 'Analyze user intent, emotional expectation, and implicit goals.',
@@ -77,7 +77,6 @@ const defaultSettings = {
     llmNodePresetName: '',
     toolCallRetryMax: 2,
     maxRecentMessages: 14,
-    includeWorldInfoSummary: true,
     capsuleInjectPosition: extension_prompt_types.IN_CHAT,
     capsuleInjectDepth: 1,
     capsuleInjectRole: extension_prompt_roles.SYSTEM,
@@ -132,8 +131,6 @@ function registerLocaleData() {
         'Tags': '标签',
         'Patch Last User': '用户消息修订建议',
         'Structured Notes': '结构化补充',
-        'WI Summary': '世界书摘要',
-        'World Info Activated': '已激活世界书',
         'Current card:': '当前角色卡：',
         '(No character card)': '（无角色卡）',
         '(No character selected)': '（未选择角色卡）',
@@ -164,7 +161,7 @@ function registerLocaleData() {
         'Node ID': '节点 ID',
         'Preset': '预设',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}',
         'Execution': '执行方式',
         'Serial': '串行',
         'Parallel': '并行',
@@ -241,8 +238,6 @@ function registerLocaleData() {
         'Tags': '標籤',
         'Patch Last User': '使用者訊息修訂建議',
         'Structured Notes': '結構化補充',
-        'WI Summary': '世界書摘要',
-        'World Info Activated': '已啟動世界書',
         'Current card:': '目前角色卡：',
         '(No character card)': '（無角色卡）',
         '(No character selected)': '（未選擇角色卡）',
@@ -272,7 +267,7 @@ function registerLocaleData() {
         'Node ID': '節點 ID',
         'Preset': '預設',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}',
         'Execution': '執行方式',
         'Serial': '串行',
         'Parallel': '並行',
@@ -894,8 +889,7 @@ function renderTemplate(template, vars) {
         .replaceAll('{{recent_chat}}', String(vars.recent_chat || ''))
         .replaceAll('{{last_user}}', String(vars.last_user || ''))
         .replaceAll('{{previous_outputs}}', String(vars.previous_outputs || ''))
-        .replaceAll('{{distiller}}', String(vars.distiller || ''))
-        .replaceAll('{{wi_summary}}', String(vars.wi_summary || ''));
+        .replaceAll('{{distiller}}', String(vars.distiller || ''));
 }
 
 function toCompactJsonText(value, fallback = '{}') {
@@ -964,7 +958,7 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     });
 }
 
-async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint = '', abortSignal = null) {
+async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null) {
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
@@ -987,7 +981,6 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
         last_user: String(lastUser?.mes || ''),
         previous_outputs: previousOutputs,
         distiller: distillerOutput,
-        wi_summary: wiHint,
     });
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
@@ -1046,12 +1039,12 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
     throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
 }
 
-async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, wiHint = '', abortSignal = null) {
+async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null) {
     const preset = presets[nodeSpec.preset] || {};
-    return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, wiHint, abortSignal);
+    return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, abortSignal);
 }
 
-async function runOrchestration(context, payload, messages, profile, wiHint = '') {
+async function runOrchestration(context, payload, messages, profile) {
     const spec = sanitizeSpec(profile.spec);
     const stages = Array.isArray(spec?.stages) ? spec.stages : [];
     const stageOutputs = [];
@@ -1071,7 +1064,7 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 return {
                     node: nodeSpec.id,
-                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint, abortSignal),
+                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
                 };
             }));
             nodeOutputs.push(...outputs);
@@ -1080,7 +1073,7 @@ async function runOrchestration(context, payload, messages, profile, wiHint = ''
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 nodeOutputs.push({
                     node: nodeSpec.id,
-                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, wiHint, abortSignal),
+                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
                 });
             }
         }
@@ -1278,37 +1271,6 @@ function formatNodeOutputAsXml(nodeOutput, nodeId) {
     return lines.join('\n');
 }
 
-function summarizeActivatedEntries(payload) {
-    const result = [];
-    const allActivated = payload?.worldInfoResolution?.allActivatedEntries;
-    if (allActivated && typeof allActivated[Symbol.iterator] === 'function') {
-        for (const entry of allActivated) {
-            if (!entry || typeof entry !== 'object') {
-                continue;
-            }
-            const label = String(entry.comment || entry.key || entry.content || '').trim();
-            if (label) {
-                result.push(label);
-            }
-            if (result.length >= 10) {
-                break;
-            }
-        }
-    }
-
-    if (result.length === 0 && Array.isArray(payload?.worldInfoDepth) && payload.worldInfoDepth.length > 0) {
-        for (const depthEntry of payload.worldInfoDepth.slice(0, 4)) {
-            const depth = Number(depthEntry?.depth);
-            const text = Array.isArray(depthEntry?.entries) ? depthEntry.entries.join(' ') : '';
-            if (text) {
-                result.push(`depth:${Number.isFinite(depth) ? depth : 0} ${String(text).trim()}`);
-            }
-        }
-    }
-
-    return result;
-}
-
 function buildCapsuleText(capsule, settings) {
     const lines = [];
     const customInstruction = String(settings?.capsuleCustomInstruction || '').trim();
@@ -1389,10 +1351,7 @@ async function onWorldInfoFinalized(payload) {
         updateUiStatus(i18n('Orchestrator running...'));
         showRunInfoToast(i18n('Orchestrator running...'));
 
-        const wiActivated = summarizeActivatedEntries(payload);
-        const wiHint = settings.includeWorldInfoSummary ? wiActivated.slice(0, 5).join('; ') : '';
-
-        const finalRun = await runOrchestration(context, payload, messages, profile, wiHint);
+        const finalRun = await runOrchestration(context, payload, messages, profile);
 
         const capsuleText = buildCapsule(payload, finalRun.stageOutputs || [], {
             phase: 'final',
@@ -1954,7 +1913,7 @@ function renderWorkflowBoard(scope, editor) {
         ${renderPresetOptions(editor.presets, node.preset)}
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{wi_summary}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
 
         return `
