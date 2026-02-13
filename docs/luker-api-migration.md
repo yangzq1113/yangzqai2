@@ -119,11 +119,6 @@ Path uses JSON Pointer string format:
 { "op": "replace", "path": "/extensions/memory/last_capsule", "value": { "ok": true } }
 ```
 
-### Prompt-delta fields (chat-completions)
+### Chat-completions request body
 
-- `luker_prompt_state_id`
-- `luker_prompt_delta` with:
-  - `state_id`
-  - `base_revision`
-  - `prefix_length`
-  - `messages`
+For generation requests, send the full `messages` array in the request body.
