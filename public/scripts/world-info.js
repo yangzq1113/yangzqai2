@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1 } from '../script.js';
+import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, buildObjectPatchOperations } from '../script.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
@@ -1222,6 +1222,68 @@ export const wi_anchor_position = {
  * @type {StructuredCloneMap<string,object>}
  * */
 export const worldInfoCache = new StructuredCloneMap({ cloneOnGet: true, cloneOnSet: false });
+const worldInfoSnapshotCache = new Map();
+
+function isPlainObject(value) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+
+function cloneJsonValue(value) {
+    if (typeof structuredClone === 'function') {
+        try {
+            return structuredClone(value);
+        } catch {
+            // Fallback below.
+        }
+    }
+    const seen = new WeakSet();
+    const serialized = JSON.stringify(value, (_, nextValue) => {
+        if (typeof nextValue === 'function' || typeof nextValue === 'symbol') {
+            return undefined;
+        }
+        if (typeof nextValue === 'bigint') {
+            return String(nextValue);
+        }
+        if (nextValue && typeof nextValue === 'object') {
+            if (seen.has(nextValue)) {
+                return undefined;
+            }
+            seen.add(nextValue);
+        }
+        return nextValue;
+    });
+    return serialized === undefined ? undefined : JSON.parse(serialized);
+}
+
+function rememberWorldInfoSnapshot(name, data) {
+    const key = String(name || '').trim();
+    if (!key) {
+        return;
+    }
+    if (!isPlainObject(data)) {
+        worldInfoSnapshotCache.delete(key);
+        return;
+    }
+    const snapshot = cloneJsonValue(data);
+    if (isPlainObject(snapshot)) {
+        worldInfoSnapshotCache.set(key, snapshot);
+    } else {
+        worldInfoSnapshotCache.delete(key);
+    }
+}
+
+function getWorldInfoSnapshot(name) {
+    const key = String(name || '').trim();
+    if (!key) {
+        return null;
+    }
+    const snapshot = worldInfoSnapshotCache.get(key);
+    return isPlainObject(snapshot) ? cloneJsonValue(snapshot) : null;
+}
 
 /**
  * Gets the world info based on chat messages.
@@ -2363,7 +2425,11 @@ export async function loadWorldInfo(name) {
     }
 
     if (worldInfoCache.has(name)) {
-        return worldInfoCache.get(name);
+        const cached = worldInfoCache.get(name);
+        if (!worldInfoSnapshotCache.has(name)) {
+            rememberWorldInfoSnapshot(name, cached);
+        }
+        return cached;
     }
 
     const response = await fetch('/api/worldinfo/get', {
@@ -2376,6 +2442,7 @@ export async function loadWorldInfo(name) {
     if (response.ok) {
         const data = await response.json();
         worldInfoCache.set(name, data);
+        rememberWorldInfoSnapshot(name, data);
         return data;
     }
 
@@ -4471,11 +4538,36 @@ async function _save(name, data) {
     // Prevent double saving if both immediate and debounced save are called
     cancelDebounce(saveWorldDebounced);
 
-    await fetch('/api/worldinfo/edit', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ name: name, data: data }),
-    });
+    let saved = false;
+    const previousSnapshot = getWorldInfoSnapshot(name);
+    const canPatch = isPlainObject(previousSnapshot) && isPlainObject(data);
+
+    if (canPatch) {
+        const operations = buildObjectPatchOperations(previousSnapshot, data, { maxOperations: 16000 });
+        if (operations.length === 0) {
+            saved = true;
+        } else {
+            const patchResult = await fetch('/api/worldinfo/patch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ name, operations }),
+            });
+            saved = patchResult.ok;
+        }
+    }
+
+    if (!saved) {
+        const fullSaveResult = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: name, data: data }),
+        });
+        if (!fullSaveResult.ok) {
+            throw new Error(`Failed to save world info: ${fullSaveResult.status}`);
+        }
+    }
+
+    rememberWorldInfoSnapshot(name, data);
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
 }
 
@@ -4572,6 +4664,7 @@ export async function deleteWorldInfo(worldInfoName) {
     if (worldInfoCache.has(worldInfoName)) {
         worldInfoCache.delete(worldInfoName);
     }
+    worldInfoSnapshotCache.delete(worldInfoName);
 
     const existingWorldIndex = selected_world_info.findIndex((e) => e === worldInfoName);
     if (existingWorldIndex !== -1) {

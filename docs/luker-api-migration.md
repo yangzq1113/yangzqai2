@@ -23,6 +23,11 @@ In Luker, `getContext()` is the primary plugin surface. Prefer these helpers ove
 - `buildPresetAwarePromptMessages(options)`
 - `simulateWorldInfoActivation(options?)`
 
+### Lorebook/world info persistence
+
+- `loadWorldInfo(name)`
+- `saveWorldInfo(name, data, immediately?)` (Luker now prefers RFC6902 patch internally, with full-save fallback)
+
 ## 2) Generation Hook Order (Recommended)
 
 Register generation-time logic with:
@@ -48,6 +53,7 @@ Practical rule:
 - Use metadata patching for lightweight per-chat state.
 - Use chat state sidecar for larger plugin objects.
 - For app/global settings, prefer `saveSettings()` / `saveSettingsDebounced()` (Luker now routes these through settings patch internally).
+- For lorebook edits, prefer `saveWorldInfo(...)` so built-ins and extensions get patch-first persistence automatically.
 - Prefer context helpers to preserve compatibility and future internal changes.
 
 ## 4) Generation Resilience
@@ -94,6 +100,10 @@ Most plugins should not call these directly, but they are listed for low-level i
 
 - `POST /api/settings/patch`
 
+### World info
+
+- `POST /api/worldinfo/patch`
+
 ### Message patch operation format
 
 Message patch routes now use RFC6902 operations against the message array root:
@@ -105,7 +115,7 @@ Message patch routes now use RFC6902 operations against the message array root:
 
 Legacy custom message ops (`insert/update/delete/insert_many/update_many/delete_range/batch`) are no longer supported.
 
-### Object patch format (`meta/patch`, `state/patch`, `settings/patch`)
+### Object patch format (`meta/patch`, `state/patch`, `settings/patch`, `worldinfo/patch`)
 
 Object patch routes use RFC6902-style operations:
 

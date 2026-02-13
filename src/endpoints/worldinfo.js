@@ -6,6 +6,7 @@ import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
+import { applyPatch as applyJsonPatch } from '../../public/scripts/util/fast-json-patch.js';
 
 /**
  * Reads a World Info file and returns its contents
@@ -35,6 +36,25 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
 }
 
 export const router = express.Router();
+
+/**
+ * Applies RFC6902 patch operations to world info payload.
+ * @param {object} state Current world info object.
+ * @param {object[]} operations Patch operations.
+ * @returns {{applied:number,state:object}}
+ */
+function applyWorldInfoPatch(state, operations) {
+    const root = _.isObjectLike(state) && !Array.isArray(state) ? state : { entries: {} };
+    const patchResult = applyJsonPatch(root, operations, true, false);
+    const patched = patchResult.newDocument;
+    if (!_.isObjectLike(patched) || Array.isArray(patched)) {
+        throw new Error('World info patch must produce an object root.');
+    }
+    if (!('entries' in patched) || !_.isObjectLike(patched.entries) || Array.isArray(patched.entries)) {
+        throw new Error('World info patch must keep a valid entries object.');
+    }
+    return { applied: operations.length, state: patched };
+}
 
 router.post('/list', async (request, response) => {
     try {
@@ -154,4 +174,39 @@ router.post('/edit', (request, response) => {
     writeFileAtomicSync(pathToFile, JSON.stringify(request.body.data, null, 4));
 
     return response.send({ ok: true });
+});
+
+router.post('/patch', (request, response) => {
+    try {
+        const worldInfoName = String(request.body?.name || '').trim();
+        if (!worldInfoName) {
+            return response.status(400).send({ error: 'World file must have a name' });
+        }
+
+        const operations = Array.isArray(request.body?.operations)
+            ? request.body.operations
+            : (_.isObjectLike(request.body?.operations)
+                ? [request.body.operations]
+                : (_.isObjectLike(request.body?.operation) ? [request.body.operation] : []));
+
+        if (operations.length === 0) {
+            return response.status(400).send({ error: 'No world info patch operations found. Expected body.operations or body.operation.' });
+        }
+
+        const filename = sanitize(`${worldInfoName}.json`);
+        const pathToFile = path.join(request.user.directories.worlds, filename);
+        let current = { entries: {} };
+        if (fs.existsSync(pathToFile)) {
+            const raw = fs.readFileSync(pathToFile, 'utf8');
+            const parsed = JSON.parse(raw);
+            current = _.isObjectLike(parsed) && !Array.isArray(parsed) ? parsed : { entries: {} };
+        }
+
+        const { applied, state } = applyWorldInfoPatch(current, operations);
+        writeFileAtomicSync(pathToFile, JSON.stringify(state, null, 4), 'utf8');
+        return response.send({ ok: true, applied });
+    } catch (error) {
+        console.error('Error patching world info:', error);
+        return response.status(500).send({ error: 'Failed to patch world info.' });
+    }
 });
