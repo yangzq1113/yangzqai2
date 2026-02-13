@@ -113,153 +113,6 @@ const cachingAtDepth = (() => {
  * @type {string[]}
  */
 const openRouterCacheableModels = [];
-const lukerPromptStates = new Map();
-const LUKER_PROMPT_STATE_MAX_ITEMS = 256;
-const LUKER_PROMPT_STATE_TTL_MS = 30 * 60 * 1000;
-
-function getPromptStateStorageKey(handle, stateId) {
-    const safeHandle = String(handle || '').trim();
-    const safeStateId = String(stateId || '').trim();
-    if (!safeHandle || !safeStateId) {
-        return '';
-    }
-    return `${safeHandle}\u0000${safeStateId}`;
-}
-
-function pruneLukerPromptStates() {
-    const now = Date.now();
-    for (const [key, value] of lukerPromptStates.entries()) {
-        if (!value || !Number.isFinite(value.touched) || (now - value.touched) > LUKER_PROMPT_STATE_TTL_MS) {
-            lukerPromptStates.delete(key);
-        }
-    }
-
-    while (lukerPromptStates.size > LUKER_PROMPT_STATE_MAX_ITEMS) {
-        const oldestKey = lukerPromptStates.keys().next().value;
-        lukerPromptStates.delete(oldestKey);
-    }
-}
-
-function commitLukerPromptState(handle, stateId, messages) {
-    const storageKey = getPromptStateStorageKey(handle, stateId);
-    if (!storageKey || !Array.isArray(messages)) {
-        return null;
-    }
-
-    pruneLukerPromptStates();
-    const previous = lukerPromptStates.get(storageKey);
-    const revision = previous ? Number(previous.revision || 0) + 1 : 1;
-    lukerPromptStates.set(storageKey, {
-        revision,
-        messages: structuredClone(messages),
-        touched: Date.now(),
-    });
-    pruneLukerPromptStates();
-    return revision;
-}
-
-function resolveLukerPromptMessages(request, requestBody) {
-    const handle = String(request?.user?.profile?.handle || '').trim();
-    const explicitStateId = typeof requestBody?.luker_prompt_state_id === 'string'
-        ? requestBody.luker_prompt_state_id.trim()
-        : '';
-    const delta = requestBody?.luker_prompt_delta;
-
-    if (Array.isArray(requestBody?.messages)) {
-        const stateId = explicitStateId || (typeof delta?.state_id === 'string' ? delta.state_id.trim() : '');
-        return {
-            ok: true,
-            statusCode: 200,
-            stateId: stateId || null,
-            messagesSnapshot: stateId ? structuredClone(requestBody.messages) : null,
-            message: '',
-        };
-    }
-
-    if (!delta || typeof delta !== 'object') {
-        return {
-            ok: true,
-            statusCode: 200,
-            stateId: null,
-            messagesSnapshot: null,
-            message: '',
-        };
-    }
-
-    const stateId = typeof delta.state_id === 'string' ? delta.state_id.trim() : '';
-    const storageKey = getPromptStateStorageKey(handle, stateId);
-    const baseRevision = Number(delta.base_revision);
-    const prefixLength = Number(delta.prefix_length);
-    const suffixLength = Number.isInteger(Number(delta.suffix_length)) ? Number(delta.suffix_length) : 0;
-    const middleMessages = Array.isArray(delta.messages) ? delta.messages : null;
-
-    if (!storageKey || !Number.isInteger(baseRevision) || !Number.isInteger(prefixLength) || !Number.isInteger(suffixLength) || !Array.isArray(middleMessages)) {
-        return {
-            ok: false,
-            statusCode: 400,
-            stateId: null,
-            messagesSnapshot: null,
-            message: 'Invalid luker_prompt_delta payload.',
-        };
-    }
-
-    pruneLukerPromptStates();
-    const state = lukerPromptStates.get(storageKey);
-    if (!state || !Array.isArray(state.messages)) {
-        return {
-            ok: false,
-            statusCode: 409,
-            stateId,
-            messagesSnapshot: null,
-            message: 'Prompt delta state not found on the server.',
-        };
-    }
-
-    if (Number(state.revision) !== baseRevision) {
-        return {
-            ok: false,
-            statusCode: 409,
-            stateId,
-            messagesSnapshot: null,
-            message: 'Prompt delta revision mismatch.',
-        };
-    }
-
-    if (prefixLength < 0 || prefixLength > state.messages.length) {
-        return {
-            ok: false,
-            statusCode: 400,
-            stateId,
-            messagesSnapshot: null,
-            message: 'Prompt delta prefix_length is out of bounds.',
-        };
-    }
-
-    if (suffixLength < 0 || (prefixLength + suffixLength) > state.messages.length) {
-        return {
-            ok: false,
-            statusCode: 400,
-            stateId,
-            messagesSnapshot: null,
-            message: 'Prompt delta suffix_length is out of bounds.',
-        };
-    }
-
-    const reconstructedMessages = structuredClone([
-        ...state.messages.slice(0, prefixLength),
-        ...middleMessages,
-        ...(suffixLength > 0 ? state.messages.slice(state.messages.length - suffixLength) : []),
-    ]);
-    requestBody.messages = reconstructedMessages;
-
-    return {
-        ok: true,
-        statusCode: 200,
-        stateId,
-        messagesSnapshot: structuredClone(reconstructedMessages),
-        message: '',
-    };
-}
 
 /**
  * Checks if an OpenRouter model supports prompt cache writing.
@@ -2270,19 +2123,6 @@ router.post('/bias', async function (request, response) {
 router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
-
-        const lukerPromptResolution = resolveLukerPromptMessages(request, request.body);
-        if (!lukerPromptResolution.ok) {
-            return response.status(lukerPromptResolution.statusCode).send({
-                error: {
-                    message: lukerPromptResolution.message,
-                    type: 'luker_prompt_delta',
-                },
-            });
-        }
-
-        const lukerPromptStateId = lukerPromptResolution.stateId;
-        let lukerPromptMessagesSnapshot = lukerPromptResolution.messagesSnapshot;
         const requestedLukerGenerationOptions = request.body.luker_generation && typeof request.body.luker_generation === 'object'
             ? request.body.luker_generation
             : null;
@@ -2635,10 +2475,6 @@ router.post('/generate', async function (request, response) {
             ...bodyParams,
         };
 
-        if (lukerPromptStateId && Array.isArray(requestBody.messages)) {
-            lukerPromptMessagesSnapshot = structuredClone(requestBody.messages);
-        }
-
         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
             excludeKeysByYaml(requestBody, request.body.custom_exclude_body);
         }
@@ -2658,13 +2494,6 @@ router.post('/generate', async function (request, response) {
         console.debug('Chat Completion request:', requestBody);
 
         const fetchResponse = await fetch(endpointUrl, config);
-
-        if (fetchResponse.ok) {
-            const promptRevision = commitLukerPromptState(request.user?.profile?.handle, lukerPromptStateId, lukerPromptMessagesSnapshot);
-            if (Number.isInteger(promptRevision) && promptRevision > 0) {
-                response.setHeader('x-luker-prompt-revision', String(promptRevision));
-            }
-        }
 
         if (lukerGenerationJob) {
             response.setHeader('x-luker-generation-id', lukerGenerationJob.id);

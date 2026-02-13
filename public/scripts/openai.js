@@ -174,8 +174,6 @@ const textCompletionModels = [
 
 let biasCache = undefined;
 export let model_list = [];
-const promptDeltaStates = new Map();
-const MAX_PROMPT_DELTA_STATES = 128;
 let lastOpenAIReplyPersistedByServer = false;
 let lastOpenAIGenerationId = '';
 
@@ -206,10 +204,6 @@ export const chat_completion_sources = {
     SILICONFLOW: 'siliconflow',
 };
 
-function isLukerPromptDeltaSupported(source) {
-    return typeof source === 'string' && source.trim().length > 0;
-}
-
 const lukerServerPersistenceUnsupportedSources = new Set([
     chat_completion_sources.CLAUDE,
     chat_completion_sources.AI21,
@@ -227,134 +221,6 @@ const lukerServerPersistenceUnsupportedSources = new Set([
 
 function isLukerServerPersistenceSupported(source) {
     return !lukerServerPersistenceUnsupportedSources.has(String(source || '').trim().toLowerCase());
-}
-
-function getPromptDeltaStateKey(model, source, requestScope = 'chat') {
-    const safeScope = String(requestScope || 'chat').trim() || 'chat';
-    const safeSource = String(source || oai_settings.chat_completion_source || '').trim();
-    if (selected_group) {
-        return `group:${selected_group}|${safeScope}|${safeSource}|${model}`;
-    }
-
-    const avatar = characters[this_chid]?.avatar ?? 'unknown_avatar';
-    const chatName = characters[this_chid]?.chat ?? 'unknown_chat';
-    return `char:${avatar}:${chatName}|${safeScope}|${safeSource}|${model}`;
-}
-
-function getCommonMessagePrefixLength(previousMessages, currentMessages) {
-    const minLength = Math.min(previousMessages.length, currentMessages.length);
-    let index = 0;
-
-    while (index < minLength) {
-        if (JSON.stringify(previousMessages[index]) !== JSON.stringify(currentMessages[index])) {
-            break;
-        }
-        index++;
-    }
-
-    return index;
-}
-
-function getCommonMessageSuffixLength(previousMessages, currentMessages, prefixLength = 0) {
-    const previousLength = previousMessages.length;
-    const currentLength = currentMessages.length;
-    const maxSuffixLength = Math.min(previousLength, currentLength) - prefixLength;
-    let suffixLength = 0;
-
-    while (suffixLength < maxSuffixLength) {
-        const previousIndex = previousLength - 1 - suffixLength;
-        const currentIndex = currentLength - 1 - suffixLength;
-        if (JSON.stringify(previousMessages[previousIndex]) !== JSON.stringify(currentMessages[currentIndex])) {
-            break;
-        }
-        suffixLength++;
-    }
-
-    return suffixLength;
-}
-
-function upsertPromptDeltaState(key, revision, messages) {
-    if (!key || !Array.isArray(messages) || !Number.isInteger(revision) || revision <= 0) {
-        return;
-    }
-
-    if (promptDeltaStates.has(key)) {
-        promptDeltaStates.delete(key);
-    }
-    promptDeltaStates.set(key, { revision, messages: structuredClone(messages), touched: Date.now() });
-
-    while (promptDeltaStates.size > MAX_PROMPT_DELTA_STATES) {
-        const oldestKey = promptDeltaStates.keys().next().value;
-        promptDeltaStates.delete(oldestKey);
-    }
-}
-
-function buildPromptDeltaRequest(generateData, model, { source = '', requestScope = 'chat' } = {}) {
-    const fullRequestBody = structuredClone(generateData);
-    const promptMessages = Array.isArray(fullRequestBody.messages) ? structuredClone(fullRequestBody.messages) : null;
-    const effectiveSource = String(source || fullRequestBody.chat_completion_source || '').trim();
-    const effectiveScope = String(requestScope || 'chat').trim() || 'chat';
-    const canUseDelta = effectiveScope === 'chat';
-
-    if (!Array.isArray(promptMessages) || !canUseDelta || !isLukerPromptDeltaSupported(effectiveSource)) {
-        return {
-            requestBody: fullRequestBody,
-            fallbackBody: null,
-            usedDelta: false,
-            stateKey: null,
-            promptMessages: null,
-        };
-    }
-
-    const stateKey = getPromptDeltaStateKey(model, effectiveSource, effectiveScope);
-    const previousState = promptDeltaStates.get(stateKey);
-
-    if (!previousState || !Array.isArray(previousState.messages) || !Number.isInteger(previousState.revision)) {
-        fullRequestBody.luker_prompt_state_id = stateKey;
-        return {
-            requestBody: fullRequestBody,
-            fallbackBody: null,
-            usedDelta: false,
-            stateKey,
-            promptMessages,
-        };
-    }
-
-    const prefixLength = getCommonMessagePrefixLength(previousState.messages, promptMessages);
-    const suffixLength = getCommonMessageSuffixLength(previousState.messages, promptMessages, prefixLength);
-    const unchangedMessages = prefixLength + suffixLength;
-    const shouldSendDelta = unchangedMessages >= 2
-        && prefixLength <= previousState.messages.length
-        && suffixLength <= previousState.messages.length;
-
-    if (!shouldSendDelta) {
-        fullRequestBody.luker_prompt_state_id = stateKey;
-        return {
-            requestBody: fullRequestBody,
-            fallbackBody: null,
-            usedDelta: false,
-            stateKey,
-            promptMessages,
-        };
-    }
-
-    const deltaBody = structuredClone(fullRequestBody);
-    deltaBody.luker_prompt_delta = {
-        state_id: stateKey,
-        base_revision: previousState.revision,
-        prefix_length: prefixLength,
-        suffix_length: suffixLength,
-        messages: promptMessages.slice(prefixLength, promptMessages.length - suffixLength),
-    };
-    delete deltaBody.messages;
-
-    return {
-        requestBody: deltaBody,
-        fallbackBody: fullRequestBody,
-        usedDelta: true,
-        stateKey,
-        promptMessages,
-    };
 }
 
 function buildLukerPersistTarget() {
@@ -3162,11 +3028,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
     }
 
     const generate_url = '/api/backends/chat-completions/generate';
-    const deltaRequest = buildPromptDeltaRequest(generate_data, model, {
-        source: requestSettings.chat_completion_source,
-        requestScope,
-    });
-    let requestBody = deltaRequest.requestBody;
+    let requestBody = structuredClone(generate_data);
     lastOpenAIReplyPersistedByServer = false;
     lastOpenAIGenerationId = '';
     if (shouldUseLukerServerPersistence(type, requestSettings.chat_completion_source)) {
@@ -3183,72 +3045,20 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
             lastOpenAIGenerationId = generationId;
         }
     }
-    let response = await fetch(generate_url, {
+    const response = await fetch(generate_url, {
         method: 'POST',
         body: JSON.stringify(requestBody),
         headers: getRequestHeaders(),
         signal: signal,
     });
 
-    const shouldTryPromptDeltaFallback = async (resp) => {
-        if (!deltaRequest.usedDelta || !deltaRequest.fallbackBody) {
-            return false;
-        }
-        if (resp.status !== 400 && resp.status !== 409) {
-            return false;
-        }
-        try {
-            const raw = await resp.clone().text();
-            let parsed = null;
-            try {
-                parsed = JSON.parse(raw);
-            } catch {
-                // ignore parse failure and fallback to text matching below
-            }
-            const errorType = String(parsed?.error?.type || '');
-            const errorMessage = String(parsed?.error?.message || raw || '');
-            if (errorType === 'luker_prompt_delta') {
-                return true;
-            }
-            return /prompt delta/i.test(errorMessage);
-        } catch {
-            return false;
-        }
-    };
-
-    if (await shouldTryPromptDeltaFallback(response)) {
-        let fallbackBody = deltaRequest.fallbackBody;
-        if (requestBody?.luker_generation) {
-            fallbackBody = {
-                ...fallbackBody,
-                luker_generation: requestBody.luker_generation,
-            };
-        }
-        response = await fetch(generate_url, {
-            method: 'POST',
-            body: JSON.stringify(fallbackBody),
-            headers: getRequestHeaders(),
-            signal: signal,
-        });
-        requestBody = fallbackBody;
-    }
-
     if (!response.ok) {
         tryParseStreamingError(response, await response.text());
         throw new Error(`Got response status ${response.status}`);
     }
-
-    const promptRevisionHeader = response.headers.get('x-luker-prompt-revision');
-    const promptRevision = Number(promptRevisionHeader);
     const generationIdHeader = response.headers.get('x-luker-generation-id');
     if (generationIdHeader) {
         lastOpenAIGenerationId = generationIdHeader;
-    }
-    if (deltaRequest.stateKey && Array.isArray(deltaRequest.promptMessages) && Number.isInteger(promptRevision) && promptRevision > 0) {
-        upsertPromptDeltaState(deltaRequest.stateKey, promptRevision, deltaRequest.promptMessages);
-    } else if (deltaRequest.stateKey) {
-        // Only trust server-authoritative prompt revision.
-        promptDeltaStates.delete(deltaRequest.stateKey);
     }
 
     if (stream) {
