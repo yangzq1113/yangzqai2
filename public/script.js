@@ -8075,6 +8075,9 @@ function attachObjectPatchTests(previousState, operations) {
         const path = typeof operation.path === 'string' ? operation.path : null;
         if (opName === 'test') {
             guardedOperations.push(operation);
+            if (typeof path === 'string') {
+                lastTestedPath = path;
+            }
             continue;
         }
 
@@ -8140,6 +8143,10 @@ function attachChatMessagePatchTests(previousMessages, operations) {
         const opName = String(operation.op || '').trim().toLowerCase();
         if (opName === 'test') {
             guardedOperations.push(operation);
+            const testedIndex = extractTopMessageIndexFromPath(operation.path);
+            if (Number.isInteger(testedIndex)) {
+                lastTestedIndex = testedIndex;
+            }
             continue;
         }
 
@@ -8297,6 +8304,9 @@ export async function patchChatState(namespace, operations, options = {}) {
             return false;
         }
 
+        const currentState = await getChatState(stateNamespace, { target });
+        const guardedOperations = attachObjectPatchTests(currentState || {}, operations);
+
         const response = await fetch('/api/chats/state/patch', {
             method: 'POST',
             cache: 'no-cache',
@@ -8304,7 +8314,7 @@ export async function patchChatState(namespace, operations, options = {}) {
             body: JSON.stringify({
                 ...target,
                 namespace: stateNamespace,
-                operations,
+                operations: guardedOperations,
             }),
         });
 
