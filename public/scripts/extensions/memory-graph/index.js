@@ -4773,68 +4773,84 @@ async function runLLMDrivenRecall(context, store, payload) {
     const alwaysInjectIds = alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean);
     const alwaysInjectSet = new Set(alwaysInjectIds);
 
-    const route = await chooseRecallRoute(context, settings, {
-        store,
-        query,
-        queryBundle,
-        candidates: rootCandidates,
-        alwaysInjectIds,
-        abortSignal,
-    });
-    trace.push({
-        step: 'plan_pass_1',
-        route,
-        stage1_candidates: rootCandidates.map(node => node.id),
-    });
-    if (Array.isArray(route?.referenced_always_inject_ids) && route.referenced_always_inject_ids.length > 0) {
-        trace.push({
-            step: 'plan_referenced_always_inject',
-            node_ids: route.referenced_always_inject_ids,
-        });
-    }
-
     let selectedIds = [];
-    if (route.action === 'finalize' && Array.isArray(route.selected_node_ids) && route.selected_node_ids.length > 0) {
-        selectedIds = route.selected_node_ids;
-    }
+    let currentCandidates = rootCandidates.slice();
+    let latestRoute = null;
+    let earlyFinalized = false;
+    const drillBudget = Math.max(0, maxIterations - 1);
 
-    let expandedCandidates = rootCandidates.slice();
-    if (selectedIds.length === 0 && route.action === 'drill' && maxIterations >= 2) {
-        expandedCandidates = expandRouteCandidates(store, route, rootCandidates);
+    for (let pass = 1; pass <= drillBudget; pass++) {
+        const route = await chooseRecallRoute(context, settings, {
+            store,
+            query,
+            queryBundle,
+            candidates: currentCandidates,
+            alwaysInjectIds,
+            abortSignal,
+        });
+        latestRoute = route;
         trace.push({
-            step: 'expand_from_plan',
+            step: `plan_pass_${pass}`,
+            route,
+            stage1_candidates: currentCandidates.map(node => node.id),
+        });
+        if (Array.isArray(route?.referenced_always_inject_ids) && route.referenced_always_inject_ids.length > 0) {
+            trace.push({
+                step: `plan_referenced_always_inject_${pass}`,
+                node_ids: route.referenced_always_inject_ids,
+            });
+        }
+
+        if (route.action === 'finalize') {
+            selectedIds = Array.isArray(route.selected_node_ids) ? route.selected_node_ids : [];
+            trace.push({
+                step: `plan_early_finalize_${pass}`,
+                selected_ids: selectedIds,
+                reason: route.reason || '',
+            });
+            earlyFinalized = true;
+            break;
+        }
+
+        if (route.action !== 'drill') {
+            trace.push({
+                step: `plan_stop_non_drill_${pass}`,
+                action: String(route.action || ''),
+            });
+            break;
+        }
+
+        const expandedCandidates = expandRouteCandidates(store, route, currentCandidates);
+        trace.push({
+            step: `expand_from_plan_${pass}`,
             expanded_candidates: expandedCandidates.map(node => node.id),
         });
-        const selectedRaw = await chooseFocusNodes(context, settings, {
-            store,
-            query,
-            queryBundle,
-            route,
-            candidates: expandedCandidates,
-            alwaysInjectIds,
-            abortSignal,
-        });
-        selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
-        trace.push({
-            step: 'finalize_pass_2',
-            selected_ids: selectedIds,
-            reason: selectedRaw.reason || '',
-        });
+
+        if (expandedCandidates.length <= currentCandidates.length) {
+            currentCandidates = expandedCandidates;
+            trace.push({
+                step: `drill_stagnated_${pass}`,
+                candidate_count: currentCandidates.length,
+            });
+            break;
+        }
+
+        currentCandidates = expandedCandidates;
     }
 
-    if (selectedIds.length === 0) {
+    if (!earlyFinalized) {
         const selectedRaw = await chooseFocusNodes(context, settings, {
             store,
             query,
             queryBundle,
-            route,
-            candidates: expandedCandidates,
+            route: latestRoute || {},
+            candidates: currentCandidates,
             alwaysInjectIds,
             abortSignal,
         });
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
         trace.push({
-            step: 'finalize_pass_direct',
+            step: 'finalize_pass',
             selected_ids: selectedIds,
             reason: selectedRaw.reason || '',
         });
