@@ -95,7 +95,15 @@ const app = express();
 app.use(helmet({
     contentSecurityPolicy: false,
 }));
-app.use(compression());
+app.use(compression({
+    filter: (req, res) => {
+        const contentType = String(res.getHeader('Content-Type') || '');
+        if (contentType.includes('text/event-stream')) {
+            return false;
+        }
+        return compression.filter(req, res);
+    },
+}));
 app.use(responseTime());
 
 app.use(bodyParser.json({ limit: '500mb' }));

@@ -372,6 +372,13 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
     if (contentType) {
         response.setHeader('content-type', contentType);
     }
+    // Ensure SSE/proxy path does not buffer stream chunks.
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    response.setHeader('Connection', 'keep-alive');
+    response.setHeader('X-Accel-Buffering', 'no');
+    if (typeof response.flushHeaders === 'function') {
+        response.flushHeaders();
+    }
 
     let clientClosed = false;
     response.socket?.on('close', () => {
@@ -393,6 +400,9 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
             const chunkText = Buffer.from(chunk).toString('utf8');
             if (!clientClosed && !response.writableEnded) {
                 response.write(chunkText);
+                if (typeof response.flush === 'function') {
+                    response.flush();
+                }
             }
 
             buffer += chunkText.replace(/\r\n/g, '\n');
@@ -435,6 +445,9 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
     appendGenerationEvent(job, completionEvent);
     if (!clientClosed && !response.writableEnded) {
         response.write(`data: ${completionEvent}\n\n`);
+        if (typeof response.flush === 'function') {
+            response.flush();
+        }
         response.end();
     }
 }
