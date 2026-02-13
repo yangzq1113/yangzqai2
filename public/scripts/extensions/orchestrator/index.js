@@ -2140,6 +2140,7 @@ function showRunInfoToast(message, { stopLabel = '', onStop = null } = {}) {
                 event.preventDefault();
                 event.stopPropagation();
                 button.prop('disabled', true);
+                clearRunInfoToast();
                 onStop();
             });
             toastBody.append(button);
@@ -2179,6 +2180,7 @@ function showAiBuildToast(message, { stopLabel = '', onStop = null } = {}) {
                 event.preventDefault();
                 event.stopPropagation();
                 button.prop('disabled', true);
+                clearAiBuildToast();
                 onStop();
             });
             toastBody.append(button);
