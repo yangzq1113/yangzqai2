@@ -3502,7 +3502,12 @@ function setCommentPlaceholder(keys, commentInput) {
 async function showActivationTracePopup(worldName, uid) {
     const scopeKey = getActivationTraceScopeKey();
     const trace = getEntryActivationTrace(scopeKey, worldName, uid);
-    if (!trace) {
+    const hasTrace = trace && (
+        (Array.isArray(trace.recentScans) && trace.recentScans.length > 0) ||
+        (Array.isArray(trace.recentDryRunScans) && trace.recentDryRunScans.length > 0)
+    );
+
+    if (!hasTrace) {
         await callGenericPopup(
             `<div style="max-width:900px;"><h4>${escapeHtmlText(t`No activation trace yet`)}</h4><p>${escapeHtmlText(t`Generate at least one reply in this chat, then check again.`)}</p></div>`,
             POPUP_TYPE.TEXT,
@@ -3513,10 +3518,17 @@ async function showActivationTracePopup(worldName, uid) {
     }
 
     const recentScans = Array.isArray(trace.recentScans) ? trace.recentScans : [];
+    const recentDryRunScans = Array.isArray(trace.recentDryRunScans) ? trace.recentDryRunScans : [];
+    const hasRealScans = recentScans.length > 0;
+    const displayScans = hasRealScans ? recentScans : recentDryRunScans;
+    const usingDryRunFallback = !hasRealScans && displayScans.length > 0;
     const lastActivation = trace.lastActivation || null;
-    const scanCards = recentScans.map((scan, scanIndex) => {
+    const fallbackDryActivation = trace.lastDryRunActivation || null;
+    const effectiveActivation = lastActivation || (usingDryRunFallback ? fallbackDryActivation : null);
+    const scanCards = displayScans.map((scan, scanIndex) => {
         const attempts = Array.isArray(scan?.attempts) ? scan.attempts : [];
         const activated = Boolean(scan?.activated);
+        const isDryRunScan = Boolean(scan?.dryRun);
         const attemptHtml = attempts.length > 0
             ? attempts.map((attempt, attemptIndex) => {
                 const details = attempt?.details && typeof attempt.details === 'object' ? attempt.details : {};
@@ -3536,9 +3548,10 @@ async function showActivationTracePopup(worldName, uid) {
         return `
 <div style="border:1px solid var(--SmartThemeBorderColor);border-radius:10px;padding:10px;margin-top:10px;">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
-        <div style="font-weight:700;">Scan #${scanIndex + 1}</div>
+        <div style="font-weight:700;">${escapeHtmlText(t`Scan`)} #${scanIndex + 1}</div>
         <div style="opacity:.78;">${escapeHtmlText(formatTraceTime(scan?.finishedAt || scan?.startedAt))}</div>
     </div>
+    ${isDryRunScan ? `<div style="margin-top:4px;opacity:.8;">${escapeHtmlText(t`Simulated activation (dry run)`)}.</div>` : ''}
     <div style="margin-top:4px;">
         <span style="font-weight:600;color:${activated ? 'var(--SmartThemeQuoteColor)' : 'var(--SmartThemeBodyColor)'};">
             ${activated ? escapeHtmlText(t`Activated`) : escapeHtmlText(t`Not activated`)}
@@ -3554,11 +3567,12 @@ async function showActivationTracePopup(worldName, uid) {
     <h4>${escapeHtmlText(t`Lorebook Activation Trace`)}</h4>
     <div style="opacity:0.8;">${escapeHtmlText(t`Scope`)}: ${escapeHtmlText(scopeKey)}</div>
     <div style="opacity:0.8;">${escapeHtmlText(t`Entry`)}: ${escapeHtmlText(`${trace.world}.${trace.uid}`)}</div>
-    <div style="opacity:0.8;">${escapeHtmlText(t`Last activated at`)}: ${escapeHtmlText(formatTraceTime(trace.lastActivatedAt))}</div>
-    <div style="margin-top:6px;font-weight:600;">${escapeHtmlText(t`Last activation reason`)}: ${escapeHtmlText(lastActivation ? explainTraceReason(lastActivation?.details?.reason, lastActivation?.details || {}) : t`N/A`)}</div>
-    ${lastActivation ? `<div style="margin-top:6px;">${renderTraceDetailLines(lastActivation.details || {})}</div>` : ''}
+    <div style="opacity:0.8;">${escapeHtmlText(t`Last activated at`)}: ${escapeHtmlText(formatTraceTime(trace.lastActivatedAt || (usingDryRunFallback ? trace.lastDryRunScanAt : null)))}</div>
+    <div style="margin-top:6px;font-weight:600;">${escapeHtmlText(t`Last activation reason`)}: ${escapeHtmlText(effectiveActivation ? explainTraceReason(effectiveActivation?.details?.reason, effectiveActivation?.details || {}) : t`N/A`)}</div>
+    ${effectiveActivation ? `<div style="margin-top:6px;">${renderTraceDetailLines(effectiveActivation.details || {})}</div>` : ''}
+    ${usingDryRunFallback ? `<div style="margin-top:8px;opacity:.8;">${escapeHtmlText(t`No real generation trace yet. Showing simulated activation from dry run.`)}</div>` : ''}
     <hr style="margin:12px 0;">
-    <div style="font-weight:700;">${escapeHtmlText(t`Recent scans`)}</div>
+    <div style="font-weight:700;">${escapeHtmlText(hasRealScans ? t`Recent scans` : t`Recent simulated scans`)}</div>
     <div style="max-height:68vh;overflow:auto;padding-right:4px;">
         ${scanCards || `<div style="opacity:.75;">${escapeHtmlText(t`No scan records yet.`)}</div>`}
     </div>
@@ -5471,7 +5485,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         token_budget_overflowed = args.budget.overflowed;
     }
 
-    if (!isDryRun && scanTraceByEntry.size > 0) {
+    if (scanTraceByEntry.size > 0) {
         const bucket = getOrCreateActivationTraceBucket(activationTraceScopeKey);
         const scanFinishedAt = Date.now();
         for (const [entryKey, traceState] of scanTraceByEntry.entries()) {
@@ -5481,25 +5495,35 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 lastActivatedAt: null,
                 lastActivation: null,
                 recentScans: [],
+                lastDryRunScanAt: null,
+                lastDryRunActivation: null,
+                recentDryRunScans: [],
             };
 
             const scanRecord = {
                 startedAt: scanStartedAt,
                 finishedAt: scanFinishedAt,
                 trigger: String(globalScanData.trigger || 'normal'),
+                dryRun: Boolean(isDryRun),
                 activated: Boolean(traceState.activated),
                 attempts: Array.isArray(traceState.attempts) ? traceState.attempts : [],
                 lastActivation: traceState.lastActivation || null,
             };
 
-            const previousScans = Array.isArray(previous.recentScans) ? previous.recentScans : [];
             previous.world = String(traceState.world || previous.world || '');
             previous.uid = Number(traceState.uid);
-            previous.recentScans = [scanRecord, ...previousScans].slice(0, WI_ACTIVATION_TRACE_SCAN_LIMIT);
-
-            if (traceState.lastActivation) {
-                previous.lastActivation = traceState.lastActivation;
-                previous.lastActivatedAt = scanFinishedAt;
+            if (isDryRun) {
+                const previousDryScans = Array.isArray(previous.recentDryRunScans) ? previous.recentDryRunScans : [];
+                previous.recentDryRunScans = [scanRecord, ...previousDryScans].slice(0, WI_ACTIVATION_TRACE_SCAN_LIMIT);
+                previous.lastDryRunScanAt = scanFinishedAt;
+                previous.lastDryRunActivation = traceState.lastActivation || null;
+            } else {
+                const previousScans = Array.isArray(previous.recentScans) ? previous.recentScans : [];
+                previous.recentScans = [scanRecord, ...previousScans].slice(0, WI_ACTIVATION_TRACE_SCAN_LIMIT);
+                if (traceState.lastActivation) {
+                    previous.lastActivation = traceState.lastActivation;
+                    previous.lastActivatedAt = scanFinishedAt;
+                }
             }
 
             bucket.set(entryKey, previous);
