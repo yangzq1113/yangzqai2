@@ -104,17 +104,19 @@ Most plugins should not call these directly, but they are listed for low-level i
 - `delete_range`: `{ "op": "delete_range", "index": number, "count": number }`
 - `batch`: `{ "op": "batch", "operations": [ ... ] }`
 
-### Object patch format (`meta/patch` and `state/patch`)
+### Object patch format (`meta/patch`, `state/patch`, `settings/patch`)
 
-- `replace_root`
-- `set`
-- `merge`
-- `delete`
+Object patch routes use RFC6902-style operations:
 
-Path example:
+- `add`
+- `remove`
+- `replace`
+- `test` (optional guard)
+
+Path uses JSON Pointer string format:
 
 ```json
-{ "op": "set", "path": ["extensions", "memory", "last_capsule"], "value": { "ok": true } }
+{ "op": "replace", "path": "/extensions/memory/last_capsule", "value": { "ok": true } }
 ```
 
 ### Prompt-delta fields (chat-completions)
