@@ -453,8 +453,12 @@ function isLastLukerReplyPersistedByServerForApi(api = main_api) {
     return lastLukerReplyPersistedByServer;
 }
 
+function shouldUseLukerServerPersistenceForType(type) {
+    return type === 'normal' || type === 'regenerate';
+}
+
 function buildLukerGenerationRequestOptions(type, api = main_api) {
-    if (type !== 'normal' || !supportsLukerServerPersistence(api)) {
+    if (!shouldUseLukerServerPersistenceForType(type) || !supportsLukerServerPersistence(api)) {
         return null;
     }
 
@@ -3964,7 +3968,7 @@ class StreamingProcessor {
         if (!isAborted && power_user.auto_swipe && generatedTextFiltered(text)) {
             return await swipe(null, SWIPE_DIRECTION.RIGHT, { source: SWIPE_SOURCE.AUTO_SWIPE, repeated: true, forceMesId: chat.length - 1 });
         }
-        if (this.type === 'normal' && this.messageId >= 0 && chat[this.messageId]) {
+        if (shouldUseLukerServerPersistenceForType(this.type) && this.messageId >= 0 && chat[this.messageId]) {
             chat[this.messageId].extra = chat[this.messageId].extra || {};
             chat[this.messageId].extra.luker_generation_id = getLastLukerGenerationIdForApi() || chat[this.messageId].extra.luker_generation_id;
         }
@@ -5999,7 +6003,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
 
         console.debug('/api/chats/save called by /Generate');
-        if (type === 'normal' && chat.length > 0 && !chat[chat.length - 1]?.is_user) {
+        if (shouldUseLukerServerPersistenceForType(type) && chat.length > 0 && !chat[chat.length - 1]?.is_user) {
             chat[chat.length - 1].extra = chat[chat.length - 1].extra || {};
             chat[chat.length - 1].extra.luker_generation_id = getLastLukerGenerationIdForApi() || chat[chat.length - 1].extra.luker_generation_id;
         }

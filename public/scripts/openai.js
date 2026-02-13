@@ -389,7 +389,7 @@ function buildLukerPersistTarget() {
 }
 
 function shouldUseLukerServerPersistence(type, source = oai_settings.chat_completion_source) {
-    return type === 'normal' && isLukerServerPersistenceSupported(source);
+    return (type === 'normal' || type === 'regenerate') && isLukerServerPersistenceSupported(source);
 }
 
 function isLastOpenAIReplyPersistedByServer() {
