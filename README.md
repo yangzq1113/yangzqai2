@@ -5,7 +5,7 @@ Luker is a SillyTavern fork focused on cleaner API behavior, stronger extension 
 ## Why Luker
 
 - Reliable generation lifecycle: backend-owned generation jobs keep running and persisting even if the frontend disconnects/reloads, and active output can be recovered after reconnect.
-- Incremental chat persistence: message/content changes are patch-first instead of repeated full chat saves.
+- Incremental persistence: chat/message and settings changes are patch-first instead of repeated full-save payloads.
 - Better plugin ergonomics: prompt-preset-aware message assembly, world-info simulation/finalization hooks, and chat-bound plugin state helpers.
 - Built-in advanced plugins: `Orchestrator` (multi-agent planning) and `Memory` (graph memory + recall).
 

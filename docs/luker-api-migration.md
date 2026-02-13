@@ -47,6 +47,7 @@ Practical rule:
 - Use message patch ops for edit/delete/insert behavior.
 - Use metadata patching for lightweight per-chat state.
 - Use chat state sidecar for larger plugin objects.
+- For app/global settings, prefer `saveSettings()` / `saveSettingsDebounced()` (Luker now routes these through settings patch internally).
 - Prefer context helpers to preserve compatibility and future internal changes.
 
 ## 4) Generation Resilience
@@ -61,6 +62,7 @@ Legacy full-save routes are still available for compatibility:
 
 - `/api/chats/save`
 - `/api/chats/group/save`
+- `/api/settings/save`
 
 Luker internals and built-ins are patch-first; full-save is legacy compatibility, not the preferred path.
 
@@ -87,6 +89,10 @@ Most plugins should not call these directly, but they are listed for low-level i
 - `POST /api/chats/state/get`
 - `POST /api/chats/state/patch`
 - `POST /api/chats/state/delete`
+
+### Settings
+
+- `POST /api/settings/patch`
 
 ### Message patch operation format
 

@@ -19,7 +19,7 @@ English | [German](readme-de_de.md) | [中文](readme-zh_cn.md) | [繁體中文]
 
 Luker is a fork of SillyTavern focused on cleaner API design and stronger extension capabilities.
 
-- Patch-first chat persistence (`append` / `patch` / metadata patch / chat-state patch) to avoid repeated full-save payloads.
+- Patch-first persistence (`chat append/patch`, metadata/state patch, and settings patch) to avoid repeated full-save payloads.
 - Backend-owned generation lifecycle (including reconnect-safe persistence and active-output recovery behavior).
 - Plugin-first helpers via `getContext()` and generation world-info hooks.
 - Built-in `Orchestrator` and `Memory` plugins.
