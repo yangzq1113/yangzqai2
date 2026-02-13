@@ -4059,15 +4059,14 @@ class StreamingProcessor {
             && this.messageId === (chat.length - 1)
             && !chat[this.messageId]?.is_user
             && !serverPersistedReply;
-        if (canUseIncrementalAppend) {
+        if (serverPersistedReply) {
+            console.debug('Skipping local save because backend already persisted generation', getLastLukerGenerationIdForApi());
+        } else if (canUseIncrementalAppend) {
             const appended = await appendChatMessages([chat[this.messageId]]);
             if (!appended) {
                 await saveChatConditional();
             }
         } else {
-            if (serverPersistedReply) {
-                console.debug('Skipping incremental append because backend already persisted generation', getLastLukerGenerationIdForApi());
-            }
             await saveChatConditional();
         }
 
@@ -6093,15 +6092,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             && chat.length > 0
             && !chat[chat.length - 1]?.is_user
             && !serverPersistedReply;
-        if (canUseIncrementalAppend) {
+        if (serverPersistedReply) {
+            console.debug('Skipping local save because backend already persisted generation', getLastLukerGenerationIdForApi());
+        } else if (canUseIncrementalAppend) {
             const appended = await appendChatMessages([chat[chat.length - 1]]);
             if (!appended) {
                 await saveChatConditional();
             }
         } else {
-            if (serverPersistedReply) {
-                console.debug('Skipping incremental append because backend already persisted generation', getLastLukerGenerationIdForApi());
-            }
             await saveChatConditional();
         }
         unblockGeneration(type);
