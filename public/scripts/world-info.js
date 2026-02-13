@@ -169,12 +169,74 @@ function explainTraceSourceHint(hint) {
         case 'extension_inject':
             return `${t`Extension Inject`} #${Number(hint.index || 0)}`;
         case 'wi_recursion':
-            return `${t`WI Recursion Buffer`} #${Number(hint.index || 0)}`;
+            return `${t`WI Recursion Buffer`} #${Number(hint.index || 0)} (${t`indirect recursion source`})`;
         case 'scan_buffer':
             return t`Scan Buffer`;
         default:
             return source || t`Unknown`;
     }
+}
+
+function explainTraceScanState(stateName) {
+    const key = String(stateName || '').trim();
+    switch (key) {
+        case 'INITIAL':
+            return t`Initial scan`;
+        case 'RECURSION':
+            return t`Recursion scan`;
+        case 'MIN_ACTIVATIONS':
+            return t`Minimum activation backfill scan`;
+        default:
+            return key || t`Unknown`;
+    }
+}
+
+function normalizeTraceSignatureValue(value) {
+    if (Array.isArray(value)) {
+        return value.map(normalizeTraceSignatureValue);
+    }
+    if (value && typeof value === 'object') {
+        const out = {};
+        const keys = Object.keys(value).sort();
+        for (const key of keys) {
+            out[key] = normalizeTraceSignatureValue(value[key]);
+        }
+        return out;
+    }
+    return value;
+}
+
+function buildTraceScanSignature(scan) {
+    const payload = {
+        trigger: String(scan?.trigger || ''),
+        dryRun: Boolean(scan?.dryRun),
+        activated: Boolean(scan?.activated),
+        attempts: Array.isArray(scan?.attempts) ? scan.attempts : [],
+        lastActivation: scan?.lastActivation || null,
+    };
+    return JSON.stringify(normalizeTraceSignatureValue(payload));
+}
+
+function collapseConsecutiveDuplicateScans(scans = []) {
+    const merged = [];
+    for (const scan of scans) {
+        const signature = buildTraceScanSignature(scan);
+        const finishedAt = scan?.finishedAt || scan?.startedAt || null;
+        const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+        if (prev && prev.signature === signature) {
+            prev.repeatCount += 1;
+            prev.oldestAt = finishedAt || prev.oldestAt;
+            continue;
+        }
+        merged.push({
+            scan,
+            signature,
+            repeatCount: 1,
+            newestAt: finishedAt,
+            oldestAt: finishedAt,
+        });
+    }
+    return merged;
 }
 
 function explainTraceReason(reason, details = {}) {
@@ -226,7 +288,7 @@ function renderTraceDetailLines(details = {}) {
                 labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
             }
             const compact = Array.from(labelCounts.entries())
-                .map(([label, count]) => count > 1 ? `${label} ×${count}` : label);
+                .map(([label, count]) => count > 1 ? `${label} (${count} ${t`hits`})` : label);
             const previewLimit = 6;
             const head = compact.slice(0, previewLimit).join(', ');
             const tail = compact.length > previewLimit
@@ -274,22 +336,13 @@ function renderTraceDetailLines(details = {}) {
             }
             const grouped = Array.from(groupCounts.entries())
                 .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-            const groupedPreviewLimit = 6;
             const groupedSummary = grouped
-                .slice(0, groupedPreviewLimit)
-                .map(([group, count]) => `${group} ×${count}`)
+                .map(([group, count]) => `${group} (${count} ${t`entries`})`)
                 .join(', ');
-            const groupedTail = grouped.length > groupedPreviewLimit
-                ? ` (+${grouped.length - groupedPreviewLimit} ${t`more groups`})`
-                : '';
-            lines.push(`${t`Recursion source entries`}: ${recursionEntries.length} ${t`entries`} (${groupedSummary}${groupedTail})`);
+            lines.push(`${t`Recursion source entries`}: ${recursionEntries.length} ${t`entries`} (${groupedSummary})`);
+            lines.push(`${t`Recursion source explanation`}: ${t`This entry was activated indirectly by recursive expansion from the source entries below, not by a direct keyword hit in this single worldbook.`}`);
 
-            const entryPreviewLimit = 8;
-            const entryPreview = recursionEntries.slice(0, entryPreviewLimit).join(', ');
-            const entryTail = recursionEntries.length > entryPreviewLimit
-                ? ` (+${recursionEntries.length - entryPreviewLimit} ${t`more entries`})`
-                : '';
-            lines.push(`${t`Recursion source preview`}: ${entryPreview}${entryTail}`);
+            lines.push(`${t`Recursion source preview`}: ${recursionEntries.join(', ')}`);
         }
     }
 
@@ -3561,11 +3614,13 @@ async function showActivationTracePopup(worldName, uid) {
     const recentDryRunScans = Array.isArray(trace.recentDryRunScans) ? trace.recentDryRunScans : [];
     const hasRealScans = recentScans.length > 0;
     const displayScans = hasRealScans ? recentScans : recentDryRunScans;
+    const dedupedDisplayScans = collapseConsecutiveDuplicateScans(displayScans);
     const usingDryRunFallback = !hasRealScans && displayScans.length > 0;
     const lastActivation = trace.lastActivation || null;
     const fallbackDryActivation = trace.lastDryRunActivation || null;
     const effectiveActivation = lastActivation || (usingDryRunFallback ? fallbackDryActivation : null);
-    const scanCards = displayScans.map((scan, scanIndex) => {
+    const scanCards = dedupedDisplayScans.map((entry, scanIndex) => {
+        const scan = entry.scan;
         const attempts = Array.isArray(scan?.attempts) ? scan.attempts : [];
         const activated = Boolean(scan?.activated);
         const isDryRunScan = Boolean(scan?.dryRun);
@@ -3576,7 +3631,7 @@ async function showActivationTracePopup(worldName, uid) {
                 return `
 <div style="border:1px solid var(--SmartThemeBorderColor);border-radius:8px;padding:8px;margin-top:6px;">
     <div style="font-weight:600;">#${attemptIndex + 1} ${escapeHtmlText(reasonText)}</div>
-    <div style="opacity:.75;">Loop ${escapeHtmlText(String(attempt?.loop ?? 'N/A'))} · ${escapeHtmlText(String(attempt?.scanState ?? 'N/A'))}</div>
+    <div style="opacity:.75;">${escapeHtmlText(t`Scan loop`)}: ${escapeHtmlText(String(attempt?.loop ?? 'N/A'))} · ${escapeHtmlText(t`Scan phase`)}: ${escapeHtmlText(explainTraceScanState(attempt?.scanState))}</div>
     ${renderTraceDetailLines(details)}
 </div>`;
             }).join('')
@@ -3589,8 +3644,11 @@ async function showActivationTracePopup(worldName, uid) {
 <div style="border:1px solid var(--SmartThemeBorderColor);border-radius:10px;padding:10px;margin-top:10px;">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
         <div style="font-weight:700;">${escapeHtmlText(t`Scan`)} #${scanIndex + 1}</div>
-        <div style="opacity:.78;">${escapeHtmlText(formatTraceTime(scan?.finishedAt || scan?.startedAt))}</div>
+        <div style="opacity:.78;">${escapeHtmlText(formatTraceTime(entry.newestAt))}</div>
     </div>
+    ${entry.repeatCount > 1
+            ? `<div style="margin-top:4px;opacity:.82;">${escapeHtmlText(t`Merged identical scans`)} ×${escapeHtmlText(String(entry.repeatCount))}</div>`
+            : ''}
     ${isDryRunScan ? `<div style="margin-top:4px;opacity:.8;">${escapeHtmlText(t`Simulated activation (dry run)`)}.</div>` : ''}
     <div style="margin-top:4px;">
         <span style="font-weight:600;color:${activated ? 'var(--SmartThemeQuoteColor)' : 'var(--SmartThemeBodyColor)'};">
