@@ -7945,9 +7945,30 @@ function isPlainObject(value) {
 
 function cloneJsonValue(value) {
     if (typeof structuredClone === 'function') {
-        return structuredClone(value);
+        try {
+            return structuredClone(value);
+        } catch {
+            // Fall back to JSON-safe cloning for values that cannot be structured-cloned
+            // (e.g. functions attached by extensions).
+        }
     }
-    return JSON.parse(JSON.stringify(value));
+    const seen = new WeakSet();
+    const serialized = JSON.stringify(value, (_, nextValue) => {
+        if (typeof nextValue === 'function' || typeof nextValue === 'symbol') {
+            return undefined;
+        }
+        if (typeof nextValue === 'bigint') {
+            return String(nextValue);
+        }
+        if (nextValue && typeof nextValue === 'object') {
+            if (seen.has(nextValue)) {
+                return undefined;
+            }
+            seen.add(nextValue);
+        }
+        return nextValue;
+    });
+    return serialized === undefined ? undefined : JSON.parse(serialized);
 }
 
 function areJsonValuesEqual(left, right) {
