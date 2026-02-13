@@ -343,6 +343,7 @@ function registerLocaleData() {
         'No recall injection result yet.': '当前还没有召回注入结果。',
         'Memory recall running...': '记忆召回进行中...',
         'Memory graph update running...': '记忆图更新进行中...',
+        'Memory graph update running... seq ${0}-${1} / latest ${2}': '记忆图更新进行中... 楼层 ${0}-${1} / 最新 ${2}',
         'No active chat selected.': '未选择有效聊天。',
         'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
         'Import': '导入',
@@ -567,6 +568,7 @@ function registerLocaleData() {
         'No recall injection result yet.': '目前還沒有召回注入結果。',
         'Memory recall running...': '記憶召回進行中...',
         'Memory graph update running...': '記憶圖更新進行中...',
+        'Memory graph update running... seq ${0}-${1} / latest ${2}': '記憶圖更新進行中... 樓層 ${0}-${1} / 最新 ${2}',
         'No active chat selected.': '未選擇有效聊天。',
         'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
         'Import': '匯入',
@@ -3640,6 +3642,7 @@ async function runExtractionForStore(context, store, {
     startSeq = null,
     showCompressionToast = true,
     abortSignal = null,
+    onBatchStart = null,
 } = {}) {
     const settings = getSettings();
     const window = computeExtractionWindow(context, store, startSeq);
@@ -3698,6 +3701,15 @@ async function runExtractionForStore(context, store, {
         const batchEndIndex = Math.min(frames.length - 1, i + extractBatchTurns - 1);
         const startFrame = frames[batchStartIndex];
         const endFrame = frames[batchEndIndex];
+        if (typeof onBatchStart === 'function') {
+            onBatchStart({
+                beginSeq: Number(startFrame?.seq || 0),
+                endSeq: Number(endFrame?.seq || 0),
+                latestSeq,
+                batchStartIndex,
+                batchEndIndex,
+            });
+        }
         let success = false;
         let lastFrameError = null;
         for (let attempt = 0; attempt <= frameErrorRetries; attempt++) {
@@ -4887,7 +4899,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     };
 }
 
-async function rebuildStoreFromCurrentChat(context, { abortSignal = null } = {}) {
+async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatchStart = null } = {}) {
     const chatKey = getChatKey(context);
     const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
     if (!target) {
@@ -4900,6 +4912,7 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null } = {})
         startSeq: 1,
         showCompressionToast: false,
         abortSignal,
+        onBatchStart,
     });
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
@@ -4964,6 +4977,13 @@ function computeExtractionWindow(context, store, startSeq = null) {
         beginSeq,
         gap: latestSeq - coveredSeqTo,
     };
+}
+
+function formatExtractionRangeToast(beginSeq, endSeq, latestSeq) {
+    const begin = Math.max(1, Math.floor(Number(beginSeq || 0)));
+    const end = Math.max(begin, Math.floor(Number(endSeq || begin)));
+    const latest = Math.max(end, Math.floor(Number(latestSeq || end)));
+    return i18nFormat('Memory graph update running... seq ${0}-${1} / latest ${2}', begin, end, latest);
 }
 
 function normalizeMutationMeta(rawMeta = null) {
@@ -5243,7 +5263,15 @@ function scheduleExtraction(context) {
                 refreshUiStats();
                 return;
             }
-            showRuntimeInfoToast(i18n('Memory graph update running...'), {
+            const extractBatchTurns = Math.max(
+                1,
+                Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+            );
+            const initialEndSeq = Math.min(
+                Number(preview.latestSeq || 0),
+                Number(preview.beginSeq || 1) + extractBatchTurns - 1,
+            );
+            showRuntimeInfoToast(formatExtractionRangeToast(preview.beginSeq, initialEndSeq, preview.latestSeq), {
                 stopLabel: i18n('Stop'),
                 onStop: () => {
                     if (!extractionAbortController.signal.aborted) {
@@ -5253,6 +5281,9 @@ function scheduleExtraction(context) {
             });
             await runExtractionForStore(context, store, {
                 abortSignal: extractionAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+                },
             });
             await persistMemoryStoreByChatKey(context, chatKey, store);
             const debug = store.lastExtractionDebug || {};
@@ -6548,9 +6579,13 @@ function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
         closeButton: true,
         progressBar: false,
     });
-    if (activeRuntimeInfoToast && typeof onStop === 'function') {
-        const toastBody = activeRuntimeInfoToast.find('.toast-message');
-        if (toastBody.length > 0) {
+    const toastBody = activeRuntimeInfoToast ? activeRuntimeInfoToast.find('.toast-message') : null;
+    if (toastBody && toastBody.length > 0) {
+        toastBody.empty();
+        const textNode = jQuery('<div class="luker-rpg-memory-toast-text"></div>');
+        textNode.text(String(message || ''));
+        toastBody.append(textNode);
+        if (typeof onStop === 'function') {
             const button = jQuery('<button type="button" class="menu_button menu_button_small" style="margin-top:8px;"></button>');
             button.text(String(stopLabel || i18n('Stop')));
             button.on('click', (event) => {
@@ -6561,6 +6596,16 @@ function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
             });
             toastBody.append(button);
         }
+    }
+}
+
+function updateRuntimeInfoToastMessage(message) {
+    if (!activeRuntimeInfoToast) {
+        return;
+    }
+    const textNode = activeRuntimeInfoToast.find('.luker-rpg-memory-toast-text');
+    if (textNode.length > 0) {
+        textNode.text(String(message || ''));
     }
 }
 
@@ -8067,7 +8112,8 @@ function bindUi() {
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
-        showRuntimeInfoToast(i18n('Memory graph update running...'), {
+        const rebuildLatestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+        showRuntimeInfoToast(formatExtractionRangeToast(1, Math.min(1, rebuildLatestSeq || 1), Math.max(1, rebuildLatestSeq)), {
             stopLabel: i18n('Stop'),
             onStop: () => {
                 if (!rebuildAbortController.signal.aborted) {
@@ -8076,7 +8122,12 @@ function bindUi() {
             },
         });
         try {
-            const store = await rebuildStoreFromCurrentChat(context, { abortSignal: rebuildAbortController.signal });
+            const store = await rebuildStoreFromCurrentChat(context, {
+                abortSignal: rebuildAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+                },
+            });
             if (!store) {
                 notifyError(i18n('No active chat selected.'));
                 return;
