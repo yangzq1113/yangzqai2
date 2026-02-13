@@ -3180,7 +3180,25 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
         signal: signal,
     });
 
-    if (response.status === 409 && deltaRequest.usedDelta && deltaRequest.fallbackBody) {
+    const shouldTryPromptDeltaFallback = async (resp) => {
+        if (!deltaRequest.usedDelta || !deltaRequest.fallbackBody) {
+            return false;
+        }
+        if (resp.status === 409) {
+            return true;
+        }
+        if (resp.status !== 400) {
+            return false;
+        }
+        try {
+            const errorText = await resp.clone().text();
+            return /prompt delta (prefix_length|suffix_length) is out of bounds\./i.test(String(errorText || ''));
+        } catch {
+            return false;
+        }
+    };
+
+    if (await shouldTryPromptDeltaFallback(response)) {
         let fallbackBody = deltaRequest.fallbackBody;
         if (requestBody?.luker_generation) {
             fallbackBody = {
@@ -3210,10 +3228,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
     }
     if (deltaRequest.stateKey && Array.isArray(deltaRequest.promptMessages) && Number.isInteger(promptRevision) && promptRevision > 0) {
         upsertPromptDeltaState(deltaRequest.stateKey, promptRevision, deltaRequest.promptMessages);
-    } else if (deltaRequest.stateKey && requestBody?.luker_prompt_state_id && Array.isArray(deltaRequest.promptMessages)) {
-        // Fallback compatibility when server did not return prompt revision header.
-        const previousRevision = Number(promptDeltaStates.get(deltaRequest.stateKey)?.revision) || 0;
-        upsertPromptDeltaState(deltaRequest.stateKey, previousRevision + 1, deltaRequest.promptMessages);
+    } else if (deltaRequest.stateKey) {
+        // Only trust server-authoritative prompt revision.
+        promptDeltaStates.delete(deltaRequest.stateKey);
     }
 
     if (stream) {
