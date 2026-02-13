@@ -165,7 +165,11 @@ function sortPersonas(personas) {
 
 function isPersonaVisibleForCurrentConnection(avatarId) {
     const descriptor = power_user.persona_descriptions?.[avatarId];
-    const connections = Array.isArray(descriptor?.connections) ? descriptor.connections : [];
+    const groupConnections = (Array.isArray(descriptor?.connections) ? descriptor.connections : [])
+        .filter(connection => connection?.type === 'group' && connection?.id);
+    const characterConnections = getCharacterAvatarsConnectedToPersona(avatarId)
+        .map(characterAvatar => ({ type: 'character', id: characterAvatar }));
+    const connections = [...groupConnections, ...characterConnections];
 
     if (connections.length === 0) {
         return true;
@@ -177,6 +181,24 @@ function isPersonaVisibleForCurrentConnection(avatarId) {
     }
 
     return connections.some(connection => connection?.type === currentConnection.type && connection?.id === currentConnection.id);
+}
+
+function pruneLegacyCharacterConnections() {
+    let changed = false;
+    for (const descriptor of Object.values(power_user.persona_descriptions ?? {})) {
+        if (!Array.isArray(descriptor?.connections)) {
+            continue;
+        }
+        const filtered = descriptor.connections.filter(connection => connection?.type !== 'character');
+        if (filtered.length !== descriptor.connections.length) {
+            descriptor.connections = filtered;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        saveSettingsDebounced();
+    }
 }
 
 function getOrCreatePersonaDescriptorForAvatar(avatarId) {
@@ -214,38 +236,86 @@ function getDedicatedPersonaEntriesFromCharacter(character) {
     return Array.isArray(entries) ? entries : [];
 }
 
-function buildDedicatedPersonaCardEntry(avatarId) {
-    if (!avatarId || !power_user.personas?.[avatarId]) {
-        return null;
-    }
-
-    const descriptor = power_user.persona_descriptions?.[avatarId] ?? {};
-    return {
-        avatar: avatarId,
-        name: power_user.personas[avatarId],
-        description: descriptor.description ?? '',
-        position: Number.isInteger(Number(descriptor.position)) ? Number(descriptor.position) : persona_description_positions.IN_PROMPT,
-        depth: Number.isInteger(Number(descriptor.depth)) ? Number(descriptor.depth) : DEFAULT_DEPTH,
-        role: Number.isInteger(Number(descriptor.role)) ? Number(descriptor.role) : DEFAULT_ROLE,
-        lorebook: descriptor.lorebook ?? '',
-        title: descriptor.title ?? '',
-    };
-}
-
-async function syncDedicatedPersonasToCharacter(characterAvatar) {
+function getCharacterDedicatedPersonaEntries(characterAvatar) {
     const character = getCharacterByAvatar(characterAvatar);
     if (!character) {
-        return;
+        return [];
+    }
+    return getDedicatedPersonaEntriesFromCharacter(character);
+}
+
+function getCharacterDedicatedPersonaAvatarIds(characterAvatar) {
+    return getCharacterDedicatedPersonaEntries(characterAvatar)
+        .map(entry => String(entry?.avatar ?? '').trim())
+        .filter(Boolean)
+        .filter(onlyUnique);
+}
+
+function getCharacterAvatarsConnectedToPersona(personaAvatarId) {
+    if (!personaAvatarId) {
+        return [];
     }
 
-    const connectedPersonas = getConnectedPersonas(characterAvatar, 'character');
-    const dedicatedPersonas = connectedPersonas
-        .map(avatarId => buildDedicatedPersonaCardEntry(avatarId))
+    return characters
+        .filter(character => getCharacterDedicatedPersonaAvatarIds(character?.avatar).includes(personaAvatarId))
+        .map(character => character.avatar)
         .filter(Boolean);
+}
 
+function normalizeDedicatedPersonaEntries(entries) {
+    const used = new Set();
+    const normalized = [];
+
+    for (const rawEntry of Array.isArray(entries) ? entries : []) {
+        const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : null;
+        if (!entry) {
+            continue;
+        }
+
+        const avatarId = String(entry.avatar ?? '').trim();
+        if (!avatarId || used.has(avatarId)) {
+            continue;
+        }
+
+        const descriptor = power_user.persona_descriptions?.[avatarId] ?? {};
+        const fallbackName = String(entry.name ?? '').trim();
+        const name = String(power_user.personas?.[avatarId] ?? fallbackName).trim();
+        if (!name) {
+            continue;
+        }
+
+        used.add(avatarId);
+        normalized.push({
+            avatar: avatarId,
+            name,
+            description: String(descriptor.description ?? entry.description ?? ''),
+            position: Number.isInteger(Number(descriptor.position ?? entry.position))
+                ? Number(descriptor.position ?? entry.position)
+                : persona_description_positions.IN_PROMPT,
+            depth: Number.isInteger(Number(descriptor.depth ?? entry.depth))
+                ? Number(descriptor.depth ?? entry.depth)
+                : DEFAULT_DEPTH,
+            role: Number.isInteger(Number(descriptor.role ?? entry.role))
+                ? Number(descriptor.role ?? entry.role)
+                : DEFAULT_ROLE,
+            lorebook: String(descriptor.lorebook ?? entry.lorebook ?? ''),
+            title: String(descriptor.title ?? entry.title ?? ''),
+        });
+    }
+
+    return normalized;
+}
+
+async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
+    const character = getCharacterByAvatar(characterAvatar);
+    if (!character) {
+        return false;
+    }
+
+    const nextDedicatedPersonas = normalizeDedicatedPersonaEntries(entries);
     const currentEntries = getDedicatedPersonaEntriesFromCharacter(character);
-    if (JSON.stringify(currentEntries) === JSON.stringify(dedicatedPersonas)) {
-        return;
+    if (JSON.stringify(currentEntries) === JSON.stringify(nextDedicatedPersonas)) {
+        return false;
     }
 
     const nextExtensions = structuredClone(character?.data?.extensions ?? {});
@@ -253,8 +323,8 @@ async function syncDedicatedPersonasToCharacter(characterAvatar) {
         ? nextExtensions.luker
         : {};
 
-    if (dedicatedPersonas.length > 0) {
-        nextExtensions.luker.dedicated_personas = dedicatedPersonas;
+    if (nextDedicatedPersonas.length > 0) {
+        nextExtensions.luker.dedicated_personas = nextDedicatedPersonas;
     } else {
         delete nextExtensions.luker.dedicated_personas;
     }
@@ -277,7 +347,36 @@ async function syncDedicatedPersonasToCharacter(characterAvatar) {
 
     if (!mergeResponse.ok) {
         console.error('Failed to sync dedicated personas to character card', mergeResponse.statusText);
+        return false;
     }
+
+    return true;
+}
+
+function buildDedicatedPersonaCardEntry(avatarId) {
+    if (!avatarId || !power_user.personas?.[avatarId]) {
+        return null;
+    }
+
+    const descriptor = power_user.persona_descriptions?.[avatarId] ?? {};
+    return {
+        avatar: avatarId,
+        name: power_user.personas[avatarId],
+        description: descriptor.description ?? '',
+        position: Number.isInteger(Number(descriptor.position)) ? Number(descriptor.position) : persona_description_positions.IN_PROMPT,
+        depth: Number.isInteger(Number(descriptor.depth)) ? Number(descriptor.depth) : DEFAULT_DEPTH,
+        role: Number.isInteger(Number(descriptor.role)) ? Number(descriptor.role) : DEFAULT_ROLE,
+        lorebook: descriptor.lorebook ?? '',
+        title: descriptor.title ?? '',
+    };
+}
+
+async function syncDedicatedPersonasToCharacter(characterAvatar) {
+    const currentEntries = getCharacterDedicatedPersonaEntries(characterAvatar);
+    const dedicatedPersonas = currentEntries
+        .map(entry => buildDedicatedPersonaCardEntry(String(entry?.avatar ?? '').trim()) ?? entry)
+        .filter(Boolean);
+    await setCharacterDedicatedPersonaEntries(characterAvatar, dedicatedPersonas);
 }
 
 function buildDedicatedPersonaAvatarId(characterAvatar, personaName = '') {
@@ -392,13 +491,6 @@ async function ensureDedicatedPersonasFromCharacter(character) {
             changed = true;
         }
 
-        const targetConnection = { type: 'character', id: character.avatar };
-        const hasConnection = descriptor.connections.some(connection =>
-            connection?.type === targetConnection.type && connection?.id === targetConnection.id);
-        if (!hasConnection) {
-            descriptor.connections = [...descriptor.connections, targetConnection];
-            changed = true;
-        }
     }
 
     if (changed) {
@@ -875,8 +967,12 @@ export function buildPersonaAvatarList(block, personas, { empty = true, interact
  * Converts connections to entities and populates the avatar list. Shows a message if no connections are found.
  */
 export function updatePersonaConnectionsAvatarList() {
-    /** @type {PersonaConnection[]} */
-    const connections = power_user.persona_descriptions[user_avatar]?.connections ?? [];
+    const descriptorConnections = (power_user.persona_descriptions[user_avatar]?.connections ?? [])
+        .filter(connection => connection?.type === 'group' && connection?.id);
+    const characterConnections = getCharacterAvatarsConnectedToPersona(user_avatar)
+        .map(characterAvatar => ({ type: 'character', id: characterAvatar }));
+    const connections = [...characterConnections, ...descriptorConnections];
+
     const entities = connections.map(connection => {
         if (connection.type === 'character') {
             const character = characters.find(c => c.avatar === connection.id);
@@ -958,22 +1054,23 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
             text: t`Remove All Connections`,
             result: 2,
             action: async () => {
-                for (const [personaId, description] of Object.entries(power_user.persona_descriptions)) {
-                    /** @type {PersonaConnection[]} */
-                    const connections = description.connections;
-                    if (connections) {
-                        power_user.persona_descriptions[personaId].connections = connections.filter(c => {
-                            if (targetedChar.type == c.type && targetedChar.id == c.id) return false;
-                            return true;
-                        });
+                if (targetedChar.type === 'character' && targetedChar.id) {
+                    await setCharacterDedicatedPersonaEntries(targetedChar.id, []);
+                } else {
+                    for (const [personaId, description] of Object.entries(power_user.persona_descriptions)) {
+                        /** @type {PersonaConnection[]} */
+                        const connections = description.connections;
+                        if (connections) {
+                            power_user.persona_descriptions[personaId].connections = connections.filter(c => {
+                                if (targetedChar.type == c.type && targetedChar.id == c.id) return false;
+                                return true;
+                            });
+                        }
                     }
                 }
 
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
-                if (targetedChar.type === 'character' && targetedChar.id) {
-                    await syncDedicatedPersonasToCharacter(targetedChar.id);
-                }
                 if (power_user.persona_show_notifications) {
                     const name = targetedChar.type == 'character' ? characters[targetedChar.id]?.name : groups[targetedChar.id]?.name;
                     toastr.info(t`All connections to ${name} have been removed.`, t`Personas Unlocked`);
@@ -1149,8 +1246,11 @@ async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
  * @returns {boolean} Whether the connection is locked
  */
 export function isPersonaConnectionLocked(connection) {
-    return (!selected_group && connection.type === 'character' && connection.id === characters[this_chid]?.avatar)
-        || (selected_group && connection.type === 'group' && connection.id === selected_group);
+    if (connection?.type === 'character') {
+        const currentAvatar = characters[Number(this_chid)]?.avatar;
+        return !selected_group && !!currentAvatar && connection.id === currentAvatar;
+    }
+    return selected_group && connection?.type === 'group' && connection.id === selected_group;
 }
 
 /**
@@ -1165,7 +1265,15 @@ export function isPersonaLocked(type = 'chat') {
         case 'chat':
             return chat_metadata['persona'] == user_avatar;
         case 'character': {
-            return !!power_user.persona_descriptions[user_avatar]?.connections?.some(isPersonaConnectionLocked);
+            if (selected_group) {
+                return !!power_user.persona_descriptions[user_avatar]?.connections
+                    ?.some(connection => connection?.type === 'group' && connection.id === selected_group);
+            }
+            const currentAvatar = characters[Number(this_chid)]?.avatar;
+            if (!currentAvatar) {
+                return false;
+            }
+            return getCharacterDedicatedPersonaAvatarIds(currentAvatar).includes(user_avatar);
         }
         default: throw new Error(`Unknown persona lock type: ${type}`);
     }
@@ -1220,19 +1328,26 @@ async function unlockPersona(type = 'chat') {
             break;
         }
         case 'character': {
-            /** @type {PersonaConnection[]} */
-            const connections = power_user.persona_descriptions[user_avatar]?.connections;
-            if (connections) {
+            const currentConnection = getCurrentConnectionObj();
+            if (currentConnection?.type === 'character' && currentConnection?.id) {
                 console.log(`Unlocking persona ${user_avatar} from this character ${name2}`);
-                const currentConnection = getCurrentConnectionObj();
-                power_user.persona_descriptions[user_avatar].connections = connections.filter(c => !isPersonaConnectionLocked(c));
-                saveSettingsDebounced();
-                updatePersonaConnectionsAvatarList();
-                if (currentConnection?.type === 'character' && currentConnection?.id) {
-                    await syncDedicatedPersonasToCharacter(currentConnection.id);
+                const currentEntries = getCharacterDedicatedPersonaEntries(currentConnection.id);
+                const nextEntries = currentEntries.filter(entry => String(entry?.avatar ?? '').trim() !== user_avatar);
+                const changed = await setCharacterDedicatedPersonaEntries(currentConnection.id, nextEntries);
+                if (changed) {
+                    saveSettingsDebounced();
+                    updatePersonaConnectionsAvatarList();
+                    if (power_user.persona_show_notifications && !isPersonaPanelOpen()) {
+                        toastr.info(t`Persona ${name1} is now unlocked from character ${name2}.`, t`Persona Unlocked`);
+                    }
                 }
-                if (power_user.persona_show_notifications && !isPersonaPanelOpen()) {
-                    toastr.info(t`Persona ${name1} is now unlocked from character ${name2}.`, t`Persona Unlocked`);
+            } else if (currentConnection?.type === 'group' && currentConnection?.id) {
+                /** @type {PersonaConnection[]} */
+                const connections = power_user.persona_descriptions[user_avatar]?.connections;
+                if (connections) {
+                    power_user.persona_descriptions[user_avatar].connections = connections.filter(c => !isPersonaConnectionLocked(c));
+                    saveSettingsDebounced();
+                    updatePersonaConnectionsAvatarList();
                 }
             }
             break;
@@ -1283,38 +1398,46 @@ async function lockPersona(type = 'chat') {
         }
         case 'character': {
             const newConnection = getCurrentConnectionObj();
-            /** @type {PersonaConnection[]} */
-            const connections = power_user.persona_descriptions[user_avatar].connections?.filter(c => !isPersonaConnectionLocked(c)) ?? [];
-            if (newConnection && newConnection.id) {
+            if (newConnection?.type === 'character' && newConnection.id) {
                 console.log(`Locking persona ${user_avatar} to this character ${name2}`);
-                power_user.persona_descriptions[user_avatar].connections = [...connections, newConnection];
+                const currentEntries = getCharacterDedicatedPersonaEntries(newConnection.id);
+                const entry = buildDedicatedPersonaCardEntry(user_avatar);
+                if (!entry) {
+                    break;
+                }
 
-                const unlinkedCharacters = [];
+                let nextEntries = currentEntries.filter(item => String(item?.avatar ?? '').trim() !== user_avatar);
+                let unlinkedNames = [];
+
                 if (!power_user.persona_allow_multi_connections) {
-                    for (const [avatarId, description] of Object.entries(power_user.persona_descriptions)) {
-                        if (avatarId === user_avatar) continue;
+                    unlinkedNames = nextEntries
+                        .map(item => String(item?.name ?? power_user.personas[String(item?.avatar ?? '').trim()] ?? '').trim())
+                        .filter(Boolean)
+                        .filter(onlyUnique);
+                    nextEntries = [];
+                }
 
-                        const filteredConnections = description.connections?.filter(c => !(c.type === newConnection.type && c.id === newConnection.id)) ?? [];
-                        if (filteredConnections.length !== description.connections?.length) {
-                            description.connections = filteredConnections;
-                            unlinkedCharacters.push(power_user.personas[avatarId]);
+                nextEntries.push(entry);
+                const changed = await setCharacterDedicatedPersonaEntries(newConnection.id, nextEntries);
+                if (changed) {
+                    saveSettingsDebounced();
+                    updatePersonaConnectionsAvatarList();
+                    if (power_user.persona_show_notifications) {
+                        let additional = '';
+                        if (unlinkedNames.length) {
+                            additional += `<br /><br />${t`Unlinked existing persona${unlinkedNames.length > 1 ? 's' : ''}: ${unlinkedNames.join(', ')}`}`;
+                        }
+                        if (additional || !isPersonaPanelOpen()) {
+                            toastr.success(t`User persona ${name1} is locked to character ${name2}${additional}`, t`Persona Locked`, { escapeHtml: false });
                         }
                     }
                 }
-
+            } else if (newConnection?.type === 'group' && newConnection.id) {
+                /** @type {PersonaConnection[]} */
+                const connections = power_user.persona_descriptions[user_avatar].connections?.filter(c => !isPersonaConnectionLocked(c)) ?? [];
+                power_user.persona_descriptions[user_avatar].connections = [...connections, newConnection];
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
-                if (newConnection.type === 'character') {
-                    await syncDedicatedPersonasToCharacter(newConnection.id);
-                }
-                if (power_user.persona_show_notifications) {
-                    let additional = '';
-                    if (unlinkedCharacters.length)
-                        additional += `<br /><br />${t`Unlinked existing persona${unlinkedCharacters.length > 1 ? 's' : ''}: ${unlinkedCharacters.join(', ')}`}`;
-                    if (additional || !isPersonaPanelOpen()) {
-                        toastr.success(t`User persona ${name1} is locked to character ${name2}${additional}`, t`Persona Locked`, { escapeHtml: false });
-                    }
-                }
             }
             break;
         }
@@ -1352,13 +1475,7 @@ async function deleteUserAvatar() {
     });
 
     if (request.ok) {
-        const descriptor = power_user.persona_descriptions[avatarId];
-        const affectedCharacterAvatars = Array.isArray(descriptor?.connections)
-            ? descriptor.connections
-                .filter(connection => connection?.type === 'character' && connection?.id)
-                .map(connection => connection.id)
-                .filter(onlyUnique)
-            : [];
+        const affectedCharacterAvatars = getCharacterAvatarsConnectedToPersona(avatarId);
 
         console.log(`Deleted avatar ${avatarId}`);
         delete power_user.personas[avatarId];
@@ -1378,7 +1495,9 @@ async function deleteUserAvatar() {
         saveSettingsDebounced();
 
         for (const characterAvatar of affectedCharacterAvatars) {
-            await syncDedicatedPersonasToCharacter(characterAvatar);
+            const entries = getCharacterDedicatedPersonaEntries(characterAvatar)
+                .filter(entry => String(entry?.avatar ?? '').trim() !== avatarId);
+            await setCharacterDedicatedPersonaEntries(characterAvatar, entries);
         }
 
         // Use the existing mechanism to re-render the persona list and choose the next persona here
@@ -1587,11 +1706,14 @@ function getPersonaStates(avatarId) {
     const isDefaultPersona = power_user.default_persona === avatarId;
     const hasChatLock = chat_metadata['persona'] == avatarId;
 
-    /** @type {PersonaConnection[]} */
-    const connections = power_user.persona_descriptions[avatarId]?.connections;
-    const hasCharLock = !!connections?.some(c =>
-        (!selected_group && c.type === 'character' && c.id === characters[Number(this_chid)]?.avatar)
-        || (selected_group && c.type === 'group' && c.id === selected_group));
+    let hasCharLock = false;
+    if (selected_group) {
+        const connections = power_user.persona_descriptions[avatarId]?.connections;
+        hasCharLock = !!connections?.some(connection => connection?.type === 'group' && connection.id === selected_group);
+    } else {
+        const currentCharacterAvatar = characters[Number(this_chid)]?.avatar;
+        hasCharLock = !!currentCharacterAvatar && getCharacterDedicatedPersonaAvatarIds(currentCharacterAvatar).includes(avatarId);
+    }
 
     return {
         avatarId: avatarId,
@@ -1835,10 +1957,13 @@ export function getConnectedPersonas(characterKey = undefined, connectionType = 
         connectionType = selected_group ? 'group' : 'character';
     }
 
-    const connectedPersonas = Object.entries(power_user.persona_descriptions)
+    if (connectionType === 'character') {
+        return getCharacterDedicatedPersonaAvatarIds(characterKey);
+    }
+
+    return Object.entries(power_user.persona_descriptions)
         .filter(([_, { connections }]) => connections?.some(conn => conn.id === characterKey && conn.type === connectionType))
         .map(([key, _]) => key);
-    return connectedPersonas;
 }
 
 
@@ -1859,28 +1984,44 @@ export async function showCharConnections() {
         shiftClickHandler: async (element, ev) => {
 
             const personaId = $(element).attr('data-pid');
+            const currentCharacterAvatar = characters[Number(this_chid)]?.avatar;
+
+            if (!selected_group && currentCharacterAvatar) {
+                const nextEntries = getCharacterDedicatedPersonaEntries(currentCharacterAvatar)
+                    .filter(entry => String(entry?.avatar ?? '').trim() !== personaId);
+                const changed = await setCharacterDedicatedPersonaEntries(currentCharacterAvatar, nextEntries);
+                if (changed) {
+                    saveSettingsDebounced();
+                    updatePersonaConnectionsAvatarList();
+                    if (power_user.persona_show_notifications) {
+                        toastr.info(t`User persona ${power_user.personas[personaId]} is now unlocked from the current character ${name2}.`, t`Persona unlocked`);
+                    }
+                    isRemoving = true;
+                    $('#char_connections_button').trigger('click');
+                }
+                return;
+            }
 
             /** @type {PersonaConnection[]} */
             const connections = power_user.persona_descriptions[personaId]?.connections;
-            if (connections) {
-                console.log(`Unlocking persona ${personaId} from current character ${name2}`);
-                power_user.persona_descriptions[personaId].connections = connections.filter(c => {
-                    if (menu_type == 'group_edit' && c.type == 'group' && c.id == selected_group) return false;
-                    else if (c.type == 'character' && c.id == characters[Number(this_chid)]?.avatar) return false;
-                    return true;
-                });
-                saveSettingsDebounced();
-                updatePersonaConnectionsAvatarList();
-                if (!selected_group && characters[Number(this_chid)]?.avatar) {
-                    await syncDedicatedPersonasToCharacter(characters[Number(this_chid)]?.avatar);
-                }
-                if (power_user.persona_show_notifications) {
-                    toastr.info(t`User persona ${power_user.personas[personaId]} is now unlocked from the current character ${name2}.`, t`Persona unlocked`);
-                }
-
-                isRemoving = true;
-                $('#char_connections_button').trigger('click');
+            if (!connections) {
+                return;
             }
+
+            console.log(`Unlocking persona ${personaId} from current character ${name2}`);
+            power_user.persona_descriptions[personaId].connections = connections.filter(c => {
+                if (menu_type == 'group_edit' && c.type == 'group' && c.id == selected_group) return false;
+                else if (c.type == 'character' && c.id == currentCharacterAvatar) return false;
+                return true;
+            });
+            saveSettingsDebounced();
+            updatePersonaConnectionsAvatarList();
+            if (power_user.persona_show_notifications) {
+                toastr.info(t`User persona ${power_user.personas[personaId]} is now unlocked from the current character ${name2}.`, t`Persona unlocked`);
+            }
+
+            isRemoving = true;
+            $('#char_connections_button').trigger('click');
         },
     });
 
@@ -2261,6 +2402,7 @@ function registerPersonaSlashCommands() {
  */
 export async function initPersonas() {
     await migrateNonPersonaUser();
+    pruneLegacyCharacterConnections();
     registerPersonaSlashCommands();
     $('#persona_delete_button').on('click', deleteUserAvatar);
     $('#lock_persona_default').on('click', () => togglePersonaLock('default'));
