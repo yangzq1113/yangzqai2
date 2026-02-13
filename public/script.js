@@ -48,6 +48,7 @@ import {
     initWorldInfo,
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
+    deleteWorldInfo,
 } from './scripts/world-info.js';
 
 import {
@@ -1845,6 +1846,81 @@ export async function deleteLastMessage() {
         deletedAssistantSeqFrom: deletedAssistantSeq,
         deletedAssistantSeqTo: deletedAssistantSeq,
     });
+}
+
+async function getChatBoundLorebookName(chatFile, groupId = null) {
+    const normalizedFileName = String(chatFile || '').trim().replace(/\.jsonl$/i, '');
+    if (!normalizedFileName) {
+        return '';
+    }
+
+    try {
+        if (groupId) {
+            const response = await fetch('/api/chats/group/get', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ id: normalizedFileName }),
+            });
+
+            if (!response.ok) {
+                return '';
+            }
+
+            const data = await response.json();
+            const metadata = Array.isArray(data) ? data?.[0]?.chat_metadata : data?.chat_metadata;
+            return typeof metadata?.world_info === 'string' ? metadata.world_info.trim() : '';
+        }
+
+        const avatarUrl = String(characters?.[this_chid]?.avatar || '').trim();
+        if (!avatarUrl) {
+            return '';
+        }
+
+        const response = await fetch('/api/chats/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: String(characters?.[this_chid]?.name || name2 || ''),
+                file_name: normalizedFileName,
+                avatar_url: avatarUrl,
+            }),
+        });
+
+        if (!response.ok) {
+            return '';
+        }
+
+        const data = await response.json();
+        const metadata = Array.isArray(data) ? data?.[0]?.chat_metadata : data?.chat_metadata;
+        return typeof metadata?.world_info === 'string' ? metadata.world_info.trim() : '';
+    } catch (error) {
+        console.warn('Failed to inspect chat-bound lorebook before chat deletion', error);
+        return '';
+    }
+}
+
+async function maybeDeleteChatBoundLorebook(chatFile, groupId = null) {
+    const lorebookName = await getChatBoundLorebookName(chatFile, groupId);
+    if (!lorebookName) {
+        return;
+    }
+
+    const safeLorebookName = DOMPurify.sanitize(lorebookName);
+    const promptHtml = [
+        `<h3>${t`Delete bound lorebook too?`}</h3>`,
+        `<p>${t`This chat is bound to lorebook:`} <code>${safeLorebookName}</code></p>`,
+        `<p>${t`If this lorebook is shared by other chats or characters, they will lose that binding too.`}</p>`,
+    ].join('');
+    const result = await callGenericPopup(promptHtml, POPUP_TYPE.CONFIRM);
+
+    if (result !== POPUP_RESULT.AFFIRMATIVE) {
+        return;
+    }
+
+    const deleted = await deleteWorldInfo(lorebookName);
+    if (!deleted) {
+        toastr.warning(t`Lorebook could not be deleted.`, t`Delete Chat`);
+    }
 }
 
 /**
@@ -11772,6 +11848,10 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         await saveChatConditional();
     }
 
+    if (deleteCurrentChat) {
+        await maybeDeleteChatBoundLorebook(chat_file_for_del, selected_group);
+    }
+
     if (selected_group) {
         await createNewGroupChat(selected_group);
         if (deleteCurrentChat) await deleteGroupChat(selected_group, chat_file_for_del, { jumpToNewChat: false }); // don't jump, new chat was already created and jumped to above
@@ -12414,6 +12494,8 @@ jQuery(async function () {
      * @returns {Promise<void>}
      */
     async function handleDeleteChat(chatFile, group, fromSlashCommand = false) {
+        await maybeDeleteChatBoundLorebook(chatFile, group);
+
         // Close past chat popup.
         $('#select_chat_cross').trigger('click');
         showLoader();
