@@ -281,7 +281,7 @@ import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
-import { compare as compareJsonPatch } from './scripts/util/fast-json-patch.js';
+import { applyPatch as applyJsonPatch, compare as compareJsonPatch } from './scripts/util/fast-json-patch.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
@@ -7848,7 +7848,7 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
                 continue;
             }
 
-            const operations = [];
+            const previousMessages = currentChat.slice(1).map(message => cloneJsonValue(message));
             for (let lineIndex = 1; lineIndex < currentChat.length; lineIndex++) {
                 const message = currentChat[lineIndex];
                 if (message?.is_user || message?.is_system || message?.extra?.type == system_message_types.NARRATOR) {
@@ -7860,12 +7860,9 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
 
                 const nextMessage = { ...message, name: newName };
                 currentChat[lineIndex] = nextMessage;
-                operations.push({
-                    op: 'replace',
-                    path: `/${lineIndex - 1}`,
-                    value: nextMessage,
-                });
             }
+
+            const operations = buildChatMessagePatchOperations(previousMessages, currentChat.slice(1));
 
             if (operations.length === 0) {
                 continue;
@@ -8024,13 +8021,168 @@ export function buildObjectPatchOperations(previousState, nextState, options = {
     if (operations.length > maxOperations) {
         return [{ op: 'replace', path: '', value: cloneJsonValue(next) }];
     }
-    return operations;
+    return attachObjectPatchTests(previous, operations);
+}
+
+function decodeJsonPointerSegment(segment) {
+    return String(segment || '').replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+function getJsonPointerValue(root, path) {
+    if (path === '') {
+        return { found: true, value: root };
+    }
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+        return { found: false, value: undefined };
+    }
+    const segments = path.slice(1).split('/').map(decodeJsonPointerSegment);
+    let cursor = root;
+    for (const segment of segments) {
+        if (Array.isArray(cursor)) {
+            if (segment === '-') {
+                return { found: false, value: undefined };
+            }
+            const index = Number(segment);
+            if (!Number.isInteger(index) || index < 0 || index >= cursor.length) {
+                return { found: false, value: undefined };
+            }
+            cursor = cursor[index];
+            continue;
+        }
+        if (!cursor || typeof cursor !== 'object' || !(segment in cursor)) {
+            return { found: false, value: undefined };
+        }
+        cursor = cursor[segment];
+    }
+    return { found: true, value: cursor };
+}
+
+function attachObjectPatchTests(previousState, operations) {
+    const sourceOperations = Array.isArray(operations)
+        ? operations.filter(op => op && typeof op === 'object')
+        : [];
+    if (sourceOperations.length === 0) {
+        return sourceOperations;
+    }
+
+    let workingState = cloneJsonValue(previousState);
+    let lastTestedPath = null;
+    /** @type {object[]} */
+    const guardedOperations = [];
+
+    for (const operation of sourceOperations) {
+        const opName = String(operation.op || '').trim().toLowerCase();
+        const path = typeof operation.path === 'string' ? operation.path : null;
+        if (opName === 'test') {
+            guardedOperations.push(operation);
+            continue;
+        }
+
+        const shouldAddTest = (opName === 'replace' || opName === 'remove')
+            && typeof path === 'string'
+            && path !== lastTestedPath;
+        if (shouldAddTest) {
+            const resolved = getJsonPointerValue(workingState, path);
+            if (resolved.found) {
+                guardedOperations.push({
+                    op: 'test',
+                    path,
+                    value: cloneJsonValue(resolved.value),
+                });
+                lastTestedPath = path;
+            }
+        }
+
+        guardedOperations.push(operation);
+
+        try {
+            const patchResult = applyJsonPatch(workingState, [operation], true, false);
+            workingState = patchResult?.newDocument;
+        } catch {
+            // Keep operation list intact even if local simulation fails.
+        }
+
+        if (opName === 'add' || opName === 'remove') {
+            lastTestedPath = null;
+        }
+    }
+
+    return guardedOperations;
+}
+
+function extractTopMessageIndexFromPath(path) {
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+        return null;
+    }
+    const firstSegment = decodeJsonPointerSegment(path.slice(1).split('/')[0] || '');
+    if (!firstSegment || firstSegment === '-') {
+        return null;
+    }
+    const index = Number(firstSegment);
+    return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function attachChatMessagePatchTests(previousMessages, operations) {
+    const baseMessages = Array.isArray(previousMessages) ? cloneJsonValue(previousMessages) : null;
+    const sourceOperations = Array.isArray(operations)
+        ? operations.filter(op => op && typeof op === 'object')
+        : [];
+    if (!Array.isArray(baseMessages) || sourceOperations.length === 0) {
+        return sourceOperations;
+    }
+
+    let workingMessages = baseMessages;
+    let lastTestedIndex = null;
+    /** @type {object[]} */
+    const guardedOperations = [];
+
+    for (const operation of sourceOperations) {
+        const opName = String(operation.op || '').trim().toLowerCase();
+        if (opName === 'test') {
+            guardedOperations.push(operation);
+            continue;
+        }
+
+        const index = extractTopMessageIndexFromPath(operation.path);
+        const shouldAddTest = (opName === 'replace' || opName === 'remove')
+            && Number.isInteger(index)
+            && index >= 0
+            && index < workingMessages.length
+            && index !== lastTestedIndex;
+
+        if (shouldAddTest) {
+            guardedOperations.push({
+                op: 'test',
+                path: `/${index}`,
+                value: cloneJsonValue(workingMessages[index]),
+            });
+            lastTestedIndex = index;
+        }
+
+        guardedOperations.push(operation);
+
+        try {
+            const patchResult = applyJsonPatch(workingMessages, [operation], true, false);
+            if (Array.isArray(patchResult?.newDocument)) {
+                workingMessages = patchResult.newDocument;
+            }
+        } catch {
+            // Keep operation list intact even if local simulation fails.
+        }
+
+        if (opName === 'add' || opName === 'remove') {
+            lastTestedIndex = null;
+        }
+    }
+
+    return guardedOperations;
 }
 
 export function buildChatMessagePatchOperations(previousMessages, nextMessages) {
     const previous = Array.isArray(previousMessages) ? previousMessages : [];
     const next = Array.isArray(nextMessages) ? nextMessages : [];
-    return compareJsonPatch(previous, next);
+    const operations = compareJsonPatch(previous, next);
+    return attachChatMessagePatchTests(previous, operations);
 }
 
 function buildChatMetadataPatchOperations(previousMetadata, nextMetadata) {
@@ -8311,6 +8463,10 @@ export async function patchChatMessages(operations, retryCount = 0) {
     }
 
     try {
+        const target = resolveChatStateTarget();
+        const previousMessages = target ? chatMessageSnapshotCache.get(getChatMessageSnapshotKey(target)) : null;
+        const guardedOperations = attachChatMessagePatchTests(previousMessages, normalizedOperations);
+
         if (selected_group) {
             const group = groups.find(x => x.id == selected_group);
             const groupChatId = group?.chat_id;
@@ -8324,7 +8480,7 @@ export async function patchChatMessages(operations, retryCount = 0) {
                 headers: getRequestHeaders(),
                 body: JSON.stringify({
                     id: groupChatId,
-                    operations: normalizedOperations,
+                    operations: guardedOperations,
                     chat_metadata: { ...chat_metadata },
                     integrity: chat_metadata?.integrity,
                 }),
@@ -8353,16 +8509,16 @@ export async function patchChatMessages(operations, retryCount = 0) {
         const response = await fetch('/api/chats/patch', {
             method: 'POST',
             cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: charName,
-                file_name: fileName,
-                operations: normalizedOperations,
-                avatar_url: avatar,
-                chat_metadata: { ...chat_metadata },
-                integrity: chat_metadata?.integrity,
-            }),
-        });
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    ch_name: charName,
+                    file_name: fileName,
+                    operations: guardedOperations,
+                    avatar_url: avatar,
+                    chat_metadata: { ...chat_metadata },
+                    integrity: chat_metadata?.integrity,
+                }),
+            });
 
         if (response.ok) {
             const payload = await response.json().catch(() => null);

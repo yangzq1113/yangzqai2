@@ -760,6 +760,9 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
 
                 // Only save the chat if there were any changes to the chat content
                 let hadChanges = false;
+                const previousMessages = Array.isArray(messages) && messages.length > 1
+                    ? JSON.parse(JSON.stringify(messages.slice(1)))
+                    : [];
                 // Chat shouldn't be empty
                 if (Array.isArray(messages) && messages.length) {
                     // Iterate over every chat message
@@ -786,22 +789,7 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
 
                     if (hadChanges) {
                         await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, messages, oldAvatar, newAvatar);
-                        const operations = [];
-                        for (let lineIndex = 1; lineIndex < messages.length; lineIndex++) {
-                            const message = messages[lineIndex];
-                            if (!message || message.is_user || message.is_system) {
-                                continue;
-                            }
-                            const forceAvatar = String(message.force_avatar || '');
-                            if (!forceAvatar || forceAvatar.indexOf(encodeURIComponent(newAvatar)) === -1) {
-                                continue;
-                            }
-                            operations.push({
-                                op: 'replace',
-                                path: `/${lineIndex - 1}`,
-                                value: message,
-                            });
-                        }
+                        const operations = buildChatMessagePatchOperations(previousMessages, messages.slice(1));
                         if (operations.length === 0) {
                             continue;
                         }
