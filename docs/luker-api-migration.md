@@ -1,23 +1,72 @@
-# Luker API Additions and Migration Guide
+# Luker Plugin/API Migration Guide
 
-This document summarizes the Luker API changes on top of SillyTavern and shows how extension authors should migrate to incremental, chat-bound APIs.
+This guide is for extension authors migrating from legacy SillyTavern-style save flows to Luker’s patch-first, hook-first model.
 
-## Goals
+## 1) Use Context Helpers First
 
-- Avoid repeated full chat uploads for save/edit/delete.
-- Keep plugin state chat-bound, patchable, and lightweight.
-- Make generation persistence/recovery backend-owned.
-- Keep legacy `/save` style APIs available for compatibility.
+In Luker, `getContext()` is the primary plugin surface. Prefer these helpers over direct endpoint calls.
 
-## Recommended Migration (TL;DR)
+### Chat/message persistence
 
-1. Stop calling full-save endpoints for every change.
-2. Use incremental message APIs (`append` / `patch`) for chat content.
-3. Use metadata patch APIs for `chat_metadata` changes.
-4. Use chat state sidecar APIs for large plugin state objects.
-5. For OpenAI chat-completion requests, use prompt delta + persisted job APIs when reconnect recovery matters.
+- `appendChatMessages(messages)`
+- `patchChatMessages(operations)`
+- `saveChatMetadata(withMetadata?)`
 
-## Incremental Chat APIs
+### Chat-bound plugin state
+
+- `getChatState(namespace, options?)`
+- `patchChatState(namespace, operations, options?)`
+- `deleteChatState(namespace, options?)`
+
+### Prompt/world-info assembly
+
+- `buildPresetAwarePromptMessages(options)`
+- `simulateWorldInfoActivation(options?)`
+
+## 2) Generation Hook Order (Recommended)
+
+Register generation-time logic with:
+
+- `context.eventSource.on(context.eventTypes.GENERATION_BEFORE_WORLD_INFO_SCAN, handler)`
+- `context.eventSource.on(context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN, handler)`
+- `context.eventSource.on(context.eventTypes.GENERATION_WORLD_INFO_FINALIZED, handler)`
+- `context.eventSource.on(context.eventTypes.GENERATION_BEFORE_API_REQUEST, handler)`
+
+Lifecycle hooks:
+
+- `GENERATION_STARTED`
+- `GENERATION_STOPPED`
+- `GENERATION_ENDED`
+
+Practical rule:
+- If you need to read/update lorebook-triggered context for this request, do it at `GENERATION_WORLD_INFO_FINALIZED`.
+
+## 3) Migration Rules
+
+- Do not full-save entire chats after every tiny mutation.
+- Use message patch ops for edit/delete/insert behavior.
+- Use metadata patching for lightweight per-chat state.
+- Use chat state sidecar for larger plugin objects.
+- Prefer context helpers to preserve compatibility and future internal changes.
+
+## 4) Generation Resilience
+
+Luker generation routes attach backend generation IDs (`x-luker-generation-id`) and use backend-owned job state, so reply persistence is decoupled from frontend connection stability.
+
+This behavior is not limited to a single model provider route.
+
+## 5) Legacy Compatibility
+
+Legacy full-save routes are still available for compatibility:
+
+- `/api/chats/save`
+- `/api/chats/group/save`
+
+Luker internals and built-ins are patch-first; full-save is legacy compatibility, not the preferred path.
+
+## 6) Endpoint Appendix (Only When You Need Direct Calls)
+
+Most plugins should not call these directly, but they are listed for low-level integrations.
 
 ### Character chat
 
@@ -33,135 +82,40 @@ This document summarizes the Luker API changes on top of SillyTavern and shows h
 - `POST /api/chats/group/meta/patch`
 - `POST /api/chats/group/get-delta`
 
-### Message patch operation format
+### Chat state sidecar
 
-Base operations:
+- `POST /api/chats/state/get`
+- `POST /api/chats/state/patch`
+- `POST /api/chats/state/delete`
+
+### Message patch operation format
 
 - `insert`: `{ "op": "insert", "index": number, "message": {...} }`
 - `update`: `{ "op": "update", "index": number, "message": {...} }`
 - `delete`: `{ "op": "delete", "index": number }`
-
-Batch/range helpers (server-normalized into base ops):
-
 - `insert_many`: `{ "op": "insert_many", "index": number, "messages": [{...}, ...] }`
 - `update_many`: `{ "op": "update_many", "index": number, "messages": [{...}, ...] }`
 - `delete_range`: `{ "op": "delete_range", "index": number, "count": number }`
 - `batch`: `{ "op": "batch", "operations": [ ... ] }`
 
-Notes:
-
-- `index` is zero-based over message rows (header excluded).
-- `chat_metadata` can be included alongside patch/append payloads.
-
-## Metadata/Object Patch Semantics
-
-`/meta/patch` and `/state/patch` use object patch ops:
+### Object patch format (`meta/patch` and `state/patch`)
 
 - `replace_root`
 - `set`
 - `merge`
 - `delete`
 
-Paths are array-based and safe-segment validated:
+Path example:
 
-- Example: `{ "op": "set", "path": ["extensions", "memory", "last_capsule"], "value": {...} }`
-
-## Chat-Bound Plugin State (Sidecar)
-
-For plugin data that is too heavy for frequent full metadata writes, use:
-
-- `POST /api/chats/state/get`
-- `POST /api/chats/state/patch`
-- `POST /api/chats/state/delete`
-
-Payload target:
-
-- Character chat: `{ is_group: false, avatar_url, file_name, namespace }`
-- Group chat: `{ is_group: true, id, namespace }`
-
-Behavior:
-
-- Sidecar state is tied to the chat lifecycle.
-- Rename/delete operations move/remove sidecar files with the chat.
-
-## Frontend Helper APIs (Preferred for Extensions)
-
-From `getContext()` in `public/scripts/st-context.js`:
-
-- `appendChatMessages(messages)`
-- `patchChatMessages(operations)`
-- `saveChatMetadata(withMetadata?)`
-- `getChatState(namespace, options?)`
-- `patchChatState(namespace, operations, options?)`
-- `deleteChatState(namespace, options?)`
-- `simulateWorldInfoActivation(options?)`
-- `buildPresetAwarePromptMessages(options?)`
-
-These helpers already target Luker incremental endpoints and preserve compatibility behavior.
-
-## Prompt-Preset-Aware Plugin Message Assembly
-
-Use `buildPresetAwarePromptMessages()` to construct plugin request messages using current prompt preset structure.
-
-`plugin_extra` prompts are excluded from plugin message assembly by design.
-
-This lets plugins reuse the active preset skeleton while injecting their own runtime `messages`.
-
-## Generation Persistence and Reconnect Recovery
-
-For OpenAI chat-completions generation:
-
-- Request supports `persist_target` for backend-owned message persistence.
-- Request supports prompt delta via:
-  - `luker_prompt_state_id`
-  - `luker_prompt_delta` (`state_id`, `base_revision`, `prefix_length`, `messages`)
-- Active/recovery endpoints:
-  - `POST /api/backends/chat-completions/jobs/active`
-  - `POST /api/backends/chat-completions/jobs/status`
-  - `POST /api/backends/chat-completions/jobs/events`
-
-Streaming responses expose `x-luker-generation-id` so the frontend can resume status/events after reconnect.
-
-## Legacy Compatibility
-
-Legacy full-save routes are still available:
-
-- `/api/chats/save`
-- `/api/chats/group/save`
-
-Luker core now prefers patch/append/meta patch paths internally and only falls back to full save when necessary.
-
-## Minimal Migration Examples
-
-### Replace full chat save after edit
-
-Before:
-
-```js
-await fetch('/api/chats/save', { method: 'POST', body: JSON.stringify(fullPayload) });
+```json
+{ "op": "set", "path": ["extensions", "memory", "last_capsule"], "value": { "ok": true } }
 ```
 
-After:
+### Prompt-delta fields (chat-completions)
 
-```js
-await context.patchChatMessages([
-  { op: 'update', index: editedIndex, message: editedMessage },
-]);
-```
-
-### Persist plugin state incrementally
-
-```js
-await context.patchChatState('my_plugin', [
-  { op: 'set', path: ['graph', 'lastRecall'], value: recallResult },
-  { op: 'merge', path: ['stats'], value: { updatedAt: Date.now() } },
-]);
-```
-
-### Save only metadata diff
-
-```js
-await context.saveChatMetadata({
-  my_plugin_last_capsule: capsule,
-});
-```
+- `luker_prompt_state_id`
+- `luker_prompt_delta` with:
+  - `state_id`
+  - `base_revision`
+  - `prefix_length`
+  - `messages`

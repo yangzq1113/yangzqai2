@@ -1,17 +1,37 @@
 # Luker
 
-Luker is a fork of SillyTavern focused on cleaner APIs, stronger extension hooks, and better generation lifecycle handling.
+Luker is a SillyTavern fork focused on cleaner API behavior, stronger extension hooks, and production-grade generation lifecycle handling.
 
-## What Luker Adds
+## Why Luker
 
-- Incremental chat persistence APIs (`append`, `patch`, `meta/patch`, `state/patch`) to avoid repeated full-payload saves.
-- Backend-owned generation job tracking and recovery for active/finished stream state after reconnect.
-- Prompt-preset-aware extension helpers and world-info simulation hooks for plugin workflows.
-- Built-in `Orchestrator` and `Memory` plugins.
+- Reliable generation lifecycle: backend-owned generation jobs keep running and persisting even if the frontend disconnects/reloads, and active output can be recovered after reconnect.
+- Incremental chat persistence: message/content changes are patch-first instead of repeated full chat saves.
+- Better plugin ergonomics: prompt-preset-aware message assembly, world-info simulation/finalization hooks, and chat-bound plugin state helpers.
+- Built-in advanced plugins: `Orchestrator` (multi-agent planning) and `Memory` (graph memory + recall).
 
-## Luker API Guide
+## Developer Quick Start (Plugins)
 
-- Luker API additions and migration notes: [`docs/luker-api-migration.md`](docs/luker-api-migration.md)
+Use `getContext()` as the primary integration surface.
+
+- Persistence helpers:
+  - `appendChatMessages(messages)`
+  - `patchChatMessages(operations)`
+  - `saveChatMetadata(withMetadata?)`
+  - `getChatState(namespace, options?)`
+  - `patchChatState(namespace, operations, options?)`
+  - `deleteChatState(namespace, options?)`
+- Prompt/world-info helpers:
+  - `buildPresetAwarePromptMessages(options)`
+  - `simulateWorldInfoActivation(options?)`
+- Generation lifecycle hooks (`context.eventSource.on(context.eventTypes.*)`):
+  - `GENERATION_BEFORE_WORLD_INFO_SCAN`
+  - `GENERATION_AFTER_WORLD_INFO_SCAN`
+  - `GENERATION_WORLD_INFO_FINALIZED`
+  - `GENERATION_BEFORE_API_REQUEST`
+  - `GENERATION_STARTED` / `GENERATION_STOPPED` / `GENERATION_ENDED`
+
+Detailed migration and API notes:
+- [`docs/luker-api-migration.md`](docs/luker-api-migration.md)
 
 ## Upstream Resources (SillyTavern)
 
