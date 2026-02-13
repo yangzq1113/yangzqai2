@@ -1,10 +1,13 @@
-# This workflow publishes a docker image on tag push or manual dispatch.
+# This workflow publishes docker images on every push.
+# The `latest` tag is pushed only for tag refs.
 
 name: Create Docker Image (Release and Staging)
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - '**'
     tags:
       - '*'
 
@@ -39,7 +42,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
+            type=sha,format=short
             type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=manual,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       # Login into package repository as the person who created the release
