@@ -203,8 +203,10 @@ function registerLocaleData() {
         'Orchestrator running...': '编排插件运行中...',
         'Orchestrator completed.': '编排插件运行完成。',
         'Generation aborted. Skipped orchestration.': '生成已中断，已跳过编排。',
+        'Orchestrator cancelled by user.': '编排插件已由用户终止。',
         'Orchestrator failed: ${0}': '编排插件运行失败：${0}',
         'Failed to persist character override.': '角色卡覆写写入失败。',
+        'Stop': '终止',
     });
     addLocaleData('zh-tw', {
         'Orchestrator': '多智能體編排',
@@ -310,8 +312,10 @@ function registerLocaleData() {
         'Orchestrator running...': '編排插件運行中...',
         'Orchestrator completed.': '編排插件運行完成。',
         'Generation aborted. Skipped orchestration.': '生成已中斷，已跳過編排。',
+        'Orchestrator cancelled by user.': '編排插件已由使用者終止。',
         'Orchestrator failed: ${0}': '編排插件運行失敗：${0}',
         'Failed to persist character override.': '角色卡覆寫寫入失敗。',
+        'Stop': '終止',
     });
 }
 
@@ -379,6 +383,7 @@ const uiState = {
 let orchInFlight = false;
 let activeRunInfoToast = null;
 let activeAiBuildToast = null;
+let activeOrchRunAbortController = null;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -785,6 +790,40 @@ function isAbortError(error, abortSignal = null) {
     }
     const message = String(error?.message || error || '').toLowerCase();
     return message.includes('aborted') || message.includes('abort');
+}
+
+function linkAbortSignals(...signals) {
+    const validSignals = signals.filter(isAbortSignalLike);
+    if (validSignals.length === 0) {
+        return { signal: null, cleanup: () => {} };
+    }
+    if (validSignals.length === 1) {
+        return { signal: validSignals[0], cleanup: () => {} };
+    }
+
+    const controller = new AbortController();
+    const onAbort = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    for (const signal of validSignals) {
+        if (signal.aborted) {
+            onAbort();
+            break;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return {
+        signal: controller.signal,
+        cleanup: () => {
+            for (const signal of validSignals) {
+                signal.removeEventListener('abort', onAbort);
+            }
+        },
+    };
 }
 
 async function requestToolCallWithRetry(settings, promptMessages, {
@@ -1344,6 +1383,12 @@ async function onWorldInfoFinalized(payload) {
         return;
     }
     orchInFlight = true;
+    const pluginAbortController = new AbortController();
+    activeOrchRunAbortController = pluginAbortController;
+    const linkedAbort = linkAbortSignals(payload?.signal, pluginAbortController.signal);
+    const orchestrationPayload = linkedAbort.signal && linkedAbort.signal !== payload?.signal
+        ? { ...payload, signal: linkedAbort.signal }
+        : payload;
 
     try {
         const profile = getEffectiveProfile(context);
@@ -1354,9 +1399,16 @@ async function onWorldInfoFinalized(payload) {
             return;
         }
         updateUiStatus(i18n('Orchestrator running...'));
-        showRunInfoToast(i18n('Orchestrator running...'));
+        showRunInfoToast(i18n('Orchestrator running...'), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!pluginAbortController.signal.aborted) {
+                    pluginAbortController.abort();
+                }
+            },
+        });
 
-        const finalRun = await runOrchestration(context, payload, messages, profile);
+        const finalRun = await runOrchestration(context, orchestrationPayload, messages, profile);
 
         const capsuleText = buildCapsule(payload, finalRun.stageOutputs || [], {
             phase: 'final',
@@ -1366,10 +1418,13 @@ async function onWorldInfoFinalized(payload) {
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
     } catch (error) {
-        if (isAbortError(error, payload?.signal)) {
+        if (isAbortError(error, orchestrationPayload?.signal)) {
             clearCapsulePrompt(context);
             clearLastCapsuleMetadata(context);
-            updateUiStatus(i18n('Generation aborted. Skipped orchestration.'));
+            const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
+            updateUiStatus(generationAborted
+                ? i18n('Generation aborted. Skipped orchestration.')
+                : i18n('Orchestrator cancelled by user.'));
             clearRunInfoToast();
             return;
         }
@@ -1381,6 +1436,10 @@ async function onWorldInfoFinalized(payload) {
         clearRunInfoToast();
         notifyError(failText);
     } finally {
+        linkedAbort.cleanup();
+        if (activeOrchRunAbortController === pluginAbortController) {
+            activeOrchRunAbortController = null;
+        }
         clearRunInfoToast();
         orchInFlight = false;
     }
@@ -2021,7 +2080,7 @@ function updateUiStatus(text) {
     jQuery('#luker_orch_status').text(String(text || ''));
 }
 
-function showRunInfoToast(message) {
+function showRunInfoToast(message, { stopLabel = '', onStop = null } = {}) {
     if (typeof toastr === 'undefined') {
         return;
     }
@@ -2036,6 +2095,20 @@ function showRunInfoToast(message) {
         closeButton: true,
         progressBar: false,
     });
+    if (activeRunInfoToast && typeof onStop === 'function') {
+        const toastBody = activeRunInfoToast.find('.toast-message');
+        if (toastBody.length > 0) {
+            const button = jQuery('<button type="button" class="menu_button menu_button_small" style="margin-top:8px;"></button>');
+            button.text(String(stopLabel || i18n('Stop')));
+            button.on('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                button.prop('disabled', true);
+                onStop();
+            });
+            toastBody.append(button);
+        }
+    }
 }
 
 function clearRunInfoToast() {

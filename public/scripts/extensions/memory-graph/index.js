@@ -509,6 +509,9 @@ function registerLocaleData() {
         'Selected edge #${0}: ${1} -> ${2} [${3}]': '已选择边 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '检测到聊天变更。记忆图会在下次生成时重新同步。',
         'Generation aborted. Skipped memory recall.': '生成已中断，已跳过记忆召回。',
+        'Memory recall cancelled by user.': '记忆召回已由用户终止。',
+        'Memory graph update cancelled by user.': '记忆图更新已由用户终止。',
+        'Stop': '终止',
     });
     addLocaleData('zh-tw', {
         'Memory': '記憶',
@@ -730,6 +733,9 @@ function registerLocaleData() {
         'Selected edge #${0}: ${1} -> ${2} [${3}]': '已選擇邊 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '偵測到聊天變更。記憶圖會在下次生成時重新同步。',
         'Generation aborted. Skipped memory recall.': '生成已中斷，已跳過記憶召回。',
+        'Memory recall cancelled by user.': '記憶召回已由使用者終止。',
+        'Memory graph update cancelled by user.': '記憶圖更新已由使用者終止。',
+        'Stop': '終止',
     });
 }
 
@@ -793,6 +799,8 @@ const memoryStoreTargets = new Map();
 const memoryStorePersistedSnapshots = new Map();
 const memoryLoadTasks = new Map();
 let activeRuntimeInfoToast = null;
+let activeRecallAbortController = null;
+let activeExtractionAbortController = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 
@@ -1913,7 +1921,7 @@ function buildPresetAwareLLMMessages(
     });
 }
 
-async function summarizeTextWithLLM(context, settings, instruction, lines) {
+async function summarizeTextWithLLM(context, settings, instruction, lines, abortSignal = null) {
     const joined = summarizeTextHeuristic(lines);
     if (!joined) {
         return '';
@@ -1935,6 +1943,7 @@ async function summarizeTextWithLLM(context, settings, instruction, lines) {
                 required: ['summary'],
                 additionalProperties: false,
             },
+            abortSignal,
         });
         return normalizeText(result?.summary || '');
     } catch (error) {
@@ -2025,6 +2034,40 @@ function isAbortError(error, abortSignal = null) {
     }
     const message = String(error?.message || error || '').toLowerCase();
     return message.includes('aborted') || message.includes('abort');
+}
+
+function linkAbortSignals(...signals) {
+    const validSignals = signals.filter(isAbortSignalLike);
+    if (validSignals.length === 0) {
+        return { signal: null, cleanup: () => {} };
+    }
+    if (validSignals.length === 1) {
+        return { signal: validSignals[0], cleanup: () => {} };
+    }
+
+    const controller = new AbortController();
+    const onAbort = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    for (const signal of validSignals) {
+        if (signal.aborted) {
+            onAbort();
+            break;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return {
+        signal: controller.signal,
+        cleanup: () => {
+            for (const signal of validSignals) {
+                signal.removeEventListener('abort', onAbort);
+            }
+        },
+    };
 }
 
 async function requestToolCallWithRetry(settings, promptMessages, {
@@ -2914,8 +2957,12 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                 llmPresetName: promptPresetName,
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 retriesOverride: 0,
+                abortSignal: options?.abortSignal || null,
             });
         } catch (error) {
+            if (isAbortError(error, options?.abortSignal || null)) {
+                throw error;
+            }
             if (attempt >= semanticRetries) {
                 throw error;
             }
@@ -3350,6 +3397,9 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
 
     for (let depth = 0; depth < Number(config.maxDepth || 1); depth++) {
         while (guard < 120 && compressedRounds < maxRoundsPerType) {
+            if (isAbortSignalLike(options?.abortSignal) && options.abortSignal.aborted) {
+                throw new DOMException('Memory compression aborted.', 'AbortError');
+            }
             guard += 1;
             let candidates = collectSemanticRootsByDepth(store, type, depth, options);
             if (!forceMode && depth === 0 && Number(config.keepRecentLeaves || 0) > 0 && candidates.length > Number(config.keepRecentLeaves || 0)) {
@@ -3373,7 +3423,13 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 config.summarizeInstruction
                 || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
             );
-            const summary = await summarizeTextWithLLM(context, settings, instruction, lines);
+            const summary = await summarizeTextWithLLM(
+                context,
+                settings,
+                instruction,
+                lines,
+                options?.abortSignal || null,
+            );
             if (!summary) {
                 break;
             }
@@ -3495,6 +3551,7 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
     const extractionMaxSeq = Number.isFinite(endFrameSeq) ? Math.max(0, Math.floor(endFrameSeq)) : null;
     const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch, {
         maxSeq: extractionMaxSeq,
+        abortSignal: options?.abortSignal || null,
     });
     if (operations.length === 0) {
         return false;
@@ -3573,11 +3630,17 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
     await runCompressionLoop(context, store, settings, {
         compressionStats: options?.compressionStats,
         maxSeq: extractionMaxSeq,
+        abortSignal: options?.abortSignal || null,
     });
     return true;
 }
 
-async function runExtractionForStore(context, store, { force = false, startSeq = null, showCompressionToast = true } = {}) {
+async function runExtractionForStore(context, store, {
+    force = false,
+    startSeq = null,
+    showCompressionToast = true,
+    abortSignal = null,
+} = {}) {
     const settings = getSettings();
     const window = computeExtractionWindow(context, store, startSeq);
     const frames = window.frames;
@@ -3587,6 +3650,9 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
         store.appliedSeqTo = coveredSeqTo;
     }
     const beginSeq = window.beginSeq;
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        throw new DOMException('Memory extraction aborted.', 'AbortError');
+    }
     if (beginSeq > latestSeq) {
         store.appliedSeqTo = latestSeq;
         store.seqCounter = latestSeq;
@@ -3625,6 +3691,9 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
     );
     let extractedAny = false;
     for (let i = beginSeq - 1; i < frames.length; i += extractBatchTurns) {
+        if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+            throw new DOMException('Memory extraction aborted.', 'AbortError');
+        }
         const batchStartIndex = i;
         const batchEndIndex = Math.min(frames.length - 1, i + extractBatchTurns - 1);
         const startFrame = frames[batchStartIndex];
@@ -3642,12 +3711,16 @@ async function runExtractionForStore(context, store, { force = false, startSeq =
                     batchStartIndex,
                     batchEndIndex,
                     {
-                    compressionStats,
+                        compressionStats,
+                        abortSignal,
                     },
                 );
                 lastFrameError = null;
                 break;
             } catch (error) {
+                if (isAbortError(error, abortSignal)) {
+                    throw error;
+                }
                 lastFrameError = error;
                 if (attempt >= frameErrorRetries) {
                     throw error;
@@ -4814,7 +4887,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     };
 }
 
-async function rebuildStoreFromCurrentChat(context) {
+async function rebuildStoreFromCurrentChat(context, { abortSignal = null } = {}) {
     const chatKey = getChatKey(context);
     const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
     if (!target) {
@@ -4822,7 +4895,12 @@ async function rebuildStoreFromCurrentChat(context) {
     }
 
     const rebuilt = createEmptyStore();
-    await runExtractionForStore(context, rebuilt, { force: true, startSeq: 1, showCompressionToast: false });
+    await runExtractionForStore(context, rebuilt, {
+        force: true,
+        startSeq: 1,
+        showCompressionToast: false,
+        abortSignal,
+    });
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
     memoryStoreCache.set(chatKey, rebuilt);
@@ -5053,18 +5131,36 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
         && payload?.dryRun !== true
         && generationType !== 'quiet'
         && Array.isArray(payload?.coreChat);
+    const recallAbortController = shouldShowRuntimeToast ? new AbortController() : null;
+    if (recallAbortController) {
+        activeRecallAbortController = recallAbortController;
+    }
+    const linkedAbort = linkAbortSignals(payload?.signal, recallAbortController?.signal);
+    const effectivePayload = linkedAbort.signal && linkedAbort.signal !== payload?.signal
+        ? { ...payload, signal: linkedAbort.signal }
+        : payload;
     if (shouldShowRuntimeToast) {
-        showRuntimeInfoToast(i18n('Memory recall running...'));
+        showRuntimeInfoToast(i18n('Memory recall running...'), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (recallAbortController && !recallAbortController.signal.aborted) {
+                    recallAbortController.abort();
+                }
+            },
+        });
     }
     try {
-        const injected = await injectMemoryPrompts(context, payload);
+        const injected = await injectMemoryPrompts(context, effectivePayload);
         if (injected && payload && typeof payload === 'object') {
             payload.__lukerRpgMemoryInjected = true;
         }
         return Boolean(injected);
     } catch (error) {
-        if (isAbortError(error, payload?.signal)) {
-            updateUiStatus(i18n('Generation aborted. Skipped memory recall.'));
+        if (isAbortError(error, effectivePayload?.signal)) {
+            const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
+            updateUiStatus(generationAborted
+                ? i18n('Generation aborted. Skipped memory recall.')
+                : i18n('Memory recall cancelled by user.'));
             return false;
         }
         console.error(`[${MODULE_NAME}] Recall injection failed during ${trigger}`, error);
@@ -5075,6 +5171,10 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
         ));
         return false;
     } finally {
+        linkedAbort.cleanup();
+        if (activeRecallAbortController === recallAbortController) {
+            activeRecallAbortController = null;
+        }
         if (shouldShowRuntimeToast) {
             clearRuntimeInfoToast();
         }
@@ -5117,6 +5217,8 @@ function scheduleExtraction(context) {
         if (!store) {
             return;
         }
+        const extractionAbortController = new AbortController();
+        activeExtractionAbortController = extractionAbortController;
         try {
             alignStoreCoverageToChat(store, context);
             const settings = getSettings();
@@ -5141,8 +5243,17 @@ function scheduleExtraction(context) {
                 refreshUiStats();
                 return;
             }
-            showRuntimeInfoToast(i18n('Memory graph update running...'));
-            await runExtractionForStore(context, store);
+            showRuntimeInfoToast(i18n('Memory graph update running...'), {
+                stopLabel: i18n('Stop'),
+                onStop: () => {
+                    if (!extractionAbortController.signal.aborted) {
+                        extractionAbortController.abort();
+                    }
+                },
+            });
+            await runExtractionForStore(context, store, {
+                abortSignal: extractionAbortController.signal,
+            });
             await persistMemoryStoreByChatKey(context, chatKey, store);
             const debug = store.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
@@ -5154,9 +5265,16 @@ function scheduleExtraction(context) {
             ));
             refreshUiStats();
         } catch (error) {
+            if (isAbortError(error, extractionAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                return;
+            }
             console.warn(`[${MODULE_NAME}] Extraction failed`, error);
             updateUiStatus(i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error)));
         } finally {
+            if (activeExtractionAbortController === extractionAbortController) {
+                activeExtractionAbortController = null;
+            }
             clearRuntimeInfoToast();
         }
     }, 0);
@@ -6415,7 +6533,7 @@ function notifyEventCompressionIfAny(compressionStats) {
     notifyInfo(i18nFormat('Event compression completed: ${0} round(s).', eventRounds));
 }
 
-function showRuntimeInfoToast(message) {
+function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
     if (typeof toastr === 'undefined') {
         return;
     }
@@ -6430,6 +6548,20 @@ function showRuntimeInfoToast(message) {
         closeButton: true,
         progressBar: false,
     });
+    if (activeRuntimeInfoToast && typeof onStop === 'function') {
+        const toastBody = activeRuntimeInfoToast.find('.toast-message');
+        if (toastBody.length > 0) {
+            const button = jQuery('<button type="button" class="menu_button menu_button_small" style="margin-top:8px;"></button>');
+            button.text(String(stopLabel || i18n('Stop')));
+            button.on('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                button.prop('disabled', true);
+                onStop();
+            });
+            toastBody.append(button);
+        }
+    }
 }
 
 function clearRuntimeInfoToast() {
@@ -7726,7 +7858,16 @@ async function openManualCompressionPopup(context, settings) {
     const beforeNodeCount = beforeNodes.length;
     const beforeArchivedCount = beforeNodes.filter(node => Boolean(node?.archived)).length;
     const compressionStats = createCompressionStats();
-    showRuntimeInfoToast(i18n('Memory graph update running...'));
+    const compressionAbortController = new AbortController();
+    activeExtractionAbortController = compressionAbortController;
+    showRuntimeInfoToast(i18n('Memory graph update running...'), {
+        stopLabel: i18n('Stop'),
+        onStop: () => {
+            if (!compressionAbortController.signal.aborted) {
+                compressionAbortController.abort();
+            }
+        },
+    });
     try {
         const changed = await runCompressionLoop(context, store, settings, {
             typeIds: values.selectedTypeIds,
@@ -7734,6 +7875,7 @@ async function openManualCompressionPopup(context, settings) {
             maxRoundsPerType: values.maxRoundsPerType,
             maxSeq,
             compressionStats,
+            abortSignal: compressionAbortController.signal,
         });
         if (!changed) {
             notifySuccess(i18n('Manual compression made no changes.'));
@@ -7750,7 +7892,17 @@ async function openManualCompressionPopup(context, settings) {
         notifySuccess(summary);
         notifyEventCompressionIfAny(compressionStats);
         updateUiStatus(summary);
+    } catch (error) {
+        if (isAbortError(error, compressionAbortController.signal)) {
+            updateUiStatus(i18n('Memory graph update cancelled by user.'));
+            return;
+        }
+        console.warn(`[${MODULE_NAME}] Manual compression failed`, error);
+        notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'compress', String(error?.message || error)));
     } finally {
+        if (activeExtractionAbortController === compressionAbortController) {
+            activeExtractionAbortController = null;
+        }
         clearRuntimeInfoToast();
     }
 }
@@ -7913,23 +8065,45 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
-        showRuntimeInfoToast(i18n('Memory graph update running...'));
+        const rebuildAbortController = new AbortController();
+        activeExtractionAbortController = rebuildAbortController;
+        showRuntimeInfoToast(i18n('Memory graph update running...'), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!rebuildAbortController.signal.aborted) {
+                    rebuildAbortController.abort();
+                }
+            },
+        });
         try {
-            const store = await rebuildStoreFromCurrentChat(context);
+            const store = await rebuildStoreFromCurrentChat(context, { abortSignal: rebuildAbortController.signal });
             if (!store) {
                 notifyError(i18n('No active chat selected.'));
                 return;
             }
             const extractionEventRounds = getCompressionRoundsByType(store?.lastExtractionDebug?.compression, 'event');
             const compressionStats = createCompressionStats();
-            await runCompressionLoop(context, store, settings, { compressionStats });
+            await runCompressionLoop(context, store, settings, {
+                compressionStats,
+                abortSignal: rebuildAbortController.signal,
+            });
             await persistMemoryStoreByChatKey(context, getChatKey(context), store);
             refreshUiStats();
             notifySuccess(i18n('Memory graph rebuilt from current chat.'));
             recordCompressionRound(compressionStats, 'event', extractionEventRounds);
             notifyEventCompressionIfAny(compressionStats);
             updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
+        } catch (error) {
+            if (isAbortError(error, rebuildAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                return;
+            }
+            console.warn(`[${MODULE_NAME}] Rebuild failed`, error);
+            notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'rebuild', String(error?.message || error)));
         } finally {
+            if (activeExtractionAbortController === rebuildAbortController) {
+                activeExtractionAbortController = null;
+            }
             clearRuntimeInfoToast();
         }
     });
