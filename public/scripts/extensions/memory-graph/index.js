@@ -297,7 +297,7 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回预设（参数+提示词，留空=当前）',
         'Extract API preset (Connection profile, empty = current)': '写入 API 预设（连接配置，留空=当前）',
         'Extract preset (params + prompt, empty = current)': '写入预设（参数+提示词，留空=当前）',
-        'Project recall output to chat lorebook before WI scan': '在世界书扫描前将召回结果投影到聊天 Lorebook',
+        'Project recall output to chat lorebook (rescan WI after inject)': '将召回结果投影到聊天 Lorebook（注入后重扫世界书）',
         'Exclude latest N messages from memory injection': '记忆注入排除最近 N 条消息',
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '写入上下文 Assistant 楼层数',
@@ -518,7 +518,7 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回預設（參數+提示詞，留空=目前）',
         'Extract API preset (Connection profile, empty = current)': '寫入 API 預設（連線設定，留空=目前）',
         'Extract preset (params + prompt, empty = current)': '寫入預設（參數+提示詞，留空=目前）',
-        'Project recall output to chat lorebook before WI scan': '在世界書掃描前將召回結果投影到聊天 Lorebook',
+        'Project recall output to chat lorebook (rescan WI after inject)': '將召回結果投影到聊天 Lorebook（注入後重掃世界書）',
         'Exclude latest N messages from memory injection': '記憶注入排除最近 N 條訊息',
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '寫入上下文 Assistant 樓層數',
@@ -5021,7 +5021,7 @@ async function injectMemoryPrompts(context, payload) {
     return true;
 }
 
-async function safeInjectMemoryPrompts(context, payload, trigger = 'before_world_info_scan') {
+async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_info_scan') {
     const settings = getSettings();
     const generationType = String(payload?.type || '').trim().toLowerCase();
     const shouldShowRuntimeToast = settings.enabled
@@ -8028,7 +8028,7 @@ function ensureUi() {
             <select id="luker_rpg_memory_extract_api_preset" class="text_pole"></select>
             <label for="luker_rpg_memory_extract_preset">${escapeHtml(i18n('Extract preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_preset" class="text_pole"></select>
-            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook before WI scan'))}</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook (rescan WI after inject)'))}</label>
 
             <div class="flex-container">
                 <label style="flex:1">${escapeHtml(i18n('Update every N assistant turns'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
@@ -8083,11 +8083,16 @@ jQuery(() => {
     saveSettingsDebounced();
     ensureUi();
 
-    const wiBeforeEvent = context.eventTypes.GENERATION_BEFORE_WORLD_INFO_SCAN;
-    context.eventSource.on(wiBeforeEvent, async (payload) => {
-        const runtimeContext = getContext();
-        await safeInjectMemoryPrompts(runtimeContext, payload, 'before_world_info_scan');
-    });
+    const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
+    if (wiAfterEvent) {
+        context.eventSource.on(wiAfterEvent, async (payload) => {
+            const runtimeContext = getContext();
+            const injected = await safeInjectMemoryPrompts(runtimeContext, payload, 'after_world_info_scan');
+            if (injected && payload && typeof payload === 'object') {
+                payload.requestRescan = true;
+            }
+        });
+    }
     const clearRuntimeProjectionAfterGeneration = async () => {
         const runtimeContext = getContext();
         try {
