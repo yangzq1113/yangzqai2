@@ -98,6 +98,169 @@ export const DEFAULT_WEIGHT = 100;
 export const MAX_SCAN_DEPTH = 1000;
 const MAX_COMMENT_LENGTH = 100;
 const KNOWN_DECORATORS = ['@@activate', '@@dont_activate'];
+const WI_ACTIVATION_TRACE_SCAN_LIMIT = 12;
+const wiActivationTraceByScope = new Map();
+
+function escapeHtmlText(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function getActivationTraceScopeKey() {
+    const chatId = String(getCurrentChatId() || '').trim();
+    return chatId ? `chat:${chatId}` : 'chat:none';
+}
+
+function getOrCreateActivationTraceBucket(scopeKey) {
+    const key = String(scopeKey || 'chat:none');
+    if (!wiActivationTraceByScope.has(key)) {
+        wiActivationTraceByScope.set(key, new Map());
+    }
+    return wiActivationTraceByScope.get(key);
+}
+
+function getEntryActivationTrace(scopeKey, worldName, uid) {
+    const bucket = wiActivationTraceByScope.get(String(scopeKey || 'chat:none'));
+    if (!bucket) {
+        return null;
+    }
+    return bucket.get(`${String(worldName || '')}.${String(uid || '')}`) || null;
+}
+
+function getScanStateName(stateValue) {
+    return Object.entries(scan_state).find(([_, value]) => value === stateValue)?.[0] || String(stateValue);
+}
+
+function formatTraceTime(value) {
+    if (!value) {
+        return 'N/A';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return String(value);
+    }
+    return date.toLocaleString();
+}
+
+function explainTraceSourceHint(hint) {
+    if (!hint || typeof hint !== 'object') {
+        return '';
+    }
+    const source = String(hint.source || '');
+    switch (source) {
+        case 'chat_depth':
+            return `${t`Chat depth`} #${Number(hint.depth || 0)}`;
+        case 'personaDescription':
+            return t`Persona Description`;
+        case 'characterDescription':
+            return t`Character Description`;
+        case 'characterPersonality':
+            return t`Character Personality`;
+        case 'characterDepthPrompt':
+            return t`Character Depth Prompt`;
+        case 'scenario':
+            return t`Scenario`;
+        case 'creatorNotes':
+            return t`Creator Notes`;
+        case 'extension_inject':
+            return `${t`Extension Inject`} #${Number(hint.index || 0)}`;
+        case 'wi_recursion':
+            return `${t`WI Recursion Buffer`} #${Number(hint.index || 0)}`;
+        case 'scan_buffer':
+            return t`Scan Buffer`;
+        default:
+            return source || t`Unknown`;
+    }
+}
+
+function explainTraceReason(reason, details = {}) {
+    const reasonKey = String(reason || '');
+    switch (reasonKey) {
+        case 'decorator_activate':
+            return t`Activated by @@activate decorator`;
+        case 'external_activation':
+            return t`Activated externally by another entry/system`;
+        case 'constant':
+            return t`Activated because this entry is constant`;
+        case 'sticky':
+            return t`Activated because sticky effect is active`;
+        case 'key_match': {
+            const key = String(details.primaryKey || '').trim();
+            return key
+                ? `${t`Activated by keyword match`}: "${key}"`
+                : t`Activated by keyword match`;
+        }
+        case 'secondary_key_miss':
+            return t`Primary key matched but secondary keyword logic failed`;
+        case 'inclusion_group_filtered':
+            return t`Filtered out by inclusion-group conflict`;
+        case 'probability_failed':
+            return t`Failed probability roll`;
+        case 'budget_overflow':
+            return t`Skipped due to world info budget limit`;
+        case 'added_to_prompt':
+            return t`Activated and injected into prompt`;
+        default:
+            return reasonKey || t`Unknown reason`;
+    }
+}
+
+function renderTraceDetailLines(details = {}) {
+    if (!details || typeof details !== 'object') {
+        return '';
+    }
+
+    const lines = [];
+    const sourceHints = Array.isArray(details.sourceHints) ? details.sourceHints : [];
+    if (sourceHints.length > 0) {
+        const labels = sourceHints
+            .map(explainTraceSourceHint)
+            .filter(Boolean);
+        if (labels.length > 0) {
+            lines.push(`${t`Matched in`}: ${labels.join(', ')}`);
+        }
+    }
+
+    if (Array.isArray(details.secondaryKeys) && details.secondaryKeys.length > 0) {
+        lines.push(`${t`Secondary keys checked`}: ${details.secondaryKeys.join(', ')}`);
+    }
+
+    if (Array.isArray(details.matchedSecondaryKeys) && details.matchedSecondaryKeys.length > 0) {
+        lines.push(`${t`Secondary keys matched`}: ${details.matchedSecondaryKeys.join(', ')}`);
+    }
+
+    if (details.selectiveLogic) {
+        lines.push(`${t`Secondary logic`}: ${String(details.selectiveLogic)}`);
+    }
+
+    if (details.group) {
+        lines.push(`${t`Inclusion group`}: ${String(details.group)}`);
+    }
+
+    if (Number.isFinite(details.probability)) {
+        lines.push(`${t`Probability`}: ${Number(details.probability)}%`);
+    }
+
+    if (Number.isFinite(details.budget)) {
+        lines.push(`${t`Budget`}: ${Number(details.budget)}`);
+    }
+
+    if (Array.isArray(details.recursionSourceEntries) && details.recursionSourceEntries.length > 0) {
+        lines.push(`${t`Recursion source entries`}: ${details.recursionSourceEntries.join(', ')}`);
+    }
+
+    if (details.sourceEntry) {
+        lines.push(`${t`Activated by entry`}: ${String(details.sourceEntry)}`);
+    }
+
+    return lines
+        .map(line => `<div style="opacity:.86;">${escapeHtmlText(line)}</div>`)
+        .join('');
+}
 
 // Typedef area
 /**
@@ -364,6 +527,90 @@ class WorldInfoBuffer {
         }
 
         return false;
+    }
+
+    /**
+     * Returns match source hints for a key.
+     * @param {WIScanEntry} entry WI entry
+     * @param {string} needle Key text/regex to match
+     * @param {number} scanState The current scan state
+     * @returns {Array<object>} Match source hints
+     */
+    getMatchSourceHints(entry, needle, scanState) {
+        const hints = [];
+        const key = String(needle || '').trim();
+        if (!key) {
+            return hints;
+        }
+
+        let depth = entry.scanDepth ?? this.getDepth();
+        if (!Number.isFinite(depth)) {
+            depth = this.getDepth();
+        }
+        depth = Math.max(0, Math.min(MAX_SCAN_DEPTH, Math.floor(depth)));
+
+        for (let index = this.#startDepth; index < depth; index++) {
+            const message = this.#depthBuffer[index];
+            if (!message) {
+                continue;
+            }
+            if (this.matchKeys(message, key, entry)) {
+                hints.push({
+                    source: 'chat_depth',
+                    depth: index + 1,
+                });
+            }
+        }
+
+        const globalMatchers = [
+            ['personaDescription', entry.matchPersonaDescription, this.#globalScanData.personaDescription],
+            ['characterDescription', entry.matchCharacterDescription, this.#globalScanData.characterDescription],
+            ['characterPersonality', entry.matchCharacterPersonality, this.#globalScanData.characterPersonality],
+            ['characterDepthPrompt', entry.matchCharacterDepthPrompt, this.#globalScanData.characterDepthPrompt],
+            ['scenario', entry.matchScenario, this.#globalScanData.scenario],
+            ['creatorNotes', entry.matchCreatorNotes, this.#globalScanData.creatorNotes],
+        ];
+        for (const [name, enabled, text] of globalMatchers) {
+            if (!enabled || !text) {
+                continue;
+            }
+            if (this.matchKeys(text, key, entry)) {
+                hints.push({ source: name });
+            }
+        }
+
+        for (let index = 0; index < this.#injectBuffer.length; index++) {
+            const text = this.#injectBuffer[index];
+            if (!text) {
+                continue;
+            }
+            if (this.matchKeys(text, key, entry)) {
+                hints.push({
+                    source: 'extension_inject',
+                    index: index + 1,
+                });
+            }
+        }
+
+        if (scanState !== scan_state.MIN_ACTIVATIONS) {
+            for (let index = 0; index < this.#recurseBuffer.length; index++) {
+                const text = this.#recurseBuffer[index];
+                if (!text) {
+                    continue;
+                }
+                if (this.matchKeys(text, key, entry)) {
+                    hints.push({
+                        source: 'wi_recursion',
+                        index: index + 1,
+                    });
+                }
+            }
+        }
+
+        if (hints.length === 0) {
+            hints.push({ source: 'scan_buffer' });
+        }
+        return hints;
     }
 
     /**
@@ -3252,6 +3499,78 @@ function setCommentPlaceholder(keys, commentInput) {
     commentInput.attr('placeholder', (keys || t`Entry Title/Memo`));
 }
 
+async function showActivationTracePopup(worldName, uid) {
+    const scopeKey = getActivationTraceScopeKey();
+    const trace = getEntryActivationTrace(scopeKey, worldName, uid);
+    if (!trace) {
+        await callGenericPopup(
+            `<div style="max-width:900px;"><h4>${escapeHtmlText(t`No activation trace yet`)}</h4><p>${escapeHtmlText(t`Generate at least one reply in this chat, then check again.`)}</p></div>`,
+            POPUP_TYPE.TEXT,
+            t`Lorebook Activation Trace`,
+            { wide: true, large: true, allowVerticalScrolling: true },
+        );
+        return;
+    }
+
+    const recentScans = Array.isArray(trace.recentScans) ? trace.recentScans : [];
+    const lastActivation = trace.lastActivation || null;
+    const scanCards = recentScans.map((scan, scanIndex) => {
+        const attempts = Array.isArray(scan?.attempts) ? scan.attempts : [];
+        const activated = Boolean(scan?.activated);
+        const attemptHtml = attempts.length > 0
+            ? attempts.map((attempt, attemptIndex) => {
+                const details = attempt?.details && typeof attempt.details === 'object' ? attempt.details : {};
+                const reasonText = explainTraceReason(attempt?.reason, details);
+                return `
+<div style="border:1px solid var(--SmartThemeBorderColor);border-radius:8px;padding:8px;margin-top:6px;">
+    <div style="font-weight:600;">#${attemptIndex + 1} ${escapeHtmlText(reasonText)}</div>
+    <div style="opacity:.75;">Loop ${escapeHtmlText(String(attempt?.loop ?? 'N/A'))} · ${escapeHtmlText(String(attempt?.scanState ?? 'N/A'))}</div>
+    ${renderTraceDetailLines(details)}
+</div>`;
+            }).join('')
+            : `<div style="opacity:.75;">${escapeHtmlText(t`No activation attempts recorded in this scan.`)}</div>`;
+
+        const activationSummary = scan?.lastActivation
+            ? explainTraceReason(scan.lastActivation?.details?.reason, scan.lastActivation?.details || {})
+            : (activated ? t`Activated` : t`Not activated`);
+        return `
+<div style="border:1px solid var(--SmartThemeBorderColor);border-radius:10px;padding:10px;margin-top:10px;">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+        <div style="font-weight:700;">Scan #${scanIndex + 1}</div>
+        <div style="opacity:.78;">${escapeHtmlText(formatTraceTime(scan?.finishedAt || scan?.startedAt))}</div>
+    </div>
+    <div style="margin-top:4px;">
+        <span style="font-weight:600;color:${activated ? 'var(--SmartThemeQuoteColor)' : 'var(--SmartThemeBodyColor)'};">
+            ${activated ? escapeHtmlText(t`Activated`) : escapeHtmlText(t`Not activated`)}
+        </span>
+        <span style="opacity:.9;"> · ${escapeHtmlText(activationSummary)}</span>
+    </div>
+    <div style="margin-top:8px;">${attemptHtml}</div>
+</div>`;
+    }).join('');
+
+    const html = `
+<div style="max-width:1100px;">
+    <h4>${escapeHtmlText(t`Lorebook Activation Trace`)}</h4>
+    <div style="opacity:0.8;">${escapeHtmlText(t`Scope`)}: ${escapeHtmlText(scopeKey)}</div>
+    <div style="opacity:0.8;">${escapeHtmlText(t`Entry`)}: ${escapeHtmlText(`${trace.world}.${trace.uid}`)}</div>
+    <div style="opacity:0.8;">${escapeHtmlText(t`Last activated at`)}: ${escapeHtmlText(formatTraceTime(trace.lastActivatedAt))}</div>
+    <div style="margin-top:6px;font-weight:600;">${escapeHtmlText(t`Last activation reason`)}: ${escapeHtmlText(lastActivation ? explainTraceReason(lastActivation?.details?.reason, lastActivation?.details || {}) : t`N/A`)}</div>
+    ${lastActivation ? `<div style="margin-top:6px;">${renderTraceDetailLines(lastActivation.details || {})}</div>` : ''}
+    <hr style="margin:12px 0;">
+    <div style="font-weight:700;">${escapeHtmlText(t`Recent scans`)}</div>
+    <div style="max-height:68vh;overflow:auto;padding-right:4px;">
+        ${scanCards || `<div style="opacity:.75;">${escapeHtmlText(t`No scan records yet.`)}</div>`}
+    </div>
+</div>`;
+    await callGenericPopup(
+        html,
+        POPUP_TYPE.TEXT,
+        t`Lorebook Activation Trace`,
+        { wide: true, large: true, allowVerticalScrolling: true },
+    );
+}
+
 /**
  * Main function to build the WI entry editor template.
  * @param {string} name - The name of the world info file.
@@ -3425,6 +3744,14 @@ export async function getWorldEntry(name, data, entry) {
         const deleteOriginal = popupConfirm === POPUP_RESULT.CUSTOM1;
         await moveWorldInfoEntry(sourceWorld, selectedValue, sourceUid, { deleteOriginal });
     });
+    const traceButton = $(
+        `<i class="menu_button trace_activation_button fa-solid fa-route" title="${escapeHtmlText(t`Trace activation source`)}"></i>`,
+    );
+    traceButton.on('click', async function (e) {
+        e.stopPropagation();
+        await showActivationTracePopup(name, entry.uid);
+    });
+    headerTemplate.find('.delete_entry_button').after(traceButton);
 
     let drawerInitialized = false;
     let drawerDestroyTimeout = null;
@@ -4469,6 +4796,9 @@ function parseDecorators(content) {
 export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData = defaultGlobalScanData) {
     const context = getContext();
     const buffer = new WorldInfoBuffer(chat, globalScanData);
+    const activationTraceScopeKey = getActivationTraceScopeKey();
+    const scanStartedAt = Date.now();
+    const scanTraceByEntry = new Map();
 
     console.debug(`[WI] --- START WI SCAN (on ${chat.length} messages, trigger = ${globalScanData.trigger})${isDryRun ? ' (DRY RUN)' : ''} ---`);
 
@@ -4492,6 +4822,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     let allActivatedEntries = new Map();
     let failedProbabilityChecks = new Set();
     let allActivatedText = '';
+    let recursionSourceEntryKeys = [];
 
     let budget = Math.round(world_info_budget * maxContext / 100) || 1;
 
@@ -4519,6 +4850,76 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     let currentRecursionDelayLevel = availableRecursionDelayLevels.shift() ?? 0;
     if (currentRecursionDelayLevel > 0 && availableRecursionDelayLevels.length) {
         console.debug('[WI] Preparing first delayed recursion level', currentRecursionDelayLevel, '. Still delayed:', availableRecursionDelayLevels);
+    }
+
+    function makeTraceKey(entry) {
+        return `${entry.world}.${entry.uid}`;
+    }
+
+    function getRecursionTraceSources(state = scanState) {
+        if (state !== scan_state.RECURSION || !recursionSourceEntryKeys.length) {
+            return [];
+        }
+        return [...new Set(recursionSourceEntryKeys)];
+    }
+
+    function withRecursionTraceSources(details = {}, state = scanState) {
+        const sources = getRecursionTraceSources(state);
+        if (!sources.length) {
+            return details;
+        }
+        return {
+            ...details,
+            recursionSourceEntries: sources,
+        };
+    }
+
+    function recordActivationAttempt(entry, reason, details = {}, loopCount = count, state = scanState) {
+        if (!entry || entry.uid === undefined || !entry.world) {
+            return;
+        }
+        const key = makeTraceKey(entry);
+        const existing = scanTraceByEntry.get(key) || {
+            world: String(entry.world || ''),
+            uid: Number(entry.uid),
+            recentScans: [],
+            attempts: [],
+            activated: false,
+            lastActivation: null,
+        };
+        existing.attempts.push({
+            loop: Number(loopCount || 0),
+            scanState: getScanStateName(state),
+            trigger: String(globalScanData.trigger || 'normal'),
+            scanDepth: Number(entry.scanDepth ?? buffer.getDepth()),
+            reason: String(reason || ''),
+            details: details && typeof details === 'object' ? details : {},
+        });
+        scanTraceByEntry.set(key, existing);
+    }
+
+    function recordActivationSuccess(entry, details = {}, loopCount = count, state = scanState) {
+        if (!entry || entry.uid === undefined || !entry.world) {
+            return;
+        }
+        const key = makeTraceKey(entry);
+        const existing = scanTraceByEntry.get(key) || {
+            world: String(entry.world || ''),
+            uid: Number(entry.uid),
+            recentScans: [],
+            attempts: [],
+            activated: false,
+            lastActivation: null,
+        };
+        existing.activated = true;
+        existing.lastActivation = {
+            loop: Number(loopCount || 0),
+            scanState: getScanStateName(state),
+            trigger: String(globalScanData.trigger || 'normal'),
+            scanDepth: Number(entry.scanDepth ?? buffer.getDepth()),
+            details: details && typeof details === 'object' ? details : {},
+        };
+        scanTraceByEntry.set(key, existing);
     }
 
     console.debug(`[WI] --- SEARCHING ENTRIES (on ${sortedEntries.length} entries) ---`);
@@ -4634,6 +5035,11 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
             if (entry.decorators.includes('@@activate')) {
                 log('activated by @@activate decorator');
+                recordActivationAttempt(
+                    entry,
+                    'decorator_activate',
+                    withRecursionTraceSources({ decorator: '@@activate' }),
+                );
                 activatedNow.add(entry);
                 continue;
             }
@@ -4643,21 +5049,37 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 continue;
             }
 
-            if (buffer.getExternallyActivated(entry)) {
+            const externallyActivated = buffer.getExternallyActivated(entry);
+            if (externallyActivated) {
                 log('externally activated');
-                activatedNow.add(buffer.getExternallyActivated(entry));
+                recordActivationAttempt(
+                    externallyActivated,
+                    'external_activation',
+                    withRecursionTraceSources({ sourceEntry: makeTraceKey(entry) }),
+                );
+                activatedNow.add(externallyActivated);
                 continue;
             }
 
             // Now do checks for immediate activations
             if (entry.constant) {
                 log('activated because of constant');
+                recordActivationAttempt(
+                    entry,
+                    'constant',
+                    withRecursionTraceSources({ constant: true }),
+                );
                 activatedNow.add(entry);
                 continue;
             }
 
             if (isSticky) {
                 log('activated because active sticky');
+                recordActivationAttempt(
+                    entry,
+                    'sticky',
+                    withRecursionTraceSources({ sticky: true }),
+                );
                 activatedNow.add(entry);
                 continue;
             }
@@ -4681,6 +5103,11 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 continue;
             }
 
+            const substitutedPrimary = String(substituteParams(primaryKeyMatch) || primaryKeyMatch || '').trim();
+            const matchSourceHints = substitutedPrimary
+                ? buffer.getMatchSourceHints(entry, substitutedPrimary, scanState)
+                : [];
+
             const hasSecondaryKeywords = (
                 entry.selective && //all entries are selective now
                 Array.isArray(entry.keysecondary) && //always true
@@ -4690,6 +5117,15 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             if (!hasSecondaryKeywords) {
                 // Handle cases where secondary is empty
                 log('activated by primary key match', primaryKeyMatch);
+                recordActivationAttempt(
+                    entry,
+                    'key_match',
+                    withRecursionTraceSources({
+                        primaryKey: substitutedPrimary || String(primaryKeyMatch || ''),
+                        sourceHints: matchSourceHints,
+                        selectiveLogic: 'none',
+                    }),
+                );
                 activatedNow.add(entry);
                 continue;
             }
@@ -4703,21 +5139,45 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             function matchSecondaryKeys() {
                 let hasAnyMatch = false;
                 let hasAllMatch = true;
+                const matchedSecondaryKeys = [];
                 for (let keysecondary of entry.keysecondary) {
                     const secondarySubstituted = substituteParams(keysecondary);
                     const hasSecondaryMatch = secondarySubstituted && buffer.matchKeys(textToScan, secondarySubstituted.trim(), entry);
 
                     if (hasSecondaryMatch) hasAnyMatch = true;
                     if (!hasSecondaryMatch) hasAllMatch = false;
+                    if (hasSecondaryMatch) {
+                        matchedSecondaryKeys.push(secondarySubstituted.trim());
+                    }
 
                     // Simplified AND ANY / NOT ALL if statement. (Proper fix for PR#1356 by Bronya)
                     // If AND ANY logic and the main checks pass OR if NOT ALL logic and the main checks do not pass
                     if (selectiveLogic === world_info_logic.AND_ANY && hasSecondaryMatch) {
                         log('activated. (AND ANY) Found match secondary keyword', secondarySubstituted);
+                        recordActivationAttempt(
+                            entry,
+                            'key_match',
+                            withRecursionTraceSources({
+                                primaryKey: substitutedPrimary || String(primaryKeyMatch || ''),
+                                sourceHints: matchSourceHints,
+                                selectiveLogic: 'AND_ANY',
+                                matchedSecondaryKeys,
+                            }),
+                        );
                         return true;
                     }
                     if (selectiveLogic === world_info_logic.NOT_ALL && !hasSecondaryMatch) {
                         log('activated. (NOT ALL) Found not matching secondary keyword', secondarySubstituted);
+                        recordActivationAttempt(
+                            entry,
+                            'key_match',
+                            withRecursionTraceSources({
+                                primaryKey: substitutedPrimary || String(primaryKeyMatch || ''),
+                                sourceHints: matchSourceHints,
+                                selectiveLogic: 'NOT_ALL',
+                                matchedSecondaryKeys,
+                            }),
+                        );
                         return true;
                     }
                 }
@@ -4725,12 +5185,32 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 // Handle NOT ANY logic
                 if (selectiveLogic === world_info_logic.NOT_ANY && !hasAnyMatch) {
                     log('activated. (NOT ANY) No secondary keywords found', entry.keysecondary);
+                    recordActivationAttempt(
+                        entry,
+                        'key_match',
+                        withRecursionTraceSources({
+                            primaryKey: substitutedPrimary || String(primaryKeyMatch || ''),
+                            sourceHints: matchSourceHints,
+                            selectiveLogic: 'NOT_ANY',
+                            matchedSecondaryKeys: [],
+                        }),
+                    );
                     return true;
                 }
 
                 // Handle AND ALL logic
                 if (selectiveLogic === world_info_logic.AND_ALL && hasAllMatch) {
                     log('activated. (AND ALL) All secondary keywords found', entry.keysecondary);
+                    recordActivationAttempt(
+                        entry,
+                        'key_match',
+                        withRecursionTraceSources({
+                            primaryKey: substitutedPrimary || String(primaryKeyMatch || ''),
+                            sourceHints: matchSourceHints,
+                            selectiveLogic: 'AND_ALL',
+                            matchedSecondaryKeys: entry.keysecondary.map(x => String(substituteParams(x) || x || '').trim()).filter(Boolean),
+                        }),
+                    );
                     return true;
                 }
 
@@ -4740,6 +5220,16 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             const matched = matchSecondaryKeys();
             if (!matched) {
                 log('skipped. Secondary keywords not satisfied', entry.keysecondary);
+                recordActivationAttempt(
+                    entry,
+                    'secondary_key_miss',
+                    withRecursionTraceSources({
+                        primaryKey: substitutedPrimary || String(primaryKeyMatch || ''),
+                        sourceHints: matchSourceHints,
+                        selectiveLogic: Object.entries(world_info_logic).find(x => x[1] === selectiveLogic)?.[0] || String(selectiveLogic),
+                        secondaryKeys: entry.keysecondary.map(x => String(substituteParams(x) || x || '').trim()).filter(Boolean),
+                    }),
+                );
                 continue;
             }
 
@@ -4761,8 +5251,19 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
 
         let newContent = '';
         const textToScanTokens = await getTokenCountAsync(allActivatedText);
-
+        const entriesBeforeGroupFilter = [...newEntries];
         filterByInclusionGroups(newEntries, allActivatedEntries, buffer, scanState, timedEffects);
+        for (const groupedOutEntry of entriesBeforeGroupFilter) {
+            if (!newEntries.includes(groupedOutEntry)) {
+                recordActivationAttempt(
+                    groupedOutEntry,
+                    'inclusion_group_filtered',
+                    withRecursionTraceSources({
+                        group: String(groupedOutEntry.group || ''),
+                    }),
+                );
+            }
+        }
 
         console.debug('[WI] --- PROBABILITY CHECKS ---');
         !newEntries.length && console.debug('[WI] No probability checks to do');
@@ -4804,6 +5305,14 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             const success = verifyProbability();
             if (!success) {
                 console.debug(`WI entry ${entry.uid} failed probability check, removing from activated entries`, entry);
+                recordActivationAttempt(
+                    entry,
+                    'probability_failed',
+                    withRecursionTraceSources({
+                        useProbability: Boolean(entry.useProbability),
+                        probability: Number(entry.probability ?? 100),
+                    }),
+                );
                 continue;
             }
 
@@ -4822,10 +5331,27 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                     }
                     token_budget_overflowed = true;
                 }
+                recordActivationAttempt(
+                    entry,
+                    'budget_overflow',
+                    withRecursionTraceSources({
+                        budget: Number(budget),
+                        ignoreBudget: Boolean(entry.ignoreBudget),
+                    }),
+                );
                 continue;
             }
 
             allActivatedEntries.set(`${entry.world}.${entry.uid}`, entry);
+            recordActivationSuccess(
+                entry,
+                withRecursionTraceSources({
+                    reason: 'added_to_prompt',
+                    ignoreBudget: Boolean(entry.ignoreBudget),
+                    useProbability: Boolean(entry.useProbability),
+                    probability: Number(entry.probability ?? 100),
+                }),
+            );
             console.debug(`[WI] Entry ${entry.uid} activation successful, adding to prompt`, entry);
         }
 
@@ -4895,8 +5421,14 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
                 buffer.addRecurse(text);
                 allActivatedText = (text + '\n' + allActivatedText);
             }
+            if (scanState === scan_state.RECURSION) {
+                recursionSourceEntryKeys = successfulNewEntriesForRecursion.map(entry => makeTraceKey(entry));
+            } else {
+                recursionSourceEntryKeys = [];
+            }
         } else {
             logNextState('[WI] Scan done. No new entries to prompt. Stopping.');
+            recursionSourceEntryKeys = [];
         }
 
         // Fire an event after each scan loop, so extensions can hook into the current scanning state
@@ -4937,6 +5469,41 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         currentRecursionDelayLevel = args.recursionDelay.currentLevel;
         budget = args.budget.current;
         token_budget_overflowed = args.budget.overflowed;
+    }
+
+    if (!isDryRun && scanTraceByEntry.size > 0) {
+        const bucket = getOrCreateActivationTraceBucket(activationTraceScopeKey);
+        const scanFinishedAt = Date.now();
+        for (const [entryKey, traceState] of scanTraceByEntry.entries()) {
+            const previous = bucket.get(entryKey) || {
+                world: String(traceState.world || ''),
+                uid: Number(traceState.uid),
+                lastActivatedAt: null,
+                lastActivation: null,
+                recentScans: [],
+            };
+
+            const scanRecord = {
+                startedAt: scanStartedAt,
+                finishedAt: scanFinishedAt,
+                trigger: String(globalScanData.trigger || 'normal'),
+                activated: Boolean(traceState.activated),
+                attempts: Array.isArray(traceState.attempts) ? traceState.attempts : [],
+                lastActivation: traceState.lastActivation || null,
+            };
+
+            const previousScans = Array.isArray(previous.recentScans) ? previous.recentScans : [];
+            previous.world = String(traceState.world || previous.world || '');
+            previous.uid = Number(traceState.uid);
+            previous.recentScans = [scanRecord, ...previousScans].slice(0, WI_ACTIVATION_TRACE_SCAN_LIMIT);
+
+            if (traceState.lastActivation) {
+                previous.lastActivation = traceState.lastActivation;
+                previous.lastActivatedAt = scanFinishedAt;
+            }
+
+            bucket.set(entryKey, previous);
+        }
     }
 
     console.debug('[WI] --- BUILDING PROMPT ---');
