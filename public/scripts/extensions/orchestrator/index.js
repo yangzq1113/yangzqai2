@@ -197,6 +197,7 @@ function registerLocaleData() {
         'AI build did not call finalize explicitly.': 'AI 构建未显式调用 finalize。',
         'AI build must return multiple tool calls in one response.': 'AI 构建必须在一次响应里返回多个工具调用。',
         'AI profile generation failed: ${0}': 'AI 配置生成失败：${0}',
+        'Generating orchestration profile for ${0}...': '正在为 ${0} 生成编排配置...',
         'Function output is invalid.': '函数输出无效。',
         'AI build did not provide any stage tool calls.': 'AI 构建未提供任何阶段工具调用。',
         'Orchestrator running...': '编排插件运行中...',
@@ -303,6 +304,7 @@ function registerLocaleData() {
         'AI build did not call finalize explicitly.': 'AI 建構未明確呼叫 finalize。',
         'AI build must return multiple tool calls in one response.': 'AI 建構必須在一次回應中返回多個工具呼叫。',
         'AI profile generation failed: ${0}': 'AI 設定生成失敗：${0}',
+        'Generating orchestration profile for ${0}...': '正在為 ${0} 生成編排設定...',
         'Function output is invalid.': '函式輸出無效。',
         'AI build did not provide any stage tool calls.': 'AI 建構未提供任何階段工具呼叫。',
         'Orchestrator running...': '編排插件運行中...',
@@ -376,6 +378,7 @@ const uiState = {
 };
 let orchInFlight = false;
 let activeRunInfoToast = null;
+let activeAiBuildToast = null;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -2041,6 +2044,31 @@ function clearRunInfoToast() {
     activeRunInfoToast = null;
 }
 
+function showAiBuildToast(message) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    if (activeAiBuildToast) {
+        toastr.clear(activeAiBuildToast);
+        activeAiBuildToast = null;
+    }
+    activeAiBuildToast = toastr.info(String(message || ''), '', {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: false,
+        closeButton: true,
+        progressBar: false,
+    });
+}
+
+function clearAiBuildToast() {
+    if (typeof toastr === 'undefined' || !activeAiBuildToast) {
+        return;
+    }
+    toastr.clear(activeAiBuildToast);
+    activeAiBuildToast = null;
+}
+
 async function persistGlobalEditorFrom(settings, editor) {
     ensureEditorIntegrity(editor);
     settings.orchestrationSpec = serializeEditorSpec(editor.spec);
@@ -2323,7 +2351,7 @@ async function runAiCharacterProfileBuild(context, settings) {
         String(context?.chatCompletionSettings?.chat_completion_source || ''),
     );
 
-    updateUiStatus(`Generating orchestration profile for ${characterCard.name}...`);
+    updateUiStatus(i18nFormat('Generating orchestration profile for ${0}...', characterCard.name));
     const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
     let parsed = null;
     let lastBuildError = null;
@@ -2747,6 +2775,9 @@ function bindUi() {
         }
 
         if (action === 'ai-suggest-character') {
+            const avatar = String(getCurrentAvatar(context) || '').trim();
+            const displayName = getCharacterDisplayNameByAvatar(context, avatar) || i18n('(No character selected)');
+            showAiBuildToast(i18nFormat('Generating orchestration profile for ${0}...', displayName));
             try {
                 await runAiCharacterProfileBuild(context, settings);
                 renderDynamicPanels(root, context);
@@ -2755,6 +2786,8 @@ function bindUi() {
             } catch (error) {
                 notifyError(i18nFormat('AI profile generation failed: ${0}', error?.message || error));
                 updateUiStatus(i18n('AI profile generation failed.'));
+            } finally {
+                clearAiBuildToast();
             }
         }
     });
