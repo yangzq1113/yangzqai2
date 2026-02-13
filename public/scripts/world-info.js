@@ -221,7 +221,18 @@ function renderTraceDetailLines(details = {}) {
             .map(explainTraceSourceHint)
             .filter(Boolean);
         if (labels.length > 0) {
-            lines.push(`${t`Matched in`}: ${labels.join(', ')}`);
+            const labelCounts = new Map();
+            for (const label of labels) {
+                labelCounts.set(label, (labelCounts.get(label) || 0) + 1);
+            }
+            const compact = Array.from(labelCounts.entries())
+                .map(([label, count]) => count > 1 ? `${label} ×${count}` : label);
+            const previewLimit = 6;
+            const head = compact.slice(0, previewLimit).join(', ');
+            const tail = compact.length > previewLimit
+                ? ` (+${compact.length - previewLimit} ${t`more`})`
+                : '';
+            lines.push(`${t`Matched in`}: ${head}${tail}`);
         }
     }
 
@@ -250,7 +261,36 @@ function renderTraceDetailLines(details = {}) {
     }
 
     if (Array.isArray(details.recursionSourceEntries) && details.recursionSourceEntries.length > 0) {
-        lines.push(`${t`Recursion source entries`}: ${details.recursionSourceEntries.join(', ')}`);
+        const recursionEntries = details.recursionSourceEntries
+            .map(x => String(x || '').trim())
+            .filter(Boolean);
+        if (recursionEntries.length > 0) {
+            const groupCounts = new Map();
+            for (const entry of recursionEntries) {
+                const dotIndex = entry.lastIndexOf('.');
+                const hasNumericSuffix = dotIndex > 0 && /^\d+$/.test(entry.slice(dotIndex + 1));
+                const group = hasNumericSuffix ? entry.slice(0, dotIndex) : entry;
+                groupCounts.set(group, (groupCounts.get(group) || 0) + 1);
+            }
+            const grouped = Array.from(groupCounts.entries())
+                .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+            const groupedPreviewLimit = 6;
+            const groupedSummary = grouped
+                .slice(0, groupedPreviewLimit)
+                .map(([group, count]) => `${group} ×${count}`)
+                .join(', ');
+            const groupedTail = grouped.length > groupedPreviewLimit
+                ? ` (+${grouped.length - groupedPreviewLimit} ${t`more groups`})`
+                : '';
+            lines.push(`${t`Recursion source entries`}: ${recursionEntries.length} ${t`entries`} (${groupedSummary}${groupedTail})`);
+
+            const entryPreviewLimit = 8;
+            const entryPreview = recursionEntries.slice(0, entryPreviewLimit).join(', ');
+            const entryTail = recursionEntries.length > entryPreviewLimit
+                ? ` (+${recursionEntries.length - entryPreviewLimit} ${t`more entries`})`
+                : '';
+            lines.push(`${t`Recursion source preview`}: ${entryPreview}${entryTail}`);
+        }
     }
 
     if (details.sourceEntry) {
