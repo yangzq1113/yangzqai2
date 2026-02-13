@@ -17,30 +17,23 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build:
+  prepare:
     if: github.repository == 'funnycups/Luker'
     runs-on: ubuntu-latest
-
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      tags: ${{ steps.metadata.outputs.tags }}
+      labels: ${{ steps.metadata.outputs.labels }}
     steps:
       - name: Set lowercase repo name
-        run: |
-          echo "IMAGE_NAME=${REPO,,}" >> ${GITHUB_ENV}
-
-      - name: Checkout
-        uses: actions/checkout@v4.1.2
-
-      # Setting up QEMU for multi-arch image build
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        id: image
+        run: echo "image=${{ env.REGISTRY }}/${REPO,,}" >> "${GITHUB_OUTPUT}"
 
       - name: Extract metadata (tags, labels) for the image
         uses: docker/metadata-action@v5.5.1
         id: metadata
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.image }}
           tags: |
             type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
             type=sha,format=short
@@ -48,7 +41,19 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
             type=raw,value=manual,enable=${{ github.event_name == 'workflow_dispatch' }}
 
-      # Login into package repository as the person who created the release
+  build-amd64:
+    if: github.repository == 'funnycups/Luker'
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
@@ -56,15 +61,75 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build docker image using dockerfile for amd64 and arm64
-      # Tag it with branch name
-      # Assumes branch name is the version number
-      - name: Build and push
+      - name: Build and push linux/amd64 by digest
+        id: build
         uses: docker/build-push-action@v5.3.0
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
           file: Dockerfile
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
+          platforms: linux/amd64
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+  build-arm64:
+    if: github.repository == 'funnycups/Luker'
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.1.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/arm64 by digest
+        id: build
+        uses: docker/build-push-action@v5.3.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+  publish-manifest:
+    if: github.repository == 'funnycups/Luker'
+    needs:
+      - prepare
+      - build-amd64
+      - build-arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch manifests
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          DIGEST_AMD64: ${{ needs.build-amd64.outputs.digest }}
+          DIGEST_ARM64: ${{ needs.build-arm64.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for tag in ${TAGS}; do
+            docker buildx imagetools create \
+              -t "${tag}" \
+              "${IMAGE}@${DIGEST_AMD64}" \
+              "${IMAGE}@${DIGEST_ARM64}"
+          done
