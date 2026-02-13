@@ -96,13 +96,14 @@ Most plugins should not call these directly, but they are listed for low-level i
 
 ### Message patch operation format
 
-- `insert`: `{ "op": "insert", "index": number, "message": {...} }`
-- `update`: `{ "op": "update", "index": number, "message": {...} }`
-- `delete`: `{ "op": "delete", "index": number }`
-- `insert_many`: `{ "op": "insert_many", "index": number, "messages": [{...}, ...] }`
-- `update_many`: `{ "op": "update_many", "index": number, "messages": [{...}, ...] }`
-- `delete_range`: `{ "op": "delete_range", "index": number, "count": number }`
-- `batch`: `{ "op": "batch", "operations": [ ... ] }`
+Message patch routes now use RFC6902 operations against the message array root:
+
+- `add` (insert message): `{ "op": "add", "path": "/2", "value": { ...message } }`
+- `replace` (edit message): `{ "op": "replace", "path": "/5", "value": { ...message } }`
+- `remove` (delete message): `{ "op": "remove", "path": "/3" }`
+- `test` (recommended guard): `{ "op": "test", "path": "/5", "value": { ...expectedMessage } }`
+
+Legacy custom message ops (`insert/update/delete/insert_many/update_many/delete_range/batch`) are no longer supported.
 
 ### Object patch format (`meta/patch`, `state/patch`, `settings/patch`)
 
@@ -111,13 +112,15 @@ Object patch routes use RFC6902-style operations:
 - `add`
 - `remove`
 - `replace`
-- `test` (optional guard)
+- `test` (recommended guard)
 
 Path uses JSON Pointer string format:
 
 ```json
 { "op": "replace", "path": "/extensions/memory/last_capsule", "value": { "ok": true } }
 ```
+
+Luker context helpers auto-attach lightweight `test` guards on patch-first paths.
 
 ### Chat-completions request body
 
