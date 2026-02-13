@@ -2134,7 +2134,7 @@ function showRunInfoToast(message, { stopLabel = '', onStop = null } = {}) {
     if (activeRunInfoToast && typeof onStop === 'function') {
         const toastBody = activeRunInfoToast.find('.toast-message');
         if (toastBody.length > 0) {
-            const button = jQuery('<button type="button" class="menu_button menu_button_small" style="margin-top:8px;"></button>');
+            const button = jQuery('<button type="button" class="menu_button menu_button_small luker-toast-stop-button"></button>');
             button.text(String(stopLabel || i18n('Stop')));
             button.on('click', (event) => {
                 event.preventDefault();
@@ -2173,7 +2173,7 @@ function showAiBuildToast(message, { stopLabel = '', onStop = null } = {}) {
     if (activeAiBuildToast && typeof onStop === 'function') {
         const toastBody = activeAiBuildToast.find('.toast-message');
         if (toastBody.length > 0) {
-            const button = jQuery('<button type="button" class="menu_button menu_button_small" style="margin-top:8px;"></button>');
+            const button = jQuery('<button type="button" class="menu_button menu_button_small luker-toast-stop-button"></button>');
             button.text(String(stopLabel || i18n('Stop')));
             button.on('click', (event) => {
                 event.preventDefault();

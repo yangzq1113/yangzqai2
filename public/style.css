@@ -3969,6 +3969,14 @@ button.toast-close-button {
     padding-top: 3px;
 }
 
+.menu_button.luker-toast-stop-button {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    margin-top: 8px;
+    display: inline-flex;
+}
+
 #dialogue_del_mes {
     display: none;
 }

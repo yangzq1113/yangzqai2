@@ -6610,7 +6610,7 @@ function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
         textNode.text(String(message || ''));
         toastBody.append(textNode);
         if (typeof onStop === 'function') {
-            const button = jQuery('<button type="button" class="menu_button menu_button_small" style="margin-top:8px;"></button>');
+            const button = jQuery('<button type="button" class="menu_button menu_button_small luker-toast-stop-button"></button>');
             button.text(String(stopLabel || i18n('Stop')));
             button.on('click', (event) => {
                 event.preventDefault();
