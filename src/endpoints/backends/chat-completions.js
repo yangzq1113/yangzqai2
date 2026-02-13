@@ -63,6 +63,7 @@ import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
 import {
     attachJobToRequest,
     bindRequestCloseAbort,
+    cancelGenerationJobForRequest,
     completeGenerationJobFromPayload,
     createGenerationJob,
     failGenerationJob,
@@ -1867,6 +1868,23 @@ router.post('/jobs/active', async function (request, response) {
     try {
         const jobs = getActiveGenerationJobsForRequest(request, request.body?.persist_target);
         return response.send({ jobs });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/jobs/cancel', async function (request, response) {
+    try {
+        const result = cancelGenerationJobForRequest(request, request.body?.id, 'Cancelled by user');
+        if (!result.ok) {
+            return response.status(result.status).send({ error: { message: result.message } });
+        }
+        return response.send({
+            id: result.job?.id || '',
+            status: result.job?.status || '',
+            cancelled: Boolean(result.cancelled),
+        });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);

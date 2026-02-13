@@ -200,6 +200,8 @@ export function createGenerationJob(request, options) {
         persisted: false,
         persistTarget,
         chatKey,
+        abortController: null,
+        cancelledByUser: false,
     };
 
     job.status = 'running';
@@ -210,6 +212,8 @@ export function createGenerationJob(request, options) {
     if (!Array.isArray(job.events)) {
         job.events = [];
     }
+    job.cancelledByUser = false;
+    job.abortController = null;
 
     generationJobs.set(jobId, job);
     pruneGenerationJobs();
@@ -250,10 +254,14 @@ export function failGenerationJob(job, errorMessage = 'Unknown error occurred') 
     if (!job) {
         return;
     }
+    if (job.status === 'cancelled') {
+        return;
+    }
     job.status = 'failed';
     job.error = String(errorMessage || 'Unknown error occurred');
     job.updatedAt = Date.now();
     job.finishedAt = Date.now();
+    job.abortController = null;
 }
 
 async function persistGeneratedReply(request, persistTarget, text, generationId = '', modelName = '') {
@@ -326,6 +334,13 @@ export async function completeGenerationJobFromText(request, job, text, modelNam
     if (!job) {
         return false;
     }
+    if (job.status === 'cancelled') {
+        job.updatedAt = Date.now();
+        job.finishedAt = Date.now();
+        job.abortController = null;
+        job.persisted = false;
+        return false;
+    }
 
     const finalText = String(text || '');
     job.text = finalText || job.text || '';
@@ -333,6 +348,7 @@ export async function completeGenerationJobFromText(request, job, text, modelNam
     job.updatedAt = Date.now();
     job.finishedAt = Date.now();
     job.persisted = await persistGeneratedReply(request, job.persistTarget, job.text, job.id, modelName);
+    job.abortController = null;
     return Boolean(job.persisted);
 }
 
@@ -344,7 +360,12 @@ export async function completeGenerationJobFromPayload(request, job, payload, mo
 export function bindRequestCloseAbort(request, controller, options = {}) {
     const onAbortClose = typeof options.onAbortClose === 'function' ? options.onAbortClose : null;
     const keepAliveWhenJob = options.keepAliveWhenJob !== false;
-    const hasJob = keepAliveWhenJob && Boolean(getJobFromRequest(request));
+    const job = getJobFromRequest(request);
+    const hasJob = keepAliveWhenJob && Boolean(job);
+
+    if (job) {
+        job.abortController = controller || null;
+    }
 
     request.socket.removeAllListeners('close');
     request.socket.on('close', async function () {
@@ -356,6 +377,41 @@ export function bindRequestCloseAbort(request, controller, options = {}) {
         }
         controller.abort();
     });
+}
+
+export function cancelGenerationJobForRequest(request, jobId, reason = 'Cancelled by user') {
+    pruneGenerationJobs();
+    const id = String(jobId || '').trim();
+    if (!id) {
+        return { ok: false, status: 400, message: 'Job id is required.' };
+    }
+
+    const job = generationJobs.get(id);
+    if (!job || job.handle !== request.user.profile.handle) {
+        return { ok: false, status: 404, message: 'Job not found.' };
+    }
+
+    if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+        return { ok: true, status: 200, cancelled: false, job };
+    }
+
+    job.status = 'cancelled';
+    job.cancelledByUser = true;
+    job.error = String(reason || 'Cancelled by user');
+    job.updatedAt = Date.now();
+    job.finishedAt = Date.now();
+    job.persisted = false;
+
+    if (job.abortController && !job.abortController.signal?.aborted) {
+        try {
+            job.abortController.abort(job.error);
+        } catch {
+            // ignore abort propagation failures
+        }
+    }
+    job.abortController = null;
+
+    return { ok: true, status: 200, cancelled: true, job };
 }
 
 export async function forwardStreamingWithGenerationJob(fetchResponse, response, request, job, options = {}) {
@@ -395,32 +451,45 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
     }
 
     let buffer = '';
-    if (fetchResponse.body) {
-        for await (const chunk of fetchResponse.body) {
-            const chunkText = Buffer.from(chunk).toString('utf8');
-            if (!clientClosed && !response.writableEnded) {
-                response.write(chunkText);
-                if (typeof response.flush === 'function') {
-                    response.flush();
+    try {
+        if (fetchResponse.body) {
+            for await (const chunk of fetchResponse.body) {
+                if (job.status === 'cancelled') {
+                    break;
                 }
-            }
+                const chunkText = Buffer.from(chunk).toString('utf8');
+                if (!clientClosed && !response.writableEnded) {
+                    response.write(chunkText);
+                    if (typeof response.flush === 'function') {
+                        response.flush();
+                    }
+                }
 
-            buffer += chunkText.replace(/\r\n/g, '\n');
-            let delimiterIndex = buffer.indexOf('\n\n');
-            while (delimiterIndex !== -1) {
-                const frame = buffer.slice(0, delimiterIndex);
-                buffer = buffer.slice(delimiterIndex + 2);
-                const dataLines = frame
-                    .split('\n')
-                    .map(line => line.trimEnd())
-                    .filter(line => line.startsWith('data:'))
-                    .map(line => line.slice(5).trimStart());
-                if (dataLines.length > 0) {
-                    appendGenerationEvent(job, dataLines.join('\n'));
+                buffer += chunkText.replace(/\r\n/g, '\n');
+                let delimiterIndex = buffer.indexOf('\n\n');
+                while (delimiterIndex !== -1) {
+                    const frame = buffer.slice(0, delimiterIndex);
+                    buffer = buffer.slice(delimiterIndex + 2);
+                    const dataLines = frame
+                        .split('\n')
+                        .map(line => line.trimEnd())
+                        .filter(line => line.startsWith('data:'))
+                        .map(line => line.slice(5).trimStart());
+                    if (dataLines.length > 0) {
+                        appendGenerationEvent(job, dataLines.join('\n'));
+                    }
+                    delimiterIndex = buffer.indexOf('\n\n');
                 }
-                delimiterIndex = buffer.indexOf('\n\n');
             }
         }
+    } catch (error) {
+        if (job.status !== 'cancelled') {
+            failGenerationJob(job, error?.message || 'Streaming interrupted');
+        }
+        if (!clientClosed && !response.writableEnded) {
+            response.end();
+        }
+        return;
     }
 
     if (buffer.trim()) {
@@ -432,6 +501,13 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
         if (dataLines.length > 0) {
             appendGenerationEvent(job, dataLines.join('\n'));
         }
+    }
+
+    if (job.status === 'cancelled') {
+        if (!clientClosed && !response.writableEnded) {
+            response.end();
+        }
+        return;
     }
 
     const persisted = await completeGenerationJobFromText(request, job, job.text, modelName);

@@ -6139,6 +6139,19 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
  */
 export function stopGeneration() {
     let stopped = false;
+    const generationId = getLastLukerGenerationIdForApi();
+    if (generationId) {
+        fetch('/api/backends/chat-completions/jobs/cancel', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ id: generationId }),
+            cache: 'no-cache',
+            keepalive: true,
+        }).catch(error => {
+            console.warn('Failed to cancel generation job on server', error);
+        });
+    }
+
     if (streamingProcessor) {
         streamingProcessor.onStopStreaming();
         stopped = true;
