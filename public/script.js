@@ -839,6 +839,7 @@ let this_edit_mes_id = undefined;
 
 //settings
 export let settings;
+let settingsSnapshotCache = null;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -9231,30 +9232,31 @@ export async function getSettings() {
         }
     }
     await validateDisabledSamplers();
+    rememberSettingsSnapshot(buildSettingsPayload());
     settingsReady = true;
     await eventSource.emit(event_types.SETTINGS_LOADED);
 }
 
-//MARK: saveSettings()
-export async function saveSettings(loopCounter = 0) {
-    if (!settingsReady) {
-        console.warn('Settings not ready, scheduling another save');
-        saveSettingsDebounced();
+function rememberSettingsSnapshot(nextSettings = null) {
+    if (!isPlainObject(nextSettings)) {
+        settingsSnapshotCache = null;
         return;
     }
+    settingsSnapshotCache = cloneJsonValue(nextSettings);
+}
 
-    const MAX_RETRIES = 3;
-    if (TempResponseLength.isCustomized()) {
-        if (loopCounter < MAX_RETRIES) {
-            console.warn('Response length is currently being overridden, scheduling another save');
-            saveSettingsDebounced(++loopCounter);
-            return;
-        }
-        console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
-        TempResponseLength.restore(null);
+function getSettingsSnapshot() {
+    if (isPlainObject(settingsSnapshotCache)) {
+        return cloneJsonValue(settingsSnapshotCache);
     }
+    if (isPlainObject(settings)) {
+        return cloneJsonValue(settings);
+    }
+    return null;
+}
 
-    const payload = {
+function buildSettingsPayload() {
+    return {
         firstRun: firstRun,
         accountStorage: accountStorage.getState(),
         currentVersion: currentVersion,
@@ -9280,20 +9282,63 @@ export async function saveSettings(loopCounter = 0) {
         proxies: proxies,
         selected_proxy: selected_proxy,
     };
+}
+
+//MARK: saveSettings()
+export async function saveSettings(loopCounter = 0) {
+    if (!settingsReady) {
+        console.warn('Settings not ready, scheduling another save');
+        saveSettingsDebounced();
+        return;
+    }
+
+    const MAX_RETRIES = 3;
+    if (TempResponseLength.isCustomized()) {
+        if (loopCounter < MAX_RETRIES) {
+            console.warn('Response length is currently being overridden, scheduling another save');
+            saveSettingsDebounced(++loopCounter);
+            return;
+        }
+        console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
+        TempResponseLength.restore(null);
+    }
+
+    const payload = buildSettingsPayload();
 
     try {
-        const result = await fetch('/api/settings/save', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(payload),
-            cache: 'no-cache',
-        });
+        let saved = false;
+        const previousSnapshot = getSettingsSnapshot();
 
-        if (!result.ok) {
-            throw new Error(`Failed to save settings: ${result.statusText}`);
+        if (isPlainObject(previousSnapshot)) {
+            const operations = buildObjectPatchOperations(previousSnapshot, payload, { maxOperations: 4000 });
+            if (operations.length === 0) {
+                saved = true;
+            } else {
+                const patchResult = await fetch('/api/settings/patch', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({ operations }),
+                    cache: 'no-cache',
+                });
+                saved = patchResult.ok;
+            }
+        }
+
+        if (!saved) {
+            const result = await fetch('/api/settings/save', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(payload),
+                cache: 'no-cache',
+            });
+
+            if (!result.ok) {
+                throw new Error(`Failed to save settings: ${result.statusText}`);
+            }
         }
 
         settings = payload;
+        rememberSettingsSnapshot(payload);
         await eventSource.emit(event_types.SETTINGS_UPDATED);
     } catch (error) {
         console.error('Error saving settings:', error);
