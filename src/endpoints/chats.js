@@ -21,6 +21,7 @@ import {
     tryReadFileSync,
     tryDeleteFile,
 } from '../util.js';
+import { applyPatch as applyJsonPatch } from '../../public/scripts/util/fast-json-patch.js';
 
 const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
 const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
@@ -695,140 +696,17 @@ function resolveChatFilePathForStateTarget(request, target) {
     return path.join(request.user.directories.chats, avatarDir, fileName);
 }
 
-function isSafeStatePathSegment(segment) {
-    const token = String(segment || '');
-    if (!token) {
-        return false;
-    }
-    return !['__proto__', 'prototype', 'constructor'].includes(token);
-}
-
-function normalizeStatePath(pathValue) {
-    if (!Array.isArray(pathValue)) {
-        return null;
-    }
-    const normalized = [];
-    for (const segment of pathValue) {
-        const token = String(segment);
-        if (!isSafeStatePathSegment(token)) {
-            return null;
-        }
-        normalized.push(token);
-    }
-    return normalized;
-}
-
-function ensureStateParentObject(target, pathSegments) {
-    let cursor = target;
-    for (let i = 0; i < pathSegments.length; i++) {
-        const key = pathSegments[i];
-        if (!isSafeStatePathSegment(key)) {
-            throw new Error(`Unsafe state path segment: ${key}`);
-        }
-        if (!_.isObjectLike(cursor[key]) || Array.isArray(cursor[key])) {
-            cursor[key] = {};
-        }
-        cursor = cursor[key];
-    }
-    return cursor;
-}
-
 /**
  * Applies patch operations to a chat state object.
- * Supported ops: replace_root, set, merge, delete.
+ * Uses RFC6902 operations (add/remove/replace/test).
  * @param {object} state Current state object.
  * @param {object[]} operations Patch operations.
  * @returns {{applied:number,state:object}}
  */
 function applyChatStatePatch(state, operations) {
-    let root = _.isObjectLike(state) && !Array.isArray(state) ? state : {};
-    let applied = 0;
-
-    for (const rawOperation of operations) {
-        if (!_.isObjectLike(rawOperation)) {
-            throw new Error('State patch operation must be an object.');
-        }
-        const op = String(rawOperation.op || rawOperation.type || '').trim().toLowerCase();
-        if (!op) {
-            throw new Error('State patch operation is missing op/type.');
-        }
-
-        if (op === 'replace_root') {
-            if (!_.isObjectLike(rawOperation.value) || Array.isArray(rawOperation.value)) {
-                throw new Error('State replace_root operation requires object value.');
-            }
-            root = rawOperation.value;
-            applied++;
-            continue;
-        }
-
-        const pathSegments = normalizeStatePath(rawOperation.path);
-        if (!pathSegments) {
-            throw new Error('State patch operation path must be an array of safe segments.');
-        }
-
-        if (op === 'set') {
-            if (pathSegments.length === 0) {
-                if (!_.isObjectLike(rawOperation.value) || Array.isArray(rawOperation.value)) {
-                    throw new Error('State set operation with empty path requires object value.');
-                }
-                root = rawOperation.value;
-            } else {
-                const parent = ensureStateParentObject(root, pathSegments.slice(0, -1));
-                parent[pathSegments[pathSegments.length - 1]] = rawOperation.value;
-            }
-            applied++;
-            continue;
-        }
-
-        if (op === 'merge') {
-            if (!_.isObjectLike(rawOperation.value) || Array.isArray(rawOperation.value)) {
-                throw new Error('State merge operation requires object value.');
-            }
-            if (pathSegments.length === 0) {
-                root = {
-                    ...(_.isObjectLike(root) && !Array.isArray(root) ? root : {}),
-                    ...rawOperation.value,
-                };
-            } else {
-                const parent = ensureStateParentObject(root, pathSegments.slice(0, -1));
-                const key = pathSegments[pathSegments.length - 1];
-                const baseValue = _.isObjectLike(parent[key]) && !Array.isArray(parent[key]) ? parent[key] : {};
-                parent[key] = {
-                    ...baseValue,
-                    ...rawOperation.value,
-                };
-            }
-            applied++;
-            continue;
-        }
-
-        if (op === 'delete') {
-            if (pathSegments.length === 0) {
-                root = {};
-            } else {
-                let cursor = root;
-                let missing = false;
-                for (let i = 0; i < pathSegments.length - 1; i++) {
-                    const key = pathSegments[i];
-                    if (!_.isObjectLike(cursor[key]) || Array.isArray(cursor[key])) {
-                        missing = true;
-                        break;
-                    }
-                    cursor = cursor[key];
-                }
-                if (!missing) {
-                    delete cursor[pathSegments[pathSegments.length - 1]];
-                }
-            }
-            applied++;
-            continue;
-        }
-
-        throw new Error(`Unsupported state patch operation: ${op}`);
-    }
-
-    return { applied, state: root };
+    const root = _.isObjectLike(state) && !Array.isArray(state) ? state : {};
+    const patchResult = applyJsonPatch(root, operations, true, false);
+    return { applied: operations.length, state: patchResult.newDocument };
 }
 
 /**

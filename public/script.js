@@ -281,6 +281,7 @@ import { initAccessibility } from './scripts/a11y.js';
 import { applyStreamFadeIn } from './scripts/util/stream-fadein.js';
 import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
+import { compare as compareJsonPatch } from './scripts/util/fast-json-patch.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
@@ -7940,7 +7941,11 @@ function resolveChatStateTarget(target = null) {
 }
 
 function isPlainObject(value) {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
 }
 
 function cloneJsonValue(value) {
@@ -7969,6 +7974,11 @@ function cloneJsonValue(value) {
         return nextValue;
     });
     return serialized === undefined ? undefined : JSON.parse(serialized);
+}
+
+function normalizeJsonObject(value) {
+    const normalized = cloneJsonValue(value);
+    return isPlainObject(normalized) ? normalized : {};
 }
 
 function areJsonValuesEqual(left, right) {
@@ -8009,60 +8019,10 @@ export function buildObjectPatchOperations(previousState, nextState, options = {
     if (!next) {
         return [];
     }
-    if (!isPlainObject(previousState)) {
-        return [{ op: 'replace_root', value: cloneJsonValue(next) }];
-    }
-
-    /** @type {Array<{op:string,path?:string[],value?:any}>} */
-    const operations = [];
-    const walk = (previousNode, nextNode, path = []) => {
-        if (!isPlainObject(previousNode) || !isPlainObject(nextNode)) {
-            if (!areJsonValuesEqual(previousNode, nextNode)) {
-                if (path.length === 0) {
-                    operations.push({
-                        op: 'replace_root',
-                        value: cloneJsonValue(nextNode),
-                    });
-                } else {
-                    operations.push({
-                        op: 'set',
-                        path,
-                        value: cloneJsonValue(nextNode),
-                    });
-                }
-            }
-            return;
-        }
-
-        const keys = new Set([...Object.keys(previousNode), ...Object.keys(nextNode)]);
-        for (const key of keys) {
-            const hasPrev = Object.hasOwn(previousNode, key);
-            const hasNext = Object.hasOwn(nextNode, key);
-            const nextPath = [...path, key];
-            if (!hasNext) {
-                operations.push({ op: 'delete', path: nextPath });
-                continue;
-            }
-            if (!hasPrev) {
-                operations.push({ op: 'set', path: nextPath, value: cloneJsonValue(nextNode[key]) });
-                continue;
-            }
-
-            const previousValue = previousNode[key];
-            const nextValue = nextNode[key];
-            if (isPlainObject(previousValue) && isPlainObject(nextValue)) {
-                walk(previousValue, nextValue, nextPath);
-                continue;
-            }
-            if (!areJsonValuesEqual(previousValue, nextValue)) {
-                operations.push({ op: 'set', path: nextPath, value: cloneJsonValue(nextValue) });
-            }
-        }
-    };
-
-    walk(previousState, next, []);
+    const previous = isPlainObject(previousState) ? previousState : {};
+    const operations = compareJsonPatch(previous, next);
     if (operations.length > maxOperations) {
-        return [{ op: 'replace_root', value: cloneJsonValue(next) }];
+        return [{ op: 'replace', path: '', value: cloneJsonValue(next) }];
     }
     return operations;
 }
@@ -9263,7 +9223,7 @@ function rememberSettingsSnapshot(nextSettings = null) {
         settingsSnapshotCache = null;
         return;
     }
-    settingsSnapshotCache = cloneJsonValue(nextSettings);
+    settingsSnapshotCache = normalizeJsonObject(nextSettings);
 }
 
 function getSettingsSnapshot() {
@@ -9271,13 +9231,13 @@ function getSettingsSnapshot() {
         return cloneJsonValue(settingsSnapshotCache);
     }
     if (isPlainObject(settings)) {
-        return cloneJsonValue(settings);
+        return normalizeJsonObject(settings);
     }
     return null;
 }
 
 function buildSettingsPayload() {
-    return {
+    return normalizeJsonObject({
         firstRun: firstRun,
         accountStorage: accountStorage.getState(),
         currentVersion: currentVersion,
@@ -9302,7 +9262,7 @@ function buildSettingsPayload() {
         background: background_settings,
         proxies: proxies,
         selected_proxy: selected_proxy,
-    };
+    });
 }
 
 //MARK: saveSettings()
@@ -9335,13 +9295,18 @@ export async function saveSettings(loopCounter = 0) {
             if (operations.length === 0) {
                 saved = true;
             } else {
-                const patchResult = await fetch('/api/settings/patch', {
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({ operations }),
-                    cache: 'no-cache',
-                });
-                saved = patchResult.ok;
+                const patchBody = JSON.stringify({ operations });
+                const fullBody = JSON.stringify(payload);
+                // If patch is not meaningfully smaller, prefer legacy full-save path.
+                if (patchBody.length < fullBody.length) {
+                    const patchResult = await fetch('/api/settings/patch', {
+                        method: 'POST',
+                        headers: getRequestHeaders(),
+                        body: patchBody,
+                        cache: 'no-cache',
+                    });
+                    saved = patchResult.ok;
+                }
             }
         }
 
