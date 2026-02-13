@@ -2922,9 +2922,10 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             console.warn(`[${MODULE_NAME}] Extract request failed. Retrying semantic pass (${attempt + 1}/${semanticRetries})...`, error);
             continue;
         }
-            if (!Array.isArray(calls) || calls.length < 2) {
-                continue;
-            }
+        if (!Array.isArray(calls) || calls.length < 2) {
+            retryReason = 'Tool calls are missing or incomplete.';
+            continue;
+        }
             const names = calls.map(call => String(call?.name || '').trim()).filter(Boolean);
             const doneCount = names.filter(name => name === 'luker_rpg_extract_done').length;
             if (doneCount < 1) {
@@ -3026,11 +3027,8 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     if (validatedOps.length > 0) {
         return validatedOps;
     }
-    if (lastRetryableError) {
-        console.warn(`[${MODULE_NAME}] extract llm ended without valid ops after retries`, lastRetryableError);
-    }
-
-    return [];
+    const failureReason = normalizeText(retryReason || String(lastRetryableError?.message || '')) || 'No valid extraction tool calls after retries.';
+    throw new Error(failureReason);
 }
 
 function upsertSemanticNode(store, item, settings = null, options = {}) {

@@ -2923,6 +2923,9 @@ function ensureUi() {
                     <div>
                         <label for="luker_orch_ai_goal">${escapeHtml(i18n('AI build goal (optional)'))}</label>
                         <textarea id="luker_orch_ai_goal" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}"></textarea>
+                        <div class="flex-container">
+                            <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Build Character Override'))}</div>
+                        </div>
                     </div>
                 </div>
                 <div id="luker_orch_effective_visual"></div>
@@ -2931,7 +2934,6 @@ function ensureUi() {
                     <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
                     <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
                     <div id="luker_orch_clear_character_button" class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>
-                    <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Build Character Override'))}</div>
                 </div>
             </div>
 
