@@ -27,15 +27,19 @@ function getDefaultAiSuggestSystemPrompt() {
         'Call multiple functions in one response to build the profile incrementally.',
         'Keep stages concise, operational, and easy to run in a single request turn.',
         'Only the LAST stage outputs are injected into the final generation context.',
-        'Therefore, design the last stage as PARALLEL multi-agent synthesis and put final actionable guidance there.',
+        'Design a clear pipeline: state distillation -> parallel reasoning/critique -> final synthesis.',
         'Node outputs are returned via function fields. Do NOT embed JSON blobs inside summary.',
         'For last-stage nodes, use plain structured fields (summary, directives, risks, tags, patch_last_user).',
         'Runtime will assemble the final injected YAML from those structured fields.',
+        'Do NOT hardcode any fixed narrator persona/identity/roleplay character in system prompts.',
+        'Do NOT mirror long single-prompt identity blocks; focus on process quality and constraints.',
         'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
         'Do NOT repeat full character biography in every node prompt. Prefer compact behavior policy and decision criteria.',
         'Each node must have a distinct role, concrete output focus, and minimal overlap.',
-        'Prefer practical distiller/director/critic style agents and add custom presets only when necessary.',
+        'Prefer practical distiller/planner/critic/synthesizer style agents and add custom presets only when necessary.',
         'Design for robust RP quality: user-intent understanding, character independence, anti-OOC, realism, and world autonomy.',
+        'Require explicit hard-gate checks (consistency, OOC, causality, continuity, over-interpretation) in the critic node.',
+        'Require final synthesizer output to be concise, actionable, and directly usable for drafting.',
         `Allowed template placeholders ONLY: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
         'Do not invent any other placeholder names.',
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
@@ -52,22 +56,31 @@ function getDefaultAiSuggestSystemPrompt() {
 const defaultSpec = {
     stages: [
         { id: 'distill', mode: 'serial', nodes: ['distiller'] },
-        { id: 'plan', mode: 'parallel', nodes: ['director', 'critic'] },
+        { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
+        { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
     ],
 };
 
 const defaultPresets = {
     distiller: {
-        systemPrompt: 'You are a narrative distiller. Extract key story state and user intent.',
-        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
+        systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn.',
+        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
     },
-    director: {
-        systemPrompt: 'You are a roleplay director. Produce concise tactical guidance for the next assistant reply.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+    planner: {
+        systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
-        systemPrompt: 'You are an RP critic. Flag OOC, pacing, and consistency risks.',
-        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+    },
+    recall_relevance: {
+        systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+    },
+    synthesizer: {
+        systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall insights into one coherent final guidance.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
 };
 
@@ -2336,7 +2349,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         },
         injectionContract: {
             injected_stage: 'only_last_stage',
-            expected_last_stage_mode: 'parallel',
+            expected_last_stage_mode: 'serial_single_synthesizer_preferred',
             expected_guidance_format: 'runtime_assembled_yaml_from_structured_fields',
             no_json_in_summary: true,
         },
