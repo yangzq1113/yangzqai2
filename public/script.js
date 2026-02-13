@@ -1984,7 +1984,7 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
 
     const startIndex = [0, minId].includes(id) ? id : null;
     updateViewMessageIds(startIndex);
-    const patched = await patchChatMessages([{ op: 'delete', index: id }]);
+    const patched = await patchChatMessages([{ op: 'remove', path: `/${id}` }]);
     if (!patched) {
         saveChatDebounced();
     }
@@ -6450,7 +6450,7 @@ export async function sendMessageAsUser(messageText, messageBias, insertAt = nul
 
     if (typeof insertAt === 'number' && insertAt >= 0 && insertAt <= chat.length) {
         chat.splice(insertAt, 0, message);
-        const patched = await patchChatMessages([{ op: 'insert', index: insertAt, message }]);
+        const patched = await patchChatMessages([{ op: 'add', path: `/${insertAt}`, value: message }]);
         if (!patched) {
             await saveChatConditional();
         }
@@ -7861,9 +7861,9 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
                 const nextMessage = { ...message, name: newName };
                 currentChat[lineIndex] = nextMessage;
                 operations.push({
-                    op: 'update',
-                    index: lineIndex - 1,
-                    message: nextMessage,
+                    op: 'replace',
+                    path: `/${lineIndex - 1}`,
+                    value: nextMessage,
                 });
             }
 
@@ -7992,17 +7992,6 @@ function normalizeJsonObject(value) {
     return isPlainObject(normalized) ? normalized : {};
 }
 
-function areJsonValuesEqual(left, right) {
-    if (left === right) {
-        return true;
-    }
-    try {
-        return JSON.stringify(left) === JSON.stringify(right);
-    } catch {
-        return false;
-    }
-}
-
 function getChatMetadataSnapshotKey(target = resolveChatStateTarget()) {
     if (!target || typeof target !== 'object') {
         return '';
@@ -8041,61 +8030,7 @@ export function buildObjectPatchOperations(previousState, nextState, options = {
 export function buildChatMessagePatchOperations(previousMessages, nextMessages) {
     const previous = Array.isArray(previousMessages) ? previousMessages : [];
     const next = Array.isArray(nextMessages) ? nextMessages : [];
-    const previousLength = previous.length;
-    const nextLength = next.length;
-
-    let prefixLength = 0;
-    while (prefixLength < previousLength
-        && prefixLength < nextLength
-        && areJsonValuesEqual(previous[prefixLength], next[prefixLength])) {
-        prefixLength++;
-    }
-
-    let suffixLength = 0;
-    while (suffixLength < (previousLength - prefixLength)
-        && suffixLength < (nextLength - prefixLength)
-        && areJsonValuesEqual(previous[previousLength - 1 - suffixLength], next[nextLength - 1 - suffixLength])) {
-        suffixLength++;
-    }
-
-    const previousMiddleStart = prefixLength;
-    const previousMiddleEnd = previousLength - suffixLength;
-    const nextMiddleStart = prefixLength;
-    const nextMiddleEnd = nextLength - suffixLength;
-
-    const previousMiddleLength = Math.max(0, previousMiddleEnd - previousMiddleStart);
-    const nextMiddleLength = Math.max(0, nextMiddleEnd - nextMiddleStart);
-    const sharedLength = Math.min(previousMiddleLength, nextMiddleLength);
-
-    /** @type {Array<{op:'insert'|'update'|'delete',index:number,message?:ChatMessage}>} */
-    const operations = [];
-
-    for (let offset = 0; offset < sharedLength; offset++) {
-        const index = previousMiddleStart + offset;
-        const nextMessage = next[nextMiddleStart + offset];
-        operations.push({
-            op: 'update',
-            index,
-            message: cloneJsonValue(nextMessage),
-        });
-    }
-
-    for (let offset = 0; offset < (previousMiddleLength - sharedLength); offset++) {
-        operations.push({
-            op: 'delete',
-            index: previousMiddleStart + sharedLength,
-        });
-    }
-
-    for (let offset = 0; offset < (nextMiddleLength - sharedLength); offset++) {
-        operations.push({
-            op: 'insert',
-            index: previousMiddleStart + sharedLength + offset,
-            message: cloneJsonValue(next[nextMiddleStart + sharedLength + offset]),
-        });
-    }
-
-    return operations;
+    return compareJsonPatch(previous, next);
 }
 
 function buildChatMetadataPatchOperations(previousMetadata, nextMetadata) {
@@ -9619,8 +9554,8 @@ async function messageEditMove(sourceId, targetId) {
     updateViewMessageIds();
     refreshSwipeButtons();
     const patched = await patchChatMessages([
-        { op: 'update', index: sourceId, message: chat[sourceId] },
-        { op: 'update', index: targetId, message: chat[targetId] },
+        { op: 'replace', path: `/${sourceId}`, value: chat[sourceId] },
+        { op: 'replace', path: `/${targetId}`, value: chat[targetId] },
     ]);
     if (!patched) {
         await saveChatConditional();
@@ -9669,7 +9604,7 @@ async function messageEditDone(div) {
     await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
     this_edit_mes_id = undefined;
     const patched = await patchChatMessages([
-        { op: 'update', index: editedMessageId, message: chat[editedMessageId] },
+        { op: 'replace', path: `/${editedMessageId}`, value: chat[editedMessageId] },
     ]);
     if (!patched) {
         await saveChatConditional();
@@ -10604,7 +10539,7 @@ export async function deleteSwipe(swipeId = null, messageId = chat.length - 1) {
     await swipe(null, direction, { source: SWIPE_SOURCE.DELETE, repeated: false, forceMesId: messageId, forceSwipeId: newSwipeId });
 
     const patched = await patchChatMessages([
-        { op: 'update', index: messageId, message: chat[messageId] },
+        { op: 'replace', path: `/${messageId}`, value: chat[messageId] },
     ]);
     if (!patched) {
         await saveChatConditional();

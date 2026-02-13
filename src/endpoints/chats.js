@@ -809,102 +809,19 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
 }
 
 /**
- * Applies incremental patch operations to chat messages in a chat file.
- * Supported operations:
- * - insert / update / delete
- * - insert_many / update_many / delete_range
- * - batch (contains nested operations or patches)
+ * Applies RFC6902 patch operations to chat messages in a chat file.
  * @param {object} args Patch options.
  * @param {string} args.filePath Target chat file path.
- * @param {object[]} args.operations Patch operations.
+ * @param {object[]|object} args.operations RFC6902 operations array.
  * @param {object} [args.chatMetadata] Optional metadata merge for header.
  * @param {string} [args.integritySlug] Integrity slug to validate before patching.
  * @param {boolean} [args.force] Skip integrity mismatch error if true.
  * @returns {Promise<{applied:number,total_messages:number}>}
  */
-function normalizeMessagePatchOperations(operations = []) {
-    const rootOperations = Array.isArray(operations)
+export async function patchChatMessagesInFile({ filePath, operations, chatMetadata = {}, integritySlug, force = false }) {
+    const normalizedOperations = Array.isArray(operations)
         ? operations
         : (_.isObjectLike(operations) ? [operations] : []);
-    const queue = [...rootOperations];
-    const normalized = [];
-
-    while (queue.length > 0) {
-        const rawOperation = queue.shift();
-        if (!_.isObjectLike(rawOperation)) {
-            throw new Error('Patch operation must be an object.');
-        }
-
-        const op = String(rawOperation.op || rawOperation.type || '').trim().toLowerCase();
-        if (!op) {
-            throw new Error('Patch operation is missing op/type.');
-        }
-
-        if (op === 'batch') {
-            const nested = Array.isArray(rawOperation.operations)
-                ? rawOperation.operations
-                : (Array.isArray(rawOperation.patches) ? rawOperation.patches : null);
-            if (!Array.isArray(nested) || nested.length === 0) {
-                throw new Error('Patch batch operation requires non-empty operations/patches array.');
-            }
-            queue.unshift(...nested);
-            continue;
-        }
-
-        if (op === 'insert_many' || op === 'update_many') {
-            const baseIndex = Number(rawOperation.index);
-            if (!Number.isInteger(baseIndex) || baseIndex < 0) {
-                throw new Error(`${op} operation index is invalid: ${rawOperation.index}`);
-            }
-
-            const messages = Array.isArray(rawOperation.messages)
-                ? rawOperation.messages
-                : (_.isObjectLike(rawOperation.message) ? [rawOperation.message] : []);
-            if (messages.length === 0) {
-                throw new Error(`${op} operation requires non-empty messages payload.`);
-            }
-
-            const mappedOperationType = op === 'insert_many' ? 'insert' : 'update';
-            for (let offset = 0; offset < messages.length; offset++) {
-                const message = messages[offset];
-                if (!_.isObjectLike(message)) {
-                    throw new Error(`${op} operation message must be an object.`);
-                }
-                normalized.push({
-                    op: mappedOperationType,
-                    index: baseIndex + offset,
-                    message,
-                });
-            }
-            continue;
-        }
-
-        if (op === 'delete_range') {
-            const baseIndex = Number(rawOperation.index);
-            const count = Number(rawOperation.count ?? 1);
-            if (!Number.isInteger(baseIndex) || baseIndex < 0) {
-                throw new Error(`delete_range operation index is invalid: ${rawOperation.index}`);
-            }
-            if (!Number.isInteger(count) || count <= 0) {
-                throw new Error(`delete_range operation count is invalid: ${rawOperation.count}`);
-            }
-            for (let offset = 0; offset < count; offset++) {
-                normalized.push({
-                    op: 'delete',
-                    index: baseIndex,
-                });
-            }
-            continue;
-        }
-
-        normalized.push(rawOperation);
-    }
-
-    return normalized;
-}
-
-export async function patchChatMessagesInFile({ filePath, operations, chatMetadata = {}, integritySlug, force = false }) {
-    const normalizedOperations = normalizeMessagePatchOperations(operations);
     if (normalizedOperations.length === 0) {
         return { applied: 0, total_messages: 0 };
     }
@@ -932,64 +849,25 @@ export async function patchChatMessagesInFile({ filePath, operations, chatMetada
         };
     }
 
-    const messages = chatData.slice(1);
-    let applied = 0;
-
-    for (const rawOperation of normalizedOperations) {
-        if (!_.isObjectLike(rawOperation)) {
-            throw new Error('Patch operation must be an object.');
-        }
-
-        const op = String(rawOperation.op || rawOperation.type || '').trim().toLowerCase();
-        const index = Number(rawOperation.index);
-        if (!Number.isInteger(index) || index < 0) {
-            throw new Error(`Patch operation index is invalid: ${rawOperation.index}`);
-        }
-
-        if (op === 'delete') {
-            if (index >= messages.length) {
-                throw new Error(`Patch delete index out of bounds: ${index}`);
-            }
-            messages.splice(index, 1);
-            applied++;
-            continue;
-        }
-
-        if (op === 'update') {
-            if (index >= messages.length) {
-                throw new Error(`Patch update index out of bounds: ${index}`);
-            }
-            if (!_.isObjectLike(rawOperation.message)) {
-                throw new Error('Patch update operation requires an object message payload.');
-            }
-            messages[index] = rawOperation.message;
-            applied++;
-            continue;
-        }
-
-        if (op === 'insert') {
-            if (index > messages.length) {
-                throw new Error(`Patch insert index out of bounds: ${index}`);
-            }
-            if (!_.isObjectLike(rawOperation.message)) {
-                throw new Error('Patch insert operation requires an object message payload.');
-            }
-            messages.splice(index, 0, rawOperation.message);
-            applied++;
-            continue;
-        }
-
-        throw new Error(`Unsupported patch operation: ${op}`);
+    const currentMessages = chatData.slice(1);
+    const patchResult = applyJsonPatch(currentMessages, normalizedOperations, true, false);
+    const patchedMessages = patchResult.newDocument;
+    if (!Array.isArray(patchedMessages)) {
+        throw new Error('Message patch must produce an array root.');
     }
 
     const nextIntegrity = randomUUID();
     const header = chatData[0];
     header.chat_metadata = applyIntegrityToMetadata(header.chat_metadata, nextIntegrity);
-    const serialized = [header, ...messages].map(entry => JSON.stringify(entry)).join('\n');
+    const serialized = [header, ...patchedMessages].map(entry => JSON.stringify(entry)).join('\n');
     tryWriteFileSync(filePath, serialized);
     writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
 
-    return { applied, total_messages: messages.length, integrity: nextIntegrity };
+    return {
+        applied: normalizedOperations.length,
+        total_messages: patchedMessages.length,
+        integrity: nextIntegrity,
+    };
 }
 
 /**

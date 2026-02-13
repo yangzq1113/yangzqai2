@@ -115,9 +115,9 @@ async function patchMessagesByIndex(indexes) {
             continue;
         }
         operations.push({
-            op: 'update',
-            index,
-            message,
+            op: 'replace',
+            path: `/${index}`,
+            value: message,
         });
     }
 

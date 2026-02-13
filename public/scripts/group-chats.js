@@ -797,9 +797,9 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                                 continue;
                             }
                             operations.push({
-                                op: 'update',
-                                index: lineIndex - 1,
-                                message,
+                                op: 'replace',
+                                path: `/${lineIndex - 1}`,
+                                value: message,
                             });
                         }
                         if (operations.length === 0) {
