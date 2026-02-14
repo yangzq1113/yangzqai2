@@ -129,8 +129,9 @@ export function getBasicAuthHeader(auth) {
 }
 
 /**
- * Returns the version of the running instance. Get the version from the package.json file and the git revision.
+ * Returns the version of the running instance. Get the version from package.json and git metadata.
  * Also returns the agent string for the Horde API.
+ * isLatest is computed by comparing package version against the highest remote git tag version.
  * @returns {Promise<{agent: string, compatAgent: string, stCompatVersion: string, pkgVersion: string, gitRevision: string | null, gitBranch: string | null, commitDate: string | null, isLatest: boolean}>} Version info object
  */
 export async function getVersion() {
@@ -146,16 +147,30 @@ export async function getVersion() {
         pkgVersion = pkgJson.version;
         if (commandExistsSync('git')) {
             const git = simpleGit({ baseDir: serverDirectory });
-            gitRevision = await git.revparse(['--short', 'HEAD']);
-            gitBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
-            commitDate = await git.show(['-s', '--format=%ci', gitRevision]);
-
-            const trackingBranch = await git.revparse(['--abbrev-ref', '@{u}']);
-
-            // Might fail, but exception is caught. Just don't run anything relevant after in this block...
-            const localLatest = await git.revparse(['HEAD']);
-            const remoteLatest = await git.revparse([trackingBranch]);
-            isLatest = localLatest === remoteLatest;
+            try {
+                gitRevision = await git.revparse(['--short', 'HEAD']);
+                gitBranch = await git.revparse(['--abbrev-ref', 'HEAD']);
+                commitDate = await git.show(['-s', '--format=%ci', gitRevision]);
+            } catch {
+                // No local git metadata (e.g. Docker image without .git). Continue silently.
+            }
+            let remoteTags = '';
+            try {
+                remoteTags = await git.listRemote(['--tags', 'origin']);
+            } catch {
+                const remoteUrl = String(process.env.LUKER_UPDATE_REMOTE || 'https://github.com/funnycups/Luker.git').trim();
+                if (remoteUrl) {
+                    try {
+                        remoteTags = await simpleGit().listRemote(['--tags', remoteUrl]);
+                    } catch {
+                        // Silent fallback by design.
+                    }
+                }
+            }
+            const latestTaggedVersion = findLatestVersionFromRemoteTags(remoteTags);
+            if (latestTaggedVersion) {
+                isLatest = compareSemver(pkgVersion, latestTaggedVersion) >= 0;
+            }
         }
     }
     catch {
@@ -166,6 +181,65 @@ export async function getVersion() {
     const agent = `Luker:${pkgVersion}:Cohee#1207`;
     const compatAgent = `Luker:${stCompatVersion}:Cohee#1207`;
     return { agent, compatAgent, stCompatVersion, pkgVersion, gitRevision, gitBranch, commitDate: commitDate?.trim() ?? null, isLatest };
+}
+
+/**
+ * @param {string} input
+ * @returns {[number, number, number] | null}
+ */
+function parseSemverTriple(input) {
+    const raw = String(input || '').trim().replace(/^v/i, '');
+    const match = raw.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+    if (!match) {
+        return null;
+    }
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function compareSemver(a, b) {
+    const pa = parseSemverTriple(a);
+    const pb = parseSemverTriple(b);
+    if (!pa && !pb) return 0;
+    if (!pa) return -1;
+    if (!pb) return 1;
+    for (let i = 0; i < 3; i++) {
+        if (pa[i] > pb[i]) return 1;
+        if (pa[i] < pb[i]) return -1;
+    }
+    return 0;
+}
+
+/**
+ * @param {string} remoteTagsRaw
+ * @returns {string | null}
+ */
+function findLatestVersionFromRemoteTags(remoteTagsRaw) {
+    const lines = String(remoteTagsRaw || '').split('\n');
+    /** @type {string[]} */
+    const versions = [];
+    for (const line of lines) {
+        const ref = line.split('\t')[1] || '';
+        if (!ref.startsWith('refs/tags/')) {
+            continue;
+        }
+        const tag = ref
+            .replace(/^refs\/tags\//, '')
+            .replace(/\^\{\}$/, '')
+            .trim();
+        if (parseSemverTriple(tag)) {
+            versions.push(tag);
+        }
+    }
+    if (versions.length === 0) {
+        return null;
+    }
+    versions.sort((a, b) => compareSemver(a, b));
+    return versions[versions.length - 1] || null;
 }
 
 /**

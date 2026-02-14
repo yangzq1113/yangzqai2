@@ -735,8 +735,33 @@ async function getClientVersion() {
 
         $('#version_display').text(displayVersion);
         $('#version_display_welcome').text(displayVersion);
+
+        maybeNotifyLukerUpdate(data);
     } catch (err) {
         console.error('Couldn\'t get client version', err);
+    }
+}
+
+function maybeNotifyLukerUpdate(versionData) {
+    try {
+        if (!versionData || versionData.isLatest !== false) {
+            return;
+        }
+        const branch = String(versionData.gitBranch || '').trim();
+        const revision = String(versionData.gitRevision || '').trim();
+        const branchText = branch ? ` (${branch}${revision ? ` @ ${revision}` : ''})` : '';
+        toastr.info(
+            t`A Luker update is available. Pull latest changes to update your instance.` + branchText,
+            t`Update Available`,
+            {
+                timeOut: 0,
+                extendedTimeOut: 0,
+                closeButton: true,
+                preventDuplicates: true,
+            },
+        );
+    } catch {
+        // Silent fallback by design.
     }
 }
 

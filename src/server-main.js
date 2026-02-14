@@ -267,8 +267,8 @@ async function preSetupTasks() {
         const localDate = date.toLocaleString('en-US', { timeZoneName: 'short' });
         console.log(`Running '${version.gitBranch}' (${version.gitRevision}) - ${localDate}`);
         if (!version.isLatest && ['staging', 'release'].includes(version.gitBranch)) {
-            console.log('INFO: Currently not on the latest commit.');
-            console.log('      Run \'git pull\' to update. If you have any merge conflicts, run \'git reset --hard\' and \'git pull\' to reset your branch.');
+            console.log('INFO: A newer tagged Luker version is available.');
+            console.log('      Pull latest tags/changes to update.');
         }
     }
     console.log();
