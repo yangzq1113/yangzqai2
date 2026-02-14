@@ -181,6 +181,8 @@ function registerLocaleData() {
         'AI build goal (optional)': 'AI 生成目标（可选）',
         'e.g. mystery thriller pacing, strict in-character tone': '例如：悬疑节奏、严格角色内表达',
         'Reload Current': '重载当前',
+        'Export Profile': '导出编排',
+        'Import Profile': '导入编排',
         'Reset Global': '重置全局',
         'Save To Global': '保存到全局',
         'Save To Character Override': '保存到角色卡覆写',
@@ -227,6 +229,15 @@ function registerLocaleData() {
         'Global orchestration profile saved.': '全局编排配置已保存。',
         'Global orchestration profile reset to defaults.': '全局编排配置已重置为默认。',
         'Saved to global profile.': '已保存到全局配置。',
+        'Select export source: OK = global profile, Cancel = character override.': '选择导出来源：确定=全局配置，取消=角色卡覆写。',
+        'Select import target: OK = global profile, Cancel = character override.': '选择导入目标：确定=全局配置，取消=角色卡覆写。',
+        'No character selected. Use global profile?': '当前未选择角色卡。是否改为使用全局配置？',
+        'Exported global profile.': '已导出全局配置。',
+        'Exported character override: ${0}.': '已导出角色卡覆写：${0}。',
+        'Imported to global profile.': '已导入到全局配置。',
+        'Imported to character override: ${0}.': '已导入到角色卡覆写：${0}。',
+        'Invalid profile file format.': '编排文件格式无效。',
+        'Import failed: ${0}': '导入失败：${0}',
         'Reset global profile to defaults.': '已将全局配置重置为默认。',
         'Reset global orchestration profile to defaults? This will overwrite current global workflow and presets.': '确认重置全局编排为默认？这会覆盖当前全局工作流和预设。',
         'Character orchestration override removed.': '角色卡编排覆写已移除。',
@@ -297,6 +308,8 @@ function registerLocaleData() {
         'AI build goal (optional)': 'AI 生成目標（可選）',
         'e.g. mystery thriller pacing, strict in-character tone': '例如：懸疑節奏、嚴格角色內語氣',
         'Reload Current': '重新載入目前',
+        'Export Profile': '匯出編排',
+        'Import Profile': '匯入編排',
         'Reset Global': '重置全域',
         'Save To Global': '儲存到全域',
         'Save To Character Override': '儲存到角色卡覆寫',
@@ -342,6 +355,15 @@ function registerLocaleData() {
         'Global orchestration profile saved.': '全域編排設定已儲存。',
         'Global orchestration profile reset to defaults.': '全域編排設定已重置為預設。',
         'Saved to global profile.': '已儲存至全域設定。',
+        'Select export source: OK = global profile, Cancel = character override.': '選擇匯出來源：確定=全域設定，取消=角色卡覆寫。',
+        'Select import target: OK = global profile, Cancel = character override.': '選擇匯入目標：確定=全域設定，取消=角色卡覆寫。',
+        'No character selected. Use global profile?': '目前未選擇角色卡。是否改為使用全域設定？',
+        'Exported global profile.': '已匯出全域設定。',
+        'Exported character override: ${0}.': '已匯出角色卡覆寫：${0}。',
+        'Imported to global profile.': '已匯入到全域設定。',
+        'Imported to character override: ${0}.': '已匯入到角色卡覆寫：${0}。',
+        'Invalid profile file format.': '編排檔案格式無效。',
+        'Import failed: ${0}': '匯入失敗：${0}',
         'Reset global profile to defaults.': '已將全域設定重置為預設。',
         'Reset global orchestration profile to defaults? This will overwrite current global workflow and presets.': '確認重置全域編排為預設？這會覆蓋目前全域工作流與預設。',
         'Character orchestration override removed.': '角色卡編排覆寫已移除。',
@@ -2281,6 +2303,80 @@ async function persistCharacterEditor(context, settings, avatar, {
     return true;
 }
 
+function createPortableProfileFromEditor(editor) {
+    ensureEditorIntegrity(editor);
+    return {
+        spec: serializeEditorSpec(editor.spec),
+        presets: serializeEditorPresetMap(editor.presets),
+    };
+}
+
+function parseImportedProfilePayload(rawText) {
+    let parsed = null;
+    try {
+        parsed = JSON.parse(String(rawText || ''));
+    } catch {
+        throw new Error(i18n('Invalid profile file format.'));
+    }
+    const profile = parsed && typeof parsed === 'object' && parsed.profile && typeof parsed.profile === 'object'
+        ? parsed.profile
+        : parsed;
+    const spec = sanitizeSpec(profile?.spec);
+    const presets = sanitizePresetMap(profile?.presets);
+    if (!Array.isArray(spec?.stages) || spec.stages.length === 0 || !presets || Object.keys(presets).length === 0) {
+        throw new Error(i18n('Invalid profile file format.'));
+    }
+    return { spec, presets };
+}
+
+function downloadJsonFile(fileName, payload) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = String(fileName || 'orchestration-profile.json');
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function pickJsonFileText() {
+    return new Promise((resolve, reject) => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.style.display = 'none';
+        input.addEventListener('change', async () => {
+            const file = input.files?.[0] || null;
+            input.remove();
+            if (!file) {
+                resolve(null);
+                return;
+            }
+            try {
+                const text = await file.text();
+                resolve(text);
+            } catch (error) {
+                reject(error);
+            }
+        }, { once: true });
+        document.body.appendChild(input);
+        input.click();
+    });
+}
+
+function chooseProfileScopeByConfirm(context, confirmKey) {
+    const avatar = String(getCurrentAvatar(context) || '').trim();
+    if (avatar) {
+        return window.confirm(i18n(confirmKey)) ? 'global' : 'character';
+    }
+    if (!window.confirm(i18n('No character selected. Use global profile?'))) {
+        return null;
+    }
+    return 'global';
+}
+
 function isPresetUsed(editor, presetId) {
     const stages = editor?.spec?.stages || [];
     return stages.some(stage => (stage.nodes || []).some(node => String(node.preset || '') === String(presetId || '')));
@@ -2968,6 +3064,90 @@ function bindUi() {
             return;
         }
 
+        if (action === 'export-profile') {
+            syncCharacterEditorWithActiveAvatar(context);
+            const scope = chooseProfileScopeByConfirm(context, 'Select export source: OK = global profile, Cancel = character override.');
+            if (!scope) {
+                return;
+            }
+            const avatar = String(getCurrentAvatar(context) || '').trim();
+            const editor = scope === 'global'
+                ? uiState.globalEditor
+                : uiState.characterEditor;
+            const profile = createPortableProfileFromEditor(editor);
+            const payload = {
+                format: 'luker_orchestrator_profile_v1',
+                scope,
+                exportedAt: new Date().toISOString(),
+                profile,
+            };
+            const safeName = sanitizeIdentifierToken(getCharacterDisplayNameByAvatar(context, avatar) || 'character', 'character');
+            const fileName = scope === 'global'
+                ? `luker-orchestrator-global.json`
+                : `luker-orchestrator-character-${safeName}.json`;
+            downloadJsonFile(fileName, payload);
+            if (scope === 'global') {
+                notifySuccess(i18n('Exported global profile.'));
+                updateUiStatus(i18n('Exported global profile.'));
+            } else {
+                notifySuccess(i18nFormat('Exported character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+                updateUiStatus(i18nFormat('Exported character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+            }
+            return;
+        }
+
+        if (action === 'import-profile') {
+            syncCharacterEditorWithActiveAvatar(context);
+            try {
+                const fileText = await pickJsonFileText();
+                if (!fileText) {
+                    return;
+                }
+                const imported = parseImportedProfilePayload(fileText);
+                const scope = chooseProfileScopeByConfirm(context, 'Select import target: OK = global profile, Cancel = character override.');
+                if (!scope) {
+                    return;
+                }
+                if (scope === 'global') {
+                    settings.orchestrationSpec = sanitizeSpec(imported.spec);
+                    settings.presets = sanitizePresetMap(imported.presets);
+                    await saveSettings();
+                    uiState.globalEditor = loadGlobalEditorState();
+                    ensureEditorIntegrity(uiState.globalEditor);
+                    notifySuccess(i18n('Imported to global profile.'));
+                    updateUiStatus(i18n('Imported to global profile.'));
+                } else {
+                    const avatar = String(getCurrentAvatar(context) || '').trim();
+                    if (!avatar) {
+                        notifyError(i18n('No character selected.'));
+                        return;
+                    }
+                    const importedEditor = {
+                        spec: toEditableSpec(imported.spec, toEditablePresetMap(imported.presets)),
+                        presets: toEditablePresetMap(imported.presets),
+                        enabled: true,
+                        notes: '',
+                    };
+                    const ok = await persistCharacterEditor(context, settings, avatar, {
+                        editor: importedEditor,
+                        forceEnabled: true,
+                    });
+                    if (!ok) {
+                        notifyError(i18n('Failed to persist character override.'));
+                        return;
+                    }
+                    uiState.characterEditor = loadCharacterEditorState(context, avatar);
+                    ensureEditorIntegrity(uiState.characterEditor);
+                    notifySuccess(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+                    updateUiStatus(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+                }
+                renderDynamicPanels(root, context);
+            } catch (error) {
+                notifyError(i18nFormat('Import failed: ${0}', error?.message || error));
+            }
+            return;
+        }
+
         if (action === 'save-character') {
             syncCharacterEditorWithActiveAvatar(context);
             const activeAvatar = String(getCurrentAvatar(context) || '').trim();
@@ -3223,6 +3403,8 @@ function ensureUi() {
                 <div id="luker_orch_effective_visual"></div>
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
+                    <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
+                    <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
                     <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
                     <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
                     <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
