@@ -211,6 +211,11 @@ function applySettingsPatch(state, operations) {
     return { applied: operations.length, state: patchResult.newDocument };
 }
 
+function isJsonPatchTestFailure(error) {
+    const message = String(error?.message || '');
+    return message.includes('JSON Patch test failed at path');
+}
+
 export const router = express.Router();
 
 router.post('/patch', function (request, response) {
@@ -238,6 +243,9 @@ router.post('/patch', function (request, response) {
         triggerAutoSave(request.user.profile.handle);
         return response.send({ result: 'ok', applied });
     } catch (error) {
+        if (isJsonPatchTestFailure(error)) {
+            return response.status(409).send({ error: 'Settings patch test conflict.', code: 'patch_test_failed', details: String(error?.message || '') });
+        }
         console.error('Error patching settings:', error);
         return response.status(500).send({ error: 'Failed to patch settings.' });
     }

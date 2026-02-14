@@ -56,6 +56,11 @@ function applyWorldInfoPatch(state, operations) {
     return { applied: operations.length, state: patched };
 }
 
+function isJsonPatchTestFailure(error) {
+    const message = String(error?.message || '');
+    return message.includes('JSON Patch test failed at path');
+}
+
 router.post('/list', async (request, response) => {
     try {
         const data = [];
@@ -206,6 +211,9 @@ router.post('/patch', (request, response) => {
         writeFileAtomicSync(pathToFile, JSON.stringify(state, null, 4), 'utf8');
         return response.send({ ok: true, applied });
     } catch (error) {
+        if (isJsonPatchTestFailure(error)) {
+            return response.status(409).send({ error: 'World info patch test conflict.', code: 'patch_test_failed', details: String(error?.message || '') });
+        }
         console.error('Error patching world info:', error);
         return response.status(500).send({ error: 'Failed to patch world info.' });
     }

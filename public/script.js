@@ -841,6 +841,8 @@ let this_edit_mes_id = undefined;
 //settings
 export let settings;
 let settingsSnapshotCache = null;
+let settingsSaveInFlight = null;
+let settingsSaveQueued = false;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -9378,7 +9380,7 @@ function buildSettingsPayload() {
 }
 
 //MARK: saveSettings()
-export async function saveSettings(loopCounter = 0) {
+async function saveSettingsInternal(loopCounter = 0) {
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
         saveSettingsDebounced();
@@ -9442,6 +9444,27 @@ export async function saveSettings(loopCounter = 0) {
         console.error('Error saving settings:', error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Settings could not be saved`);
     }
+}
+
+export async function saveSettings(loopCounter = 0) {
+    if (settingsSaveInFlight) {
+        settingsSaveQueued = true;
+        return settingsSaveInFlight;
+    }
+
+    settingsSaveInFlight = (async () => {
+        try {
+            await saveSettingsInternal(loopCounter);
+        } finally {
+            settingsSaveInFlight = null;
+            if (settingsSaveQueued) {
+                settingsSaveQueued = false;
+                await saveSettings(0);
+            }
+        }
+    })();
+
+    return settingsSaveInFlight;
 }
 
 /**
