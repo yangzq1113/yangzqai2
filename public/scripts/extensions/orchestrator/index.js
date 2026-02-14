@@ -10,11 +10,14 @@ const UI_BLOCK_ID = 'orchestrator_settings';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
+const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
 const ORCH_AI_QUALITY_AXES = {
     user_intent: 'Analyze user intent, emotional expectation, and implicit goals.',
     character_traits: 'Use character traits and card constraints without restating full biographies in every node.',
+    lorebook_compliance: 'Read and obey active lorebook/world-info constraints as hard writing constraints.',
     character_independence: 'Preserve multi-character independence and avoid voice/agency collapse.',
     anti_ooc: 'Detect and prevent OOC behavior and persona drift.',
+    anti_datafication: 'Prevent data-like writing (numbers, metrics, pseudo-analytics) in creative RP output.',
     latent_behavior: 'Infer plausible latent behavior, motivations, and next-step actions.',
     human_realism: 'Increase human-like behavior through natural uncertainty, bounded knowledge, and believable pacing.',
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
@@ -39,6 +42,9 @@ function getDefaultAiSuggestSystemPrompt() {
         'Prefer practical distiller/planner/critic/synthesizer style agents and add custom presets only when necessary.',
         'Design for robust RP quality: user-intent understanding, character independence, anti-OOC, realism, and world autonomy.',
         'Require explicit hard-gate checks (consistency, OOC, causality, continuity, over-interpretation) in the critic node.',
+        'Hard requirement: include one dedicated node id "lorebook_reader" to explicitly study active lorebook/world-info constraints.',
+        'Hard requirement: include one dedicated node id "anti_data_guard" to explicitly block data-like writing and metric-style phrasing.',
+        'Those two required nodes must exist even when you innovate other stage/node designs.',
         'Require final synthesizer output to be concise, actionable, and directly usable for drafting.',
         'Flexibility policy: treat the provided blueprint as a strong baseline, not a prison.',
         'You may innovate node roles/stage topology for this specific character card if quality improves.',
@@ -59,6 +65,7 @@ function getDefaultAiSuggestSystemPrompt() {
 const defaultSpec = {
     stages: [
         { id: 'distill', mode: 'serial', nodes: ['distiller'] },
+        { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
         { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
         { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
     ],
@@ -68,6 +75,14 @@ const defaultPresets = {
     distiller: {
         systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn.',
         userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
+    },
+    lorebook_reader: {
+        systemPrompt: 'You are a lorebook compliance reader. Extract only the active writing constraints and must-follow style rules from the already-injected world-info context.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+    },
+    anti_data_guard: {
+        systemPrompt: 'You are an anti-datafication guard for RP writing. Prevent output from sounding like analytics, logs, measurements, or pseudo-metrics.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Detect data-like phrasing risks (numeric quantification, percentages, timing estimates, KPI-style wording, pseudo-scientific analytics tone).\n- Emit strict rewrite directives that preserve natural in-character prose.\n- Keep constraints actionable and easy for final drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     planner: {
         systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan.',
@@ -83,7 +98,7 @@ const defaultPresets = {
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall insights into one coherent final guidance.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
 };
 
@@ -2347,6 +2362,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Runtime hard contract (must follow): return COMPLETE tool calls in one response; never return only one tool call.',
         'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
         'luker_orch_finalize_profile must be last.',
+        `Must include dedicated required node ids: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
         'When deviating, explicitly optimize for this character card while preserving hard gates and final YAML guidance contract.',
@@ -2372,6 +2388,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             continuity: 'No timeline/scene continuity break.',
             causality: 'Actions and consequences must be causally coherent.',
             anti_ooc: 'Prevent role/persona drift and voice collapse.',
+            lorebook_compliance: 'Respect active lorebook/world-info constraints as hard writing limits.',
+            anti_datafication: 'Reject numeric/data-like roleplay prose and require natural narrative language.',
             anti_overinterpretation: 'Avoid inflated/extreme interpretations without evidence.',
             realism: 'Behavior should remain human-believable and situationally plausible.',
             world_autonomy: 'World events should not always orbit the user.',
@@ -2379,11 +2397,14 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         recommendedBlueprint: {
             stages: [
                 { id: 'distill', mode: 'serial', nodes: ['distiller'] },
+                { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
                 { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
                 { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
             ],
             role_contracts: {
                 distiller: 'Produce compact evidence-grounded state snapshot.',
+                lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
+                anti_data_guard: 'Enforce anti-data writing constraints and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
                 critic: 'Run hard-gate checks and output minimal fix directives.',
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
@@ -2403,6 +2424,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             no_fixed_identity_roleplay: true,
             no_long_persona_copy_paste: true,
             no_redundant_character_bio_per_node: true,
+            no_data_metric_style_wording: true,
             no_json_blob_in_summary: true,
             no_single_tool_call_partial_output: true,
         },
@@ -2527,7 +2549,12 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         const reminder = attempt > 0
             ? [{
                 role: 'user',
-                content: 'Previous tool calls were incomplete. Return COMPLETE tool calls in one response (not one call). MUST include luker_orch_append_stage and luker_orch_finalize_profile, with finalize as the last call.',
+                content: [
+                    `Previous attempt failed: ${String(lastBuildError?.message || 'incomplete tool calls')}`,
+                    'Return COMPLETE tool calls in one response (not one call).',
+                    'MUST include luker_orch_append_stage and luker_orch_finalize_profile, with finalize as the last call.',
+                    `MUST include dedicated nodes: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
+                ].join(' '),
             }]
             : [];
         let toolCalls = [];
