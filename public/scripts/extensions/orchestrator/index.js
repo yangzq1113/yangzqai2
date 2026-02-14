@@ -138,6 +138,7 @@ function registerLocaleData() {
         'AI build preset (params + prompt, empty = current)': 'AI 生成预设（参数+提示词，留空=当前）',
         'AI build system prompt': 'AI 生成系统提示词',
         'Reset AI build prompt': '重置 AI 生成提示词',
+        'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '确认重置 AI 生成提示词为默认值？这会覆盖当前内容。',
         'Recent messages (N)': '最近消息数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Capsule injection position': '胶囊注入位置',
@@ -253,6 +254,7 @@ function registerLocaleData() {
         'AI build preset (params + prompt, empty = current)': 'AI 生成預設（參數+提示詞，留空=目前）',
         'AI build system prompt': 'AI 生成系統提示詞',
         'Reset AI build prompt': '重置 AI 生成提示詞',
+        'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '確認重置 AI 生成提示詞為預設值？這會覆蓋目前內容。',
         'Recent messages (N)': '最近訊息數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Capsule injection position': '膠囊注入位置',
@@ -2697,6 +2699,9 @@ function bindUi() {
     });
 
     root.on('click.lukerOrch', '#luker_orch_reset_ai_prompt', function () {
+        if (!window.confirm(i18n('Reset AI build prompt to default? This will overwrite current AI build system prompt.'))) {
+            return;
+        }
         settings.aiSuggestSystemPrompt = getDefaultAiSuggestSystemPrompt();
         root.find('#luker_orch_ai_suggest_system_prompt').val(settings.aiSuggestSystemPrompt);
         saveSettingsDebounced();

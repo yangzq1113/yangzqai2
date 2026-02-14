@@ -322,6 +322,7 @@ function registerLocaleData() {
         'Advanced settings saved.': '高级设置已保存。',
         'Saved advanced settings.': '已保存高级设置。',
         'Advanced settings reset to defaults in editor.': '高级设置已在编辑器中重置为默认值。',
+        'Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.': '确认将高级设置编辑器重置为默认？这会覆盖当前未保存的编辑。',
         'Update every N assistant turns': '每 N 条 Assistant 楼层更新',
         'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆表类型、抽取提示与压缩策略。',
@@ -457,6 +458,7 @@ function registerLocaleData() {
         'Add Type': '新增类型',
         'Reset to Default Schema': '重置为默认 Schema',
         'Schema reset to default in editor.': '已在编辑器中重置为默认 Schema。',
+        'Reset schema editor content to default? This will overwrite current unsaved schema edits.': '确认将 Schema 编辑器重置为默认？这会覆盖当前未保存的编辑。',
         'table: ${0}': '表：${0}',
         'mode: ${0}': '模式：${0}',
         'always inject': '常驻注入',
@@ -547,6 +549,7 @@ function registerLocaleData() {
         'Advanced settings saved.': '進階設定已儲存。',
         'Saved advanced settings.': '已儲存進階設定。',
         'Advanced settings reset to defaults in editor.': '進階設定已在編輯器中重設為預設值。',
+        'Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.': '確認將進階設定編輯器重設為預設？這會覆蓋目前未儲存的編輯。',
         'Update every N assistant turns': '每 N 條 Assistant 樓層更新',
         'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
         'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶表類型、抽取提示與壓縮策略。',
@@ -682,6 +685,7 @@ function registerLocaleData() {
         'Add Type': '新增類型',
         'Reset to Default Schema': '重設為預設 Schema',
         'Schema reset to default in editor.': '已在編輯器中重設為預設 Schema。',
+        'Reset schema editor content to default? This will overwrite current unsaved schema edits.': '確認將 Schema 編輯器重設為預設？這會覆蓋目前未儲存的編輯。',
         'table: ${0}': '表：${0}',
         'mode: ${0}': '模式：${0}',
         'always inject': '常駐注入',
@@ -7583,6 +7587,9 @@ async function openSchemaEditorPopup(context, settings, root) {
         rerender(current);
     });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-reset`, function () {
+        if (!window.confirm(i18n('Reset schema editor content to default? This will overwrite current unsaved schema edits.'))) {
+            return;
+        }
         rerender(normalizeNodeTypeSchema(structuredClone(defaultNodeTypeSchema)));
         notifySuccess(i18n('Schema reset to default in editor.'));
     });
@@ -7733,6 +7740,9 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             onOpen: () => {
                 const popupRoot = jQuery(`#${popupId}`);
                 popupRoot.find(`#${popupId}_reset_advanced`).off('click').on('click', () => {
+                    if (!window.confirm(i18n('Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.'))) {
+                        return;
+                    }
                     applyValuesToPopup(popupRoot, defaultSettings);
                     notifySuccess(i18n('Advanced settings reset to defaults in editor.'));
                 });
