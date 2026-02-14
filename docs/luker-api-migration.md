@@ -6,6 +6,11 @@ This guide is for extension authors migrating from legacy SillyTavern-style save
 
 In Luker, `getContext()` is the primary plugin surface. Prefer these helpers over direct endpoint calls.
 
+Global object recommendation:
+
+- Prefer `Luker.getContext()` in new plugins.
+- `st.getContext()` / `SillyTavern.getContext()` are compatibility aliases and should be considered legacy naming.
+
 ### Chat/message persistence
 
 - `appendChatMessages(messages)`
@@ -20,8 +25,13 @@ In Luker, `getContext()` is the primary plugin surface. Prefer these helpers ove
 
 ### Prompt/world-info assembly
 
+- `getActivePromptPresetEnvelope(options?)`
+- `getActivePromptLayout(options?)`
+- `formatPromptPresetEnvelope(envelope, options?)`
 - `buildPresetAwarePromptMessages(options)`
 - `simulateWorldInfoActivation(options?)`
+- `buildWorldInfoChatInput(options?)`
+- `buildWorldInfoGlobalScanData(options?)`
 
 ### Lorebook/world info persistence
 
