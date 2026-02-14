@@ -8,7 +8,7 @@ const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
-const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
+const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_orchestration'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
 const ANTI_DATA_BLOCKED_LEXICON = [
@@ -84,31 +84,31 @@ const defaultSpec = {
 const defaultPresets = {
     distiller: {
         systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn.',
-        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
+        userPromptTemplate: 'Previous orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
     },
     lorebook_reader: {
         systemPrompt: 'You are a lorebook compliance reader. Extract only active hard constraints from world-info, especially explicit banned wording/style requirements.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     anti_data_guard: {
         systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     planner: {
         systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
         systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
 };
 
@@ -206,7 +206,7 @@ function registerLocaleData() {
         'Node ID': '节点 ID',
         'Preset': '预设',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}',
         'Execution': '执行方式',
         'Serial': '串行',
         'Parallel': '并行',
@@ -333,7 +333,7 @@ function registerLocaleData() {
         'Node ID': '節點 ID',
         'Preset': '預設',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}',
         'Execution': '執行方式',
         'Serial': '串行',
         'Parallel': '並行',
@@ -604,11 +604,13 @@ function saveLastCapsuleMetadata(context, capsuleText, payload, profile) {
     if (!capsule) {
         return;
     }
+    const targetLayer = getTargetAssistantLayer(payload);
 
     context.updateChatMetadata({
         [LAST_CAPSULE_METADATA_KEY]: {
             updatedAt: new Date().toISOString(),
             trigger: String(payload?.type || 'normal'),
+            layer: targetLayer,
             profileSource: String(profile?.source || 'global'),
             profileKey: String(profile?.key || 'global'),
             capsule,
@@ -627,6 +629,32 @@ function clearLastCapsuleMetadata(context) {
     delete nextMetadata[LAST_CAPSULE_METADATA_KEY];
     context.updateChatMetadata(nextMetadata, true);
     context.saveMetadataDebounced();
+}
+
+function getTargetAssistantLayer(payload) {
+    const type = String(payload?.type || 'normal').trim().toLowerCase();
+    const messages = getCoreMessages(payload);
+    const assistantCount = messages.filter(message => !message?.is_user).length;
+    return (type === 'regenerate' || type === 'swipe' || type === 'continue')
+        ? Math.max(assistantCount, 1)
+        : Math.max(assistantCount + 1, 1);
+}
+
+function getPreviousOrchestrationCapsuleText(context, payload) {
+    const metadata = context?.chatMetadata;
+    const entry = metadata && typeof metadata === 'object'
+        ? metadata[LAST_CAPSULE_METADATA_KEY]
+        : null;
+    if (!entry || typeof entry !== 'object') {
+        return '';
+    }
+    const currentTargetLayer = getTargetAssistantLayer(payload);
+    const expectedPreviousLayer = Math.max(currentTargetLayer - 1, 0);
+    const storedLayer = Number(entry.layer || 0);
+    if (expectedPreviousLayer <= 0 || storedLayer !== expectedPreviousLayer) {
+        return '';
+    }
+    return String(entry.capsule || '').trim();
 }
 
 function shouldRunOrchestrationForPayload(payload) {
@@ -1091,7 +1119,7 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     });
 }
 
-async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null) {
+async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null) {
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
@@ -1109,11 +1137,13 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
         `  <json><![CDATA[${encodeCdata(toCompactJsonText(previousNodeOutputs.get('distiller') || {}))}]]></json>`,
         '</distiller_output>',
     ].join('\n');
+    const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
     const userPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
         recent_chat: recent,
         last_user: String(lastUser?.mes || ''),
         previous_outputs: previousOutputs,
         distiller: distillerOutput,
+        previous_orchestration: previousOrchestration,
     });
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
@@ -1172,9 +1202,9 @@ async function runLLMNode(context, nodeSpec, preset, messages, previousNodeOutpu
     throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
 }
 
-async function executeNode(context, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null) {
+async function executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null) {
     const preset = presets[nodeSpec.preset] || {};
-    return await runLLMNode(context, nodeSpec, preset, messages, previousNodeOutputs, abortSignal);
+    return await runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal);
 }
 
 async function runOrchestration(context, payload, messages, profile) {
@@ -1197,7 +1227,7 @@ async function runOrchestration(context, payload, messages, profile) {
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 return {
                     node: nodeSpec.id,
-                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
+                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
                 };
             }));
             nodeOutputs.push(...outputs);
@@ -1206,7 +1236,7 @@ async function runOrchestration(context, payload, messages, profile) {
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 nodeOutputs.push({
                     node: nodeSpec.id,
-                    output: await executeNode(context, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
+                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
                 });
             }
         }
@@ -2077,7 +2107,7 @@ function renderWorkflowBoard(scope, editor) {
         ${renderPresetOptions(editor.presets, node.preset)}
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
 
         return `
