@@ -11,13 +11,17 @@ const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance be
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
+const ANTI_DATA_BLOCKED_LEXICON = [
+    '观察', '分析', '评估', '统计', '监测', '检测', '实验', '推测', '记录', '汇报',
+    'observation', 'analyze', 'analysis', 'evaluate', 'metric', 'kpi', 'ratio', 'probability',
+];
 const ORCH_AI_QUALITY_AXES = {
     user_intent: 'Analyze user intent, emotional expectation, and implicit goals.',
     character_traits: 'Use character traits and card constraints without restating full biographies in every node.',
     lorebook_compliance: 'Read and obey active lorebook/world-info constraints as hard writing constraints.',
     character_independence: 'Preserve multi-character independence and avoid voice/agency collapse.',
     anti_ooc: 'Detect and prevent OOC behavior and persona drift.',
-    anti_datafication: 'Prevent data-like writing (numbers, metrics, pseudo-analytics) in creative RP output.',
+    anti_datafication: 'Treat data-like prose as a hard violation (quantification, pseudo-analytics, report-style phrasing).',
     latent_behavior: 'Infer plausible latent behavior, motivations, and next-step actions.',
     human_realism: 'Increase human-like behavior through natural uncertainty, bounded knowledge, and believable pacing.',
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
@@ -44,6 +48,9 @@ function getDefaultAiSuggestSystemPrompt() {
         'Require explicit hard-gate checks (consistency, OOC, causality, continuity, over-interpretation) in the critic node.',
         'Hard requirement: include one dedicated node id "lorebook_reader" to explicitly study active lorebook/world-info constraints.',
         'Hard requirement: include one dedicated node id "anti_data_guard" to explicitly block data-like writing and metric-style phrasing.',
+        `For anti_data_guard, enforce blocked lexicon as hard risk: ${ANTI_DATA_BLOCKED_LEXICON.join(', ')}.`,
+        'For anti_data_guard, also hard-block detached report/bulletin cadence (e.g., weather-broadcast style flat narration).',
+        'For anti_data_guard, avoid genre slogans and style branding; output hard compliance checks and rewrite rules only.',
         'Those two required nodes must exist even when you innovate other stage/node designs.',
         'Require final synthesizer output to be concise, actionable, and directly usable for drafting.',
         'Flexibility policy: treat the provided blueprint as a strong baseline, not a prison.',
@@ -52,6 +59,9 @@ function getDefaultAiSuggestSystemPrompt() {
         `Allowed template placeholders ONLY: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
         'Do not invent any other placeholder names.',
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
+        'Read global_orchestration_spec and global_presets as primary reference before creating card-specific overrides.',
+        'Do not output thin prompts. Each node preset must contain concrete process steps, hard constraints, and output contract details.',
+        'Minimum richness target per node preset: systemPrompt >= 3 concrete rule lines; userPromptTemplate includes Task block with multiple actionable bullets.',
         'Call luker_orch_append_stage one stage per call.',
         'luker_orch_append_stage arguments must be flat: stage_id, mode, nodes.',
         'Call luker_orch_upsert_preset one preset per call.',
@@ -77,12 +87,12 @@ const defaultPresets = {
         userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
     },
     lorebook_reader: {
-        systemPrompt: 'You are a lorebook compliance reader. Extract only the active writing constraints and must-follow style rules from the already-injected world-info context.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        systemPrompt: 'You are a lorebook compliance reader. Extract only active hard constraints from world-info, especially explicit banned wording/style requirements.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     anti_data_guard: {
-        systemPrompt: 'You are an anti-datafication guard for RP writing. Prevent output from sounding like analytics, logs, measurements, or pseudo-metrics.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Detect data-like phrasing risks (numeric quantification, percentages, timing estimates, KPI-style wording, pseudo-scientific analytics tone).\n- Emit strict rewrite directives that preserve natural in-character prose.\n- Keep constraints actionable and easy for final drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     planner: {
         systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan.',
@@ -1022,8 +1032,13 @@ function buildAiSuggestInputXml({
         buildJsonXmlBlock('quality_gate_contract', 'Hard quality gates the profile must explicitly enforce.', qualityGateContract),
         buildJsonXmlBlock('recommended_blueprint', 'Preferred orchestration blueprint when no special reason to deviate.', recommendedBlueprint),
         buildJsonXmlBlock('anti_patterns', 'Patterns to avoid when generating orchestration prompts.', antiPatterns),
-        buildJsonXmlBlock('global_orchestration_spec', 'Current global orchestration spec as reference baseline.', globalOrchestrationSpec),
-        buildJsonXmlBlock('global_presets', 'Current global preset map as reference baseline.', globalPresets),
+        buildJsonXmlBlock('global_orchestration_spec', 'Current global orchestration spec as primary baseline. Reuse/adapt this structure before inventing new topology.', globalOrchestrationSpec),
+        buildJsonXmlBlock('global_presets', 'Current global preset map as primary baseline. Preserve useful detail depth; do not collapse into short generic prompts.', globalPresets),
+        buildJsonXmlBlock('prompt_richness_contract', 'Each node prompt must be concrete and non-trivial.', {
+            system_prompt_contract: 'At least 3 concrete rule lines; avoid generic slogans.',
+            user_template_contract: 'Must include Task block with multiple actionable bullets and clear output contract.',
+            anti_lazy_rule: 'Thin one-liner prompts are invalid.',
+        }),
         buildJsonXmlBlock('tool_protocol', 'Function-call protocol and expected argument shapes.', toolProtocol),
         '</orchestration_build_input>',
     ].join('\n');
@@ -2400,6 +2415,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             anti_ooc: 'Prevent role/persona drift and voice collapse.',
             lorebook_compliance: 'Respect active lorebook/world-info constraints as hard writing limits.',
             anti_datafication: 'Reject numeric/data-like roleplay prose and require natural narrative language.',
+            anti_report_tone: 'Reject detached report/broadcast cadence; require in-scene vivid narration.',
             anti_overinterpretation: 'Avoid inflated/extreme interpretations without evidence.',
             realism: 'Behavior should remain human-believable and situationally plausible.',
             world_autonomy: 'World events should not always orbit the user.',
@@ -2414,7 +2430,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             role_contracts: {
                 distiller: 'Produce compact evidence-grounded state snapshot.',
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
-                anti_data_guard: 'Enforce anti-data writing constraints and produce rewrite-safe guidance.',
+                anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
                 critic: 'Run hard-gate checks and output minimal fix directives.',
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
