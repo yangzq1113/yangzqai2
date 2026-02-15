@@ -8,6 +8,25 @@ const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
+const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints.';
+const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
+    'Previous orchestration capsule:',
+    '{{previous_orchestration}}',
+    '',
+    'Recent chat:',
+    '{{recent_chat}}',
+    '',
+    'Current user message:',
+    '{{last_user}}',
+    '',
+    'Task:',
+    '- Distill the immediate narrative state and user intent.',
+    '- Provide concrete directives for next reply drafting.',
+    '- List key risks to avoid (OOC, continuity breaks, data-like language).',
+    '- If useful, provide a patch_last_user candidate.',
+    '',
+    'Return function-call fields only. Keep summary/directives/risks/tags as plain text.',
+].join('\n');
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_orchestration'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
@@ -121,6 +140,9 @@ const defaultPresets = {
 
 const defaultSettings = {
     enabled: false,
+    singleAgentModeEnabled: false,
+    singleAgentSystemPrompt: DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT,
+    singleAgentUserPromptTemplate: DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE,
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
     plainTextFunctionCallMode: false,
@@ -150,6 +172,10 @@ function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Orchestrator': '多智能体编排',
         'Enabled': '启用',
+        'Single-agent mode': '单 Agent 简化模式',
+        'Single-agent system prompt': '单 Agent 系统提示词',
+        'Single-agent user prompt template': '单 Agent 用户提示词模板',
+        'Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.': '单 Agent 模式已启用。复杂工作流编辑区已隐藏，运行时将使用简化单节点编排。',
         'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式（禁用原生工具 API）',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点预设（参数+提示词，留空=当前）',
@@ -279,6 +305,10 @@ function registerLocaleData() {
     addLocaleData('zh-tw', {
         'Orchestrator': '多智能體編排',
         'Enabled': '啟用',
+        'Single-agent mode': '單 Agent 簡化模式',
+        'Single-agent system prompt': '單 Agent 系統提示詞',
+        'Single-agent user prompt template': '單 Agent 使用者提示詞模板',
+        'Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.': '單 Agent 模式已啟用。複雜工作流編輯區已隱藏，執行時將使用簡化單節點編排。',
         'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式（停用原生工具 API）',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點預設（參數+提示詞，留空=目前）',
@@ -549,6 +579,9 @@ function ensureSettings() {
             extension_settings[MODULE_NAME][key] = cloneDefault(value);
         }
     }
+    extension_settings[MODULE_NAME].singleAgentModeEnabled = Boolean(extension_settings[MODULE_NAME].singleAgentModeEnabled);
+    extension_settings[MODULE_NAME].singleAgentSystemPrompt = String(extension_settings[MODULE_NAME].singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT);
+    extension_settings[MODULE_NAME].singleAgentUserPromptTemplate = String(extension_settings[MODULE_NAME].singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE);
     extension_settings[MODULE_NAME].plainTextFunctionCallMode = Boolean(extension_settings[MODULE_NAME].plainTextFunctionCallMode);
 
     extension_settings[MODULE_NAME].orchestrationSpec = sanitizeSpec(extension_settings[MODULE_NAME].orchestrationSpec);
@@ -716,6 +749,29 @@ function extractLastUserMessage(messages) {
 
 function getEffectiveProfile(context) {
     const settings = extension_settings[MODULE_NAME];
+    if (settings.singleAgentModeEnabled) {
+        return {
+            source: 'single',
+            key: 'single_agent',
+            spec: sanitizeSpec({
+                stages: [{
+                    id: 'single',
+                    mode: 'serial',
+                    nodes: [{
+                        id: 'single_agent',
+                        preset: 'single_agent',
+                    }],
+                }],
+            }),
+            presets: sanitizePresetMap({
+                ...settings.presets,
+                single_agent: {
+                    systemPrompt: String(settings.singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT),
+                    userPromptTemplate: String(settings.singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE),
+                },
+            }),
+        };
+    }
     const chatKey = getChatKey(context);
     const chatOverride = settings.chatOverrides?.[chatKey];
     if (chatOverride?.enabled && chatOverride?.spec) {
@@ -2365,6 +2421,7 @@ function renderEditorWorkspace(scope, editor, title) {
 
 function renderDynamicPanels(root, context) {
     const settings = getSettings();
+    const singleModeEnabled = Boolean(settings.singleAgentModeEnabled);
     syncCharacterEditorWithActiveAvatar(context);
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
     const override = activeAvatar ? getCharacterOverrideByAvatar(context, activeAvatar) : null;
@@ -2389,6 +2446,9 @@ function renderDynamicPanels(root, context) {
     root.find('#luker_orch_effective_visual').html(renderEditorWorkspace(scope, editor, profileTitle));
     root.find('#luker_orch_clear_character_button').toggle(isCharacterScope);
     root.find('#luker_orch_ai_goal').val(String(uiState.aiGoal || ''));
+    root.find('.luker_orch_board').toggle(!singleModeEnabled);
+    root.find('#luker_orch_single_mode_hint').toggle(singleModeEnabled);
+    root.find('#luker_orch_single_agent_fields').toggle(singleModeEnabled);
 }
 
 function updateUiStatus(text) {
@@ -3016,6 +3076,9 @@ function bindUi() {
 
     initializeUiState(context);
     root.find('#luker_orch_enabled').prop('checked', Boolean(settings.enabled));
+    root.find('#luker_orch_single_agent_mode').prop('checked', Boolean(settings.singleAgentModeEnabled));
+    root.find('#luker_orch_single_agent_system_prompt').val(String(settings.singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT));
+    root.find('#luker_orch_single_agent_user_prompt').val(String(settings.singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE));
     root.find('#luker_orch_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled(settings));
     root.find('#luker_orch_llm_api_preset').val(String(settings.llmNodeApiPresetName || ''));
     root.find('#luker_orch_llm_preset').val(String(settings.llmNodePresetName || ''));
@@ -3035,6 +3098,22 @@ function bindUi() {
 
     root.on('input.lukerOrch', '#luker_orch_enabled', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_single_agent_mode', function () {
+        settings.singleAgentModeEnabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+        renderDynamicPanels(root, context);
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_single_agent_system_prompt', function () {
+        settings.singleAgentSystemPrompt = String(jQuery(this).val() || '');
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_single_agent_user_prompt', function () {
+        settings.singleAgentUserPromptTemplate = String(jQuery(this).val() || '');
         saveSettingsDebounced();
     });
 
@@ -3617,6 +3696,13 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_orch_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
+            <label class="checkbox_label"><input id="luker_orch_single_agent_mode" type="checkbox" /> ${escapeHtml(i18n('Single-agent mode'))}</label>
+            <div id="luker_orch_single_agent_fields">
+                <label for="luker_orch_single_agent_system_prompt">${escapeHtml(i18n('Single-agent system prompt'))}</label>
+                <textarea id="luker_orch_single_agent_system_prompt" class="text_pole textarea_compact" rows="4"></textarea>
+                <label for="luker_orch_single_agent_user_prompt">${escapeHtml(i18n('Single-agent user prompt template'))}</label>
+                <textarea id="luker_orch_single_agent_user_prompt" class="text_pole textarea_compact" rows="6"></textarea>
+            </div>
             <label class="checkbox_label"><input id="luker_orch_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode (disable native tool API)'))}</label>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
@@ -3651,6 +3737,7 @@ function ensureUi() {
             </select>
             <label for="luker_orch_capsule_custom_instruction">${escapeHtml(i18n('Custom capsule instruction (prepended before analysis)'))}</label>
             <textarea id="luker_orch_capsule_custom_instruction" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. Follow this guidance first, then write final reply in-character.'))}"></textarea>
+            <small id="luker_orch_single_mode_hint" style="opacity:0.8">${escapeHtml(i18n('Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.'))}</small>
 
             <hr>
             <div class="luker_orch_board">
