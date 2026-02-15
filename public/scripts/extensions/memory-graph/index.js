@@ -325,7 +325,7 @@ function registerLocaleData() {
         'Recall query recent messages': '召回查询最近消息条数',
         'Extract batch assistant turns': '每次抽取请求处理的 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
-        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式',
+        'Plain-text function-call mode': '纯文本函数调用模式',
         'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回阶段2提示词（最终选择）',
@@ -556,7 +556,7 @@ function registerLocaleData() {
         'Recall query recent messages': '召回查詢最近訊息條數',
         'Extract batch assistant turns': '每次抽取請求處理的 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
-        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式',
+        'Plain-text function-call mode': '純文字函式呼叫模式',
         'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回階段2提示詞（最終選擇）',
@@ -8649,7 +8649,7 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="luker_rpg_memory_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode (disable native tool API)'))}</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
             <label for="luker_rpg_memory_recall_api_preset">${escapeHtml(i18n('Recall API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_api_preset" class="text_pole"></select>

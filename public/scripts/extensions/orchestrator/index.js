@@ -176,7 +176,7 @@ function registerLocaleData() {
         'Single-agent system prompt': '单 Agent 系统提示词',
         'Single-agent user prompt template': '单 Agent 用户提示词模板',
         'Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.': '单 Agent 模式已启用。复杂工作流编辑区已隐藏，运行时将使用简化单节点编排。',
-        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式',
+        'Plain-text function-call mode': '纯文本函数调用模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点预设（参数+提示词，留空=当前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
@@ -309,7 +309,7 @@ function registerLocaleData() {
         'Single-agent system prompt': '單 Agent 系統提示詞',
         'Single-agent user prompt template': '單 Agent 使用者提示詞模板',
         'Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.': '單 Agent 模式已啟用。複雜工作流編輯區已隱藏，執行時將使用簡化單節點編排。',
-        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式',
+        'Plain-text function-call mode': '純文字函式呼叫模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點預設（參數+提示詞，留空=目前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
@@ -3726,7 +3726,7 @@ function ensureUi() {
                 <label for="luker_orch_single_agent_user_prompt">${escapeHtml(i18n('Single-agent user prompt template'))}</label>
                 <textarea id="luker_orch_single_agent_user_prompt" class="text_pole textarea_compact" rows="6"></textarea>
             </div>
-            <label class="checkbox_label"><input id="luker_orch_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode (disable native tool API)'))}</label>
+            <label class="checkbox_label"><input id="luker_orch_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
             <label for="luker_orch_llm_preset">${escapeHtml(i18n('LLM node preset (params + prompt, empty = current)'))}</label>
