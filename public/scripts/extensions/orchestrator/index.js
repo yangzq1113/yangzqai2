@@ -1340,6 +1340,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     retriesOverride = null,
     abortSignal = null,
     includeAssistantText = false,
+    allowNoToolCalls = false,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
@@ -1372,7 +1373,22 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             });
             if (usePlainTextCalls) {
                 const rawContent = getResponseMessageContent(responseData);
-                const calls = extractAllFunctionCallsFromText(responseData, allowedNames);
+                let calls = [];
+                try {
+                    calls = extractAllFunctionCallsFromText(responseData, allowedNames);
+                } catch (error) {
+                    if (allowNoToolCalls && rawContent) {
+                        if (includeAssistantText) {
+                            return {
+                                toolCalls: [],
+                                assistantText: rawContent,
+                                rawAssistantText: rawContent,
+                            };
+                        }
+                        return [];
+                    }
+                    throw error;
+                }
                 if (includeAssistantText) {
                     return {
                         toolCalls: calls,
@@ -1382,12 +1398,28 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 }
                 return calls;
             }
-            const calls = extractAllFunctionCalls(responseData, allowedNames);
+            const assistantText = getResponseMessageContent(responseData);
+            let calls = [];
+            try {
+                calls = extractAllFunctionCalls(responseData, allowedNames);
+            } catch (error) {
+                if (allowNoToolCalls && assistantText) {
+                    if (includeAssistantText) {
+                        return {
+                            toolCalls: [],
+                            assistantText,
+                            rawAssistantText: assistantText,
+                        };
+                    }
+                    return [];
+                }
+                throw error;
+            }
             if (includeAssistantText) {
                 return {
                     toolCalls: calls,
-                    assistantText: getResponseMessageContent(responseData),
-                    rawAssistantText: getResponseMessageContent(responseData),
+                    assistantText,
+                    rawAssistantText: assistantText,
                 };
             }
             return calls;
@@ -4033,13 +4065,27 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         apiSettingsOverride,
         abortSignal,
         includeAssistantText: true,
+        allowNoToolCalls: true,
     });
     const toolCalls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
+    const assistantText = String(detailed?.assistantText || '').trim();
     if (toolCalls.length === 0) {
+        if (assistantText) {
+            session.messages.push({
+                role: 'assistant',
+                content: assistantText,
+                auto: false,
+                at: Date.now(),
+            });
+            trimAiIterationMessages(session);
+            session.pendingApproval = null;
+            session.updatedAt = Date.now();
+            return { ok: true, pending: false, textOnly: true };
+        }
         throw new Error(i18n('Function output is invalid.'));
     }
     session.pendingApproval = {
-        assistantText: String(detailed?.assistantText || '').trim(),
+        assistantText,
         toolCalls,
         createdAt: Date.now(),
     };
