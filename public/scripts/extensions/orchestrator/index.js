@@ -234,6 +234,14 @@ function registerLocaleData() {
         'Pending approval': '待审批',
         'Approve changes': '批准执行',
         'Reject changes': '拒绝执行',
+        'View diff': '查看 diff',
+        'Pending changes diff': '待审批变更详情',
+        'No diff details available.': '暂无可展示的差异详情。',
+        'Before': '变更前',
+        'After': '变更后',
+        'Not set': '未设置',
+        'Raw arguments': '原始参数',
+        'Operation ${0}': '操作 ${0}',
         'AI suggested changes are waiting for approval.': 'AI 产出的变更正在等待审批。',
         'No editable operations were produced.': '没有产出可执行的变更。',
         'Changes approved and applied.': '已批准并执行变更。',
@@ -399,6 +407,14 @@ function registerLocaleData() {
         'Pending approval': '待審批',
         'Approve changes': '批准執行',
         'Reject changes': '拒絕執行',
+        'View diff': '查看 diff',
+        'Pending changes diff': '待審批變更詳情',
+        'No diff details available.': '暫無可展示的差異詳情。',
+        'Before': '變更前',
+        'After': '變更後',
+        'Not set': '未設定',
+        'Raw arguments': '原始參數',
+        'Operation ${0}': '操作 ${0}',
         'AI suggested changes are waiting for approval.': 'AI 產出的變更正在等待審批。',
         'No editable operations were produced.': '沒有產出可執行的變更。',
         'Changes approved and applied.': '已批准並執行變更。',
@@ -3518,6 +3534,295 @@ function summarizeIterationToolCalls(toolCalls) {
     return lines;
 }
 
+function trimDiffText(value, maxLength = 1600) {
+    const text = String(value ?? '');
+    if (text.length <= maxLength) {
+        return text;
+    }
+    return `${text.slice(0, maxLength)}\n...(${text.length - maxLength} chars truncated)`;
+}
+
+function formatDiffValue(value) {
+    const text = String(value ?? '').trim();
+    return text ? trimDiffText(text) : i18n('Not set');
+}
+
+function buildAiIterationPendingDiffEntries(session, pending) {
+    const entries = [];
+    const workingProfile = structuredClone(session?.workingProfile || { spec: { stages: [] }, presets: {} });
+    const stages = Array.isArray(workingProfile?.spec?.stages) ? workingProfile.spec.stages : [];
+    const presets = (workingProfile?.presets && typeof workingProfile.presets === 'object') ? workingProfile.presets : {};
+
+    for (const call of Array.isArray(pending?.toolCalls) ? pending.toolCalls : []) {
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        const item = {
+            name,
+            summary: '',
+            fields: [],
+            rawArgs: args,
+        };
+
+        if (name === 'luker_orch_set_stage') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            const mode = String(args.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
+            if (!stageId) {
+                item.summary = 'Stage update skipped (missing stage_id)';
+                entries.push(item);
+                continue;
+            }
+            const before = stages.find(stage => String(stage?.id || '') === stageId) || null;
+            const beforeMode = before ? String(before.mode || 'serial') : '';
+            const beforePosition = before ? stages.findIndex(stage => String(stage?.id || '') === stageId) : -1;
+
+            let target = before;
+            if (!target) {
+                target = { id: stageId, mode, nodes: [] };
+                stages.push(target);
+            }
+            target.mode = mode;
+            const afterPositionTarget = stages.findIndex(stage => String(stage?.id || '') === stageId);
+            applyIndexReorder(stages, afterPositionTarget, Number.isInteger(args.position) ? Number(args.position) : NaN);
+            const afterPosition = stages.findIndex(stage => String(stage?.id || '') === stageId);
+
+            item.summary = stageId
+                ? `Stage "${stageId}" ${before ? 'updated' : 'created'}`
+                : 'Stage updated';
+            item.fields.push({ label: 'mode', before: formatDiffValue(beforeMode), after: formatDiffValue(mode) });
+            if (beforePosition !== afterPosition && beforePosition >= 0 && afterPosition >= 0) {
+                item.fields.push({ label: 'position', before: String(beforePosition), after: String(afterPosition) });
+            }
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_remove_stage') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            if (!stageId) {
+                item.summary = 'Stage removal skipped (missing stage_id)';
+                entries.push(item);
+                continue;
+            }
+            const index = stages.findIndex(stage => String(stage?.id || '') === stageId);
+            const removed = index >= 0 ? structuredClone(stages[index]) : null;
+            if (index >= 0) {
+                stages.splice(index, 1);
+            }
+            item.summary = stageId
+                ? `Stage "${stageId}" ${removed ? 'removed' : 'remove skipped'}`
+                : 'Stage remove requested';
+            item.fields.push({
+                label: 'result',
+                before: removed ? 'exists' : i18n('Not set'),
+                after: removed ? i18n('Not set') : 'unchanged',
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_set_node') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            const nodeId = sanitizeIdentifierToken(args.node_id, '');
+            if (!stageId || !nodeId) {
+                item.summary = 'Node update skipped (missing stage_id or node_id)';
+                entries.push(item);
+                continue;
+            }
+            const stage = resolveIterationStage({ workingProfile }, stageId, true);
+            if (!stage) {
+                item.summary = `Node "${nodeId}" update skipped (stage "${stageId}" invalid)`;
+                entries.push(item);
+                continue;
+            }
+            const nodes = Array.isArray(stage.nodes) ? stage.nodes : [];
+            stage.nodes = nodes;
+            const existingIndex = nodes.findIndex(node => String(node?.id || '') === nodeId);
+            const beforeNode = existingIndex >= 0 ? structuredClone(nodes[existingIndex]) : null;
+            const presetId = sanitizeIdentifierToken(args.preset, nodeId || 'distiller') || 'distiller';
+            const afterUserPromptTemplate = typeof args.userPromptTemplate === 'string'
+                ? args.userPromptTemplate
+                : (beforeNode ? String(beforeNode.userPromptTemplate || '') : '');
+            const nextNode = {
+                id: nodeId,
+                preset: presetId,
+                userPromptTemplate: afterUserPromptTemplate,
+            };
+            if (existingIndex >= 0) {
+                nodes[existingIndex] = nextNode;
+                applyIndexReorder(nodes, existingIndex, Number.isInteger(args.position) ? Number(args.position) : NaN);
+            } else {
+                nodes.push(nextNode);
+                applyIndexReorder(nodes, nodes.length - 1, Number.isInteger(args.position) ? Number(args.position) : NaN);
+            }
+
+            item.summary = `Node "${nodeId}" in stage "${stageId}" ${beforeNode ? 'updated' : 'created'}`;
+            item.fields.push({
+                label: 'preset',
+                before: formatDiffValue(beforeNode?.preset || ''),
+                after: formatDiffValue(presetId),
+            });
+            item.fields.push({
+                label: 'userPromptTemplate',
+                before: formatDiffValue(beforeNode?.userPromptTemplate || ''),
+                after: formatDiffValue(afterUserPromptTemplate),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_remove_node') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            const nodeId = sanitizeIdentifierToken(args.node_id, '');
+            if (!stageId || !nodeId) {
+                item.summary = 'Node removal skipped (missing stage_id or node_id)';
+                entries.push(item);
+                continue;
+            }
+            const stage = resolveIterationStage({ workingProfile }, stageId, false);
+            const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+            const index = nodes.findIndex(node => String(node?.id || '') === nodeId);
+            const removed = index >= 0 ? structuredClone(nodes[index]) : null;
+            if (index >= 0) {
+                nodes.splice(index, 1);
+            }
+            item.summary = `Node "${nodeId}" in stage "${stageId}" ${removed ? 'removed' : 'remove skipped'}`;
+            item.fields.push({
+                label: 'result',
+                before: removed ? 'exists' : i18n('Not set'),
+                after: removed ? i18n('Not set') : 'unchanged',
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_set_preset') {
+            const presetId = sanitizeIdentifierToken(args.preset_id, '');
+            if (!presetId) {
+                item.summary = 'Preset update skipped (missing preset_id)';
+                entries.push(item);
+                continue;
+            }
+            const beforePreset = presets[presetId] && typeof presets[presetId] === 'object'
+                ? structuredClone(presets[presetId])
+                : null;
+            const afterPreset = {
+                systemPrompt: String(args.systemPrompt || '').trim(),
+                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+            };
+            presets[presetId] = afterPreset;
+            item.summary = `Preset "${presetId}" ${beforePreset ? 'updated' : 'created'}`;
+            item.fields.push({
+                label: 'systemPrompt',
+                before: formatDiffValue(beforePreset?.systemPrompt || ''),
+                after: formatDiffValue(afterPreset.systemPrompt),
+            });
+            item.fields.push({
+                label: 'userPromptTemplate',
+                before: formatDiffValue(beforePreset?.userPromptTemplate || ''),
+                after: formatDiffValue(afterPreset.userPromptTemplate),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_remove_preset') {
+            const presetId = sanitizeIdentifierToken(args.preset_id, '');
+            if (!presetId) {
+                item.summary = 'Preset removal skipped (missing preset_id)';
+                entries.push(item);
+                continue;
+            }
+            const beforePreset = presets[presetId] && typeof presets[presetId] === 'object'
+                ? structuredClone(presets[presetId])
+                : null;
+            if (beforePreset) {
+                delete presets[presetId];
+            }
+            item.summary = `Preset "${presetId}" ${beforePreset ? 'removed' : 'remove skipped'}`;
+            item.fields.push({
+                label: 'result',
+                before: beforePreset ? 'exists' : i18n('Not set'),
+                after: beforePreset ? i18n('Not set') : 'unchanged',
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_simulate') {
+            item.summary = 'Run simulation';
+            item.fields.push({
+                label: 'input',
+                before: i18n('Not set'),
+                after: formatDiffValue(args.input || ''),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_finalize_iteration') {
+            item.summary = 'Finalize iteration';
+            item.fields.push({
+                label: 'summary',
+                before: i18n('Not set'),
+                after: formatDiffValue(args.summary || ''),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_continue_iteration') {
+            item.summary = 'Continue iteration';
+            item.fields.push({
+                label: 'note',
+                before: i18n('Not set'),
+                after: formatDiffValue(args.note || ''),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        item.summary = name || 'Unknown operation';
+        entries.push(item);
+    }
+
+    return entries;
+}
+
+function renderAiIterationPendingDiffHtml(session) {
+    const pending = session?.pendingApproval;
+    const entries = buildAiIterationPendingDiffEntries(session, pending);
+    if (!entries.length) {
+        return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No diff details available.'))}</div>`;
+    }
+    return `
+<div class="luker_orch_iter_diff_popup">
+    ${entries.map((entry, index) => `
+<div class="luker_orch_iter_diff_item">
+    <div class="luker_orch_iter_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(entry.summary || entry.name || ''))}</div>
+    <div class="luker_orch_iter_diff_fields">
+        ${(entry.fields || []).map(field => `
+<div class="luker_orch_iter_diff_field">
+    <div class="luker_orch_iter_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
+    <div class="luker_orch_iter_diff_blocks">
+        <div class="luker_orch_iter_diff_block before">
+            <div class="luker_orch_iter_diff_block_title">${escapeHtml(i18n('Before'))}</div>
+            <pre>${escapeHtml(String(field?.before ?? ''))}</pre>
+        </div>
+        <div class="luker_orch_iter_diff_block after">
+            <div class="luker_orch_iter_diff_block_title">${escapeHtml(i18n('After'))}</div>
+            <pre>${escapeHtml(String(field?.after ?? ''))}</pre>
+        </div>
+    </div>
+</div>`).join('')}
+    </div>
+    <details class="luker_orch_iter_diff_raw">
+        <summary>${escapeHtml(i18n('Raw arguments'))}</summary>
+        <pre>${escapeHtml(JSON.stringify(entry.rawArgs || {}, null, 2))}</pre>
+    </details>
+</div>`).join('')}
+</div>`;
+}
+
 function renderAiIterationPendingApproval(session, popupId) {
     const pending = session?.pendingApproval;
     if (!pending) {
@@ -3534,6 +3839,7 @@ function renderAiIterationPendingApproval(session, popupId) {
         ${summaryLines.length > 0 ? summaryLines.map(item => `<div class="luker_orch_iter_pending_op">${escapeHtml(item)}</div>`).join('') : `<div class="luker_orch_iter_pending_op">${escapeHtml(i18n('No editable operations were produced.'))}</div>`}
     </div>
     <div class="luker_orch_iter_actions">
+        <div id="${popupId}_view_diff" class="menu_button menu_button_small">${escapeHtml(i18n('View diff'))}</div>
         <div id="${popupId}_approve" class="menu_button">${escapeHtml(i18n('Approve changes'))}</div>
         <div id="${popupId}_reject" class="menu_button">${escapeHtml(i18n('Reject changes'))}</div>
     </div>
@@ -4341,6 +4647,20 @@ async function openAiIterationStudio(context, settings, root) {
         }
     });
 
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_view_diff`, async function () {
+        const pending = session?.pendingApproval;
+        if (!pending) {
+            return;
+        }
+        const html = renderAiIterationPendingDiffHtml(session);
+        await context.callGenericPopup(
+            html,
+            context.POPUP_TYPE.TEXT,
+            i18n('Pending changes diff'),
+            { wide: true, wider: true, large: true, allowVerticalScrolling: true },
+        );
+    });
+
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_reject`, function () {
         if (!session?.pendingApproval) {
             return;
@@ -5085,6 +5405,83 @@ function ensureStyles() {
     font-size: 0.9rem;
     opacity: 0.92;
 }
+.luker_orch_iter_diff_popup {
+    display: grid;
+    gap: 10px;
+    max-height: 72vh;
+    overflow: auto;
+    padding-right: 2px;
+}
+.luker_orch_iter_diff_item {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    background: rgba(0,0,0,0.16);
+    padding: 8px;
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_diff_title {
+    font-weight: 600;
+    line-height: 1.35;
+}
+.luker_orch_iter_diff_fields {
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_diff_field {
+    display: grid;
+    gap: 6px;
+}
+.luker_orch_iter_diff_label {
+    font-size: 0.92rem;
+    opacity: 0.86;
+}
+.luker_orch_iter_diff_blocks {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+.luker_orch_iter_diff_block {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    border-radius: 6px;
+    background: rgba(0,0,0,0.2);
+    padding: 6px;
+    min-width: 0;
+}
+.luker_orch_iter_diff_block_title {
+    font-size: 0.84rem;
+    opacity: 0.8;
+    margin-bottom: 4px;
+}
+.luker_orch_iter_diff_block pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.35;
+    font-size: 0.85rem;
+    max-height: 220px;
+    overflow: auto;
+}
+.luker_orch_iter_diff_block.before {
+    background: rgba(180, 60, 60, 0.12);
+}
+.luker_orch_iter_diff_block.after {
+    background: rgba(51, 143, 87, 0.14);
+}
+.luker_orch_iter_diff_raw summary {
+    cursor: pointer;
+    font-size: 0.9rem;
+    opacity: 0.9;
+}
+.luker_orch_iter_diff_raw pre {
+    margin-top: 6px;
+    margin-bottom: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow: auto;
+    font-size: 0.84rem;
+}
 .luker_orch_iter_popup .menu_button,
 .luker_orch_iter_popup .menu_button_small {
     width: auto;
@@ -5183,6 +5580,9 @@ function ensureStyles() {
     }
     .luker_orch_iter_col {
         min-height: 320px;
+    }
+    .luker_orch_iter_diff_blocks {
+        grid-template-columns: 1fr;
     }
 }
 </style>`);
