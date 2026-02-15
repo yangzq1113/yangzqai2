@@ -2301,10 +2301,11 @@ function buildDynamicToolDescription(spec = {}, mode = 'create') {
     return chunks.join(' ');
 }
 
-function buildDynamicExtractTools(schema = []) {
+function buildDynamicExtractTools(schema = [], options = {}) {
     const tools = [];
     const specByToolName = new Map();
     const usedNames = new Set();
+    const allowEditDelete = options?.allowEditDelete !== false;
 
     for (const rawSpec of Array.isArray(schema) ? schema : []) {
         const spec = rawSpec && typeof rawSpec === 'object' ? rawSpec : null;
@@ -2325,7 +2326,7 @@ function buildDynamicExtractTools(schema = []) {
         }
         usedNames.add(createToolName);
         let editToolName = '';
-        if (isEditableType) {
+        if (isEditableType && allowEditDelete) {
             editToolName = `${baseName}_edit`;
             suffix = 2;
             while (usedNames.has(editToolName)) {
@@ -2335,7 +2336,7 @@ function buildDynamicExtractTools(schema = []) {
             usedNames.add(editToolName);
         }
         let deleteToolName = '';
-        if (isEditableType) {
+        if (isEditableType && allowEditDelete) {
             deleteToolName = `${baseName}_delete`;
             suffix = 2;
             while (usedNames.has(deleteToolName)) {
@@ -2423,7 +2424,7 @@ function buildDynamicExtractTools(schema = []) {
                 },
             },
         });
-        if (isEditableType) {
+        if (isEditableType && allowEditDelete) {
             tools.push({
                 type: 'function',
                 function: {
@@ -2460,7 +2461,7 @@ function buildDynamicExtractTools(schema = []) {
                 },
             });
         }
-        if (isEditableType) {
+        if (isEditableType && allowEditDelete) {
             tools.push({
                 type: 'function',
                 function: {
@@ -2486,7 +2487,7 @@ function buildDynamicExtractTools(schema = []) {
             columnHints: filteredColumnHints,
             op: 'create',
         });
-        if (isEditableType) {
+        if (isEditableType && allowEditDelete) {
             specByToolName.set(editToolName, {
                 ...spec,
                 id: typeId,
@@ -2496,7 +2497,7 @@ function buildDynamicExtractTools(schema = []) {
                 op: 'edit',
             });
         }
-        if (isEditableType) {
+        if (isEditableType && allowEditDelete) {
             specByToolName.set(deleteToolName, {
                 ...spec,
                 id: typeId,
@@ -2895,29 +2896,46 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     const extractionMaxSeq = Number.isFinite(Number(options?.maxSeq))
         ? Math.max(0, Math.floor(Number(options.maxSeq)))
         : null;
-    const graphNodes = buildGraphNodeHints(store, schema, 0, { maxSeq: extractionMaxSeq });
-    const semanticNodeTotal = listNodesByLevel(store, LEVEL.SEMANTIC)
-        .filter(node => !node?.archived)
-        .filter(node => !isRecallDiagnosticNode(node))
-        .filter((node) => {
-            if (extractionMaxSeq === null) {
-                return true;
-            }
-            const seq = Number(node?.seqTo ?? NaN);
-            return !Number.isFinite(seq) || seq <= extractionMaxSeq;
-        })
-        .length;
-    const graphDataPayload = {
-        initialized: graphNodes.length > 0,
-        editable_type_ids: Array.from(editableTypeSet.values()),
-        projection_policy: {
-            hierarchical_types: 'core_like_parent_preferred',
-            non_hierarchical_types: 'full',
-        },
-        semantic_node_total: semanticNodeTotal,
-        visible_node_count: graphNodes.length,
-        nodes: graphNodes,
-    };
+    const rebuildCreateOnly = Boolean(options?.rebuildCreateOnly);
+    const graphNodes = rebuildCreateOnly
+        ? []
+        : buildGraphNodeHints(store, schema, 0, { maxSeq: extractionMaxSeq });
+    const semanticNodeTotal = rebuildCreateOnly
+        ? 0
+        : listNodesByLevel(store, LEVEL.SEMANTIC)
+            .filter(node => !node?.archived)
+            .filter(node => !isRecallDiagnosticNode(node))
+            .filter((node) => {
+                if (extractionMaxSeq === null) {
+                    return true;
+                }
+                const seq = Number(node?.seqTo ?? NaN);
+                return !Number.isFinite(seq) || seq <= extractionMaxSeq;
+            })
+            .length;
+    const graphDataPayload = rebuildCreateOnly
+        ? {
+            initialized: false,
+            editable_type_ids: [],
+            projection_policy: {
+                hierarchical_types: 'core_like_parent_preferred',
+                non_hierarchical_types: 'full',
+            },
+            semantic_node_total: 0,
+            visible_node_count: 0,
+            nodes: [],
+        }
+        : {
+            initialized: graphNodes.length > 0,
+            editable_type_ids: Array.from(editableTypeSet.values()),
+            projection_policy: {
+                hierarchical_types: 'core_like_parent_preferred',
+                non_hierarchical_types: 'full',
+            },
+            semantic_node_total: semanticNodeTotal,
+            visible_node_count: graphNodes.length,
+            nodes: graphNodes,
+        };
     const promptMessages = buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
         systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
@@ -2929,7 +2947,9 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
         includeCharacterCard: true,
         promptPresetName,
     });
-    const { tools, specByToolName } = buildDynamicExtractTools(schema);
+    const { tools, specByToolName } = buildDynamicExtractTools(schema, {
+        allowEditDelete: !rebuildCreateOnly,
+    });
     const allowedNames = new Set(['luker_rpg_extract_done', ...specByToolName.keys()]);
     const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(
         resolvedApiPresetName,
@@ -3567,6 +3587,7 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
     const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch, {
         maxSeq: extractionMaxSeq,
         abortSignal: options?.abortSignal || null,
+        rebuildCreateOnly: Boolean(options?.rebuildCreateOnly),
     });
     if (operations.length === 0) {
         return false;
@@ -3656,6 +3677,7 @@ async function runExtractionForStore(context, store, {
     showCompressionToast = true,
     abortSignal = null,
     onBatchStart = null,
+    rebuildCreateOnly = false,
 } = {}) {
     const settings = getSettings();
     const window = computeExtractionWindow(context, store, startSeq);
@@ -3738,6 +3760,7 @@ async function runExtractionForStore(context, store, {
                     {
                         compressionStats,
                         abortSignal,
+                        rebuildCreateOnly: Boolean(rebuildCreateOnly),
                     },
                 );
                 lastFrameError = null;
@@ -4942,6 +4965,7 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
         showCompressionToast: false,
         abortSignal,
         onBatchStart,
+        rebuildCreateOnly: true,
     });
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
