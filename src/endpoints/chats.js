@@ -710,6 +710,19 @@ function applyChatStatePatch(state, operations) {
 }
 
 /**
+ * Returns true when a JSON patch failure is most likely a concurrent-state conflict.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isChatStatePatchConflictError(error) {
+    const message = String(error?.message || error || '');
+    return message.includes('JSON Patch test failed')
+        || message.includes('Invalid JSON Patch replace path.')
+        || message.includes('Invalid JSON Patch remove path.')
+        || message.includes('Array index out of bounds');
+}
+
+/**
  * Reads the last non-header message from a JSONL chat file.
  * @param {string} filePath Chat file path.
  * @returns {object|null} Last chat message or null if unavailable.
@@ -1357,7 +1370,15 @@ router.post('/state/patch', function (request, response) {
             }
         }
 
-        const result = applyChatStatePatch(state, operations);
+        let result;
+        try {
+            result = applyChatStatePatch(state, operations);
+        } catch (error) {
+            if (isChatStatePatchConflictError(error)) {
+                return response.status(409).send({ error: 'Chat state patch conflict.' });
+            }
+            throw error;
+        }
 
         fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
         writeFileAtomicSync(stateFilePath, JSON.stringify(result.state), 'utf8');

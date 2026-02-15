@@ -8346,20 +8346,34 @@ export async function patchChatState(namespace, operations, options = {}) {
         if (!target) {
             return false;
         }
+        const sourceOperations = operations.filter(op => op && typeof op === 'object');
+        // Rebuild optimistic tests from the freshest state to avoid stale test collisions.
+        const baseOperations = sourceOperations.filter(op => String(op.op || '').trim().toLowerCase() !== 'test');
+        if (baseOperations.length === 0) {
+            return true;
+        }
 
-        const currentState = await getChatState(stateNamespace, { target });
-        const guardedOperations = attachObjectPatchTests(currentState || {}, operations);
+        const patchOnce = async (baseState) => {
+            const guardedOperations = attachObjectPatchTests(baseState || {}, baseOperations);
+            return fetch('/api/chats/state/patch', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    ...target,
+                    namespace: stateNamespace,
+                    operations: guardedOperations,
+                }),
+            });
+        };
 
-        const response = await fetch('/api/chats/state/patch', {
-            method: 'POST',
-            cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ...target,
-                namespace: stateNamespace,
-                operations: guardedOperations,
-            }),
-        });
+        let currentState = await getChatState(stateNamespace, { target });
+        let response = await patchOnce(currentState);
+
+        if (response.status === 409) {
+            currentState = await getChatState(stateNamespace, { target });
+            response = await patchOnce(currentState);
+        }
 
         return response.ok;
     } catch (error) {
