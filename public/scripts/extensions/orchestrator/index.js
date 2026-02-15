@@ -176,7 +176,7 @@ function registerLocaleData() {
         'Single-agent system prompt': '单 Agent 系统提示词',
         'Single-agent user prompt template': '单 Agent 用户提示词模板',
         'Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.': '单 Agent 模式已启用。复杂工作流编辑区已隐藏，运行时将使用简化单节点编排。',
-        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式（禁用原生工具 API）',
+        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点预设（参数+提示词，留空=当前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
@@ -309,7 +309,7 @@ function registerLocaleData() {
         'Single-agent system prompt': '單 Agent 系統提示詞',
         'Single-agent user prompt template': '單 Agent 使用者提示詞模板',
         'Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.': '單 Agent 模式已啟用。複雜工作流編輯區已隱藏，執行時將使用簡化單節點編排。',
-        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式（停用原生工具 API）',
+        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點預設（參數+提示詞，留空=目前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
@@ -1084,12 +1084,39 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
         : '';
     return [
         'Plain-text function-call mode is enabled.',
-        'Do not use native tool calls.',
         'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
         'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
         requiredLine,
         `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
     ].filter(Boolean).join('\n');
+}
+
+function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagName = 'function_call_protocol') {
+    const messages = Array.isArray(promptMessages)
+        ? promptMessages.map(message => ({ ...message }))
+        : [];
+    const addendum = String(addendumText || '').trim();
+    if (!addendum) {
+        return messages;
+    }
+    const tag = String(tagName || '').trim() || 'function_call_protocol';
+    const wrapped = [`<${tag}>`, addendum, `</${tag}>`].join('\n');
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (String(message?.role || '').toLowerCase() !== 'user') {
+            continue;
+        }
+        const base = typeof message?.content === 'string'
+            ? message.content
+            : String(message?.content ?? '');
+        messages[index] = {
+            ...message,
+            content: base ? `${base}\n\n${wrapped}` : wrapped,
+        };
+        return messages;
+    }
+    messages.push({ role: 'user', content: wrapped });
+    return messages;
 }
 
 function isAbortSignalLike(value) {
@@ -1169,14 +1196,12 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         function: { name: fnName },
     };
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const plainTextProtocolMessage = usePlainTextCalls
-        ? {
-            role: 'user',
-            content: buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
-        }
-        : null;
-    const requestMessages = plainTextProtocolMessage
-        ? [...promptMessages, plainTextProtocolMessage]
+    const requestMessages = usePlainTextCalls
+        ? mergeUserAddendumIntoPromptMessages(
+            promptMessages,
+            buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+            'function_call_protocol',
+        )
         : promptMessages;
 
     let lastError = null;
@@ -1234,14 +1259,12 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const plainTextProtocolMessage = usePlainTextCalls
-        ? {
-            role: 'user',
-            content: buildPlainTextToolProtocolMessage(tools),
-        }
-        : null;
-    const requestMessages = plainTextProtocolMessage
-        ? [...promptMessages, plainTextProtocolMessage]
+    const requestMessages = usePlainTextCalls
+        ? mergeUserAddendumIntoPromptMessages(
+            promptMessages,
+            buildPlainTextToolProtocolMessage(tools),
+            'function_call_protocol',
+        )
         : promptMessages;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -2962,20 +2985,20 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
     let parsed = null;
     let lastBuildError = null;
     for (let attempt = 0; attempt <= semanticRetries; attempt++) {
-        const reminder = attempt > 0
-            ? [{
-                role: 'user',
-                content: [
-                    `Previous attempt failed: ${String(lastBuildError?.message || 'incomplete tool calls')}`,
-                    'Return COMPLETE tool calls in one response (not one call).',
-                    'MUST include luker_orch_append_stage and luker_orch_finalize_profile, with finalize as the last call.',
-                    `MUST include dedicated nodes: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
-                ].join(' '),
-            }]
-            : [];
+        const reminderText = attempt > 0
+            ? [
+                `Previous attempt failed: ${String(lastBuildError?.message || 'incomplete tool calls')}`,
+                'Return COMPLETE tool calls in one response (not one call).',
+                'MUST include luker_orch_append_stage and luker_orch_finalize_profile, with finalize as the last call.',
+                `MUST include dedicated nodes: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
+            ].join(' ')
+            : '';
+        const requestPromptMessages = reminderText
+            ? mergeUserAddendumIntoPromptMessages(promptMessages, reminderText, 'retry_requirements')
+            : promptMessages;
         let toolCalls = [];
         try {
-            toolCalls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
+            toolCalls = await requestToolCallsWithRetry(settings, requestPromptMessages, {
                 tools,
                 allowedNames,
                 llmPresetName: suggestPresetName,

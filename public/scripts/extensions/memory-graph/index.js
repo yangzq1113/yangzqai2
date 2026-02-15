@@ -325,7 +325,7 @@ function registerLocaleData() {
         'Recall query recent messages': '召回查询最近消息条数',
         'Extract batch assistant turns': '每次抽取请求处理的 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
-        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式（禁用原生工具 API）',
+        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式',
         'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回阶段2提示词（最终选择）',
@@ -556,7 +556,7 @@ function registerLocaleData() {
         'Recall query recent messages': '召回查詢最近訊息條數',
         'Extract batch assistant turns': '每次抽取請求處理的 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
-        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式（停用原生工具 API）',
+        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式',
         'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回階段2提示詞（最終選擇）',
@@ -2191,14 +2191,39 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
         : '';
     return [
         'Plain-text function-call mode is enabled.',
-        'Do not use native tool calls.',
-        'You MUST output reasoning text in one <thought>...</thought> block BEFORE the final JSON payload.',
-        'Order is mandatory: first <thought>...</thought>, then the final JSON object.',
-        'Do not output JSON first. Do not omit <thought>.',
+        'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
         'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
         requiredLine,
         `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
     ].filter(Boolean).join('\n');
+}
+
+function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagName = 'function_call_protocol') {
+    const messages = Array.isArray(promptMessages)
+        ? promptMessages.map(message => ({ ...message }))
+        : [];
+    const addendum = String(addendumText || '').trim();
+    if (!addendum) {
+        return messages;
+    }
+    const tag = String(tagName || '').trim() || 'function_call_protocol';
+    const wrapped = [`<${tag}>`, addendum, `</${tag}>`].join('\n');
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (String(message?.role || '').toLowerCase() !== 'user') {
+            continue;
+        }
+        const base = typeof message?.content === 'string'
+            ? message.content
+            : String(message?.content ?? '');
+        messages[index] = {
+            ...message,
+            content: base ? `${base}\n\n${wrapped}` : wrapped,
+        };
+        return messages;
+    }
+    messages.push({ role: 'user', content: wrapped });
+    return messages;
 }
 
 function isAbortSignalLike(value) {
@@ -2278,14 +2303,12 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         function: { name: fnName },
     };
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const plainTextProtocolMessage = usePlainTextCalls
-        ? {
-            role: 'user',
-            content: buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
-        }
-        : null;
-    const requestMessages = plainTextProtocolMessage
-        ? [...promptMessages, plainTextProtocolMessage]
+    const requestMessages = usePlainTextCalls
+        ? mergeUserAddendumIntoPromptMessages(
+            promptMessages,
+            buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+            'function_call_protocol',
+        )
         : promptMessages;
 
     let lastError = null;
@@ -2340,14 +2363,12 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const plainTextProtocolMessage = usePlainTextCalls
-        ? {
-            role: 'user',
-            content: buildPlainTextToolProtocolMessage(tools),
-        }
-        : null;
-    const requestMessages = plainTextProtocolMessage
-        ? [...promptMessages, plainTextProtocolMessage]
+    const requestMessages = usePlainTextCalls
+        ? mergeUserAddendumIntoPromptMessages(
+            promptMessages,
+            buildPlainTextToolProtocolMessage(tools),
+            'function_call_protocol',
+        )
         : promptMessages;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -3164,15 +3185,15 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     let retryReason = '';
     let lastRetryableError = null;
     for (let attempt = 0; attempt <= semanticRetries; attempt++) {
-        const reminder = attempt > 0
-            ? [{
-                role: 'user',
-                content: `Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one type tool call and exactly one final luker_rpg_extract_done as the last call.${retryReason ? ` Fix: ${retryReason}` : ''}`,
-            }]
-            : [];
+        const reminderText = attempt > 0
+            ? `Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one type tool call and exactly one final luker_rpg_extract_done as the last call.${retryReason ? ` Fix: ${retryReason}` : ''}`
+            : '';
+        const requestPromptMessages = reminderText
+            ? mergeUserAddendumIntoPromptMessages(promptMessages, reminderText, 'retry_requirements')
+            : promptMessages;
         let calls = [];
         try {
-            calls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
+            calls = await requestToolCallsWithRetry(settings, requestPromptMessages, {
                 tools,
                 allowedNames,
                 llmPresetName: promptPresetName,
