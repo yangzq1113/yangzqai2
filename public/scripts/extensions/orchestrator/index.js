@@ -3463,13 +3463,9 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
         signal: abortSignal,
     };
     const run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
+    const allStageOutputs = compactStageOutputs(run?.stageOutputs || []);
     const finalStage = getFinalStageSnapshot(run?.stageOutputs || []);
     const finalNodes = Array.isArray(finalStage?.nodes) ? finalStage.nodes : [];
-    const summaries = finalNodes.map(item => ({
-        node: String(item?.node || ''),
-        summary: String(item?.output?.summary || '').trim(),
-        risks: Array.isArray(item?.output?.risks) ? item.output.risks.slice(0, 6) : [],
-    }));
     return {
         ok: true,
         summary: `Simulated ${Number(run?.stageOutputs?.length || 0)} stages with ${finalNodes.length} final outputs.`,
@@ -3477,7 +3473,7 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
             stage_count: Number(run?.stageOutputs?.length || 0),
             final_stage_id: String(finalStage?.id || ''),
             final_stage_mode: String(finalStage?.mode || 'serial'),
-            final_nodes: summaries,
+            all_stage_outputs: allStageOutputs,
             input: {
                 recent_messages_n: Math.max(1, Math.min(60, Math.floor(Number(args?.recent_messages_n) || 12))),
                 simulation_text_used: Boolean(customText),
