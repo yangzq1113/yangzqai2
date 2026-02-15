@@ -8326,5 +8326,7 @@
     "Recent simulated scans": "最近模擬掃描",
     "No scan records yet.": "尚無掃描記錄。",
     "Scope": "範圍",
-    "Entry": "條目"
+    "Entry": "條目",
+    "Character Card Bound": "角色卡綁定",
+    "Preset from current character card": "目前預設來自角色卡內嵌綁定"
 }

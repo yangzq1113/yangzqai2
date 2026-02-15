@@ -4272,6 +4272,7 @@ function loadOpenAISettings(data, settings) {
     }
 
     $(`#settings_preset_openai option[value="${openai_setting_names[oai_settings.preset_settings_openai]}"]`).prop('selected', true);
+    updateCharacterBoundPresetBadge(false);
     $('#openai_external_category').toggle(oai_settings.show_external_models);
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
 
@@ -4401,10 +4402,16 @@ function isCharacterBoundPresetOptionSelected() {
     return selected.attr('data-luker-char-bound') === '1';
 }
 
+function updateCharacterBoundPresetBadge(forceVisible = null) {
+    const visible = typeof forceVisible === 'boolean' ? forceVisible : isCharacterBoundPresetOptionSelected();
+    $('#luker_char_bound_preset_badge').toggleClass('displayNone', !visible);
+}
+
 function removeCharacterBoundRuntimeOption() {
     $('#settings_preset_openai option[data-luker-char-bound="1"]').remove();
     characterBoundPresetState.runtimePresetName = '';
     characterBoundPresetState.runtimePresetBody = null;
+    updateCharacterBoundPresetBadge(false);
 }
 
 function upsertCharacterBoundRuntimeOption(presetName, presetBody) {
@@ -4524,6 +4531,7 @@ async function setCharacterBoundPresetValue(characterId, presetName, presetBody 
 
 async function maybeApplyCharacterBoundPreset() {
     if (!openai_setting_names || Object.keys(openai_setting_names).length === 0) {
+        updateCharacterBoundPresetBadge(false);
         return;
     }
 
@@ -4537,6 +4545,7 @@ async function maybeApplyCharacterBoundPreset() {
             characterBoundPresetState.active = false;
             characterBoundPresetState.previousPreset = '';
         }
+        updateCharacterBoundPresetBadge(false);
         return;
     }
 
@@ -4553,6 +4562,7 @@ async function maybeApplyCharacterBoundPreset() {
             characterBoundPresetState.active = false;
             characterBoundPresetState.previousPreset = '';
         }
+        updateCharacterBoundPresetBadge(false);
         return;
     }
 
@@ -4569,6 +4579,8 @@ async function maybeApplyCharacterBoundPreset() {
         }
         if ($('#settings_preset_openai').val() !== characterBoundPresetState.runtimeOptionValue) {
             $('#settings_preset_openai').val(characterBoundPresetState.runtimeOptionValue).trigger('change');
+        } else {
+            updateCharacterBoundPresetBadge(true);
         }
         return;
     }
@@ -5189,6 +5201,7 @@ function onSettingsPresetChange() {
     const preset = usingCharacterBoundPreset
         ? structuredClone(characterBoundPresetState.runtimePresetBody || {})
         : structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    updateCharacterBoundPresetBadge(usingCharacterBoundPreset);
 
     if (!preset || typeof preset !== 'object') {
         return;

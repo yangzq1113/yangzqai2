@@ -3081,6 +3081,20 @@ select option[disabled]:not(:checked) {
     display: none !important;
 }
 
+.luker-char-bound-preset-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 5px;
+    padding: 0 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    color: var(--SmartThemeQuoteColor);
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+    white-space: nowrap;
+    font-size: calc(var(--mainFontSize) * 0.85);
+}
+
 #api_url_text {
     display: block;
 }
