@@ -6663,8 +6663,13 @@ export async function sendGenerationRequest(type, data, options = {}) {
         return await generateHorde(data.prompt, data, abortController.signal, true);
     }
 
-    resetLukerGenerationState(main_api);
-    const lukerGenerationOptions = buildLukerGenerationRequestOptions(type, main_api);
+    const shouldTrackLukerGenerationState = shouldUseLukerServerPersistenceForType(type) && supportsLukerServerPersistence(main_api);
+    if (shouldTrackLukerGenerationState) {
+        resetLukerGenerationState(main_api);
+    }
+    const lukerGenerationOptions = shouldTrackLukerGenerationState
+        ? buildLukerGenerationRequestOptions(type, main_api)
+        : null;
     const requestData = lukerGenerationOptions
         ? { ...data, luker_generation: lukerGenerationOptions }
         : data;
@@ -6677,7 +6682,9 @@ export async function sendGenerationRequest(type, data, options = {}) {
         signal: abortController.signal,
     });
 
-    applyLukerGenerationMetaFromHeaders(main_api, response);
+    if (shouldTrackLukerGenerationState) {
+        applyLukerGenerationMetaFromHeaders(main_api, response);
+    }
 
     if (!response.ok) {
         throw await response.json();
@@ -6703,10 +6710,17 @@ export async function sendStreamingRequest(type, data, options = {}) {
     data = requestPayload.data;
     options = requestPayload.options || options;
 
-    const onLukerMeta = (meta) => applyLukerGenerationMetaForApi(main_api, meta);
+    const shouldTrackLukerGenerationState = shouldUseLukerServerPersistenceForType(type) && supportsLukerServerPersistence(main_api);
+    const onLukerMeta = shouldTrackLukerGenerationState
+        ? (meta) => applyLukerGenerationMetaForApi(main_api, meta)
+        : null;
     if (main_api !== 'openai') {
-        resetLukerGenerationState(main_api);
-        const lukerGenerationOptions = buildLukerGenerationRequestOptions(type, main_api);
+        if (shouldTrackLukerGenerationState) {
+            resetLukerGenerationState(main_api);
+        }
+        const lukerGenerationOptions = shouldTrackLukerGenerationState
+            ? buildLukerGenerationRequestOptions(type, main_api)
+            : null;
         if (lukerGenerationOptions) {
             data = { ...data, luker_generation: lukerGenerationOptions };
         }

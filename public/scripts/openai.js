@@ -3029,9 +3029,10 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
 
     const generate_url = '/api/backends/chat-completions/generate';
     let requestBody = structuredClone(generate_data);
-    lastOpenAIReplyPersistedByServer = false;
-    lastOpenAIGenerationId = '';
-    if (shouldUseLukerServerPersistence(type, requestSettings.chat_completion_source)) {
+    const shouldTrackLukerGenerationState = shouldUseLukerServerPersistence(type, requestSettings.chat_completion_source);
+    if (shouldTrackLukerGenerationState) {
+        lastOpenAIReplyPersistedByServer = false;
+        lastOpenAIGenerationId = '';
         const persistTarget = buildLukerPersistTarget();
         if (persistTarget) {
             const generationId = uuidv4();
@@ -3057,7 +3058,7 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
         throw new Error(`Got response status ${response.status}`);
     }
     const generationIdHeader = response.headers.get('x-luker-generation-id');
-    if (generationIdHeader) {
+    if (shouldTrackLukerGenerationState && generationIdHeader) {
         lastOpenAIGenerationId = generationIdHeader;
     }
 
@@ -3080,11 +3081,13 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
                 tryParseStreamingError(response, rawData);
                 const parsed = JSON.parse(rawData);
                 if (parsed?.luker && typeof parsed.luker === 'object') {
-                    if (typeof parsed.luker.generation_id === 'string' && parsed.luker.generation_id) {
-                        lastOpenAIGenerationId = parsed.luker.generation_id;
-                    }
-                    if (typeof parsed.luker.persisted === 'boolean') {
-                        lastOpenAIReplyPersistedByServer = parsed.luker.persisted;
+                    if (shouldTrackLukerGenerationState) {
+                        if (typeof parsed.luker.generation_id === 'string' && parsed.luker.generation_id) {
+                            lastOpenAIGenerationId = parsed.luker.generation_id;
+                        }
+                        if (typeof parsed.luker.persisted === 'boolean') {
+                            lastOpenAIReplyPersistedByServer = parsed.luker.persisted;
+                        }
                     }
                     continue;
                 }
@@ -3104,7 +3107,9 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
         };
     }
     else {
-        lastOpenAIReplyPersistedByServer = response.headers.get('x-luker-server-persisted') === '1';
+        if (shouldTrackLukerGenerationState) {
+            lastOpenAIReplyPersistedByServer = response.headers.get('x-luker-server-persisted') === '1';
+        }
         const data = await response.json();
 
         checkQuotaError(data);
