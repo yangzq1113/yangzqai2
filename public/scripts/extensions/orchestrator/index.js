@@ -228,6 +228,15 @@ function registerLocaleData() {
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
         'Open Orchestration Editor': '打开编排编辑器',
+        'View Last Run': '查看最近一轮',
+        'Latest Orchestration Result': '最近编排效果',
+        'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
+        'Updated At': '更新时间',
+        'Trigger': '触发方式',
+        'Layer': '层级',
+        'Profile Source': '配置来源',
+        'Profile Key': '配置键',
+        'Capsule': '胶囊内容',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '当前迭代来源：${0}',
         'Conversation': '对话',
@@ -401,6 +410,15 @@ function registerLocaleData() {
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
         'Open Orchestration Editor': '開啟編排編輯器',
+        'View Last Run': '查看最近一輪',
+        'Latest Orchestration Result': '最近編排效果',
+        'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
+        'Updated At': '更新時間',
+        'Trigger': '觸發方式',
+        'Layer': '層級',
+        'Profile Source': '設定來源',
+        'Profile Key': '設定鍵',
+        'Capsule': '膠囊內容',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '目前迭代來源：${0}',
         'Conversation': '對話',
@@ -784,6 +802,45 @@ function getPreviousOrchestrationCapsuleText(context, payload) {
         return '';
     }
     return String(entry.capsule || '').trim();
+}
+
+function renderLastOrchestrationResultHtml(context) {
+    const metadata = context?.chatMetadata;
+    const entry = metadata && typeof metadata === 'object'
+        ? metadata[LAST_CAPSULE_METADATA_KEY]
+        : null;
+    if (!entry || typeof entry !== 'object') {
+        return `<div class="luker_orch_last_run_empty">${escapeHtml(i18n('No recent orchestration result available for this chat.'))}</div>`;
+    }
+
+    const updatedAt = String(entry.updatedAt || '').trim() || i18n('Not set');
+    const trigger = String(entry.trigger || '').trim() || i18n('Not set');
+    const layer = Number.isFinite(Number(entry.layer)) ? String(Math.max(0, Math.floor(Number(entry.layer)))) : i18n('Not set');
+    const profileSource = String(entry.profileSource || '').trim() || i18n('Not set');
+    const profileKey = String(entry.profileKey || '').trim() || i18n('Not set');
+    const capsule = String(entry.capsule || '').trim();
+
+    return `
+<div class="luker_orch_last_run_popup">
+    <div class="luker_orch_last_run_meta">
+        <div><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
+        <div><b>${escapeHtml(i18n('Trigger'))}</b>：${escapeHtml(trigger)}</div>
+        <div><b>${escapeHtml(i18n('Layer'))}</b>：${escapeHtml(layer)}</div>
+        <div><b>${escapeHtml(i18n('Profile Source'))}</b>：${escapeHtml(profileSource)}</div>
+        <div><b>${escapeHtml(i18n('Profile Key'))}</b>：${escapeHtml(profileKey)}</div>
+    </div>
+    <div class="luker_orch_last_run_capsule_title">${escapeHtml(i18n('Capsule'))}</div>
+    <pre class="luker_orch_last_run_capsule">${escapeHtml(capsule || i18n('Not set'))}</pre>
+</div>`;
+}
+
+async function openLastOrchestrationResult(context) {
+    await context.callGenericPopup(
+        renderLastOrchestrationResultHtml(context),
+        context.POPUP_TYPE.TEXT,
+        i18n('Latest Orchestration Result'),
+        { wide: true, wider: true, large: true, allowVerticalScrolling: true },
+    );
 }
 
 function shouldRunOrchestrationForPayload(payload) {
@@ -5208,6 +5265,11 @@ function bindUi() {
             return;
         }
 
+        if (action === 'view-last-run') {
+            await openLastOrchestrationResult(context);
+            return;
+        }
+
         if (action === 'open-orch-editor') {
             await openOrchestrationEditorPopup(context, settings);
             return;
@@ -5482,6 +5544,37 @@ function ensureStyles() {
     overflow: auto;
     font-size: 0.84rem;
 }
+.luker_orch_last_run_popup {
+    display: grid;
+    gap: 10px;
+}
+.luker_orch_last_run_meta {
+    display: grid;
+    gap: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.16);
+}
+.luker_orch_last_run_capsule_title {
+    font-weight: 600;
+}
+.luker_orch_last_run_capsule {
+    margin: 0;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.2);
+    max-height: 60vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.35;
+}
+.luker_orch_last_run_empty {
+    opacity: 0.85;
+    padding: 8px;
+}
 .luker_orch_iter_popup .menu_button,
 .luker_orch_iter_popup .menu_button_small {
     width: auto;
@@ -5661,6 +5754,7 @@ function ensureUi() {
                 </div>
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
+                    <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
