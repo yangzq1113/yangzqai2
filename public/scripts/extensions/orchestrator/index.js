@@ -1091,7 +1091,7 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
     ].filter(Boolean).join('\n');
 }
 
-function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagName = 'function_call_protocol') {
+function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText) {
     const messages = Array.isArray(promptMessages)
         ? promptMessages.map(message => ({ ...message }))
         : [];
@@ -1099,8 +1099,6 @@ function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagNa
     if (!addendum) {
         return messages;
     }
-    const tag = String(tagName || '').trim() || 'function_call_protocol';
-    const wrapped = [`<${tag}>`, addendum, `</${tag}>`].join('\n');
     for (let index = messages.length - 1; index >= 0; index -= 1) {
         const message = messages[index];
         if (String(message?.role || '').toLowerCase() !== 'user') {
@@ -1111,11 +1109,11 @@ function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagNa
             : String(message?.content ?? '');
         messages[index] = {
             ...message,
-            content: base ? `${base}\n\n${wrapped}` : wrapped,
+            content: base ? `${base}\n\n${addendum}` : addendum,
         };
         return messages;
     }
-    messages.push({ role: 'user', content: wrapped });
+    messages.push({ role: 'user', content: addendum });
     return messages;
 }
 
@@ -1200,7 +1198,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         ? mergeUserAddendumIntoPromptMessages(
             promptMessages,
             buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
-            'function_call_protocol',
         )
         : promptMessages;
 
@@ -1263,7 +1260,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? mergeUserAddendumIntoPromptMessages(
             promptMessages,
             buildPlainTextToolProtocolMessage(tools),
-            'function_call_protocol',
         )
         : promptMessages;
     let lastError = null;
@@ -1323,11 +1319,15 @@ function toCompactJsonText(value, fallback = '{}') {
 }
 
 function buildJsonXmlBlock(tag, note, value) {
-    const jsonText = encodeCdata(toCompactJsonText(value));
+    const jsonText = toCompactJsonText(value);
     return [
         `<${tag}>`,
-        `  <note>${escapeXml(String(note || ''))}</note>`,
-        `  <json><![CDATA[${jsonText}]]></json>`,
+        '  <note>',
+        `    ${String(note || '')}`,
+        '  </note>',
+        '  <json>',
+        `    ${jsonText}`,
+        '  </json>',
         `</${tag}>`,
     ].join('\n');
 }
@@ -1400,13 +1400,17 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     const previousOutputs = [
         '<previous_node_outputs>',
         '  <note>Outputs from completed nodes in prior stages. Use as upstream context only.</note>',
-        `  <json><![CDATA[${encodeCdata(toCompactJsonText(Object.fromEntries(previousNodeOutputs)))}]]></json>`,
+        '  <json>',
+        `    ${toCompactJsonText(Object.fromEntries(previousNodeOutputs))}`,
+        '  </json>',
         '</previous_node_outputs>',
     ].join('\n');
     const distillerOutput = [
         '<distiller_output>',
         '  <note>Output from distiller node if available.</note>',
-        `  <json><![CDATA[${encodeCdata(toCompactJsonText(previousNodeOutputs.get('distiller') || {}))}]]></json>`,
+        '  <json>',
+        `    ${toCompactJsonText(previousNodeOutputs.get('distiller') || {})}`,
+        '  </json>',
         '</distiller_output>',
     ].join('\n');
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
@@ -1536,19 +1540,6 @@ function compactStageOutputs(stageOutputs) {
             output: node.output,
         })),
     }));
-}
-
-function escapeXml(value) {
-    return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll('\'', '&apos;');
-}
-
-function encodeCdata(value) {
-    return String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
 }
 
 function tryParseJsonObject(value) {
@@ -3002,7 +2993,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             ].join(' ')
             : '';
         const requestPromptMessages = reminderText
-            ? mergeUserAddendumIntoPromptMessages(promptMessages, reminderText, 'retry_requirements')
+            ? mergeUserAddendumIntoPromptMessages(promptMessages, reminderText)
             : promptMessages;
         let toolCalls = [];
         try {
