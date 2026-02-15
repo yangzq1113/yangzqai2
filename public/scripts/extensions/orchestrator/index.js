@@ -1299,11 +1299,19 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
 }
 
 function renderTemplate(template, vars) {
-    return String(template || '')
-        .replaceAll('{{recent_chat}}', String(vars.recent_chat || ''))
-        .replaceAll('{{last_user}}', String(vars.last_user || ''))
-        .replaceAll('{{previous_outputs}}', String(vars.previous_outputs || ''))
-        .replaceAll('{{distiller}}', String(vars.distiller || ''));
+    const safeVars = vars && typeof vars === 'object' ? vars : {};
+    const replacements = {
+        recent_chat: String(safeVars.recent_chat || ''),
+        last_user: String(safeVars.last_user || ''),
+        previous_outputs: String(safeVars.previous_outputs || ''),
+        distiller: String(safeVars.distiller || ''),
+        previous_orchestration: String(safeVars.previous_orchestration || ''),
+    };
+    let output = String(template || '');
+    for (const [key, value] of Object.entries(replacements)) {
+        output = output.replaceAll(`{{${key}}}`, value);
+    }
+    return output;
 }
 
 function toCompactJsonText(value, fallback = '{}') {
