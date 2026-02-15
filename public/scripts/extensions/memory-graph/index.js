@@ -284,7 +284,6 @@ const defaultSettings = {
     recallEnabled: true,
     recallApiPresetName: '',
     recallPresetName: '',
-    recallResponseLength: 260,
     toolCallRetryMax: 2,
     recallMaxIterations: 3,
     recallRouteSystemPrompt: DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
@@ -292,7 +291,6 @@ const defaultSettings = {
     extractApiPresetName: '',
     extractPresetName: '',
     extractSystemPrompt: DEFAULT_EXTRACT_SYSTEM_PROMPT,
-    extractResponseLength: 360,
     extractBatchTurns: 1,
     extractContextTurns: 2,
     recallQueryMessages: 2,
@@ -2246,7 +2244,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
     parameters = {},
-    responseLength = null,
     llmPresetName = '',
     apiSettingsOverride = null,
     abortSignal = null,
@@ -2287,9 +2284,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 tools: usePlainTextCalls ? [] : tools,
                 toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
                 replaceTools: true,
-                responseLength: Number.isFinite(Number(responseLength)) && Number(responseLength) > 0
-                    ? Number(responseLength)
-                    : null,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
@@ -2321,7 +2315,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
 async function requestToolCallsWithRetry(settings, promptMessages, {
     tools = [],
     allowedNames = null,
-    responseLength = 320,
     llmPresetName = '',
     apiSettingsOverride = null,
     retriesOverride = null,
@@ -2352,7 +2345,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 tools: usePlainTextCalls ? [] : tools,
                 toolChoice: 'auto',
                 replaceTools: true,
-                responseLength: Number(responseLength || 320),
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
@@ -2384,7 +2376,6 @@ async function runFunctionCallTask(context, settings, {
     functionName = '',
     functionDescription = '',
     parameters = {},
-    responseLength = null,
     abortSignal = null,
 } = {}) {
     const fnName = String(functionName || '').trim();
@@ -2411,9 +2402,6 @@ async function runFunctionCallTask(context, settings, {
         functionName: fnName,
         functionDescription,
         parameters,
-        responseLength: Number.isFinite(Number(responseLength)) && Number(responseLength) > 0
-            ? Number(responseLength)
-            : null,
         llmPresetName: String(promptPresetName || '').trim(),
         apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
         abortSignal,
@@ -3176,7 +3164,6 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             calls = await requestToolCallsWithRetry(settings, [...promptMessages, ...reminder], {
                 tools,
                 allowedNames,
-                responseLength: Number(settings.extractResponseLength || 360),
                 llmPresetName: promptPresetName,
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 retriesOverride: 0,
@@ -4376,7 +4363,6 @@ async function chooseRecallRoute(context, settings, recallState) {
             promptPresetName: String(settings.recallPresetName || '').trim(),
             functionName: 'luker_rpg_recall_plan',
             functionDescription: 'Plan recall as finalize or drill with optional expansion plan.',
-            responseLength: Number(settings.recallResponseLength || 260),
             parameters: {
                 type: 'object',
                 properties: {
@@ -4569,7 +4555,6 @@ async function chooseFocusNodes(context, settings, recallState) {
             promptPresetName: String(settings.recallPresetName || '').trim(),
             functionName: 'luker_rpg_recall_finalize',
             functionDescription: 'Finalize memory node IDs to inject.',
-            responseLength: Number(settings.recallResponseLength || 260),
             parameters: {
                 type: 'object',
                 properties: {
