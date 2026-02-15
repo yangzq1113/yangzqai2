@@ -3001,13 +3001,15 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
         : '    <type>(none)</type>';
 
     const messageXml = safeMessages.map(message => {
-        const seq = escapeXmlText(String(Number(message?.seq || 0)));
+        const seq = String(Number(message?.seq || 0));
         const roleRaw = String(message?.role || '').trim().toLowerCase() === 'assistant' ? 'Assistant' : 'User';
-        const role = escapeXmlText(roleRaw);
-        const name = escapeXmlText(String(message?.name || ''));
-        const speaker = name ? `${roleRaw}: ${name}` : roleRaw;
+        const nameRaw = String(message?.name || '');
+        const speaker = nameRaw ? `${roleRaw}: ${nameRaw}` : roleRaw;
         return [
-            `    <message seq="${seq}" role="${role}" name="${name}">`,
+            '    <message>',
+            `      <seq>${escapeXmlText(seq)}</seq>`,
+            `      <role>${escapeXmlText(roleRaw)}</role>`,
+            buildCdataXmlTag('name', nameRaw, '      '),
             buildCdataXmlTag('speaker', speaker, '      '),
             buildCdataXmlTag('text', String(message?.text || ''), '      '),
             '    </message>',
