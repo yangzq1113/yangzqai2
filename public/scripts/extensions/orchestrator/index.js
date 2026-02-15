@@ -231,6 +231,13 @@ function registerLocaleData() {
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '当前迭代来源：${0}',
         'Conversation': '对话',
+        'Pending approval': '待审批',
+        'Approve changes': '批准执行',
+        'Reject changes': '拒绝执行',
+        'AI suggested changes are waiting for approval.': 'AI 产出的变更正在等待审批。',
+        'No editable operations were produced.': '没有产出可执行的变更。',
+        'Changes approved and applied.': '已批准并执行变更。',
+        'Changes rejected.': '已拒绝本次变更。',
         'Working profile': '当前编排',
         'Send to AI': '发送给 AI',
         'Stop': '终止',
@@ -386,6 +393,13 @@ function registerLocaleData() {
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '目前迭代來源：${0}',
         'Conversation': '對話',
+        'Pending approval': '待審批',
+        'Approve changes': '批准執行',
+        'Reject changes': '拒絕執行',
+        'AI suggested changes are waiting for approval.': 'AI 產出的變更正在等待審批。',
+        'No editable operations were produced.': '沒有產出可執行的變更。',
+        'Changes approved and applied.': '已批准並執行變更。',
+        'Changes rejected.': '已拒絕本次變更。',
         'Working profile': '目前編排',
         'Send to AI': '傳送給 AI',
         'Stop': '終止',
@@ -537,7 +551,6 @@ const API_ALIAS_TO_CHAT_SOURCE = {
 };
 
 const ORCH_STYLE_ID = 'orchestrator_styles';
-const AI_ITERATION_MAX_AUTO_ROUNDS = 1;
 const uiState = {
     selectedAvatar: '',
     aiGoal: '',
@@ -1003,6 +1016,30 @@ function getResponseMessageContent(responseData) {
     return String(responseData?.choices?.[0]?.message?.content || '').trim();
 }
 
+function extractDisplayTextFromPlainTextFunctionResponse(rawText) {
+    const source = String(rawText || '').trim();
+    if (!source) {
+        return '';
+    }
+    const candidates = collectJsonPayloadCandidates(source);
+    for (const candidate of candidates) {
+        if (!source.endsWith(candidate)) {
+            continue;
+        }
+        try {
+            const parsed = JSON.parse(candidate);
+            const rawCalls = normalizeTextToolCallsPayload(parsed);
+            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
+                continue;
+            }
+            return source.slice(0, source.length - candidate.length).trim();
+        } catch {
+            continue;
+        }
+    }
+    return source;
+}
+
 function collectJsonPayloadCandidates(text) {
     const source = String(text || '').trim();
     if (!source) {
@@ -1296,6 +1333,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     apiSettingsOverride = null,
     retriesOverride = null,
     abortSignal = null,
+    includeAssistantText = false,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
@@ -1327,9 +1365,26 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 ...requestOptions,
             });
             if (usePlainTextCalls) {
-                return extractAllFunctionCallsFromText(responseData, allowedNames);
+                const rawContent = getResponseMessageContent(responseData);
+                const calls = extractAllFunctionCallsFromText(responseData, allowedNames);
+                if (includeAssistantText) {
+                    return {
+                        toolCalls: calls,
+                        assistantText: extractDisplayTextFromPlainTextFunctionResponse(rawContent),
+                        rawAssistantText: rawContent,
+                    };
+                }
+                return calls;
             }
-            return extractAllFunctionCalls(responseData, allowedNames);
+            const calls = extractAllFunctionCalls(responseData, allowedNames);
+            if (includeAssistantText) {
+                return {
+                    toolCalls: calls,
+                    assistantText: getResponseMessageContent(responseData),
+                    rawAssistantText: getResponseMessageContent(responseData),
+                };
+            }
+            return calls;
         } catch (error) {
             if (isAbortError(error, abortSignal)) {
                 throw error;
@@ -3259,6 +3314,7 @@ function createAiIterationSession(context, settings) {
         workingProfile: cloneWorkingProfileFromEditor(editor),
         messages: [],
         lastSimulation: null,
+        pendingApproval: null,
     };
 }
 
@@ -3302,6 +3358,65 @@ function renderAiIterationConversation(session) {
     <div class="luker_orch_iter_msg_body">${escapeHtml(text || '(empty)')}</div>
 </div>`;
     }).join('');
+}
+
+function summarizeIterationToolCalls(toolCalls) {
+    const counts = {
+        stage_set: 0,
+        stage_remove: 0,
+        node_set: 0,
+        node_remove: 0,
+        preset_set: 0,
+        preset_remove: 0,
+        simulate: 0,
+        finalize: 0,
+        other: 0,
+    };
+    for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+        const name = String(call?.name || '').trim();
+        if (name === 'luker_orch_set_stage') counts.stage_set += 1;
+        else if (name === 'luker_orch_remove_stage') counts.stage_remove += 1;
+        else if (name === 'luker_orch_set_node') counts.node_set += 1;
+        else if (name === 'luker_orch_remove_node') counts.node_remove += 1;
+        else if (name === 'luker_orch_set_preset') counts.preset_set += 1;
+        else if (name === 'luker_orch_remove_preset') counts.preset_remove += 1;
+        else if (name === 'luker_orch_simulate') counts.simulate += 1;
+        else if (name === 'luker_orch_finalize_iteration') counts.finalize += 1;
+        else counts.other += 1;
+    }
+    const lines = [];
+    if (counts.stage_set > 0) lines.push(`更新阶段 ${counts.stage_set}`);
+    if (counts.stage_remove > 0) lines.push(`删除阶段 ${counts.stage_remove}`);
+    if (counts.node_set > 0) lines.push(`更新节点 ${counts.node_set}`);
+    if (counts.node_remove > 0) lines.push(`删除节点 ${counts.node_remove}`);
+    if (counts.preset_set > 0) lines.push(`更新预设 ${counts.preset_set}`);
+    if (counts.preset_remove > 0) lines.push(`删除预设 ${counts.preset_remove}`);
+    if (counts.simulate > 0) lines.push(`执行模拟 ${counts.simulate}`);
+    if (counts.finalize > 0) lines.push(`完成迭代 ${counts.finalize}`);
+    if (counts.other > 0) lines.push(`其他操作 ${counts.other}`);
+    return lines;
+}
+
+function renderAiIterationPendingApproval(session, popupId) {
+    const pending = session?.pendingApproval;
+    if (!pending) {
+        return '';
+    }
+    const summaryLines = summarizeIterationToolCalls(pending.toolCalls || []);
+    const assistantText = String(pending.assistantText || '').trim();
+    return `
+<div class="luker_orch_iter_pending_block">
+    <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Pending approval'))}</div>
+    <div class="luker_orch_iter_pending_hint">${escapeHtml(i18n('AI suggested changes are waiting for approval.'))}</div>
+    ${assistantText ? `<div class="luker_orch_iter_pending_text">${escapeHtml(assistantText)}</div>` : ''}
+    <div class="luker_orch_iter_pending_ops">
+        ${summaryLines.length > 0 ? summaryLines.map(item => `<div class="luker_orch_iter_pending_op">${escapeHtml(item)}</div>`).join('') : `<div class="luker_orch_iter_pending_op">${escapeHtml(i18n('No editable operations were produced.'))}</div>`}
+    </div>
+    <div class="luker_orch_iter_actions">
+        <div id="${popupId}_approve" class="menu_button">${escapeHtml(i18n('Approve changes'))}</div>
+        <div id="${popupId}_reject" class="menu_button">${escapeHtml(i18n('Reject changes'))}</div>
+    </div>
+</div>`;
 }
 
 function renderAiIterationWorkingProfile(session) {
@@ -3589,14 +3704,22 @@ function applyIndexReorder(list, currentIndex, position) {
     list.splice(targetIndex, 0, item);
 }
 
-function formatIterationSimulationForAutoPrompt(simulation) {
-    return [
-        'Simulation result:',
-        JSON.stringify(simulation?.detail || simulation || {}),
-        '',
-        'Continue with focused edits based on this simulation result.',
-        'When finished, call luker_orch_finalize_iteration.',
-    ].join('\n');
+function buildFriendlyIterationExecutionSummary(result) {
+    const lines = [];
+    const actionCount = Array.isArray(result?.actions) ? result.actions.length : 0;
+    if (actionCount > 0) {
+        lines.push(`已执行 ${actionCount} 项操作。`);
+    }
+    const simulations = Array.isArray(result?.simulations) ? result.simulations : [];
+    if (simulations.length > 0) {
+        for (const sim of simulations) {
+            lines.push(String(sim?.summary || '模拟已执行。'));
+        }
+    }
+    if (result?.finalizeSummary) {
+        lines.push(`总结：${String(result.finalizeSummary)}`);
+    }
+    return lines.join('\n').trim() || '已执行。';
 }
 
 async function executeAiIterationToolCalls(context, session, toolCalls, abortSignal = null) {
@@ -3776,56 +3899,35 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
     const tools = buildAiIterationToolSet();
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
 
-    let loop = 0;
-    while (loop <= AI_ITERATION_MAX_AUTO_ROUNDS) {
-        const promptMessages = buildPresetAwareMessages(
-            context,
-            settings,
-            buildAiIterationSystemPrompt(settings),
-            buildAiIterationUserPrompt(session, text),
-            {
-                api,
-                promptPresetName: suggestPresetName,
-            },
-        );
-        const toolCalls = await requestToolCallsWithRetry(settings, promptMessages, {
-            tools,
-            allowedNames,
-            llmPresetName: suggestPresetName,
-            apiSettingsOverride,
-            abortSignal,
-        });
-        if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-            throw new Error(i18n('Function output is invalid.'));
-        }
-        const result = await executeAiIterationToolCalls(context, session, toolCalls, abortSignal);
-        const summaryLines = [];
-        if (result.actions.length > 0) {
-            summaryLines.push(result.actions.map(item => `- ${item}`).join('\n'));
-        }
-        if (result.finalizeSummary) {
-            summaryLines.push(`Summary: ${result.finalizeSummary}`);
-        }
-        session.messages.push({
-            role: 'assistant',
-            auto: false,
-            at: Date.now(),
-            content: summaryLines.join('\n').trim() || 'Done.',
-        });
-        trimAiIterationMessages(session);
-        if (result.finalized) {
-            return { ok: true, finalized: true, actions: result.actions };
-        }
-        if (result.simulations.length > 0 && loop < AI_ITERATION_MAX_AUTO_ROUNDS) {
-            const autoPrompt = formatIterationSimulationForAutoPrompt(result.simulations[result.simulations.length - 1]);
-            session.messages.push({ role: 'user', content: autoPrompt, auto: true, at: Date.now() });
-            trimAiIterationMessages(session);
-            loop += 1;
-            continue;
-        }
-        return { ok: true, finalized: false, actions: result.actions };
+    const promptMessages = buildPresetAwareMessages(
+        context,
+        settings,
+        buildAiIterationSystemPrompt(settings),
+        buildAiIterationUserPrompt(session, text),
+        {
+            api,
+            promptPresetName: suggestPresetName,
+        },
+    );
+    const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
+        tools,
+        allowedNames,
+        llmPresetName: suggestPresetName,
+        apiSettingsOverride,
+        abortSignal,
+        includeAssistantText: true,
+    });
+    const toolCalls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
+    if (toolCalls.length === 0) {
+        throw new Error(i18n('Function output is invalid.'));
     }
-    return { ok: true, finalized: false, actions: [] };
+    session.pendingApproval = {
+        assistantText: String(detailed?.assistantText || '').trim(),
+        toolCalls,
+        createdAt: Date.now(),
+    };
+    session.updatedAt = Date.now();
+    return { ok: true, pending: true };
 }
 
 async function applyAiIterationSessionToGlobal(context, settings, session, root) {
@@ -3877,6 +3979,7 @@ function buildAiIterationPopupHtml(popupId, session) {
         <div class="luker_orch_iter_col">
             <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Conversation'))}</div>
             <div id="${popupId}_conversation" class="luker_orch_iter_conversation"></div>
+            <div id="${popupId}_pending"></div>
             <textarea id="${popupId}_input" class="text_pole textarea_compact" rows="4" placeholder="${escapeHtml(i18n('Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...'))}"></textarea>
             <div class="luker_orch_iter_actions">
                 <div id="${popupId}_send" class="menu_button">${escapeHtml(i18n('Send to AI'))}</div>
@@ -3912,6 +4015,7 @@ async function openAiIterationStudio(context, settings, root) {
             return;
         }
         popupRoot.find(`#${popupId}_conversation`).html(renderAiIterationConversation(session));
+        popupRoot.find(`#${popupId}_pending`).html(renderAiIterationPendingApproval(session, popupId));
         popupRoot.find(`#${popupId}_profile`).html(renderAiIterationWorkingProfile(session));
     };
 
@@ -3955,9 +4059,9 @@ async function openAiIterationStudio(context, settings, root) {
         activeAiIterationAbortController = controller;
         setStatus(i18n('AI iteration is running...'));
         try {
-            await runAiIterationTurn(context, settings, session, text, controller.signal);
+            const result = await runAiIterationTurn(context, settings, session, text, controller.signal);
             input.val('');
-            setStatus(i18n('AI iteration updated.'));
+            setStatus(result?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
             rerender();
         } catch (error) {
             if (isAbortError(error, controller.signal)) {
@@ -3981,6 +4085,7 @@ async function openAiIterationStudio(context, settings, root) {
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_clear`, function () {
         session.messages = [];
         session.lastSimulation = null;
+        session.pendingApproval = null;
         session.updatedAt = Date.now();
         setStatus(i18n('Iteration session reset.'));
         rerender();
@@ -4000,7 +4105,68 @@ async function openAiIterationStudio(context, settings, root) {
         session.workingProfile = nextSession.workingProfile;
         session.messages = [];
         session.lastSimulation = null;
+        session.pendingApproval = null;
         setStatus(i18n('Iteration session reset.'));
+        rerender();
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_approve`, async function () {
+        const pending = session?.pendingApproval;
+        if (!pending) {
+            return;
+        }
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        const controller = new AbortController();
+        activeAiIterationAbortController = controller;
+        setStatus(i18n('AI iteration is running...'));
+        try {
+            if (pending.assistantText) {
+                session.messages.push({
+                    role: 'assistant',
+                    content: pending.assistantText,
+                    auto: false,
+                    at: Date.now(),
+                });
+            }
+            const result = await executeAiIterationToolCalls(context, session, pending.toolCalls || [], controller.signal);
+            session.pendingApproval = null;
+            session.messages.push({
+                role: 'assistant',
+                content: buildFriendlyIterationExecutionSummary(result),
+                auto: false,
+                at: Date.now(),
+            });
+            trimAiIterationMessages(session);
+            setStatus(i18n('Changes approved and applied.'));
+            rerender();
+        } catch (error) {
+            if (isAbortError(error, controller.signal)) {
+                setStatus(i18n('Iteration run cancelled.'));
+            } else {
+                setStatus(i18nFormat('Iteration run failed: ${0}', String(error?.message || error)));
+            }
+        } finally {
+            if (activeAiIterationAbortController === controller) {
+                activeAiIterationAbortController = null;
+            }
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_reject`, function () {
+        if (!session?.pendingApproval) {
+            return;
+        }
+        session.pendingApproval = null;
+        session.messages.push({
+            role: 'assistant',
+            content: i18n('Changes rejected.'),
+            auto: false,
+            at: Date.now(),
+        });
+        trimAiIterationMessages(session);
+        setStatus(i18n('Changes rejected.'));
         rerender();
     });
 
@@ -4703,6 +4869,34 @@ function ensureStyles() {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+}
+.luker_orch_iter_pending_block {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(255,255,255,0.03);
+    display: grid;
+    gap: 6px;
+}
+.luker_orch_iter_pending_hint {
+    opacity: 0.86;
+    font-size: 0.88rem;
+}
+.luker_orch_iter_pending_text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: rgba(0,0,0,0.18);
+}
+.luker_orch_iter_pending_ops {
+    display: grid;
+    gap: 4px;
+}
+.luker_orch_iter_pending_op {
+    font-size: 0.9rem;
+    opacity: 0.92;
 }
 .luker_orch_iter_popup .menu_button,
 .luker_orch_iter_popup .menu_button_small {
