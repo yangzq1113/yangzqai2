@@ -2465,7 +2465,7 @@ router.post('/generate', async function (request, response) {
                 bodyParams['repetition_penalty'] = request.body.repetition_penalty;
             }
 
-            const isClaude = /^claude-/.test(request.body.model);
+            const isClaude = /(?:^|\/)claude[-_]/.test(request.body.model);
             if (enableSystemPromptCache && isClaude) {
                 bodyParams['cache_control'] = {
                     'enabled': true,
