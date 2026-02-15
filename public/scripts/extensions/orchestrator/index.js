@@ -238,6 +238,8 @@ function registerLocaleData() {
         'No editable operations were produced.': '没有产出可执行的变更。',
         'Changes approved and applied.': '已批准并执行变更。',
         'Changes approved and applied. Waiting for your next instruction.': '已批准并执行变更，等待你的下一条指令。',
+        'Applying approved changes...': '正在执行已批准的变更...',
+        'Running auto-continue...': '正在自动继续迭代...',
         'Changes rejected.': '已拒绝本次变更。',
         'Working profile': '当前编排',
         'Send to AI': '发送给 AI',
@@ -401,6 +403,8 @@ function registerLocaleData() {
         'No editable operations were produced.': '沒有產出可執行的變更。',
         'Changes approved and applied.': '已批准並執行變更。',
         'Changes approved and applied. Waiting for your next instruction.': '已批准並執行變更，等待你的下一條指令。',
+        'Applying approved changes...': '正在執行已批准的變更...',
+        'Running auto-continue...': '正在自動繼續迭代...',
         'Changes rejected.': '已拒絕本次變更。',
         'Working profile': '目前編排',
         'Send to AI': '傳送給 AI',
@@ -4100,7 +4104,7 @@ function buildAiIterationPopupHtml(popupId, session) {
                 <div id="${popupId}_clear" class="menu_button">${escapeHtml(i18n('Clear Session'))}</div>
                 <div id="${popupId}_new" class="menu_button">${escapeHtml(i18n('New Session'))}</div>
             </div>
-            <small id="${popupId}_status" style="opacity:0.82"></small>
+            <div id="${popupId}_status" class="luker_orch_iter_status"></div>
         </div>
         <div class="luker_orch_iter_col">
             <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Working profile'))}</div>
@@ -4235,19 +4239,25 @@ async function openAiIterationStudio(context, settings, root) {
         }
         const controller = new AbortController();
         activeAiIterationAbortController = controller;
-        setStatus(i18n('AI iteration is running...'));
+        const pendingSnapshot = {
+            assistantText: String(pending.assistantText || ''),
+            toolCalls: Array.isArray(pending.toolCalls) ? structuredClone(pending.toolCalls) : [],
+            createdAt: Number(pending.createdAt || Date.now()),
+        };
+        session.pendingApproval = null;
+        rerender();
+        setStatus(i18n('Applying approved changes...'));
         try {
-            if (pending.assistantText) {
+            if (pendingSnapshot.assistantText) {
                 session.messages.push({
                     role: 'assistant',
-                    content: pending.assistantText,
+                    content: pendingSnapshot.assistantText,
                     auto: false,
                     at: Date.now(),
                 });
             }
-            const result = await executeAiIterationToolCalls(context, session, pending.toolCalls || [], controller.signal);
-            recordAiIterationToolHistory(session, pending.toolCalls || [], result, 'approved');
-            session.pendingApproval = null;
+            const result = await executeAiIterationToolCalls(context, session, pendingSnapshot.toolCalls || [], controller.signal);
+            recordAiIterationToolHistory(session, pendingSnapshot.toolCalls || [], result, 'approved');
             session.messages.push({
                 role: 'assistant',
                 content: buildFriendlyIterationExecutionSummary(result),
@@ -4259,6 +4269,7 @@ async function openAiIterationStudio(context, settings, root) {
                 setStatus(i18n('Changes approved and applied.'));
                 rerender();
             } else if (result?.continueRequested || (Array.isArray(result?.simulations) && result.simulations.length > 0)) {
+                setStatus(i18n('Running auto-continue...'));
                 const autoPrompt = buildAiIterationAutoContinuePrompt(result);
                 const followUp = await runAiIterationTurn(context, settings, session, autoPrompt, controller.signal, { auto: true });
                 setStatus(followUp?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
@@ -4268,6 +4279,10 @@ async function openAiIterationStudio(context, settings, root) {
                 rerender();
             }
         } catch (error) {
+            if (!session.pendingApproval) {
+                session.pendingApproval = pendingSnapshot;
+                rerender();
+            }
             if (isAbortError(error, controller.signal)) {
                 setStatus(i18n('Iteration run cancelled.'));
             } else {
@@ -5056,6 +5071,20 @@ function ensureStyles() {
     white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.4;
+}
+.luker_orch_iter_status {
+    margin-top: 2px;
+    min-height: 2.1em;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    background: rgba(33, 107, 189, 0.18);
+    color: var(--SmartThemeBodyColor, #e8eef7);
+    font-size: 0.95rem;
+    line-height: 1.35;
+    font-weight: 600;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 .luker_orch_iter_empty {
     opacity: 0.8;
