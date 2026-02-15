@@ -12,10 +12,24 @@ const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
+const GLOBAL_SETTINGS_NAMESPACE = 'luker';
+const GLOBAL_PLAIN_TEXT_CALL_MODE_KEY = 'plainTextFunctionCalls';
 
 const LEVEL = {
     SEMANTIC: 'semantic',
 };
+
+function getGlobalLukerSettings() {
+    if (!extension_settings[GLOBAL_SETTINGS_NAMESPACE] || typeof extension_settings[GLOBAL_SETTINGS_NAMESPACE] !== 'object' || Array.isArray(extension_settings[GLOBAL_SETTINGS_NAMESPACE])) {
+        extension_settings[GLOBAL_SETTINGS_NAMESPACE] = {};
+    }
+    return extension_settings[GLOBAL_SETTINGS_NAMESPACE];
+}
+
+function isPlainTextFunctionCallModeEnabled() {
+    const globalSettings = getGlobalLukerSettings();
+    return Boolean(globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY]);
+}
 
 const defaultNodeTypeSchema = [
     {
@@ -2035,6 +2049,149 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
     return parsedCalls;
 }
 
+function getResponseMessageContent(responseData) {
+    return String(responseData?.choices?.[0]?.message?.content || '').trim();
+}
+
+function collectJsonPayloadCandidates(text) {
+    const source = String(text || '').trim();
+    if (!source) {
+        return [];
+    }
+    const candidates = [source];
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+    let blockMatch;
+    while ((blockMatch = codeBlockRegex.exec(source)) !== null) {
+        const body = String(blockMatch?.[1] || '').trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    const arrayStart = source.indexOf('[');
+    const arrayEnd = source.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+        const body = source.slice(arrayStart, arrayEnd + 1).trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    const objectStart = source.indexOf('{');
+    const objectEnd = source.lastIndexOf('}');
+    if (objectStart >= 0 && objectEnd > objectStart) {
+        const body = source.slice(objectStart, objectEnd + 1).trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    return [...new Set(candidates)];
+}
+
+function normalizeTextToolCallsPayload(payload) {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+    if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.tool_calls)) {
+            return payload.tool_calls;
+        }
+        if (Array.isArray(payload.calls)) {
+            return payload.calls;
+        }
+        if (payload.name || payload.function?.name) {
+            return [payload];
+        }
+    }
+    return [];
+}
+
+function coerceToolCallArgumentsObject(rawArgs, functionName) {
+    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+        return rawArgs;
+    }
+    if (typeof rawArgs === 'string' && rawArgs.trim()) {
+        try {
+            const parsed = JSON.parse(rawArgs);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed;
+            }
+        } catch {
+            throw new Error(`Tool call '${functionName}' arguments are not valid JSON.`);
+        }
+    }
+    throw new Error(`Tool call '${functionName}' arguments are empty.`);
+}
+
+function extractAllFunctionCallsFromText(responseData, allowedNames = null) {
+    const content = getResponseMessageContent(responseData);
+    if (!content) {
+        throw new Error('Model returned empty text response.');
+    }
+    const allowSet = allowedNames instanceof Set
+        ? allowedNames
+        : Array.isArray(allowedNames)
+            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
+            : null;
+    const candidates = collectJsonPayloadCandidates(content);
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            const rawCalls = normalizeTextToolCallsPayload(parsed);
+            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
+                continue;
+            }
+            const calls = [];
+            for (const item of rawCalls) {
+                const name = String(item?.name || item?.function?.name || '').trim();
+                if (!name) {
+                    continue;
+                }
+                if (allowSet && !allowSet.has(name)) {
+                    continue;
+                }
+                const rawArgs = item?.arguments ?? item?.args ?? item?.function?.arguments;
+                calls.push({
+                    id: String(item?.id || ''),
+                    name,
+                    args: coerceToolCallArgumentsObject(rawArgs, name),
+                });
+            }
+            if (calls.length > 0) {
+                return calls;
+            }
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    if (lastError) {
+        throw lastError;
+    }
+    throw new Error('Model text output did not contain parseable function calls JSON.');
+}
+
+function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = '' } = {}) {
+    const requiredName = String(requiredFunctionName || '').trim();
+    const normalizedTools = Array.isArray(tools) ? tools : [];
+    const schemaGuide = normalizedTools.map((tool) => ({
+        name: String(tool?.function?.name || ''),
+        description: String(tool?.function?.description || ''),
+        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
+            ? tool.function.parameters
+            : { type: 'object', additionalProperties: true },
+    })).filter(item => item.name);
+    const requiredLine = requiredName
+        ? `Required function name for this response: ${requiredName}.`
+        : '';
+    return [
+        'Plain-text function-call mode is enabled.',
+        'Do not use native tool calls.',
+        'Return JSON only. No prose, no markdown, no code fences.',
+        'Output format: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+        requiredLine,
+        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
+    ].filter(Boolean).join('\n');
+}
+
 function isAbortSignalLike(value) {
     return Boolean(value && typeof value === 'object' && 'aborted' in value);
 }
@@ -2112,13 +2269,23 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         type: 'function',
         function: { name: fnName },
     };
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const plainTextProtocolMessage = usePlainTextCalls
+        ? {
+            role: 'user',
+            content: buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+        }
+        : null;
+    const requestMessages = plainTextProtocolMessage
+        ? [...promptMessages, plainTextProtocolMessage]
+        : promptMessages;
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
-                tools,
-                toolChoice,
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+                tools: usePlainTextCalls ? [] : tools,
+                toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
                 replaceTools: true,
                 responseLength: Number.isFinite(Number(responseLength)) && Number(responseLength) > 0
                     ? Number(responseLength)
@@ -2127,6 +2294,14 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
             });
+            if (usePlainTextCalls) {
+                const calls = extractAllFunctionCallsFromText(responseData, [fnName]);
+                const matched = calls.find(call => String(call?.name || '') === fnName);
+                if (!matched) {
+                    throw new Error(`Model returned text calls, but not '${fnName}'.`);
+                }
+                return matched.args;
+            }
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
             if (isAbortError(error, abortSignal)) {
@@ -2160,11 +2335,21 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const plainTextProtocolMessage = usePlainTextCalls
+        ? {
+            role: 'user',
+            content: buildPlainTextToolProtocolMessage(tools),
+        }
+        : null;
+    const requestMessages = plainTextProtocolMessage
+        ? [...promptMessages, plainTextProtocolMessage]
+        : promptMessages;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
-                tools,
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+                tools: usePlainTextCalls ? [] : tools,
                 toolChoice: 'auto',
                 replaceTools: true,
                 responseLength: Number(responseLength || 320),
@@ -2172,6 +2357,9 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
             });
+            if (usePlainTextCalls) {
+                return extractAllFunctionCallsFromText(responseData, allowedNames);
+            }
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
             if (isAbortError(error, abortSignal)) {
@@ -8026,6 +8214,7 @@ function bindUi() {
     }
 
     root.find('#luker_rpg_memory_enabled').prop('checked', Boolean(settings.enabled));
+    root.find('#luker_rpg_memory_global_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled());
     root.find('#luker_rpg_memory_recall_enabled').prop('checked', Boolean(settings.recallEnabled));
     root.find('#luker_rpg_memory_recall_api_preset').val(String(settings.recallApiPresetName || ''));
     root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
@@ -8046,6 +8235,12 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_enabled').off('input').on('input', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_global_plain_text_calls').off('input').on('input', function () {
+        const globalSettings = getGlobalLukerSettings();
+        globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY] = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -8330,6 +8525,7 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_global_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Global: Plain-text function-call mode (disable native tool API)'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
             <label for="luker_rpg_memory_recall_api_preset">${escapeHtml(i18n('Recall API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_api_preset" class="text_pole"></select>

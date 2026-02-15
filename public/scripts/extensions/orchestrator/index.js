@@ -4,6 +4,8 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
 
 const MODULE_NAME = 'orchestrator';
+const GLOBAL_SETTINGS_NAMESPACE = 'luker';
+const GLOBAL_PLAIN_TEXT_CALL_MODE_KEY = 'plainTextFunctionCalls';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
@@ -26,6 +28,18 @@ const ORCH_AI_QUALITY_AXES = {
     human_realism: 'Increase human-like behavior through natural uncertainty, bounded knowledge, and believable pacing.',
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
 };
+
+function getGlobalLukerSettings() {
+    if (!extension_settings[GLOBAL_SETTINGS_NAMESPACE] || typeof extension_settings[GLOBAL_SETTINGS_NAMESPACE] !== 'object' || Array.isArray(extension_settings[GLOBAL_SETTINGS_NAMESPACE])) {
+        extension_settings[GLOBAL_SETTINGS_NAMESPACE] = {};
+    }
+    return extension_settings[GLOBAL_SETTINGS_NAMESPACE];
+}
+
+function isPlainTextFunctionCallModeEnabled() {
+    const globalSettings = getGlobalLukerSettings();
+    return Boolean(globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY]);
+}
 
 function getDefaultAiSuggestSystemPrompt() {
     return [
@@ -882,6 +896,149 @@ function extractAllFunctionCalls(responseData, allowedNames = null) {
     return parsedCalls;
 }
 
+function getResponseMessageContent(responseData) {
+    return String(responseData?.choices?.[0]?.message?.content || '').trim();
+}
+
+function collectJsonPayloadCandidates(text) {
+    const source = String(text || '').trim();
+    if (!source) {
+        return [];
+    }
+    const candidates = [source];
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+    let blockMatch;
+    while ((blockMatch = codeBlockRegex.exec(source)) !== null) {
+        const body = String(blockMatch?.[1] || '').trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    const arrayStart = source.indexOf('[');
+    const arrayEnd = source.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+        const body = source.slice(arrayStart, arrayEnd + 1).trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    const objectStart = source.indexOf('{');
+    const objectEnd = source.lastIndexOf('}');
+    if (objectStart >= 0 && objectEnd > objectStart) {
+        const body = source.slice(objectStart, objectEnd + 1).trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    return [...new Set(candidates)];
+}
+
+function normalizeTextToolCallsPayload(payload) {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+    if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.tool_calls)) {
+            return payload.tool_calls;
+        }
+        if (Array.isArray(payload.calls)) {
+            return payload.calls;
+        }
+        if (payload.name || payload.function?.name) {
+            return [payload];
+        }
+    }
+    return [];
+}
+
+function coerceToolCallArgumentsObject(rawArgs, functionName) {
+    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+        return rawArgs;
+    }
+    if (typeof rawArgs === 'string' && rawArgs.trim()) {
+        try {
+            const parsed = JSON.parse(rawArgs);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed;
+            }
+        } catch {
+            throw new Error(`Tool call '${functionName}' arguments are not valid JSON.`);
+        }
+    }
+    throw new Error(`Tool call '${functionName}' arguments are empty.`);
+}
+
+function extractAllFunctionCallsFromText(responseData, allowedNames = null) {
+    const content = getResponseMessageContent(responseData);
+    if (!content) {
+        throw new Error('Model returned empty text response.');
+    }
+    const allowSet = allowedNames instanceof Set
+        ? allowedNames
+        : Array.isArray(allowedNames)
+            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
+            : null;
+    const candidates = collectJsonPayloadCandidates(content);
+    let lastError = null;
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            const rawCalls = normalizeTextToolCallsPayload(parsed);
+            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
+                continue;
+            }
+            const calls = [];
+            for (const item of rawCalls) {
+                const name = String(item?.name || item?.function?.name || '').trim();
+                if (!name) {
+                    continue;
+                }
+                if (allowSet && !allowSet.has(name)) {
+                    continue;
+                }
+                const rawArgs = item?.arguments ?? item?.args ?? item?.function?.arguments;
+                calls.push({
+                    id: String(item?.id || ''),
+                    name,
+                    args: coerceToolCallArgumentsObject(rawArgs, name),
+                });
+            }
+            if (calls.length > 0) {
+                return calls;
+            }
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    if (lastError) {
+        throw lastError;
+    }
+    throw new Error('Model text output did not contain parseable function calls JSON.');
+}
+
+function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = '' } = {}) {
+    const requiredName = String(requiredFunctionName || '').trim();
+    const normalizedTools = Array.isArray(tools) ? tools : [];
+    const schemaGuide = normalizedTools.map((tool) => ({
+        name: String(tool?.function?.name || ''),
+        description: String(tool?.function?.description || ''),
+        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
+            ? tool.function.parameters
+            : { type: 'object', additionalProperties: true },
+    })).filter(item => item.name);
+    const requiredLine = requiredName
+        ? `Required function name for this response: ${requiredName}.`
+        : '';
+    return [
+        'Plain-text function-call mode is enabled.',
+        'Do not use native tool calls.',
+        'Return JSON only. No prose, no markdown, no code fences.',
+        'Output format: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+        requiredLine,
+        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
+    ].filter(Boolean).join('\n');
+}
+
 function isAbortSignalLike(value) {
     return Boolean(value && typeof value === 'object' && 'aborted' in value);
 }
@@ -958,21 +1115,39 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         type: 'function',
         function: { name: fnName },
     };
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const plainTextProtocolMessage = usePlainTextCalls
+        ? {
+            role: 'user',
+            content: buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+        }
+        : null;
+    const requestMessages = plainTextProtocolMessage
+        ? [...promptMessages, plainTextProtocolMessage]
+        : promptMessages;
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
             const requestOptions = {
-                tools,
-                toolChoice,
+                tools: usePlainTextCalls ? [] : tools,
+                toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
                 replaceTools: true,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
             };
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 ...requestOptions,
             });
+            if (usePlainTextCalls) {
+                const calls = extractAllFunctionCallsFromText(responseData, [fnName]);
+                const matched = calls.find(call => String(call?.name || '') === fnName);
+                if (!matched) {
+                    throw new Error(`Model returned text calls, but not '${fnName}'.`);
+                }
+                return matched.args;
+            }
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
             if (isAbortError(error, abortSignal)) {
@@ -1005,20 +1180,33 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const plainTextProtocolMessage = usePlainTextCalls
+        ? {
+            role: 'user',
+            content: buildPlainTextToolProtocolMessage(tools),
+        }
+        : null;
+    const requestMessages = plainTextProtocolMessage
+        ? [...promptMessages, plainTextProtocolMessage]
+        : promptMessages;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
             const requestOptions = {
-                tools,
+                tools: usePlainTextCalls ? [] : tools,
                 toolChoice: 'auto',
                 replaceTools: true,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
             };
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 ...requestOptions,
             });
+            if (usePlainTextCalls) {
+                return extractAllFunctionCallsFromText(responseData, allowedNames);
+            }
             return extractAllFunctionCalls(responseData, allowedNames);
         } catch (error) {
             if (isAbortError(error, abortSignal)) {
@@ -2831,6 +3019,7 @@ function bindUi() {
 
     initializeUiState(context);
     root.find('#luker_orch_enabled').prop('checked', Boolean(settings.enabled));
+    root.find('#luker_orch_global_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled());
     root.find('#luker_orch_llm_api_preset').val(String(settings.llmNodeApiPresetName || ''));
     root.find('#luker_orch_llm_preset').val(String(settings.llmNodePresetName || ''));
     root.find('#luker_orch_ai_suggest_api_preset').val(String(settings.aiSuggestApiPresetName || ''));
@@ -2849,6 +3038,12 @@ function bindUi() {
 
     root.on('input.lukerOrch', '#luker_orch_enabled', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_global_plain_text_calls', function () {
+        const globalSettings = getGlobalLukerSettings();
+        globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY] = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -3426,6 +3621,7 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_orch_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
+            <label class="checkbox_label"><input id="luker_orch_global_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Global: Plain-text function-call mode (disable native tool API)'))}</label>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
             <label for="luker_orch_llm_preset">${escapeHtml(i18n('LLM node preset (params + prompt, empty = current)'))}</label>
