@@ -1,0 +1,12 @@
+services:
+  luker:
+    image: ghcr.io/funnycups/luker:dev
+    container_name: luker
+    ports:
+      - 127.0.0.1:8000:8000
+    volumes:
+      - ./plugins:/home/node/app/plugins
+      - ./config:/home/node/app/config
+      - ./data:/home/node/app/data
+      - ./extensions:/home/node/app/public/scripts/extensions/third-party
+    restart: unless-stopped
