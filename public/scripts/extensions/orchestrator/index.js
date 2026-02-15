@@ -225,6 +225,28 @@ function registerLocaleData() {
         'Current character override': '当前角色卡覆写',
         'Clear Character Override': '清除角色卡覆写',
         'AI Build Profile': 'AI 生成编排',
+        'AI Quick Build': 'AI 快速生成',
+        'Open AI Iteration Studio': '打开 AI 迭代工作台',
+        'AI Iteration Studio': 'AI 迭代工作台',
+        'Iteration source: ${0}': '当前迭代来源：${0}',
+        'Conversation': '对话',
+        'Working profile': '当前编排',
+        'Send to AI': '发送给 AI',
+        'Stop': '终止',
+        'Clear Session': '清空会话',
+        'New Session': '新建会话',
+        'Apply to Global': '应用到全局',
+        'Apply to Character': '应用到角色卡',
+        'Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...': '输入给 AI 的需求，例如：保持紧凑节奏，并用我提供的场景做一次模拟...',
+        'No messages yet. Start by telling AI what you want to optimize.': '还没有对话。先告诉 AI 你希望优化什么。',
+        'No character selected. Cannot apply to character override.': '当前未选择角色卡，无法应用到角色卡覆写。',
+        'Iteration session applied to global profile.': '迭代会话已应用到全局配置。',
+        'Iteration session applied to character override: ${0}.': '迭代会话已应用到角色卡覆写：${0}。',
+        'AI iteration is running...': 'AI 迭代处理中...',
+        'AI iteration updated.': 'AI 迭代已更新。',
+        'Iteration run cancelled.': '迭代已终止。',
+        'Iteration run failed: ${0}': '迭代失败：${0}',
+        'Iteration session reset.': '迭代会话已重置。',
         'Workflow': '工作流',
         'Add Stage': '新增阶段',
         'Add Node': '新增节点',
@@ -357,6 +379,28 @@ function registerLocaleData() {
         'Current character override': '目前角色卡覆寫',
         'Clear Character Override': '清除角色卡覆寫',
         'AI Build Profile': 'AI 生成編排',
+        'AI Quick Build': 'AI 快速生成',
+        'Open AI Iteration Studio': '開啟 AI 迭代工作台',
+        'AI Iteration Studio': 'AI 迭代工作台',
+        'Iteration source: ${0}': '目前迭代來源：${0}',
+        'Conversation': '對話',
+        'Working profile': '目前編排',
+        'Send to AI': '傳送給 AI',
+        'Stop': '終止',
+        'Clear Session': '清空會話',
+        'New Session': '新建會話',
+        'Apply to Global': '套用到全域',
+        'Apply to Character': '套用到角色卡',
+        'Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...': '輸入給 AI 的需求，例如：保持緊湊節奏，並用我提供的場景做一次模擬...',
+        'No messages yet. Start by telling AI what you want to optimize.': '尚無對話。先告訴 AI 你希望優化什麼。',
+        'No character selected. Cannot apply to character override.': '目前未選擇角色卡，無法套用到角色卡覆寫。',
+        'Iteration session applied to global profile.': '迭代會話已套用到全域設定。',
+        'Iteration session applied to character override: ${0}.': '迭代會話已套用到角色卡覆寫：${0}。',
+        'AI iteration is running...': 'AI 迭代處理中...',
+        'AI iteration updated.': 'AI 迭代已更新。',
+        'Iteration run cancelled.': '迭代已終止。',
+        'Iteration run failed: ${0}': '迭代失敗：${0}',
+        'Iteration session reset.': '迭代會話已重置。',
         'Workflow': '工作流',
         'Add Stage': '新增階段',
         'Add Node': '新增節點',
@@ -491,15 +535,18 @@ const API_ALIAS_TO_CHAT_SOURCE = {
 };
 
 const ORCH_STYLE_ID = 'orchestrator_styles';
+const AI_ITERATION_MAX_AUTO_ROUNDS = 1;
 const uiState = {
     selectedAvatar: '',
     aiGoal: '',
     globalEditor: null,
     characterEditor: null,
+    aiIterationSession: null,
 };
 let orchInFlight = false;
 let activeRunInfoToast = null;
 let activeAiBuildToast = null;
+let activeAiIterationAbortController = null;
 let activeOrchRunAbortController = null;
 let activeAiBuildAbortController = null;
 
@@ -3087,6 +3134,816 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
     };
 }
 
+function trimAiIterationMessages(session, maxMessages = 40) {
+    if (!session || !Array.isArray(session.messages)) {
+        return;
+    }
+    const limit = Math.max(10, Math.min(200, Math.floor(Number(maxMessages) || 40)));
+    if (session.messages.length > limit) {
+        session.messages = session.messages.slice(session.messages.length - limit);
+    }
+}
+
+function cloneWorkingProfileFromEditor(editor) {
+    ensureEditorIntegrity(editor);
+    return {
+        spec: sanitizeSpec(serializeEditorSpec(editor.spec)),
+        presets: sanitizePresetMap(serializeEditorPresetMap(editor.presets)),
+    };
+}
+
+function createIterationEditorFromWorkingProfile(workingProfile) {
+    const safeSpec = sanitizeSpec(workingProfile?.spec);
+    const safePresets = sanitizePresetMap(workingProfile?.presets);
+    return {
+        spec: toEditableSpec(safeSpec, toEditablePresetMap(safePresets)),
+        presets: toEditablePresetMap(safePresets),
+    };
+}
+
+function createAiIterationSession(context, settings) {
+    syncCharacterEditorWithActiveAvatar(context);
+    const scope = getDisplayedScope(context, settings);
+    const editor = getEditorByScope(scope);
+    const avatar = String(getCurrentAvatar(context) || '').trim();
+    const sourceName = scope === 'character'
+        ? (getCharacterDisplayNameByAvatar(context, avatar) || avatar || i18n('(No character card)'))
+        : i18n('Global profile');
+    return {
+        id: `session_${Date.now()}`,
+        chatKey: getChatKey(context),
+        sourceScope: scope,
+        sourceAvatar: avatar,
+        sourceName,
+        revision: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        workingProfile: cloneWorkingProfileFromEditor(editor),
+        messages: [],
+        lastSimulation: null,
+    };
+}
+
+function ensureAiIterationSession(context, settings, { forceNew = false } = {}) {
+    if (!uiState.aiIterationSession || forceNew) {
+        uiState.aiIterationSession = createAiIterationSession(context, settings);
+        return uiState.aiIterationSession;
+    }
+    const currentChatKey = getChatKey(context);
+    if (String(uiState.aiIterationSession.chatKey || '') !== String(currentChatKey || '')) {
+        uiState.aiIterationSession = createAiIterationSession(context, settings);
+        return uiState.aiIterationSession;
+    }
+    return uiState.aiIterationSession;
+}
+
+function summarizeStageForUi(stage) {
+    const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+    const nodeSummary = nodes.map(node => `${String(node?.id || '')}→${String(node?.preset || '')}`).filter(Boolean).join(' | ');
+    return {
+        id: String(stage?.id || ''),
+        mode: String(stage?.mode || 'serial') === 'parallel' ? 'parallel' : 'serial',
+        nodeSummary,
+    };
+}
+
+function renderAiIterationConversation(session) {
+    const items = Array.isArray(session?.messages) ? session.messages : [];
+    if (items.length === 0) {
+        return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No messages yet. Start by telling AI what you want to optimize.'))}</div>`;
+    }
+    return items.map((item) => {
+        const role = String(item?.role || 'assistant').toLowerCase();
+        const auto = Boolean(item?.auto);
+        const label = auto ? 'AUTO' : (role === 'user' ? 'You' : 'AI');
+        const bubbleClass = role === 'user' ? 'user' : 'assistant';
+        const text = String(item?.content || '').trim();
+        return `
+<div class="luker_orch_iter_msg ${bubbleClass}">
+    <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
+    <div class="luker_orch_iter_msg_body">${escapeHtml(text || '(empty)')}</div>
+</div>`;
+    }).join('');
+}
+
+function renderAiIterationWorkingProfile(session) {
+    const profile = session?.workingProfile || {};
+    const stages = Array.isArray(profile?.spec?.stages) ? profile.spec.stages : [];
+    const stageCards = stages.map((stage) => {
+        const info = summarizeStageForUi(stage);
+        return `
+<div class="luker_orch_iter_stage">
+    <div class="luker_orch_iter_stage_title">${escapeHtml(info.id || '(stage)')}</div>
+    <div class="luker_orch_iter_stage_mode">${escapeHtml(info.mode)}</div>
+    <div class="luker_orch_iter_stage_nodes">${escapeHtml(info.nodeSummary || '(no nodes)')}</div>
+</div>`;
+    }).join('');
+    const presetIds = Object.keys(profile?.presets || {}).sort();
+    const presetSummary = presetIds.length > 0 ? presetIds.join(', ') : '(none)';
+    const simulationSummary = session?.lastSimulation
+        ? `${i18n('Simulation')}: ${String(session.lastSimulation.summary || '')}`
+        : '';
+    return `
+<div class="luker_orch_iter_profile_meta">
+    <div><b>${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</b></div>
+    <div>${escapeHtml(`Revision #${Number(session?.revision || 1)}`)}</div>
+    ${simulationSummary ? `<div>${escapeHtml(simulationSummary)}</div>` : ''}
+</div>
+<div class="luker_orch_iter_stage_list">${stageCards || `<div class="luker_orch_iter_empty">(no stages)</div>`}</div>
+<div class="luker_orch_iter_preset_line"><b>Presets:</b> ${escapeHtml(presetSummary)}</div>`;
+}
+
+function buildAiIterationSystemPrompt(settings) {
+    const base = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
+    return [
+        base,
+        '',
+        'Iteration mode contract:',
+        '- You are editing an existing orchestration profile incrementally (diff-style).',
+        '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
+        '- Before tool calls, write a detailed <thought> block describing what to change and why.',
+        '- If user asks to test, call luker_orch_simulate with suitable input.',
+        '- After simulation, continue with targeted edits and then call luker_orch_finalize_iteration.',
+        '- Keep output practical and concise for real RP usage.',
+    ].join('\n');
+}
+
+function buildAiIterationUserPrompt(session, userInputText) {
+    const recentConversation = (Array.isArray(session?.messages) ? session.messages : [])
+        .slice(-20)
+        .map(item => `${String(item?.role || 'assistant').toUpperCase()}: ${String(item?.content || '')}`)
+        .join('\n\n');
+    const workingProfileText = JSON.stringify({
+        spec: session?.workingProfile?.spec || { stages: [] },
+        presets: session?.workingProfile?.presets || {},
+    });
+    return [
+        '<iteration_input>',
+        '  <session_guide>',
+        '    You are in a multi-turn orchestration iteration session.',
+        '    Apply focused edits through tools only. Keep edits minimal and high-impact.',
+        '  </session_guide>',
+        '  <working_profile>',
+        `    ${workingProfileText}`,
+        '  </working_profile>',
+        '  <conversation_history>',
+        `    ${recentConversation || '(empty)'}`,
+        '  </conversation_history>',
+        '  <user_request>',
+        `    ${String(userInputText || '').trim()}`,
+        '  </user_request>',
+        '</iteration_input>',
+    ].join('\n');
+}
+
+function buildAiIterationToolSet() {
+    return [
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_set_stage',
+                description: 'Create or update one stage. Optional position can reorder it.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        stage_id: { type: 'string' },
+                        mode: { type: 'string', enum: ['serial', 'parallel'] },
+                        position: { type: 'integer' },
+                    },
+                    required: ['stage_id', 'mode'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_remove_stage',
+                description: 'Remove one stage by id.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        stage_id: { type: 'string' },
+                    },
+                    required: ['stage_id'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_set_node',
+                description: 'Create or update one node inside a stage. Optional position can reorder it.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        stage_id: { type: 'string' },
+                        node_id: { type: 'string' },
+                        preset: { type: 'string' },
+                        userPromptTemplate: { type: 'string' },
+                        position: { type: 'integer' },
+                    },
+                    required: ['stage_id', 'node_id'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_remove_node',
+                description: 'Remove one node from a stage.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        stage_id: { type: 'string' },
+                        node_id: { type: 'string' },
+                    },
+                    required: ['stage_id', 'node_id'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_set_preset',
+                description: 'Create or update one preset.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        preset_id: { type: 'string' },
+                        systemPrompt: { type: 'string' },
+                        userPromptTemplate: { type: 'string' },
+                    },
+                    required: ['preset_id', 'systemPrompt', 'userPromptTemplate'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_remove_preset',
+                description: 'Remove one preset by id. Preset in use by nodes cannot be removed.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        preset_id: { type: 'string' },
+                    },
+                    required: ['preset_id'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_simulate',
+                description: 'Run orchestration simulation against recent chat messages or a custom user message.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        recent_messages_n: { type: 'integer' },
+                        simulation_text: { type: 'string' },
+                        trigger: { type: 'string', enum: ['normal', 'regenerate', 'continue'] },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'luker_orch_finalize_iteration',
+                description: 'Finalize this iteration turn with a concise summary.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        summary: { type: 'string' },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        },
+    ];
+}
+
+function getChatMessagesForSimulation(context, recentMessagesN) {
+    const all = Array.isArray(context?.chat) ? context.chat : [];
+    const n = Math.max(1, Math.min(60, Math.floor(Number(recentMessagesN) || 12)));
+    return all.slice(Math.max(0, all.length - n)).map(item => ({ ...item }));
+}
+
+async function runAiIterationSimulation(context, session, args = {}, abortSignal = null) {
+    const simulationMessages = getChatMessagesForSimulation(context, args.recent_messages_n);
+    const customText = String(args.simulation_text || '').trim();
+    if (customText) {
+        simulationMessages.push({
+            is_user: true,
+            name: String(context?.name1 || 'User'),
+            mes: customText,
+        });
+    }
+    if (simulationMessages.length === 0) {
+        return {
+            ok: false,
+            summary: 'No messages available for simulation.',
+            detail: {},
+        };
+    }
+    const profile = {
+        spec: sanitizeSpec(session?.workingProfile?.spec),
+        presets: sanitizePresetMap(session?.workingProfile?.presets),
+    };
+    const payload = {
+        type: String(args?.trigger || 'normal').trim().toLowerCase() || 'normal',
+        coreChat: simulationMessages,
+        signal: abortSignal,
+    };
+    const run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
+    const finalStage = getFinalStageSnapshot(run?.stageOutputs || []);
+    const finalNodes = Array.isArray(finalStage?.nodes) ? finalStage.nodes : [];
+    const summaries = finalNodes.map(item => ({
+        node: String(item?.node || ''),
+        summary: String(item?.output?.summary || '').trim(),
+        risks: Array.isArray(item?.output?.risks) ? item.output.risks.slice(0, 6) : [],
+    }));
+    return {
+        ok: true,
+        summary: `Simulated ${Number(run?.stageOutputs?.length || 0)} stages with ${finalNodes.length} final outputs.`,
+        detail: {
+            stage_count: Number(run?.stageOutputs?.length || 0),
+            final_stage_id: String(finalStage?.id || ''),
+            final_stage_mode: String(finalStage?.mode || 'serial'),
+            final_nodes: summaries,
+            input: {
+                recent_messages_n: Math.max(1, Math.min(60, Math.floor(Number(args?.recent_messages_n) || 12))),
+                simulation_text_used: Boolean(customText),
+            },
+        },
+    };
+}
+
+function resolveIterationStage(session, stageId, createIfMissing = false) {
+    const safeId = sanitizeIdentifierToken(stageId, '');
+    if (!safeId) {
+        return null;
+    }
+    const stages = session?.workingProfile?.spec?.stages || [];
+    let stage = stages.find(item => String(item?.id || '') === safeId) || null;
+    if (!stage && createIfMissing) {
+        stage = { id: safeId, mode: 'serial', nodes: [] };
+        stages.push(stage);
+    }
+    return stage;
+}
+
+function applyIndexReorder(list, currentIndex, position) {
+    if (!Array.isArray(list) || currentIndex < 0 || currentIndex >= list.length) {
+        return;
+    }
+    if (!Number.isInteger(position)) {
+        return;
+    }
+    const targetIndex = Math.max(0, Math.min(list.length - 1, position));
+    if (targetIndex === currentIndex) {
+        return;
+    }
+    const [item] = list.splice(currentIndex, 1);
+    list.splice(targetIndex, 0, item);
+}
+
+function formatIterationSimulationForAutoPrompt(simulation) {
+    return [
+        'Simulation result:',
+        JSON.stringify(simulation?.detail || simulation || {}),
+        '',
+        'Continue with focused edits based on this simulation result.',
+        'When finished, call luker_orch_finalize_iteration.',
+    ].join('\n');
+}
+
+async function executeAiIterationToolCalls(context, session, toolCalls, abortSignal = null) {
+    const actions = [];
+    const simulations = [];
+    let finalized = false;
+    let finalizeSummary = '';
+    let changed = false;
+    const allowedPresetFallback = Object.keys(session?.workingProfile?.presets || {})[0] || 'distiller';
+    for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        if (!name) {
+            continue;
+        }
+        if (name === 'luker_orch_set_stage') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            if (!stageId) {
+                actions.push('Skipped stage update: missing stage_id.');
+                continue;
+            }
+            const mode = String(args.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
+            const stage = resolveIterationStage(session, stageId, true);
+            stage.mode = mode;
+            if (!Array.isArray(stage.nodes)) {
+                stage.nodes = [];
+            }
+            const stages = session.workingProfile.spec.stages;
+            const index = stages.findIndex(item => String(item?.id || '') === stageId);
+            applyIndexReorder(stages, index, Number.isInteger(args.position) ? Number(args.position) : NaN);
+            actions.push(`Stage "${stageId}" updated (${mode}).`);
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_remove_stage') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            const stages = session?.workingProfile?.spec?.stages || [];
+            const index = stages.findIndex(item => String(item?.id || '') === stageId);
+            if (index >= 0) {
+                stages.splice(index, 1);
+                actions.push(`Stage "${stageId}" removed.`);
+                changed = true;
+            } else {
+                actions.push(`Skipped stage removal: "${stageId}" not found.`);
+            }
+            continue;
+        }
+        if (name === 'luker_orch_set_node') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            const nodeId = sanitizeIdentifierToken(args.node_id, '');
+            if (!stageId || !nodeId) {
+                actions.push('Skipped node update: missing stage_id or node_id.');
+                continue;
+            }
+            const stage = resolveIterationStage(session, stageId, true);
+            const presetId = sanitizeIdentifierToken(args.preset, nodeId || allowedPresetFallback) || allowedPresetFallback;
+            if (!session.workingProfile.presets[presetId]) {
+                session.workingProfile.presets[presetId] = createPresetDraft();
+            }
+            const nodes = Array.isArray(stage.nodes) ? stage.nodes : [];
+            const existingIndex = nodes.findIndex(item => String(item?.id || '') === nodeId);
+            const nextNode = {
+                id: nodeId,
+                preset: presetId,
+                userPromptTemplate: typeof args.userPromptTemplate === 'string' ? args.userPromptTemplate : (existingIndex >= 0 ? String(nodes[existingIndex]?.userPromptTemplate || '') : ''),
+            };
+            if (existingIndex >= 0) {
+                nodes[existingIndex] = nextNode;
+                applyIndexReorder(nodes, existingIndex, Number.isInteger(args.position) ? Number(args.position) : NaN);
+                actions.push(`Node "${nodeId}" updated in stage "${stageId}".`);
+            } else {
+                nodes.push(nextNode);
+                applyIndexReorder(nodes, nodes.length - 1, Number.isInteger(args.position) ? Number(args.position) : NaN);
+                actions.push(`Node "${nodeId}" added to stage "${stageId}".`);
+            }
+            stage.nodes = nodes;
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_remove_node') {
+            const stageId = sanitizeIdentifierToken(args.stage_id, '');
+            const nodeId = sanitizeIdentifierToken(args.node_id, '');
+            const stage = resolveIterationStage(session, stageId, false);
+            if (!stage || !Array.isArray(stage.nodes)) {
+                actions.push(`Skipped node removal: stage "${stageId}" not found.`);
+                continue;
+            }
+            const index = stage.nodes.findIndex(item => String(item?.id || '') === nodeId);
+            if (index >= 0) {
+                stage.nodes.splice(index, 1);
+                actions.push(`Node "${nodeId}" removed from stage "${stageId}".`);
+                changed = true;
+            } else {
+                actions.push(`Skipped node removal: "${nodeId}" not found in stage "${stageId}".`);
+            }
+            continue;
+        }
+        if (name === 'luker_orch_set_preset') {
+            const presetId = sanitizeIdentifierToken(args.preset_id, '');
+            if (!presetId) {
+                actions.push('Skipped preset update: missing preset_id.');
+                continue;
+            }
+            session.workingProfile.presets[presetId] = {
+                systemPrompt: String(args.systemPrompt || '').trim(),
+                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+            };
+            actions.push(`Preset "${presetId}" updated.`);
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_remove_preset') {
+            const presetId = sanitizeIdentifierToken(args.preset_id, '');
+            if (!presetId || !session.workingProfile.presets[presetId]) {
+                actions.push(`Skipped preset removal: "${presetId}" not found.`);
+                continue;
+            }
+            const inUse = (session?.workingProfile?.spec?.stages || []).some(stage =>
+                (stage?.nodes || []).some(node => String(node?.preset || '') === presetId));
+            if (inUse) {
+                actions.push(`Skipped preset removal: "${presetId}" is still used by nodes.`);
+                continue;
+            }
+            delete session.workingProfile.presets[presetId];
+            actions.push(`Preset "${presetId}" removed.`);
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_simulate') {
+            const simulation = await runAiIterationSimulation(context, session, args, abortSignal);
+            simulations.push(simulation);
+            session.lastSimulation = simulation;
+            actions.push(simulation.ok
+                ? `Simulation finished: ${simulation.summary}`
+                : `Simulation failed: ${simulation.summary}`);
+            continue;
+        }
+        if (name === 'luker_orch_finalize_iteration') {
+            finalized = true;
+            finalizeSummary = String(args.summary || '').trim();
+            actions.push(`Iteration finalized.${finalizeSummary ? ` ${finalizeSummary}` : ''}`);
+            continue;
+        }
+        actions.push(`Ignored unknown action: ${name}`);
+    }
+
+    session.workingProfile.spec = sanitizeSpec(session.workingProfile.spec);
+    session.workingProfile.presets = sanitizePresetMap(session.workingProfile.presets);
+    session.revision = Number(session.revision || 0) + (changed ? 1 : 0);
+    session.updatedAt = Date.now();
+    trimAiIterationMessages(session);
+
+    return {
+        actions,
+        simulations,
+        finalized,
+        finalizeSummary,
+        changed,
+    };
+}
+
+async function runAiIterationTurn(context, settings, session, userText, abortSignal = null) {
+    const text = String(userText || '').trim();
+    if (!text) {
+        return { ok: false, message: 'empty_input' };
+    }
+    session.messages.push({ role: 'user', content: text, auto: false, at: Date.now() });
+    trimAiIterationMessages(session);
+
+    const aiSuggestApiPresetName = String(settings.aiSuggestApiPresetName || '').trim();
+    const suggestPresetName = String(settings.aiSuggestPresetName || '').trim();
+    const api = resolveRequestApiFromConnectionProfileName(context, aiSuggestApiPresetName);
+    const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(
+        aiSuggestApiPresetName,
+        String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    );
+    const tools = buildAiIterationToolSet();
+    const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
+
+    let loop = 0;
+    while (loop <= AI_ITERATION_MAX_AUTO_ROUNDS) {
+        const promptMessages = buildPresetAwareMessages(
+            context,
+            settings,
+            buildAiIterationSystemPrompt(settings),
+            buildAiIterationUserPrompt(session, text),
+            {
+                api,
+                promptPresetName: suggestPresetName,
+            },
+        );
+        const toolCalls = await requestToolCallsWithRetry(settings, promptMessages, {
+            tools,
+            allowedNames,
+            llmPresetName: suggestPresetName,
+            apiSettingsOverride,
+            abortSignal,
+        });
+        if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+            throw new Error(i18n('Function output is invalid.'));
+        }
+        const result = await executeAiIterationToolCalls(context, session, toolCalls, abortSignal);
+        const summaryLines = [];
+        if (result.actions.length > 0) {
+            summaryLines.push(result.actions.map(item => `- ${item}`).join('\n'));
+        }
+        if (result.finalizeSummary) {
+            summaryLines.push(`Summary: ${result.finalizeSummary}`);
+        }
+        session.messages.push({
+            role: 'assistant',
+            auto: false,
+            at: Date.now(),
+            content: summaryLines.join('\n').trim() || 'Done.',
+        });
+        trimAiIterationMessages(session);
+        if (result.finalized) {
+            return { ok: true, finalized: true, actions: result.actions };
+        }
+        if (result.simulations.length > 0 && loop < AI_ITERATION_MAX_AUTO_ROUNDS) {
+            const autoPrompt = formatIterationSimulationForAutoPrompt(result.simulations[result.simulations.length - 1]);
+            session.messages.push({ role: 'user', content: autoPrompt, auto: true, at: Date.now() });
+            trimAiIterationMessages(session);
+            loop += 1;
+            continue;
+        }
+        return { ok: true, finalized: false, actions: result.actions };
+    }
+    return { ok: true, finalized: false, actions: [] };
+}
+
+async function applyAiIterationSessionToGlobal(context, settings, session, root) {
+    settings.orchestrationSpec = sanitizeSpec(session?.workingProfile?.spec);
+    settings.presets = sanitizePresetMap(session?.workingProfile?.presets);
+    await saveSettings();
+    uiState.globalEditor = loadGlobalEditorState();
+    ensureEditorIntegrity(uiState.globalEditor);
+    renderDynamicPanels(root, context);
+    notifySuccess(i18n('Iteration session applied to global profile.'));
+    updateUiStatus(i18n('Iteration session applied to global profile.'));
+}
+
+async function applyAiIterationSessionToCharacter(context, settings, session, root) {
+    const avatar = String(getCurrentAvatar(context) || '').trim();
+    if (!avatar) {
+        notifyError(i18n('No character selected. Cannot apply to character override.'));
+        return;
+    }
+    const importedEditor = createIterationEditorFromWorkingProfile(session?.workingProfile || {});
+    const ok = await persistCharacterEditor(context, settings, avatar, {
+        editor: {
+            ...importedEditor,
+            enabled: true,
+            notes: '',
+        },
+        forceEnabled: true,
+    });
+    if (!ok) {
+        notifyError(i18n('Failed to persist character override.'));
+        return;
+    }
+    uiState.characterEditor = loadCharacterEditorState(context, avatar);
+    ensureEditorIntegrity(uiState.characterEditor);
+    renderDynamicPanels(root, context);
+    const name = getCharacterDisplayNameByAvatar(context, avatar) || avatar;
+    notifySuccess(i18nFormat('Iteration session applied to character override: ${0}.', name));
+    updateUiStatus(i18nFormat('Iteration session applied to character override: ${0}.', name));
+}
+
+function buildAiIterationPopupHtml(popupId, session) {
+    return `
+<div id="${popupId}" class="luker_orch_iter_popup">
+    <div class="luker_orch_iter_head">
+        <div class="luker_orch_iter_title">${escapeHtml(i18n('AI Iteration Studio'))}</div>
+        <div class="luker_orch_iter_sub">${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</div>
+    </div>
+    <div class="luker_orch_iter_grid">
+        <div class="luker_orch_iter_col">
+            <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Conversation'))}</div>
+            <div id="${popupId}_conversation" class="luker_orch_iter_conversation"></div>
+            <textarea id="${popupId}_input" class="text_pole textarea_compact" rows="4" placeholder="${escapeHtml(i18n('Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...'))}"></textarea>
+            <div class="luker_orch_iter_actions">
+                <div id="${popupId}_send" class="menu_button">${escapeHtml(i18n('Send to AI'))}</div>
+                <div id="${popupId}_stop" class="menu_button">${escapeHtml(i18n('Stop'))}</div>
+                <div id="${popupId}_clear" class="menu_button">${escapeHtml(i18n('Clear Session'))}</div>
+                <div id="${popupId}_new" class="menu_button">${escapeHtml(i18n('New Session'))}</div>
+            </div>
+            <small id="${popupId}_status" style="opacity:0.82"></small>
+        </div>
+        <div class="luker_orch_iter_col">
+            <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Working profile'))}</div>
+            <div id="${popupId}_profile" class="luker_orch_iter_profile"></div>
+            <div class="luker_orch_iter_actions">
+                <div id="${popupId}_apply_global" class="menu_button">${escapeHtml(i18n('Apply to Global'))}</div>
+                <div id="${popupId}_apply_character" class="menu_button">${escapeHtml(i18n('Apply to Character'))}</div>
+            </div>
+        </div>
+    </div>
+</div>`;
+}
+
+async function openAiIterationStudio(context, settings, root) {
+    ensureStyles();
+    const session = ensureAiIterationSession(context, settings, { forceNew: false });
+    const popupId = `luker_orch_iter_popup_${Date.now()}`;
+    const namespace = `.lukerOrchIter_${popupId}`;
+    const selector = `#${popupId}`;
+    const popupHtml = buildAiIterationPopupHtml(popupId, session);
+
+    const rerender = () => {
+        const popupRoot = jQuery(selector);
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find(`#${popupId}_conversation`).html(renderAiIterationConversation(session));
+        popupRoot.find(`#${popupId}_profile`).html(renderAiIterationWorkingProfile(session));
+    };
+
+    const setStatus = (text) => {
+        const popupRoot = jQuery(selector);
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find(`#${popupId}_status`).text(String(text || ''));
+    };
+
+    const popupPromise = context.callGenericPopup(
+        popupHtml,
+        context.POPUP_TYPE.TEXT,
+        i18n('AI Iteration Studio'),
+        {
+            okButton: i18n('Close'),
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+        },
+    );
+
+    jQuery(document).off(namespace);
+    rerender();
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_send`, async function () {
+        const popupRoot = jQuery(selector);
+        if (!popupRoot.length) {
+            return;
+        }
+        const input = popupRoot.find(`#${popupId}_input`);
+        const text = String(input.val() || '').trim();
+        if (!text) {
+            return;
+        }
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        const controller = new AbortController();
+        activeAiIterationAbortController = controller;
+        setStatus(i18n('AI iteration is running...'));
+        try {
+            await runAiIterationTurn(context, settings, session, text, controller.signal);
+            input.val('');
+            setStatus(i18n('AI iteration updated.'));
+            rerender();
+        } catch (error) {
+            if (isAbortError(error, controller.signal)) {
+                setStatus(i18n('Iteration run cancelled.'));
+            } else {
+                setStatus(i18nFormat('Iteration run failed: ${0}', String(error?.message || error)));
+            }
+        } finally {
+            if (activeAiIterationAbortController === controller) {
+                activeAiIterationAbortController = null;
+            }
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_stop`, function () {
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            activeAiIterationAbortController.abort();
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_clear`, function () {
+        session.messages = [];
+        session.lastSimulation = null;
+        session.updatedAt = Date.now();
+        setStatus(i18n('Iteration session reset.'));
+        rerender();
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_new`, function () {
+        uiState.aiIterationSession = createAiIterationSession(context, settings);
+        const nextSession = uiState.aiIterationSession;
+        session.id = nextSession.id;
+        session.chatKey = nextSession.chatKey;
+        session.sourceScope = nextSession.sourceScope;
+        session.sourceAvatar = nextSession.sourceAvatar;
+        session.sourceName = nextSession.sourceName;
+        session.revision = nextSession.revision;
+        session.createdAt = nextSession.createdAt;
+        session.updatedAt = nextSession.updatedAt;
+        session.workingProfile = nextSession.workingProfile;
+        session.messages = [];
+        session.lastSimulation = null;
+        setStatus(i18n('Iteration session reset.'));
+        rerender();
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_apply_global`, async function () {
+        await applyAiIterationSessionToGlobal(context, settings, session, root);
+        rerender();
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_apply_character`, async function () {
+        await applyAiIterationSessionToCharacter(context, settings, session, root);
+        rerender();
+    });
+
+    await popupPromise;
+    jQuery(document).off(namespace);
+}
+
 function bindUi() {
     const context = getContext();
     const settings = getSettings();
@@ -3595,18 +4452,21 @@ function bindUi() {
                 }
                 clearAiBuildToast();
             }
+            return;
+        }
+
+        if (action === 'ai-iterate-open') {
+            await openAiIterationStudio(context, settings, root);
+            return;
         }
     });
 }
 
-function ensureUi() {
-    const host = jQuery('#extensions_settings2');
-    if (!host.length) {
+function ensureStyles() {
+    if (jQuery(`#${ORCH_STYLE_ID}`).length) {
         return;
     }
-
-    if (!jQuery(`#${ORCH_STYLE_ID}`).length) {
-        jQuery('head').append(`
+    jQuery('head').append(`
 <style id="${ORCH_STYLE_ID}">
 #${UI_BLOCK_ID} .menu_button,
 #${UI_BLOCK_ID} .menu_button_small {
@@ -3693,6 +4553,132 @@ function ensureUi() {
     align-items: end;
     margin-bottom: 8px;
 }
+.luker_orch_iter_popup {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.luker_orch_iter_head {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.luker_orch_iter_title {
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+.luker_orch_iter_sub {
+    opacity: 0.82;
+    font-size: 0.9rem;
+}
+.luker_orch_iter_grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+.luker_orch_iter_col {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.4));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.16);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 420px;
+}
+.luker_orch_iter_col_title {
+    font-weight: 600;
+}
+.luker_orch_iter_conversation,
+.luker_orch_iter_profile {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.18);
+    overflow: auto;
+}
+.luker_orch_iter_conversation {
+    min-height: 260px;
+    max-height: 420px;
+}
+.luker_orch_iter_profile {
+    min-height: 350px;
+    max-height: 460px;
+}
+.luker_orch_iter_actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.luker_orch_iter_popup .menu_button,
+.luker_orch_iter_popup .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.luker_orch_iter_msg {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+}
+.luker_orch_iter_msg.user {
+    background: rgba(43, 95, 190, 0.15);
+}
+.luker_orch_iter_msg.assistant {
+    background: rgba(38, 135, 93, 0.15);
+}
+.luker_orch_iter_msg_head {
+    font-weight: 600;
+    opacity: 0.9;
+    margin-bottom: 4px;
+}
+.luker_orch_iter_msg_body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+}
+.luker_orch_iter_empty {
+    opacity: 0.8;
+    font-size: 0.92rem;
+}
+.luker_orch_iter_profile_meta {
+    display: grid;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+.luker_orch_iter_stage_list {
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_stage {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(255,255,255,0.02);
+}
+.luker_orch_iter_stage_title {
+    font-weight: 600;
+}
+.luker_orch_iter_stage_mode {
+    font-size: 0.82rem;
+    opacity: 0.8;
+    margin: 2px 0 4px;
+}
+.luker_orch_iter_stage_nodes {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.luker_orch_iter_preset_line {
+    margin-top: 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 @media (max-width: 980px) {
     #${UI_BLOCK_ID} .luker_orch_workspace_grid {
         grid-template-columns: 1fr;
@@ -3700,9 +4686,23 @@ function ensureUi() {
     #${UI_BLOCK_ID} .luker_orch_character_row {
         grid-template-columns: 1fr;
     }
+    .luker_orch_iter_grid {
+        grid-template-columns: 1fr;
+    }
+    .luker_orch_iter_col {
+        min-height: 320px;
+    }
 }
 </style>`);
+}
+
+function ensureUi() {
+    const host = jQuery('#extensions_settings2');
+    if (!host.length) {
+        return;
     }
+
+    ensureStyles();
 
     if (jQuery(`#${UI_BLOCK_ID}`).length) {
         bindUi();
@@ -3772,7 +4772,8 @@ function ensureUi() {
                         <label for="luker_orch_ai_goal">${escapeHtml(i18n('AI build goal (optional)'))}</label>
                         <textarea id="luker_orch_ai_goal" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}"></textarea>
                         <div class="flex-container">
-                            <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Build Profile'))}</div>
+                            <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
+                            <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                         </div>
                     </div>
                 </div>
