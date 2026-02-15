@@ -182,6 +182,9 @@ let lastOpenAIGenerationId = '';
 const characterBoundPresetState = {
     active: false,
     previousPreset: '',
+    runtimeOptionValue: '__luker_char_bound_preset__',
+    runtimePresetName: '',
+    runtimePresetBody: null,
 };
 
 export const chat_completion_sources = {
@@ -4349,7 +4352,25 @@ function setContinuePostfixControls() {
 
 function getCharacterBoundPresetName(character) {
     const raw = character?.data?.extensions?.luker?.chat_completion_preset;
-    return typeof raw === 'string' ? raw.trim() : '';
+    if (typeof raw === 'string') {
+        return raw.trim();
+    }
+    if (raw && typeof raw === 'object') {
+        return String(raw.name || '').trim();
+    }
+    return '';
+}
+
+function getCharacterBoundPresetPayload(character) {
+    const raw = character?.data?.extensions?.luker?.chat_completion_preset;
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const name = String(raw.name || '').trim();
+        const preset = raw.preset && typeof raw.preset === 'object' ? stripOpenAIConnectionFieldsFromPreset(raw.preset) : null;
+        if (name && preset) {
+            return { name, preset };
+        }
+    }
+    return null;
 }
 
 function getCharacterById(characterId = this_chid) {
@@ -4375,7 +4396,50 @@ function applyPresetByName(presetName) {
     return true;
 }
 
-async function setCharacterBoundPresetValue(characterId, presetName) {
+function isCharacterBoundPresetOptionSelected() {
+    const selected = $('#settings_preset_openai').find(':selected');
+    return selected.attr('data-luker-char-bound') === '1';
+}
+
+function removeCharacterBoundRuntimeOption() {
+    $('#settings_preset_openai option[data-luker-char-bound="1"]').remove();
+    characterBoundPresetState.runtimePresetName = '';
+    characterBoundPresetState.runtimePresetBody = null;
+}
+
+function upsertCharacterBoundRuntimeOption(presetName, presetBody) {
+    const name = String(presetName || '').trim();
+    if (!name || !presetBody || typeof presetBody !== 'object') {
+        removeCharacterBoundRuntimeOption();
+        return false;
+    }
+    const normalizedPreset = stripOpenAIConnectionFieldsFromPreset(structuredClone(presetBody));
+    removeCharacterBoundRuntimeOption();
+    const option = document.createElement('option');
+    option.value = characterBoundPresetState.runtimeOptionValue;
+    option.innerText = name;
+    option.setAttribute('data-luker-char-bound', '1');
+    $('#settings_preset_openai').append(option);
+    characterBoundPresetState.runtimePresetName = name;
+    characterBoundPresetState.runtimePresetBody = normalizedPreset;
+    return true;
+}
+
+function getCurrentPresetBodyForBinding() {
+    if (isCharacterBoundPresetOptionSelected() && characterBoundPresetState.runtimePresetBody) {
+        return structuredClone(characterBoundPresetState.runtimePresetBody);
+    }
+
+    const currentPreset = String(oai_settings.preset_settings_openai ?? '').trim();
+    const presetIndex = openai_setting_names?.[currentPreset];
+    if (Number.isInteger(presetIndex) && openai_settings[presetIndex]) {
+        return structuredClone(openai_settings[presetIndex]);
+    }
+
+    return getChatCompletionPreset(oai_settings);
+}
+
+async function setCharacterBoundPresetValue(characterId, presetName, presetBody = null) {
     const id = Number(characterId);
     const character = Number.isInteger(id) ? characters[id] : null;
     if (!character) {
@@ -4383,9 +4447,28 @@ async function setCharacterBoundPresetValue(characterId, presetName) {
     }
 
     const trimmed = String(presetName ?? '').trim();
+    const sanitizedPreset = trimmed && presetBody && typeof presetBody === 'object'
+        ? stripOpenAIConnectionFieldsFromPreset(structuredClone(presetBody))
+        : null;
     const nextExtensions = structuredClone(character?.data?.extensions ?? {});
-    const current = String(nextExtensions?.luker?.chat_completion_preset ?? '').trim();
-    if (current === trimmed) {
+    const currentRaw = nextExtensions?.luker?.chat_completion_preset;
+    const currentName = typeof currentRaw === 'string'
+        ? currentRaw.trim()
+        : String(currentRaw?.name || '').trim();
+    const currentPreset = currentRaw && typeof currentRaw === 'object' && !Array.isArray(currentRaw)
+        ? currentRaw.preset
+        : null;
+
+    if (currentName === trimmed) {
+        const samePreset = (!trimmed && !currentPreset && !sanitizedPreset)
+            || (trimmed && JSON.stringify(currentPreset || null) === JSON.stringify(sanitizedPreset || null));
+        if (samePreset) {
+            return true;
+        }
+    }
+
+    if (trimmed && !sanitizedPreset) {
+        console.warn('Skipped character-bound preset save: missing preset body.');
         return true;
     }
 
@@ -4394,7 +4477,10 @@ async function setCharacterBoundPresetValue(characterId, presetName) {
         : {};
 
     if (trimmed) {
-        nextExtensions.luker.chat_completion_preset = trimmed;
+        nextExtensions.luker.chat_completion_preset = {
+            name: trimmed,
+            preset: sanitizedPreset,
+        };
     } else {
         delete nextExtensions.luker.chat_completion_preset;
     }
@@ -4442,6 +4528,7 @@ async function maybeApplyCharacterBoundPreset() {
     }
 
     if (selected_group) {
+        removeCharacterBoundRuntimeOption();
         if (characterBoundPresetState.active) {
             const restored = applyPresetByName(characterBoundPresetState.previousPreset);
             if (!restored && characterBoundPresetState.previousPreset) {
@@ -4454,8 +4541,10 @@ async function maybeApplyCharacterBoundPreset() {
     }
 
     const character = getCharacterById(this_chid);
-    const boundPreset = getCharacterBoundPresetName(character);
-    if (!boundPreset) {
+    const embeddedPayload = getCharacterBoundPresetPayload(character);
+    const legacyBoundPresetName = getCharacterBoundPresetName(character);
+    if (!embeddedPayload && !legacyBoundPresetName) {
+        removeCharacterBoundRuntimeOption();
         if (characterBoundPresetState.active) {
             const restored = applyPresetByName(characterBoundPresetState.previousPreset);
             if (!restored && characterBoundPresetState.previousPreset) {
@@ -4472,9 +4561,23 @@ async function maybeApplyCharacterBoundPreset() {
         characterBoundPresetState.active = true;
     }
 
-    const changed = applyPresetByName(boundPreset);
+    if (embeddedPayload) {
+        const prepared = upsertCharacterBoundRuntimeOption(embeddedPayload.name, embeddedPayload.preset);
+        if (!prepared) {
+            toastr.warning(t`Bound chat completion preset '${embeddedPayload.name}' was not found.`, t`Preset Not Found`);
+            return;
+        }
+        if ($('#settings_preset_openai').val() !== characterBoundPresetState.runtimeOptionValue) {
+            $('#settings_preset_openai').val(characterBoundPresetState.runtimeOptionValue).trigger('change');
+        }
+        return;
+    }
+
+    // Legacy fallback: name-only binding, use global preset if present.
+    removeCharacterBoundRuntimeOption();
+    const changed = applyPresetByName(legacyBoundPresetName);
     if (!changed) {
-        toastr.warning(t`Bound chat completion preset '${boundPreset}' was not found.`, t`Preset Not Found`);
+        toastr.warning(t`Bound chat completion preset '${legacyBoundPresetName}' was not found.`, t`Preset Not Found`);
     }
 }
 
@@ -4485,11 +4588,12 @@ async function bindCurrentChatCompletionPresetToCharacter(characterId = this_chi
         return;
     }
 
-    const currentPreset = String(oai_settings.preset_settings_openai ?? '').trim();
+    const currentPreset = String($('#settings_preset_openai').find(':selected').text() || '').trim();
     if (!currentPreset) {
         toastr.warning(t`No chat completion preset selected.`);
         return;
     }
+    const presetBody = getCurrentPresetBodyForBinding();
 
     const confirmation = await Popup.show.confirm(
         t`Bind Character Preset`,
@@ -4500,9 +4604,10 @@ async function bindCurrentChatCompletionPresetToCharacter(characterId = this_chi
         return;
     }
 
-    const ok = await setCharacterBoundPresetValue(characterId, currentPreset);
+    const ok = await setCharacterBoundPresetValue(characterId, currentPreset, presetBody);
     if (ok) {
         toastr.success(t`Bound preset '${currentPreset}' to '${character.name}'.`, t`Character Preset Bound`);
+        await maybeApplyCharacterBoundPreset();
     } else {
         toastr.error(t`Failed to bind character preset.`);
     }
@@ -4533,6 +4638,7 @@ async function clearCharacterBoundChatCompletionPreset(characterId = this_chid) 
     const ok = await setCharacterBoundPresetValue(characterId, '');
     if (ok) {
         toastr.success(t`Cleared bound preset from '${character.name}'.`, t`Character Preset Cleared`);
+        await maybeApplyCharacterBoundPreset();
     } else {
         toastr.error(t`Failed to clear character preset.`);
     }
@@ -5074,11 +5180,19 @@ async function onLogitBiasPresetDeleteClick() {
 // Load OpenAI preset settings
 function onSettingsPresetChange() {
     const presetNameBefore = oai_settings.preset_settings_openai;
+    const selectedOption = $('#settings_preset_openai').find(':selected');
+    const usingCharacterBoundPreset = selectedOption.attr('data-luker-char-bound') === '1';
+    const presetName = selectedOption.text();
+    if (!usingCharacterBoundPreset) {
+        oai_settings.preset_settings_openai = presetName;
+    }
+    const preset = usingCharacterBoundPreset
+        ? structuredClone(characterBoundPresetState.runtimePresetBody || {})
+        : structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
 
-    const presetName = $('#settings_preset_openai').find(':selected').text();
-    oai_settings.preset_settings_openai = presetName;
-
-    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    if (!preset || typeof preset !== 'object') {
+        return;
+    }
 
     migrateChatCompletionSettings(preset);
 
