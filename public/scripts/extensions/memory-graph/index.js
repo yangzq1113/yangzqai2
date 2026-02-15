@@ -2955,36 +2955,23 @@ function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
     return rows;
 }
 
-function escapeXmlText(value) {
-    return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&apos;');
-}
-
-function encodeXmlCdata(value) {
-    return String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
-}
-
 function buildJsonXmlSection(tag, value) {
     const name = String(tag || '').trim();
     const safeTag = name || 'data';
-    const jsonText = encodeXmlCdata(JSON.stringify(value ?? {}));
+    const jsonText = JSON.stringify(value ?? {});
     return [
         `  <${safeTag}>`,
-        `    <![CDATA[${jsonText}]]>`,
+        `    ${jsonText}`,
         `  </${safeTag}>`,
     ].join('\n');
 }
 
-function buildCdataXmlTag(tag, value, indent = '    ') {
+function buildRawXmlTag(tag, value, indent = '    ') {
     const safeTag = String(tag || '').trim() || 'value';
-    const body = encodeXmlCdata(String(value ?? ''));
+    const body = String(value ?? '');
     return [
         `${indent}<${safeTag}>`,
-        `${indent}  <![CDATA[${body}]]>`,
+        `${indent}  ${body}`,
         `${indent}</${safeTag}>`,
     ].join('\n');
 }
@@ -2997,7 +2984,7 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
     const safeMessages = Array.isArray(messages) ? messages : [];
 
     const requiredTypeXml = safeRequiredTypes.length > 0
-        ? safeRequiredTypes.map(type => `    <type>${escapeXmlText(type)}</type>`).join('\n')
+        ? safeRequiredTypes.map(type => `    <type>${type}</type>`).join('\n')
         : '    <type>(none)</type>';
 
     const messageXml = safeMessages.map(message => {
@@ -3007,11 +2994,11 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
         const speaker = nameRaw ? `${roleRaw}: ${nameRaw}` : roleRaw;
         return [
             '    <message>',
-            `      <seq>${escapeXmlText(seq)}</seq>`,
-            `      <role>${escapeXmlText(roleRaw)}</role>`,
-            buildCdataXmlTag('name', nameRaw, '      '),
-            buildCdataXmlTag('speaker', speaker, '      '),
-            buildCdataXmlTag('text', String(message?.text || ''), '      '),
+            `      <seq>${seq}</seq>`,
+            `      <role>${roleRaw}</role>`,
+            buildRawXmlTag('name', nameRaw, '      '),
+            buildRawXmlTag('speaker', speaker, '      '),
+            buildRawXmlTag('text', String(message?.text || ''), '      '),
             '    </message>',
         ].join('\n');
     }).join('\n');
