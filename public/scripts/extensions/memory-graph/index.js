@@ -5849,60 +5849,96 @@ function buildGraphCytoscapeElements(store) {
     const maxVisualNodes = 450;
     const scopedNodes = sortedNodes.slice(-maxVisualNodes);
     const scopedNodeIds = new Set(scopedNodes.map(node => String(node.id || '')));
-    const levelOrderMap = {
-        [LEVEL.SEMANTIC]: 0,
-    };
     const scopedNodeList = [...scopedNodeIds]
         .map(id => store.nodes[id])
         .filter(Boolean);
-    const nodesByLevel = new Map();
+    const timelineNodes = scopedNodeList
+        .slice()
+        .sort((a, b) => {
+            const at = Number(a.seqTo ?? 0);
+            const bt = Number(b.seqTo ?? 0);
+            if (at !== bt) {
+                return at - bt;
+            }
+            const typeCompare = String(a.type || '').localeCompare(String(b.type || ''));
+            if (typeCompare !== 0) {
+                return typeCompare;
+            }
+            return String(a.id || '').localeCompare(String(b.id || ''));
+        });
+    const timelineIndexByNodeId = new Map();
+    timelineNodes.forEach((node, index) => {
+        timelineIndexByNodeId.set(String(node.id || ''), index);
+    });
+
+    const preferredTypeOrder = ['event', 'thread', 'character_sheet', 'location_state', 'rule_constraint'];
+    const typeRank = new Map(preferredTypeOrder.map((type, index) => [type, index]));
+    const types = [...new Set(scopedNodeList.map(node => String(node.type || 'unknown').trim() || 'unknown'))]
+        .sort((a, b) => {
+            const ar = typeRank.has(a) ? Number(typeRank.get(a)) : 999;
+            const br = typeRank.has(b) ? Number(typeRank.get(b)) : 999;
+            if (ar !== br) {
+                return ar - br;
+            }
+            return a.localeCompare(b);
+        });
+    const rowByType = new Map(types.map((type, index) => [type, index]));
+
+    const count = timelineNodes.length;
+    const colGap = count <= 12 ? 220 : count <= 28 ? 178 : 142;
+    const rowGap = 170;
+    const centerCol = (timelineNodes.length - 1) / 2;
+    const centerRow = (types.length - 1) / 2;
+
+    const buckets = new Map();
     for (const node of scopedNodeList) {
-        const level = String(node.level || LEVEL.SEMANTIC);
-        if (!nodesByLevel.has(level)) {
-            nodesByLevel.set(level, []);
+        const nodeId = String(node.id || '');
+        const timelineIndex = Number(timelineIndexByNodeId.get(nodeId) ?? 0);
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        const bucketKey = `${type}|${timelineIndex}`;
+        if (!buckets.has(bucketKey)) {
+            buckets.set(bucketKey, []);
         }
-        nodesByLevel.get(level).push(node);
+        buckets.get(bucketKey).push(node);
     }
 
-    const sortedLevels = [...nodesByLevel.keys()].sort((a, b) => {
-        const av = Number.isFinite(levelOrderMap[a]) ? levelOrderMap[a] : 99;
-        const bv = Number.isFinite(levelOrderMap[b]) ? levelOrderMap[b] : 99;
-        if (av !== bv) {
-            return av - bv;
+    const offsetsByNodeId = new Map();
+    const getClusterOffset = (index) => {
+        if (index <= 0) {
+            return { x: 0, y: 0 };
         }
-        return a.localeCompare(b);
-    });
-    const colGap = 260;
-    const rowGap = 108;
-    const centerCol = (sortedLevels.length - 1) / 2;
+        const ring = Math.ceil(index / 6);
+        const slot = (index - 1) % 6;
+        const base = 22 + ((ring - 1) * 12);
+        const pattern = [
+            { x: -base, y: -base },
+            { x: base, y: -base },
+            { x: -base, y: base },
+            { x: base, y: base },
+            { x: 0, y: -(base + 8) },
+            { x: 0, y: base + 8 },
+        ];
+        return pattern[slot] || { x: 0, y: 0 };
+    };
+    for (const bucket of buckets.values()) {
+        bucket
+            .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')))
+            .forEach((node, index) => {
+                offsetsByNodeId.set(String(node.id || ''), getClusterOffset(index));
+            });
+    }
+
     const positionByNodeId = new Map();
-    for (let colIndex = 0; colIndex < sortedLevels.length; colIndex++) {
-        const level = sortedLevels[colIndex];
-        const levelNodes = (nodesByLevel.get(level) || [])
-            .slice()
-            .sort((a, b) => {
-                const at = Number(a.seqTo ?? 0);
-                const bt = Number(b.seqTo ?? 0);
-                if (at !== bt) {
-                    return at - bt;
-                }
-                return String(a.id || '').localeCompare(String(b.id || ''));
-            });
-        const centerRow = (levelNodes.length - 1) / 2;
-        for (let rowIndex = 0; rowIndex < levelNodes.length; rowIndex++) {
-            const node = levelNodes[rowIndex];
-            let hash = 0;
-            const idText = String(node.id || '');
-            for (let i = 0; i < idText.length; i++) {
-                hash = ((hash * 31) + idText.charCodeAt(i)) >>> 0;
-            }
-            const jitterX = ((hash % 13) - 6) * 2;
-            const jitterY = (((hash >> 3) % 13) - 6) * 2;
-            positionByNodeId.set(String(node.id), {
-                x: ((colIndex - centerCol) * colGap) + jitterX,
-                y: ((rowIndex - centerRow) * rowGap) + jitterY,
-            });
-        }
+    for (const node of scopedNodeList) {
+        const nodeId = String(node.id || '');
+        const timelineIndex = Number(timelineIndexByNodeId.get(nodeId) ?? 0);
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        const rowIndex = Number(rowByType.get(type) ?? 0);
+        const offset = offsetsByNodeId.get(nodeId) || { x: 0, y: 0 };
+        positionByNodeId.set(nodeId, {
+            x: ((timelineIndex - centerCol) * colGap) + offset.x,
+            y: ((rowIndex - centerRow) * rowGap) + offset.y,
+        });
     }
 
     const nodes = scopedNodeList
@@ -6149,11 +6185,15 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                         style: {
                             label: '',
                             'font-size': 9,
-                            'curve-style': 'bezier',
-                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'taxi',
+                            'taxi-direction': 'horizontal',
+                            'taxi-turn': 18,
+                            'taxi-turn-min-distance': 12,
+                            'target-arrow-shape': 'vee',
                             'target-arrow-color': '#8e95a0',
                             'line-color': '#8e95a0',
                             width: 2,
+                            'line-opacity': 0.75,
                             color: '#d3d9e2',
                             'text-outline-width': 2,
                             'text-outline-color': '#20242b',
