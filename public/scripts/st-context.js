@@ -514,7 +514,26 @@ function tagsMatch(entryTags, requestedTags) {
     return entryTags.some(tag => requestedTags.has(tag));
 }
 
-function resolvePluginPromptOrderEntries(completionCore) {
+function getPluginPromptOrderPreferredCharacterIds() {
+    const ids = [];
+    const manager = getPresetManager('openai');
+    const activeId = manager?.activeCharacter?.id;
+    const normalizedActive = String(activeId ?? '').trim();
+    if (normalizedActive) {
+        ids.push(normalizedActive);
+    }
+
+    // Fallbacks for migrated/legacy prompt_order snapshots.
+    for (const fallbackId of ['100001', '100000']) {
+        if (!ids.includes(fallbackId)) {
+            ids.push(fallbackId);
+        }
+    }
+
+    return ids;
+}
+
+function resolvePluginPromptOrderEntries(completionCore, { preferredCharacterIds = [] } = {}) {
     const promptOrder = Array.isArray(completionCore?.prompt_order) ? completionCore.prompt_order : [];
     const isEntry = entry => entry && typeof entry === 'object' && typeof entry.identifier === 'string';
 
@@ -525,12 +544,31 @@ function resolvePluginPromptOrderEntries(completionCore) {
         return promptOrder;
     }
 
-    const list = promptOrder.find(item => Array.isArray(item?.order) && item.order.some(isEntry));
-    if (list && Array.isArray(list.order)) {
-        return list.order.filter(isEntry);
+    const grouped = promptOrder
+        .filter(item => item && typeof item === 'object' && Array.isArray(item.order))
+        .map(item => ({
+            characterId: String(item.character_id ?? '').trim(),
+            order: item.order.filter(isEntry),
+        }))
+        .filter(item => item.order.length > 0);
+
+    if (grouped.length === 0) {
+        return [];
     }
 
-    return [];
+    for (const preferredId of preferredCharacterIds.map(id => String(id ?? '').trim()).filter(Boolean)) {
+        const matched = grouped.find(item => item.characterId === preferredId);
+        if (matched) {
+            return matched.order;
+        }
+    }
+
+    const unnamed = grouped.find(item => !item.characterId);
+    if (unnamed) {
+        return unnamed.order;
+    }
+
+    return grouped[0].order;
 }
 
 function resolvePluginMarkerPromptContent(promptIdentifier, envelope) {
@@ -574,7 +612,9 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
     const promptMap = new Map(prompts
         .filter(prompt => prompt && typeof prompt === 'object' && typeof prompt.identifier === 'string')
         .map(prompt => [String(prompt.identifier), prompt]));
-    const orderEntries = resolvePluginPromptOrderEntries(completionCore);
+    const orderEntries = resolvePluginPromptOrderEntries(completionCore, {
+        preferredCharacterIds: getPluginPromptOrderPreferredCharacterIds(),
+    });
     if (orderEntries.length === 0) {
         return null;
     }
