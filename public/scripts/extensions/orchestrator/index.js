@@ -3313,12 +3313,48 @@ function recordAiIterationToolHistory(session, toolCalls, executionResult, sourc
     trimAiIterationToolHistory(session);
 }
 
+function stringifyIterationSimulationForPrompt(simulation) {
+    if (!simulation || typeof simulation !== 'object') {
+        return '(none)';
+    }
+    try {
+        return JSON.stringify({
+            ok: Boolean(simulation.ok),
+            summary: String(simulation.summary || ''),
+            detail: simulation.detail && typeof simulation.detail === 'object' ? simulation.detail : {},
+        });
+    } catch {
+        return String(simulation.summary || '(simulation)');
+    }
+}
+
+function stringifyIterationSimulationListForPrompt(simulations) {
+    const list = Array.isArray(simulations) ? simulations : [];
+    if (list.length === 0) {
+        return '(none)';
+    }
+    try {
+        return JSON.stringify(list.map(item => ({
+            ok: Boolean(item?.ok),
+            summary: String(item?.summary || ''),
+            detail: item?.detail && typeof item.detail === 'object' ? item.detail : {},
+        })));
+    } catch {
+        return list.map(item => String(item?.summary || '(simulation)')).join('\n');
+    }
+}
+
 function buildAiIterationAutoContinuePrompt(executionResult) {
+    const simulationText = stringifyIterationSimulationListForPrompt(executionResult?.simulations);
     return [
         'AUTO CONTINUE',
         'Previous tool execution is complete. Review the result and continue iteration.',
         '',
         buildFriendlyIterationExecutionSummary(executionResult),
+        '',
+        '<simulation_results>',
+        simulationText,
+        '</simulation_results>',
         '',
         'If all requested work is complete, call luker_orch_finalize_iteration.',
         'Otherwise, emit the next focused tool calls.',
@@ -3521,6 +3557,7 @@ function buildAiIterationUserPrompt(session, userInputText) {
         spec: session?.workingProfile?.spec || { stages: [] },
         presets: session?.workingProfile?.presets || {},
     });
+    const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
     return [
         '<iteration_input>',
         '  <session_guide>',
@@ -3533,6 +3570,9 @@ function buildAiIterationUserPrompt(session, userInputText) {
         '  <conversation_history>',
         `    ${recentConversation || '(empty)'}`,
         '  </conversation_history>',
+        '  <latest_simulation>',
+        `    ${latestSimulationText}`,
+        '  </latest_simulation>',
         '  <user_request>',
         `    ${String(userInputText || '').trim()}`,
         '  </user_request>',
