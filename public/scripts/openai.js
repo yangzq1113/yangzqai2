@@ -91,6 +91,8 @@ export {
     sendOpenAIRequest,
     isLastOpenAIReplyPersistedByServer,
     getLastOpenAIGenerationId,
+    bindCurrentChatCompletionPresetToCharacter,
+    clearCharacterBoundChatCompletionPreset,
     TokenHandler,
     IdentifierNotFoundError,
     Message,
@@ -176,6 +178,11 @@ let biasCache = undefined;
 export let model_list = [];
 let lastOpenAIReplyPersistedByServer = false;
 let lastOpenAIGenerationId = '';
+
+const characterBoundPresetState = {
+    active: false,
+    previousPreset: '',
+};
 
 export const chat_completion_sources = {
     OPENAI: 'openai',
@@ -4340,6 +4347,197 @@ function setContinuePostfixControls() {
     $('#continue_postfix_display').text(checkedItemText);
 }
 
+function getCharacterBoundPresetName(character) {
+    const raw = character?.data?.extensions?.luker?.chat_completion_preset;
+    return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function getCharacterById(characterId = this_chid) {
+    const id = Number(characterId);
+    return Number.isInteger(id) ? characters[id] : undefined;
+}
+
+function applyPresetByName(presetName) {
+    const target = String(presetName ?? '').trim();
+    if (!target) {
+        return false;
+    }
+
+    const presetIndex = openai_setting_names?.[target];
+    if (!Number.isInteger(presetIndex)) {
+        return false;
+    }
+
+    const selectValue = String(presetIndex);
+    if ($('#settings_preset_openai').val() !== selectValue) {
+        $('#settings_preset_openai').val(selectValue).trigger('change');
+    }
+    return true;
+}
+
+async function setCharacterBoundPresetValue(characterId, presetName) {
+    const id = Number(characterId);
+    const character = Number.isInteger(id) ? characters[id] : null;
+    if (!character) {
+        return false;
+    }
+
+    const trimmed = String(presetName ?? '').trim();
+    const nextExtensions = structuredClone(character?.data?.extensions ?? {});
+    const current = String(nextExtensions?.luker?.chat_completion_preset ?? '').trim();
+    if (current === trimmed) {
+        return true;
+    }
+
+    nextExtensions.luker = nextExtensions.luker && typeof nextExtensions.luker === 'object'
+        ? nextExtensions.luker
+        : {};
+
+    if (trimmed) {
+        nextExtensions.luker.chat_completion_preset = trimmed;
+    } else {
+        delete nextExtensions.luker.chat_completion_preset;
+    }
+
+    if (Object.keys(nextExtensions.luker).length === 0) {
+        delete nextExtensions.luker;
+    }
+
+    character.data = character.data || {};
+    character.data.extensions = nextExtensions;
+
+    if (Number(this_chid) === id && character.json_data) {
+        try {
+            const jsonData = JSON.parse(character.json_data);
+            jsonData.data = jsonData.data || {};
+            jsonData.data.extensions = nextExtensions;
+            character.json_data = JSON.stringify(jsonData);
+            $('#character_json_data').val(character.json_data);
+        } catch {
+            // Ignore malformed json_data snapshots.
+        }
+    }
+
+    const response = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            avatar: character.avatar,
+            data: {
+                extensions: nextExtensions,
+            },
+        }),
+    });
+
+    if (!response.ok) {
+        console.error('Failed to save character-bound chat completion preset', response.statusText);
+    }
+
+    return response.ok;
+}
+
+async function maybeApplyCharacterBoundPreset() {
+    if (!openai_setting_names || Object.keys(openai_setting_names).length === 0) {
+        return;
+    }
+
+    if (selected_group) {
+        if (characterBoundPresetState.active) {
+            const restored = applyPresetByName(characterBoundPresetState.previousPreset);
+            if (!restored && characterBoundPresetState.previousPreset) {
+                console.warn(`Failed to restore previous chat completion preset: ${characterBoundPresetState.previousPreset}`);
+            }
+            characterBoundPresetState.active = false;
+            characterBoundPresetState.previousPreset = '';
+        }
+        return;
+    }
+
+    const character = getCharacterById(this_chid);
+    const boundPreset = getCharacterBoundPresetName(character);
+    if (!boundPreset) {
+        if (characterBoundPresetState.active) {
+            const restored = applyPresetByName(characterBoundPresetState.previousPreset);
+            if (!restored && characterBoundPresetState.previousPreset) {
+                console.warn(`Failed to restore previous chat completion preset: ${characterBoundPresetState.previousPreset}`);
+            }
+            characterBoundPresetState.active = false;
+            characterBoundPresetState.previousPreset = '';
+        }
+        return;
+    }
+
+    if (!characterBoundPresetState.active) {
+        characterBoundPresetState.previousPreset = String(oai_settings.preset_settings_openai ?? '').trim();
+        characterBoundPresetState.active = true;
+    }
+
+    const changed = applyPresetByName(boundPreset);
+    if (!changed) {
+        toastr.warning(t`Bound chat completion preset '${boundPreset}' was not found.`, t`Preset Not Found`);
+    }
+}
+
+async function bindCurrentChatCompletionPresetToCharacter(characterId = this_chid) {
+    const character = getCharacterById(characterId);
+    if (!character) {
+        toastr.warning(t`No character selected.`);
+        return;
+    }
+
+    const currentPreset = String(oai_settings.preset_settings_openai ?? '').trim();
+    if (!currentPreset) {
+        toastr.warning(t`No chat completion preset selected.`);
+        return;
+    }
+
+    const confirmation = await Popup.show.confirm(
+        t`Bind Character Preset`,
+        t`Bind current chat completion preset '${currentPreset}' to character '${character.name}'?`,
+    );
+
+    if (!confirmation) {
+        return;
+    }
+
+    const ok = await setCharacterBoundPresetValue(characterId, currentPreset);
+    if (ok) {
+        toastr.success(t`Bound preset '${currentPreset}' to '${character.name}'.`, t`Character Preset Bound`);
+    } else {
+        toastr.error(t`Failed to bind character preset.`);
+    }
+}
+
+async function clearCharacterBoundChatCompletionPreset(characterId = this_chid) {
+    const character = getCharacterById(characterId);
+    if (!character) {
+        toastr.warning(t`No character selected.`);
+        return;
+    }
+
+    const current = getCharacterBoundPresetName(character);
+    if (!current) {
+        toastr.info(t`This character has no bound chat completion preset.`);
+        return;
+    }
+
+    const confirmation = await Popup.show.confirm(
+        t`Clear Character Preset`,
+        t`Clear bound chat completion preset '${current}' from '${character.name}'?`,
+    );
+
+    if (!confirmation) {
+        return;
+    }
+
+    const ok = await setCharacterBoundPresetValue(characterId, '');
+    if (ok) {
+        toastr.success(t`Cleared bound preset from '${character.name}'.`, t`Character Preset Cleared`);
+    } else {
+        toastr.error(t`Failed to clear character preset.`);
+    }
+}
+
 async function getStatusOpen() {
     const noValidateSources = [
         chat_completion_sources.CLAUDE,
@@ -7082,4 +7280,8 @@ export function initOpenAI() {
     $('#openai_proxy_password_show').on('click', onProxyPasswordShowClick);
     $('#customize_additional_parameters').on('click', onCustomizeParametersClick);
     $('#openai_proxy_preset').on('change', onProxyPresetChange);
+
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        void maybeApplyCharacterBoundPreset();
+    });
 }

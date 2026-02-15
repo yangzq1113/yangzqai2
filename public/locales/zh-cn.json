@@ -7052,5 +7052,22 @@
     "Recent simulated scans": "最近模拟扫描",
     "No scan records yet.": "暂无扫描记录。",
     "Scope": "范围",
-    "Entry": "条目"
+    "Entry": "条目",
+    "Bind Current Chat Completion Preset": "绑定当前对话补全预设",
+    "Clear Bound Chat Completion Preset": "清除已绑定的对话补全预设",
+    "Bind Character Preset": "绑定角色预设",
+    "Clear Character Preset": "清除角色预设",
+    "Character Preset Bound": "角色预设已绑定",
+    "Character Preset Cleared": "角色预设已清除",
+    "Preset Not Found": "未找到预设",
+    "No character selected.": "未选择角色。",
+    "No chat completion preset selected.": "未选择对话补全预设。",
+    "Failed to bind character preset.": "绑定角色预设失败。",
+    "This character has no bound chat completion preset.": "该角色当前没有绑定对话补全预设。",
+    "Failed to clear character preset.": "清除角色预设失败。",
+    "Bound chat completion preset '${0}' was not found.": "未找到已绑定的对话补全预设“${0}”。",
+    "Bind current chat completion preset '${0}' to character '${1}'?": "将当前对话补全预设“${0}”绑定到角色“${1}”吗？",
+    "Bound preset '${0}' to '${1}'.": "已将预设“${0}”绑定到“${1}”。",
+    "Clear bound chat completion preset '${0}' from '${1}'?": "要从“${1}”清除已绑定预设“${0}”吗？",
+    "Cleared bound preset from '${0}'.": "已清除“${0}”的绑定预设。"
 }

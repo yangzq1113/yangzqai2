@@ -112,6 +112,8 @@ import {
     proxies,
     loadProxyPresets,
     selected_proxy,
+    bindCurrentChatCompletionPresetToCharacter,
+    clearCharacterBoundChatCompletionPreset,
     initOpenAI,
 } from './scripts/openai.js';
 
@@ -13892,6 +13894,12 @@ jQuery(async function () {
             } break;
             case 'import_tags': {
                 await importTags(characters[this_chid], { importSetting: tag_import_setting.ASK });
+            } break;
+            case 'bind_character_chat_completion_preset': {
+                await bindCurrentChatCompletionPresetToCharacter(this_chid);
+            } break;
+            case 'clear_character_chat_completion_preset': {
+                await clearCharacterBoundChatCompletionPreset(this_chid);
             } break;
             /*case 'delete_button':
                 popup_type = "del_ch";
