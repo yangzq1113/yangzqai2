@@ -2169,70 +2169,26 @@ function extractAllFunctionCallsFromText(responseData, allowedNames = null) {
     throw new Error('Model text output did not contain parseable function calls JSON.');
 }
 
-function buildPlainTextToolCallsJsonSchema(tools = [], { requiredFunctionName = '' } = {}) {
+function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = '' } = {}) {
     const requiredName = String(requiredFunctionName || '').trim();
-    const normalizedTools = (Array.isArray(tools) ? tools : [])
-        .map(tool => ({
-            name: String(tool?.function?.name || '').trim(),
-            parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
-                ? structuredClone(tool.function.parameters)
-                : { type: 'object', additionalProperties: true },
-        }))
-        .filter(item => item.name)
-        .filter(item => !requiredName || item.name === requiredName);
-
-    const perFunctionSchemas = normalizedTools.map((item) => ({
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-            name: { const: item.name },
-            arguments: {
-                anyOf: [
-                    item.parameters,
-                    { type: 'string' },
-                ],
-            },
-        },
-        required: ['name', 'arguments'],
-    }));
-
-    const fallbackItemSchema = {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-            name: requiredName
-                ? { const: requiredName }
-                : { type: 'string', minLength: 1 },
-            arguments: {
-                anyOf: [
-                    { type: 'object', additionalProperties: true },
-                    { type: 'string' },
-                ],
-            },
-        },
-        required: ['name', 'arguments'],
-    };
-
-    const itemSchema = perFunctionSchemas.length > 0
-        ? (perFunctionSchemas.length === 1 ? perFunctionSchemas[0] : { anyOf: perFunctionSchemas })
-        : fallbackItemSchema;
-
-    return {
-        name: 'luker_plain_text_tool_calls',
-        strict: true,
-        schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-                tool_calls: {
-                    type: 'array',
-                    minItems: 1,
-                    items: itemSchema,
-                },
-            },
-            required: ['tool_calls'],
-        },
-    };
+    const normalizedTools = Array.isArray(tools) ? tools : [];
+    const schemaGuide = normalizedTools.map((tool) => ({
+        name: String(tool?.function?.name || ''),
+        description: String(tool?.function?.description || ''),
+        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
+            ? tool.function.parameters
+            : { type: 'object', additionalProperties: true },
+    })).filter(item => item.name);
+    const requiredLine = requiredName
+        ? `Required function name for this response: ${requiredName}.`
+        : '';
+    return [
+        'Plain-text function-call mode is enabled.',
+        'Do not use native tool calls.',
+        'Output one JSON object at the end: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+        requiredLine,
+        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
+    ].filter(Boolean).join('\n');
 }
 
 function isAbortSignalLike(value) {
@@ -2313,18 +2269,23 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         function: { name: fnName },
     };
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
-    const jsonSchema = usePlainTextCalls
-        ? buildPlainTextToolCallsJsonSchema(tools, { requiredFunctionName: fnName })
+    const plainTextProtocolMessage = usePlainTextCalls
+        ? {
+            role: 'user',
+            content: buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+        }
         : null;
+    const requestMessages = plainTextProtocolMessage
+        ? [...promptMessages, plainTextProtocolMessage]
+        : promptMessages;
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools: usePlainTextCalls ? [] : tools,
                 toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
                 replaceTools: true,
-                jsonSchema,
                 responseLength: Number.isFinite(Number(responseLength)) && Number(responseLength) > 0
                     ? Number(responseLength)
                     : null,
@@ -2374,17 +2335,22 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
-    const jsonSchema = usePlainTextCalls
-        ? buildPlainTextToolCallsJsonSchema(tools)
+    const plainTextProtocolMessage = usePlainTextCalls
+        ? {
+            role: 'user',
+            content: buildPlainTextToolProtocolMessage(tools),
+        }
         : null;
+    const requestMessages = plainTextProtocolMessage
+        ? [...promptMessages, plainTextProtocolMessage]
+        : promptMessages;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools: usePlainTextCalls ? [] : tools,
                 toolChoice: 'auto',
                 replaceTools: true,
-                jsonSchema,
                 responseLength: Number(responseLength || 320),
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
