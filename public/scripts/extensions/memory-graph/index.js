@@ -354,6 +354,7 @@ function registerLocaleData() {
         'Cleared character schema override: ${0}.': '已清除角色卡 Schema 覆写：${0}。',
         'Save Settings': '保存设置',
         'View Graph': '查看图',
+        'Fill Graph (Incremental)': '补全图（仅增量）',
         'Rebuild From Chat': '从聊天重建',
         'Manual Compress': '手动压缩',
         'Reset Current Chat': '重置当前聊天',
@@ -375,6 +376,8 @@ function registerLocaleData() {
         'Memory graph imported for current chat.': '当前聊天记忆图已导入。',
         'Imported memory graph JSON.': '已导入记忆图 JSON。',
         'Memory graph import failed.': '记忆图导入失败。',
+        'Memory graph incremental fill completed.': '记忆图增量补全完成。',
+        'Memory graph is already up to date.': '记忆图已是最新，无需补全。',
         'Import failed: ${0}': '导入失败：${0}',
         'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '类型：${0} | 常驻注入：${1} | 强制更新：${2} | 分层压缩：${3}',
         'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}': '类型：${0} | 可编辑：${1} | 常驻注入：${2} | 强制更新：${3} | 分层压缩：${4}',
@@ -582,6 +585,7 @@ function registerLocaleData() {
         'Cleared character schema override: ${0}.': '已清除角色卡 Schema 覆寫：${0}。',
         'Save Settings': '儲存設定',
         'View Graph': '查看圖譜',
+        'Fill Graph (Incremental)': '補全圖譜（僅增量）',
         'Rebuild From Chat': '從聊天重建',
         'Manual Compress': '手動壓縮',
         'Reset Current Chat': '重設目前聊天',
@@ -603,6 +607,8 @@ function registerLocaleData() {
         'Memory graph imported for current chat.': '目前聊天記憶圖已匯入。',
         'Imported memory graph JSON.': '已匯入記憶圖 JSON。',
         'Memory graph import failed.': '記憶圖匯入失敗。',
+        'Memory graph incremental fill completed.': '記憶圖譜增量補全完成。',
+        'Memory graph is already up to date.': '記憶圖譜已是最新，無需補全。',
         'Import failed: ${0}': '匯入失敗：${0}',
         'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '類型：${0} | 常駐注入：${1} | 強制更新：${2} | 分層壓縮：${3}',
         'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}': '類型：${0} | 可編輯：${1} | 常駐注入：${2} | 強制更新：${3} | 分層壓縮：${4}',
@@ -8367,6 +8373,74 @@ function bindUi() {
         await openGraphInspectorPopup(context);
     });
 
+    root.find('#luker_rpg_memory_fill').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const chatKey = getChatKey(context);
+        const store = memoryStoreCache.get(chatKey);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        alignStoreCoverageToChat(store, context);
+        const fillAbortController = new AbortController();
+        activeExtractionAbortController = fillAbortController;
+        try {
+            const preview = computeExtractionWindow(context, store, null);
+            if (preview.beginSeq > preview.latestSeq) {
+                notifySuccess(i18n('Memory graph is already up to date.'));
+                updateUiStatus(i18n('Memory graph is already up to date.'));
+                refreshUiStats();
+                return;
+            }
+            const extractBatchTurns = Math.max(
+                1,
+                Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+            );
+            const initialEndSeq = Math.min(
+                Number(preview.latestSeq || 0),
+                Number(preview.beginSeq || 1) + extractBatchTurns - 1,
+            );
+            showRuntimeInfoToast(formatExtractionRangeToast(preview.beginSeq, initialEndSeq, preview.latestSeq), {
+                stopLabel: i18n('Stop'),
+                onStop: () => {
+                    if (!fillAbortController.signal.aborted) {
+                        fillAbortController.abort();
+                    }
+                },
+            });
+            await runExtractionForStore(context, store, {
+                force: true,
+                abortSignal: fillAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+                },
+            });
+            await persistMemoryStoreByChatKey(context, chatKey, store);
+            const debug = store.lastExtractionDebug || {};
+            updateUiStatus(i18nFormat(
+                'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                debug.extracted ? 'ok' : 'skip',
+                Number(debug.beginSeq || 0),
+                Number(debug.latestSeq || 0),
+                Number(debug.coveredSeqTo || 0),
+            ));
+            refreshUiStats();
+            notifySuccess(i18n('Memory graph incremental fill completed.'));
+        } catch (error) {
+            if (isAbortError(error, fillAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                return;
+            }
+            console.warn(`[${MODULE_NAME}] Incremental fill failed`, error);
+            notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'fill', String(error?.message || error)));
+        } finally {
+            if (activeExtractionAbortController === fillAbortController) {
+                activeExtractionAbortController = null;
+            }
+            clearRuntimeInfoToast();
+        }
+    });
+
     root.find('#luker_rpg_memory_recall_debug').off('click').on('click', async function () {
         await ensureMemoryStoreLoaded(context);
         const store = getMemoryStore(context);
@@ -8586,6 +8660,7 @@ function ensureUi() {
 
             <div class="flex-container">
                 <div id="luker_rpg_memory_view_graph" class="menu_button">${escapeHtml(i18n('View Graph'))}</div>
+                <div id="luker_rpg_memory_fill" class="menu_button">${escapeHtml(i18n('Fill Graph (Incremental)'))}</div>
                 <div id="luker_rpg_memory_rebuild" class="menu_button">${escapeHtml(i18n('Rebuild From Chat'))}</div>
                 <div id="luker_rpg_memory_manual_compress" class="menu_button">${escapeHtml(i18n('Manual Compress'))}</div>
                 <div id="luker_rpg_memory_reset" class="menu_button">${escapeHtml(i18n('Reset Current Chat'))}</div>
