@@ -11,6 +11,10 @@ on:
     tags:
       - '*'
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   # This should allow creation of docker images even in forked repositories
   REPO: ${{ github.repository }}
