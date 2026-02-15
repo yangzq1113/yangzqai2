@@ -2191,7 +2191,9 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
     return [
         'Plain-text function-call mode is enabled.',
         'Do not use native tool calls.',
-        'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
+        'You MUST output reasoning text in one <thought>...</thought> block BEFORE the final JSON payload.',
+        'Order is mandatory: first <thought>...</thought>, then the final JSON object.',
+        'Do not output JSON first. Do not omit <thought>.',
         'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
         requiredLine,
         `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
