@@ -237,6 +237,7 @@ function registerLocaleData() {
         'AI suggested changes are waiting for approval.': 'AI 产出的变更正在等待审批。',
         'No editable operations were produced.': '没有产出可执行的变更。',
         'Changes approved and applied.': '已批准并执行变更。',
+        'Changes approved and applied. Waiting for your next instruction.': '已批准并执行变更，等待你的下一条指令。',
         'Changes rejected.': '已拒绝本次变更。',
         'Working profile': '当前编排',
         'Send to AI': '发送给 AI',
@@ -399,6 +400,7 @@ function registerLocaleData() {
         'AI suggested changes are waiting for approval.': 'AI 產出的變更正在等待審批。',
         'No editable operations were produced.': '沒有產出可執行的變更。',
         'Changes approved and applied.': '已批准並執行變更。',
+        'Changes approved and applied. Waiting for your next instruction.': '已批准並執行變更，等待你的下一條指令。',
         'Changes rejected.': '已拒絕本次變更。',
         'Working profile': '目前編排',
         'Send to AI': '傳送給 AI',
@@ -3277,6 +3279,52 @@ function trimAiIterationMessages(session, maxMessages = 40) {
     }
 }
 
+function trimAiIterationToolHistory(session, maxItems = 100) {
+    if (!session || !Array.isArray(session.toolHistory)) {
+        return;
+    }
+    const limit = Math.max(20, Math.min(500, Math.floor(Number(maxItems) || 100)));
+    if (session.toolHistory.length > limit) {
+        session.toolHistory = session.toolHistory.slice(session.toolHistory.length - limit);
+    }
+}
+
+function recordAiIterationToolHistory(session, toolCalls, executionResult, source = 'approved') {
+    if (!session) {
+        return;
+    }
+    if (!Array.isArray(session.toolHistory)) {
+        session.toolHistory = [];
+    }
+    const safeCalls = Array.isArray(toolCalls)
+        ? toolCalls.map(call => ({
+            name: String(call?.name || '').trim(),
+            args: call?.args && typeof call.args === 'object' ? structuredClone(call.args) : {},
+        }))
+        : [];
+    session.toolHistory.push({
+        at: Date.now(),
+        source: String(source || 'approved'),
+        toolCalls: safeCalls,
+        summary: buildFriendlyIterationExecutionSummary(executionResult),
+        finalized: Boolean(executionResult?.finalized),
+        changed: Boolean(executionResult?.changed),
+    });
+    trimAiIterationToolHistory(session);
+}
+
+function buildAiIterationAutoContinuePrompt(executionResult) {
+    return [
+        'AUTO CONTINUE',
+        'Previous tool execution is complete. Review the result and continue iteration.',
+        '',
+        buildFriendlyIterationExecutionSummary(executionResult),
+        '',
+        'If all requested work is complete, call luker_orch_finalize_iteration.',
+        'Otherwise, emit the next focused tool calls.',
+    ].join('\n');
+}
+
 function cloneWorkingProfileFromEditor(editor) {
     ensureEditorIntegrity(editor);
     return {
@@ -3313,6 +3361,7 @@ function createAiIterationSession(context, settings) {
         updatedAt: Date.now(),
         workingProfile: cloneWorkingProfileFromEditor(editor),
         messages: [],
+        toolHistory: [],
         lastSimulation: null,
         pendingApproval: null,
     };
@@ -3456,7 +3505,9 @@ function buildAiIterationSystemPrompt(settings) {
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Before tool calls, write a detailed <thought> block describing what to change and why.',
         '- If user asks to test, call luker_orch_simulate with suitable input.',
-        '- After simulation, continue with targeted edits and then call luker_orch_finalize_iteration.',
+        '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
+        '- If you need user decision or clarification, do not call continue/finalize. Stop and wait for user.',
+        '- When iteration is complete, call luker_orch_finalize_iteration.',
         '- Keep output practical and concise for real RP usage.',
     ].join('\n');
 }
@@ -3609,6 +3660,20 @@ function buildAiIterationToolSet() {
         {
             type: 'function',
             function: {
+                name: 'luker_orch_continue_iteration',
+                description: 'Request one automatic follow-up round after current tool execution.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        note: { type: 'string' },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
                 name: 'luker_orch_finalize_iteration',
                 description: 'Finalize this iteration turn with a concise summary.',
                 parameters: {
@@ -3727,6 +3792,7 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
     const simulations = [];
     let finalized = false;
     let finalizeSummary = '';
+    let continueRequested = false;
     let changed = false;
     const allowedPresetFallback = Object.keys(session?.workingProfile?.presets || {})[0] || 'distiller';
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
@@ -3857,6 +3923,12 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
                 : `Simulation failed: ${simulation.summary}`);
             continue;
         }
+        if (name === 'luker_orch_continue_iteration') {
+            continueRequested = true;
+            const note = String(args.note || '').trim();
+            actions.push(`Continue requested.${note ? ` ${note}` : ''}`);
+            continue;
+        }
         if (name === 'luker_orch_finalize_iteration') {
             finalized = true;
             finalizeSummary = String(args.summary || '').trim();
@@ -3877,16 +3949,17 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
         simulations,
         finalized,
         finalizeSummary,
+        continueRequested,
         changed,
     };
 }
 
-async function runAiIterationTurn(context, settings, session, userText, abortSignal = null) {
+async function runAiIterationTurn(context, settings, session, userText, abortSignal = null, { auto = false } = {}) {
     const text = String(userText || '').trim();
     if (!text) {
         return { ok: false, message: 'empty_input' };
     }
-    session.messages.push({ role: 'user', content: text, auto: false, at: Date.now() });
+    session.messages.push({ role: 'user', content: text, auto: Boolean(auto), at: Date.now() });
     trimAiIterationMessages(session);
 
     const aiSuggestApiPresetName = String(settings.aiSuggestApiPresetName || '').trim();
@@ -4085,6 +4158,7 @@ async function openAiIterationStudio(context, settings, root) {
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_clear`, function () {
         session.messages = [];
         session.lastSimulation = null;
+        session.toolHistory = [];
         session.pendingApproval = null;
         session.updatedAt = Date.now();
         setStatus(i18n('Iteration session reset.'));
@@ -4104,6 +4178,7 @@ async function openAiIterationStudio(context, settings, root) {
         session.updatedAt = nextSession.updatedAt;
         session.workingProfile = nextSession.workingProfile;
         session.messages = [];
+        session.toolHistory = [];
         session.lastSimulation = null;
         session.pendingApproval = null;
         setStatus(i18n('Iteration session reset.'));
@@ -4131,6 +4206,7 @@ async function openAiIterationStudio(context, settings, root) {
                 });
             }
             const result = await executeAiIterationToolCalls(context, session, pending.toolCalls || [], controller.signal);
+            recordAiIterationToolHistory(session, pending.toolCalls || [], result, 'approved');
             session.pendingApproval = null;
             session.messages.push({
                 role: 'assistant',
@@ -4139,8 +4215,18 @@ async function openAiIterationStudio(context, settings, root) {
                 at: Date.now(),
             });
             trimAiIterationMessages(session);
-            setStatus(i18n('Changes approved and applied.'));
-            rerender();
+            if (result?.finalized) {
+                setStatus(i18n('Changes approved and applied.'));
+                rerender();
+            } else if (result?.continueRequested || (Array.isArray(result?.simulations) && result.simulations.length > 0)) {
+                const autoPrompt = buildAiIterationAutoContinuePrompt(result);
+                const followUp = await runAiIterationTurn(context, settings, session, autoPrompt, controller.signal, { auto: true });
+                setStatus(followUp?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
+                rerender();
+            } else {
+                setStatus(i18n('Changes approved and applied. Waiting for your next instruction.'));
+                rerender();
+            }
         } catch (error) {
             if (isAbortError(error, controller.signal)) {
                 setStatus(i18n('Iteration run cancelled.'));
