@@ -356,6 +356,13 @@ function registerLocaleData() {
         'View Graph': '查看图',
         'Fill Graph (Incremental)': '补全图（仅增量）',
         'Rebuild From Chat': '从聊天重建',
+        'Rebuild Recent N Turns': '重建最近 N 层',
+        'Rebuild recent turns: enter N (1-${0}).': '重建最近楼层：请输入 N（1-${0}）。',
+        'Rebuild Recent': '重建最近范围',
+        'Please enter a valid integer between 1 and ${0}.': '请输入 1 到 ${0} 之间的整数。',
+        'No assistant turns available to rebuild.': '当前没有可重建的 Assistant 楼层。',
+        'Memory graph rebuilt for recent ${0} turn(s).': '已完成最近 ${0} 层的记忆图重建。',
+        'Rebuilt recent memory graph range: seq ${0}-${1}.': '已重建最近范围：楼层 ${0}-${1}。',
         'Manual Compress': '手动压缩',
         'Reset Current Chat': '重置当前聊天',
         'Export Current Chat Graph': '导出当前聊天图',
@@ -587,6 +594,13 @@ function registerLocaleData() {
         'View Graph': '查看圖譜',
         'Fill Graph (Incremental)': '補全圖譜（僅增量）',
         'Rebuild From Chat': '從聊天重建',
+        'Rebuild Recent N Turns': '重建最近 N 層',
+        'Rebuild recent turns: enter N (1-${0}).': '重建最近樓層：請輸入 N（1-${0}）。',
+        'Rebuild Recent': '重建最近範圍',
+        'Please enter a valid integer between 1 and ${0}.': '請輸入 1 到 ${0} 之間的整數。',
+        'No assistant turns available to rebuild.': '目前沒有可重建的 Assistant 樓層。',
+        'Memory graph rebuilt for recent ${0} turn(s).': '已完成最近 ${0} 層的記憶圖重建。',
+        'Rebuilt recent memory graph range: seq ${0}-${1}.': '已重建最近範圍：樓層 ${0}-${1}。',
         'Manual Compress': '手動壓縮',
         'Reset Current Chat': '重設目前聊天',
         'Export Current Chat Graph': '匯出目前聊天圖',
@@ -8531,6 +8545,90 @@ function bindUi() {
         }
     });
 
+    root.find('#luker_rpg_memory_rebuild_recent').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const chatKey = getChatKey(context);
+        const store = memoryStoreCache.get(chatKey);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        alignStoreCoverageToChat(store, context);
+        const latestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+        if (latestSeq <= 0) {
+            notifyError(i18n('No assistant turns available to rebuild.'));
+            return;
+        }
+
+        const defaultRecentTurns = Math.min(20, latestSeq);
+        const input = await context.callGenericPopup(
+            i18nFormat('Rebuild recent turns: enter N (1-${0}).', latestSeq),
+            context.POPUP_TYPE.INPUT,
+            String(defaultRecentTurns),
+            { okButton: i18n('Rebuild Recent'), cancelButton: i18n('Cancel') },
+        );
+        if (!input || typeof input !== 'string') {
+            return;
+        }
+        const trimmed = String(input).trim();
+        if (!/^\d+$/.test(trimmed)) {
+            notifyError(i18nFormat('Please enter a valid integer between 1 and ${0}.', latestSeq));
+            return;
+        }
+        const recentTurns = Number(trimmed);
+        if (!Number.isFinite(recentTurns) || recentTurns < 1 || recentTurns > latestSeq) {
+            notifyError(i18nFormat('Please enter a valid integer between 1 and ${0}.', latestSeq));
+            return;
+        }
+
+        const startSeq = Math.max(1, latestSeq - recentTurns + 1);
+        truncateStoreFromSeq(store, startSeq);
+        const rebuildAbortController = new AbortController();
+        activeExtractionAbortController = rebuildAbortController;
+        const extractBatchTurns = Math.max(
+            1,
+            Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+        );
+        const initialEndSeq = Math.min(
+            latestSeq,
+            startSeq + extractBatchTurns - 1,
+        );
+        showRuntimeInfoToast(formatExtractionRangeToast(startSeq, initialEndSeq, latestSeq), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!rebuildAbortController.signal.aborted) {
+                    rebuildAbortController.abort();
+                }
+            },
+        });
+        try {
+            await runExtractionForStore(context, store, {
+                force: true,
+                startSeq,
+                abortSignal: rebuildAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq: latest }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latest));
+                },
+            });
+            await persistMemoryStoreByChatKey(context, chatKey, store);
+            refreshUiStats();
+            notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} turn(s).', recentTurns));
+            updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, latestSeq));
+        } catch (error) {
+            if (isAbortError(error, rebuildAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                return;
+            }
+            console.warn(`[${MODULE_NAME}] Recent rebuild failed`, error);
+            notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'rebuild_recent', String(error?.message || error)));
+        } finally {
+            if (activeExtractionAbortController === rebuildAbortController) {
+                activeExtractionAbortController = null;
+            }
+            clearRuntimeInfoToast();
+        }
+    });
+
     root.find('#luker_rpg_memory_manual_compress').off('click').on('click', async function () {
         await openManualCompressionPopup(context, settings);
     });
@@ -8672,6 +8770,9 @@ function ensureUi() {
                 <div id="luker_rpg_memory_view_graph" class="menu_button">${escapeHtml(i18n('View Graph'))}</div>
                 <div id="luker_rpg_memory_fill" class="menu_button">${escapeHtml(i18n('Fill Graph (Incremental)'))}</div>
                 <div id="luker_rpg_memory_rebuild" class="menu_button">${escapeHtml(i18n('Rebuild From Chat'))}</div>
+                <div id="luker_rpg_memory_rebuild_recent" class="menu_button">${escapeHtml(i18n('Rebuild Recent N Turns'))}</div>
+            </div>
+            <div class="flex-container">
                 <div id="luker_rpg_memory_manual_compress" class="menu_button">${escapeHtml(i18n('Manual Compress'))}</div>
                 <div id="luker_rpg_memory_reset" class="menu_button">${escapeHtml(i18n('Reset Current Chat'))}</div>
             </div>
