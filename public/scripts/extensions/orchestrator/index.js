@@ -227,6 +227,7 @@ function registerLocaleData() {
         'AI Build Profile': 'AI 生成编排',
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
+        'Open Orchestration Editor': '打开编排编辑器',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '当前迭代来源：${0}',
         'Conversation': '对话',
@@ -381,6 +382,7 @@ function registerLocaleData() {
         'AI Build Profile': 'AI 生成編排',
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
+        'Open Orchestration Editor': '開啟編排編輯器',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '目前迭代來源：${0}',
         'Conversation': '對話',
@@ -542,6 +544,7 @@ const uiState = {
     globalEditor: null,
     characterEditor: null,
     aiIterationSession: null,
+    orchEditorPopupContentId: '',
 };
 let orchInFlight = false;
 let activeRunInfoToast = null;
@@ -2512,12 +2515,87 @@ function renderDynamicPanels(root, context) {
             ? (isOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
             : i18n('Global profile (no character override for current card)'),
     );
-    root.find('#luker_orch_effective_visual').html(renderEditorWorkspace(scope, editor, profileTitle));
-    root.find('#luker_orch_clear_character_button').toggle(isCharacterScope);
-    root.find('#luker_orch_ai_goal').val(String(uiState.aiGoal || ''));
+    root.find('[data-luker-ai-goal-input]').val(String(uiState.aiGoal || ''));
     root.find('.luker_orch_board').toggle(!singleModeEnabled);
     root.find('#luker_orch_single_mode_hint').toggle(singleModeEnabled);
     root.find('#luker_orch_single_agent_fields').toggle(singleModeEnabled);
+    refreshOrchestrationEditorPopup(context, settings);
+}
+
+function buildOrchestrationEditorPopupPanelHtml(context, settings) {
+    syncCharacterEditorWithActiveAvatar(context);
+    const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+    const scope = getDisplayedScope(context, settings);
+    const editor = getEditorByScope(scope);
+    const isCharacterScope = scope === 'character';
+    const profileTitle = isCharacterScope
+        ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
+        : i18n('Global Orchestration Profile');
+    return `
+<div class="luker_orch_editor_popup">
+    <div class="luker_orch_board">
+        <div class="luker_orch_character_row">
+            <div>
+                <small>${escapeHtml(i18n('Current card:'))} <span>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</span></small><br />
+                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(isCharacterScope ? i18n('Current character override') : i18n('Global profile'))}</span></small>
+            </div>
+            <div>
+                <label>${escapeHtml(i18n('AI build goal (optional)'))}</label>
+                <textarea class="text_pole textarea_compact" rows="2" data-luker-ai-goal-input placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}">${escapeHtml(String(uiState.aiGoal || ''))}</textarea>
+                <div class="flex-container">
+                    <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
+                    <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
+                </div>
+            </div>
+        </div>
+        <div class="flex-container">
+            <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
+            <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
+            <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
+            <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
+            <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
+            <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
+            ${isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
+        </div>
+        <div id="luker_orch_effective_visual">${renderEditorWorkspace(scope, editor, profileTitle)}</div>
+    </div>
+</div>`;
+}
+
+function refreshOrchestrationEditorPopup(context, settings) {
+    const contentId = String(uiState.orchEditorPopupContentId || '');
+    if (!contentId) {
+        return;
+    }
+    const mount = jQuery(`#${contentId}`);
+    if (!mount.length) {
+        uiState.orchEditorPopupContentId = '';
+        return;
+    }
+    mount.html(buildOrchestrationEditorPopupPanelHtml(context, settings));
+}
+
+async function openOrchestrationEditorPopup(context, settings) {
+    ensureStyles();
+    const contentId = `luker_orch_editor_popup_mount_${Date.now()}`;
+    uiState.orchEditorPopupContentId = contentId;
+    const popupHtml = `<div id="${contentId}"></div>`;
+    const popupPromise = context.callGenericPopup(
+        popupHtml,
+        context.POPUP_TYPE.TEXT,
+        i18n('Orchestrator'),
+        {
+            okButton: i18n('Close'),
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+        },
+    );
+    refreshOrchestrationEditorPopup(context, settings);
+    await popupPromise;
+    if (uiState.orchEditorPopupContentId === contentId) {
+        uiState.orchEditorPopupContentId = '';
+    }
 }
 
 function updateUiStatus(text) {
@@ -3970,6 +4048,7 @@ function bindUi() {
     renderDynamicPanels(root, context);
 
     root.off('.lukerOrch');
+    jQuery(document).off('.lukerOrchEditor');
 
     root.on('input.lukerOrch', '#luker_orch_enabled', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
@@ -4066,11 +4145,11 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.on('input.lukerOrch', '#luker_orch_ai_goal', function () {
+    jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-ai-goal-input], .luker_orch_editor_popup [data-luker-ai-goal-input]`, function () {
         uiState.aiGoal = String(jQuery(this).val() || '');
     });
 
-    root.on('input.lukerOrch change.lukerOrch', '[data-luker-field]', function () {
+    jQuery(document).on('input.lukerOrchEditor change.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-field], .luker_orch_editor_popup [data-luker-field]`, function () {
         const field = String(jQuery(this).data('luker-field') || '');
         const scope = String(jQuery(this).data('scope') || 'global');
         const stageIndex = Number(jQuery(this).data('stage-index'));
@@ -4114,7 +4193,7 @@ function bindUi() {
         }
     });
 
-    root.on('click.lukerOrch', '[data-luker-action]', async function () {
+    jQuery(document).on('click.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-action], .luker_orch_editor_popup [data-luker-action]`, async function () {
         const action = String(jQuery(this).data('luker-action') || '');
         const scope = String(jQuery(this).data('scope') || 'global');
         const stageIndex = Number(jQuery(this).data('stage-index'));
@@ -4455,6 +4534,11 @@ function bindUi() {
             await openAiIterationStudio(context, settings, root);
             return;
         }
+
+        if (action === 'open-orch-editor') {
+            await openOrchestrationEditorPopup(context, settings);
+            return;
+        }
     });
 }
 
@@ -4548,6 +4632,20 @@ function ensureStyles() {
     gap: 8px;
     align-items: end;
     margin-bottom: 8px;
+}
+.luker_orch_editor_popup .luker_orch_board {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.5));
+    border-radius: 10px;
+    padding: 10px;
+    background: linear-gradient(160deg, rgba(29,46,39,0.28), rgba(21,31,43,0.2));
+}
+.luker_orch_editor_popup .menu_button,
+.luker_orch_editor_popup .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
 }
 .luker_orch_iter_popup {
     display: flex;
@@ -4682,6 +4780,9 @@ function ensureStyles() {
     #${UI_BLOCK_ID} .luker_orch_character_row {
         grid-template-columns: 1fr;
     }
+    .luker_orch_editor_popup .luker_orch_workspace_grid {
+        grid-template-columns: 1fr;
+    }
     .luker_orch_iter_grid {
         grid-template-columns: 1fr;
     }
@@ -4759,29 +4860,14 @@ function ensureUi() {
 
             <hr>
             <div class="luker_orch_board">
-                <div class="luker_orch_character_row">
-                    <div>
-                        <small>${escapeHtml(i18n('Current card:'))} <span id="luker_orch_profile_target">${escapeHtml(i18n('(No character card)'))}</span></small><br />
-                        <small>${escapeHtml(i18n('Editing:'))} <span id="luker_orch_profile_mode">${escapeHtml(i18n('Global profile'))}</span></small>
-                    </div>
-                    <div>
-                        <label for="luker_orch_ai_goal">${escapeHtml(i18n('AI build goal (optional)'))}</label>
-                        <textarea id="luker_orch_ai_goal" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}"></textarea>
-                        <div class="flex-container">
-                            <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
-                            <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
-                        </div>
-                    </div>
+                <div>
+                    <small>${escapeHtml(i18n('Current card:'))} <span id="luker_orch_profile_target">${escapeHtml(i18n('(No character card)'))}</span></small><br />
+                    <small>${escapeHtml(i18n('Editing:'))} <span id="luker_orch_profile_mode">${escapeHtml(i18n('Global profile'))}</span></small>
                 </div>
-                <div id="luker_orch_effective_visual"></div>
                 <div class="flex-container">
-                    <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
-                    <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
-                    <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
-                    <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
-                    <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
-                    <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
-                    <div id="luker_orch_clear_character_button" class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>
+                    <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
+                    <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
+                    <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
             </div>
 
