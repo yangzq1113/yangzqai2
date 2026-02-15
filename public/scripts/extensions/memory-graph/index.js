@@ -12,23 +12,14 @@ const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
-const GLOBAL_SETTINGS_NAMESPACE = 'luker';
-const GLOBAL_PLAIN_TEXT_CALL_MODE_KEY = 'plainTextFunctionCalls';
 
 const LEVEL = {
     SEMANTIC: 'semantic',
 };
 
-function getGlobalLukerSettings() {
-    if (!extension_settings[GLOBAL_SETTINGS_NAMESPACE] || typeof extension_settings[GLOBAL_SETTINGS_NAMESPACE] !== 'object' || Array.isArray(extension_settings[GLOBAL_SETTINGS_NAMESPACE])) {
-        extension_settings[GLOBAL_SETTINGS_NAMESPACE] = {};
-    }
-    return extension_settings[GLOBAL_SETTINGS_NAMESPACE];
-}
-
-function isPlainTextFunctionCallModeEnabled() {
-    const globalSettings = getGlobalLukerSettings();
-    return Boolean(globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY]);
+function isPlainTextFunctionCallModeEnabled(settings = null) {
+    const currentSettings = settings && typeof settings === 'object' ? settings : getSettings();
+    return Boolean(currentSettings?.plainTextFunctionCallMode);
 }
 
 const defaultNodeTypeSchema = [
@@ -293,6 +284,7 @@ const defaultSettings = {
     recallApiPresetName: '',
     recallPresetName: '',
     toolCallRetryMax: 2,
+    plainTextFunctionCallMode: false,
     recallMaxIterations: 3,
     recallRouteSystemPrompt: DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
     recallFinalizeSystemPrompt: DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT,
@@ -333,6 +325,7 @@ function registerLocaleData() {
         'Recall query recent messages': '召回查询最近消息条数',
         'Extract batch assistant turns': '每次抽取请求处理的 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
+        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式（禁用原生工具 API）',
         'Extract Table Fill Prompt': '抽取填表提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回阶段2提示词（最终选择）',
@@ -560,6 +553,7 @@ function registerLocaleData() {
         'Recall query recent messages': '召回查詢最近訊息條數',
         'Extract batch assistant turns': '每次抽取請求處理的 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
+        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式（停用原生工具 API）',
         'Extract Table Fill Prompt': '抽取填表提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
         'Recall Stage 2 Prompt (Finalize)': '召回階段2提示詞（最終選擇）',
@@ -949,6 +943,7 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    extension_settings[MODULE_NAME].plainTextFunctionCallMode = Boolean(extension_settings[MODULE_NAME].plainTextFunctionCallMode);
     extension_settings[MODULE_NAME].updateEvery = Math.max(
         1,
         Math.floor(Number(extension_settings[MODULE_NAME].updateEvery) || defaultSettings.updateEvery),
@@ -2276,7 +2271,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         type: 'function',
         function: { name: fnName },
     };
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const plainTextProtocolMessage = usePlainTextCalls
         ? {
             role: 'user',
@@ -2338,7 +2333,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const plainTextProtocolMessage = usePlainTextCalls
         ? {
             role: 'user',
@@ -8249,7 +8244,7 @@ function bindUi() {
     }
 
     root.find('#luker_rpg_memory_enabled').prop('checked', Boolean(settings.enabled));
-    root.find('#luker_rpg_memory_global_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled());
+    root.find('#luker_rpg_memory_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled(settings));
     root.find('#luker_rpg_memory_recall_enabled').prop('checked', Boolean(settings.recallEnabled));
     root.find('#luker_rpg_memory_recall_api_preset').val(String(settings.recallApiPresetName || ''));
     root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
@@ -8273,9 +8268,8 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.find('#luker_rpg_memory_global_plain_text_calls').off('input').on('input', function () {
-        const globalSettings = getGlobalLukerSettings();
-        globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY] = Boolean(jQuery(this).prop('checked'));
+    root.find('#luker_rpg_memory_plain_text_calls').off('input').on('input', function () {
+        settings.plainTextFunctionCallMode = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -8560,7 +8554,7 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="luker_rpg_memory_global_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Global: Plain-text function-call mode (disable native tool API)'))}</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode (disable native tool API)'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
             <label for="luker_rpg_memory_recall_api_preset">${escapeHtml(i18n('Recall API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_api_preset" class="text_pole"></select>

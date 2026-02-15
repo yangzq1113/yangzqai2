@@ -4,8 +4,6 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
 
 const MODULE_NAME = 'orchestrator';
-const GLOBAL_SETTINGS_NAMESPACE = 'luker';
-const GLOBAL_PLAIN_TEXT_CALL_MODE_KEY = 'plainTextFunctionCalls';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
@@ -29,16 +27,11 @@ const ORCH_AI_QUALITY_AXES = {
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
 };
 
-function getGlobalLukerSettings() {
-    if (!extension_settings[GLOBAL_SETTINGS_NAMESPACE] || typeof extension_settings[GLOBAL_SETTINGS_NAMESPACE] !== 'object' || Array.isArray(extension_settings[GLOBAL_SETTINGS_NAMESPACE])) {
-        extension_settings[GLOBAL_SETTINGS_NAMESPACE] = {};
-    }
-    return extension_settings[GLOBAL_SETTINGS_NAMESPACE];
-}
-
-function isPlainTextFunctionCallModeEnabled() {
-    const globalSettings = getGlobalLukerSettings();
-    return Boolean(globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY]);
+function isPlainTextFunctionCallModeEnabled(settings = null) {
+    const currentSettings = settings && typeof settings === 'object'
+        ? settings
+        : extension_settings[MODULE_NAME];
+    return Boolean(currentSettings?.plainTextFunctionCallMode);
 }
 
 function getDefaultAiSuggestSystemPrompt() {
@@ -130,6 +123,7 @@ const defaultSettings = {
     enabled: false,
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
+    plainTextFunctionCallMode: false,
     toolCallRetryMax: 2,
     maxRecentMessages: 14,
     capsuleInjectPosition: extension_prompt_types.IN_CHAT,
@@ -156,6 +150,7 @@ function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Orchestrator': '多智能体编排',
         'Enabled': '启用',
+        'Plain-text function-call mode (disable native tool API)': '纯文本函数调用模式（禁用原生工具 API）',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点预设（参数+提示词，留空=当前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
@@ -284,6 +279,7 @@ function registerLocaleData() {
     addLocaleData('zh-tw', {
         'Orchestrator': '多智能體編排',
         'Enabled': '啟用',
+        'Plain-text function-call mode (disable native tool API)': '純文字函式呼叫模式（停用原生工具 API）',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點預設（參數+提示詞，留空=目前）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
@@ -553,6 +549,7 @@ function ensureSettings() {
             extension_settings[MODULE_NAME][key] = cloneDefault(value);
         }
     }
+    extension_settings[MODULE_NAME].plainTextFunctionCallMode = Boolean(extension_settings[MODULE_NAME].plainTextFunctionCallMode);
 
     extension_settings[MODULE_NAME].orchestrationSpec = sanitizeSpec(extension_settings[MODULE_NAME].orchestrationSpec);
     extension_settings[MODULE_NAME].presets = sanitizePresetMap(extension_settings[MODULE_NAME].presets);
@@ -1115,7 +1112,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         type: 'function',
         function: { name: fnName },
     };
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const plainTextProtocolMessage = usePlainTextCalls
         ? {
             role: 'user',
@@ -1180,7 +1177,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled();
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const plainTextProtocolMessage = usePlainTextCalls
         ? {
             role: 'user',
@@ -3019,7 +3016,7 @@ function bindUi() {
 
     initializeUiState(context);
     root.find('#luker_orch_enabled').prop('checked', Boolean(settings.enabled));
-    root.find('#luker_orch_global_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled());
+    root.find('#luker_orch_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled(settings));
     root.find('#luker_orch_llm_api_preset').val(String(settings.llmNodeApiPresetName || ''));
     root.find('#luker_orch_llm_preset').val(String(settings.llmNodePresetName || ''));
     root.find('#luker_orch_ai_suggest_api_preset').val(String(settings.aiSuggestApiPresetName || ''));
@@ -3041,9 +3038,8 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.on('input.lukerOrch', '#luker_orch_global_plain_text_calls', function () {
-        const globalSettings = getGlobalLukerSettings();
-        globalSettings[GLOBAL_PLAIN_TEXT_CALL_MODE_KEY] = Boolean(jQuery(this).prop('checked'));
+    root.on('input.lukerOrch', '#luker_orch_plain_text_calls', function () {
+        settings.plainTextFunctionCallMode = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -3621,7 +3617,7 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_orch_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="luker_orch_global_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Global: Plain-text function-call mode (disable native tool API)'))}</label>
+            <label class="checkbox_label"><input id="luker_orch_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode (disable native tool API)'))}</label>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
             <label for="luker_orch_llm_preset">${escapeHtml(i18n('LLM node preset (params + prompt, empty = current)'))}</label>
