@@ -2234,7 +2234,11 @@ function showRunInfoToast(message, { stopLabel = '', onStop = null } = {}) {
                 event.preventDefault();
                 event.stopPropagation();
                 button.prop('disabled', true);
+                const toastElement = button.closest('.toast');
                 clearRunInfoToast();
+                if (toastElement && toastElement.length > 0) {
+                    toastElement.remove();
+                }
                 onStop();
             });
             toastBody.append(button);
@@ -2274,7 +2278,11 @@ function showAiBuildToast(message, { stopLabel = '', onStop = null } = {}) {
                 event.preventDefault();
                 event.stopPropagation();
                 button.prop('disabled', true);
+                const toastElement = button.closest('.toast');
                 clearAiBuildToast();
+                if (toastElement && toastElement.length > 0) {
+                    toastElement.remove();
+                }
                 onStop();
             });
             toastBody.append(button);

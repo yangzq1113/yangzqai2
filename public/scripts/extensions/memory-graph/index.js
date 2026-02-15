@@ -6645,7 +6645,11 @@ function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
                 event.preventDefault();
                 event.stopPropagation();
                 button.prop('disabled', true);
+                const toastElement = button.closest('.toast');
                 clearRuntimeInfoToast();
+                if (toastElement && toastElement.length > 0) {
+                    toastElement.remove();
+                }
                 onStop();
             });
             toastBody.append(button);
