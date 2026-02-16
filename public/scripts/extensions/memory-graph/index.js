@@ -378,6 +378,8 @@ function registerLocaleData() {
         'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遗迹发生了什么？',
         'Run Recall Debug': '运行召回调试',
         'View Last Injection': '查看最近注入',
+        'Core Packet': '核心注入包',
+        'Core packet is empty.': '核心注入包为空。',
         'No recall injection result yet.': '当前还没有召回注入结果。',
         'Memory recall running...': '记忆召回进行中...',
         'Memory graph update running...': '记忆图更新进行中...',
@@ -616,6 +618,8 @@ function registerLocaleData() {
         'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遺跡發生了什麼？',
         'Run Recall Debug': '執行召回除錯',
         'View Last Injection': '查看最近注入',
+        'Core Packet': '核心注入包',
+        'Core packet is empty.': '核心注入包為空。',
         'No recall injection result yet.': '目前還沒有召回注入結果。',
         'Memory recall running...': '記憶召回進行中...',
         'Memory graph update running...': '記憶圖更新進行中...',
@@ -5881,7 +5885,7 @@ function renderGraphInspectorHtml(store) {
     </table>
     </div>
     <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Last Projection'))}</h4>
-    <pre style="white-space:pre-wrap; max-height:260px; overflow:auto;">${JSON.stringify(store.lastRecallProjection || {}, null, 2).replace(/</g, '&lt;')}</pre>
+    ${buildLastRecallCorePacketHtml(store, { showHeader: false })}
 </div>`;
 }
 
@@ -5917,6 +5921,47 @@ function parseLooseScalar(value) {
         return number;
     }
     return text;
+}
+
+function getLastRecallProjection(store) {
+    return store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? store.lastRecallProjection
+        : null;
+}
+
+function getLastRecallCorePacketText(store) {
+    const projection = getLastRecallProjection(store);
+    if (!projection) {
+        return '';
+    }
+    const fromBlocks = normalizeText(projection?.blocks?.corePacket || '');
+    if (fromBlocks) {
+        return fromBlocks;
+    }
+    return normalizeText(projection?.corePacket || '');
+}
+
+function buildLastRecallCorePacketHtml(store, options = {}) {
+    const projection = getLastRecallProjection(store);
+    if (!projection) {
+        return `<div style="opacity:0.8;">${escapeHtml(i18n('No recall injection result yet.'))}</div>`;
+    }
+    const corePacket = getLastRecallCorePacketText(store);
+    const showHeader = options?.showHeader !== false;
+    const at = Number(projection?.at);
+    const renderedAt = Number.isFinite(at) ? new Date(at).toLocaleString() : '';
+    const header = showHeader
+        ? `<div style="font-weight:600; margin-bottom:6px;">${escapeHtml(i18n('Core Packet'))}</div>`
+        : '';
+    const timeLine = renderedAt
+        ? `<div style="font-size:12px; opacity:0.8; margin-bottom:8px;">${escapeHtml(renderedAt)}</div>`
+        : '';
+    return `
+<div style="display:flex; flex-direction:column; gap:4px;">
+    ${header}
+    ${timeLine}
+    <pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(corePacket || i18n('Core packet is empty.'))}</pre>
+</div>`;
 }
 
 function encodeFieldsAsLines(fields) {
@@ -8711,10 +8756,7 @@ function bindUi() {
             notifyError(i18n('No active chat selected.'));
             return;
         }
-        const data = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
-            ? store.lastRecallProjection
-            : { message: i18n('No recall injection result yet.') };
-        const html = `<pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+        const html = buildLastRecallCorePacketHtml(store, { showHeader: true });
         await context.callGenericPopup(html, context.POPUP_TYPE.TEXT, i18n('View Last Injection'), { wide: true, large: true });
     });
 
