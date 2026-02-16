@@ -24,7 +24,6 @@ body.login .userSelect {
     cursor: pointer;
     margin: 5px 0;
     transition: background-color var(--animation-duration) ease-in-out;
-    display: flex;
     align-items: center;
     justify-content: center;
     text-align: center;
@@ -45,6 +44,17 @@ body.login .userSelect:hover {
 
 body.login #handleEntryBlock,
 body.login #passwordEntryBlock,
-body.login #passwordRecoveryBlock {
+body.login #passwordRecoveryBlock,
+body.login #oauthLoginBlock {
     margin: 2px;
+}
+
+body.login .oauthLoginTitle {
+    margin: 10px 0 6px;
+    opacity: 0.85;
+}
+
+body.login #oauthLoginBlock .menu_button {
+    min-width: 140px;
+    justify-content: center;
 }

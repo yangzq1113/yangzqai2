@@ -16,10 +16,11 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import sanitize from 'sanitize-filename';
 
 import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, SETTINGS_FILE, UPLOADS_DIRECTORY } from './constants.js';
-import { getConfigValue, color, delay, generateTimestamp, invalidateFirefoxCache } from './util.js';
+import { getConfigValue, color, delay, generateTimestamp, invalidateFirefoxCache, Cache, formatBytes } from './util.js';
 import { readSecret, writeSecret } from './endpoints/secrets.js';
 import { getContentOfType } from './endpoints/content-manager.js';
 import { serverDirectory } from './server-directory.js';
+import { getAdminSettings, getEffectiveUserQuotaBytes, getDirectorySizeBytes } from './admin-settings.js';
 
 export const KEY_PREFIX = 'user:';
 const AVATAR_PREFIX = 'avatar:';
@@ -28,6 +29,32 @@ const AUTHELIA_AUTH = getConfigValue('sso.autheliaAuth', false, 'boolean');
 const AUTHENTIK_AUTH = getConfigValue('sso.authentikAuth', false, 'boolean');
 const PER_USER_BASIC_AUTH = getConfigValue('perUserBasicAuth', false, 'boolean');
 const ANON_CSRF_SECRET = crypto.randomBytes(64).toString('base64');
+const STORAGE_USAGE_CACHE = new Cache(5000);
+const QUOTA_ENFORCED_PATH_PREFIXES = [
+    '/api/chats/save',
+    '/api/chats/append',
+    '/api/chats/patch',
+    '/api/chats/import',
+    '/api/chats/group/save',
+    '/api/chats/group/append',
+    '/api/chats/group/patch',
+    '/api/chats/group/import',
+    '/api/worldinfo/edit',
+    '/api/worldinfo/import',
+    '/api/worldinfo/patch',
+    '/api/characters/create',
+    '/api/characters/edit',
+    '/api/characters/import',
+    '/api/characters/duplicate',
+    '/api/settings/save',
+    '/api/settings/patch',
+    '/api/images/upload',
+    '/api/files/upload',
+    '/api/backgrounds/upload',
+    '/api/avatars/upload',
+    '/api/groups/create',
+    '/api/groups/edit',
+];
 
 /**
  * Cache for user directories.
@@ -905,6 +932,60 @@ export async function setUserDataMiddleware(request, response, next) {
  * @param {import('express').Response} response Response object
  * @param {import('express').NextFunction} next Next function
  */
+function isQuotaEnforcedRequest(request) {
+    if (!request?.path || request.method !== 'POST') {
+        return false;
+    }
+
+    return QUOTA_ENFORCED_PATH_PREFIXES.some(prefix => request.path.startsWith(prefix));
+}
+
+/**
+ * Enforces per-user storage quota on write-heavy endpoints.
+ * @param {import('express').Request} request Request object
+ * @param {import('express').Response} response Response object
+ * @param {import('express').NextFunction} next Next function
+ * @returns {Promise<any>}
+ */
+export async function enforceUserQuotaMiddleware(request, response, next) {
+    if (!ENABLE_ACCOUNTS || !request.user || request.user.profile.admin) {
+        return next();
+    }
+
+    if (!isQuotaEnforcedRequest(request)) {
+        return next();
+    }
+
+    try {
+        const settings = await getAdminSettings();
+        const quotaBytes = getEffectiveUserQuotaBytes(request.user.profile, settings);
+
+        if (!Number.isFinite(quotaBytes) || quotaBytes < 0) {
+            return next();
+        }
+
+        const handle = request.user.profile.handle;
+        let usageBytes = STORAGE_USAGE_CACHE.get(handle);
+        if (!Number.isFinite(usageBytes)) {
+            usageBytes = await getDirectorySizeBytes(request.user.directories.root);
+            STORAGE_USAGE_CACHE.set(handle, usageBytes);
+        }
+
+        const requestLength = Number(request.headers['content-length'] || 0);
+        const projectedUsage = usageBytes + (Number.isFinite(requestLength) && requestLength > 0 ? requestLength : 0);
+
+        if (projectedUsage > quotaBytes) {
+            const message = 'Storage quota exceeded. Used ' + formatBytes(usageBytes) + ' of ' + formatBytes(quotaBytes) + '.';
+            return response.status(413).json({ error: message, usedBytes: usageBytes, quotaBytes: quotaBytes });
+        }
+
+        return next();
+    } catch (error) {
+        console.error('Failed to enforce storage quota:', error);
+        return response.sendStatus(500);
+    }
+}
+
 export function requireLoginMiddleware(request, response, next) {
     if (!request.user) {
         return response.sendStatus(403);

@@ -5,11 +5,14 @@ import express from 'express';
 import { RateLimiterMemory, RateLimiterRes } from 'rate-limiter-flexible';
 import { getIpFromRequest, getRealIpFromHeader } from '../express-common.js';
 import { color, Cache, getConfigValue } from '../util.js';
-import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt } from '../users.js';
+import { getAdminSettings } from '../admin-settings.js';
+import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
+import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt, getAllUserHandles, getUserDirectories, ensurePublicDirectoriesExist } from '../users.js';
 
 const DISCREET_LOGIN = getConfigValue('enableDiscreetLogin', false, 'boolean');
 const PREFER_REAL_IP_HEADER = getConfigValue('rateLimiting.preferRealIpHeader', false, 'boolean');
 const MFA_CACHE = new Cache(5 * 60 * 1000);
+const OAUTH_STATE_CACHE = new Cache(10 * 60 * 1000);
 
 const getIpAddress = (request) => PREFER_REAL_IP_HEADER ? getRealIpFromHeader(request) : getIpFromRequest(request);
 
@@ -21,6 +24,390 @@ const loginLimiter = new RateLimiterMemory({
 const recoverLimiter = new RateLimiterMemory({
     points: 5,
     duration: 300,
+});
+
+function getBaseUrl(request) {
+    const forwardedProto = request.get('x-forwarded-proto');
+    const protocol = forwardedProto || request.protocol || 'http';
+    const host = request.get('x-forwarded-host') || request.get('host');
+    return `${protocol}://${host}`;
+}
+
+function getOAuthProviderSettings(provider, settings) {
+    if (provider === 'github') {
+        return settings?.oauth?.github;
+    }
+
+    if (provider === 'discord') {
+        return settings?.oauth?.discord;
+    }
+
+    return null;
+}
+
+function toKebabHandle(value) {
+    const candidate = String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+    return candidate || 'user';
+}
+
+async function findUserByOAuth(provider, externalId) {
+    /** @type {import('../users.js').User[]} */
+    const users = await storage.values(x => x.key.startsWith(KEY_PREFIX));
+    return users.find(user => String(user?.oauth?.[provider]?.id || '') === String(externalId)) || null;
+}
+
+async function createUserFromOAuth(provider, profile, adminSettings) {
+    const handles = await getAllUserHandles();
+    const seed = provider === 'github'
+        ? (profile?.login || profile?.name || profile?.email || 'github-user')
+        : (profile?.username || profile?.global_name || profile?.email || 'discord-user');
+
+    const baseHandle = toKebabHandle(seed);
+    let handle = baseHandle;
+    let suffix = 2;
+    while (handles.includes(handle)) {
+        handle = `${baseHandle}-${suffix++}`;
+    }
+
+    const salt = getPasswordSalt();
+    const defaultQuotaBytes = Number(adminSettings?.storage?.defaultUserQuotaBytes);
+    const identity = provider === 'github'
+        ? {
+            id: String(profile.id),
+            login: String(profile.login || ''),
+            email: String(profile.email || ''),
+        }
+        : {
+            id: String(profile.id),
+            username: String(profile.username || ''),
+            email: String(profile.email || ''),
+        };
+
+    /** @type {import('../users.js').User} */
+    const newUser = {
+        handle,
+        name: String(profile.name || profile.username || profile.login || handle),
+        created: Date.now(),
+        password: '',
+        salt: salt,
+        admin: false,
+        enabled: true,
+        oauth: {
+            [provider]: identity,
+        },
+        storageQuotaBytes: Number.isFinite(defaultQuotaBytes) && defaultQuotaBytes >= 0 ? Math.floor(defaultQuotaBytes) : undefined,
+    };
+
+    await storage.setItem(toKey(handle), newUser);
+    await ensurePublicDirectoriesExist();
+    const directories = getUserDirectories(handle);
+    await checkForNewContent([directories], [CONTENT_TYPES.SETTINGS]);
+
+    return newUser;
+}
+
+async function fetchGitHubProfile(accessToken) {
+    const userResponse = await fetch('https://api.github.com/user', {
+        headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'Luker OAuth',
+        },
+    });
+    if (!userResponse.ok) {
+        throw new Error('Failed to fetch GitHub profile');
+    }
+    const user = await userResponse.json();
+
+    if (!user.email) {
+        const emailResponse = await fetch('https://api.github.com/user/emails', {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': 'Luker OAuth',
+            },
+        });
+
+        if (emailResponse.ok) {
+            const emails = await emailResponse.json();
+            const primary = emails.find(x => x.primary && x.verified) || emails.find(x => x.verified) || emails[0];
+            user.email = primary?.email || '';
+        }
+    }
+
+    return user;
+}
+
+async function validateDiscordGuildMembership(accessToken, providerSettings) {
+    if (!providerSettings?.requireGuildMembership) {
+        return { ok: true };
+    }
+
+    const allowedGuildIds = Array.isArray(providerSettings.allowedGuildIds) ? providerSettings.allowedGuildIds : [];
+    if (!allowedGuildIds.length) {
+        return { ok: false, reason: 'Discord server allowlist is empty.' };
+    }
+
+    const guildResponse = await fetch('https://discord.com/api/users/@me/guilds', {
+        headers: {
+            'Authorization': `Bearer ${accessToken}`,
+        },
+    });
+
+    if (!guildResponse.ok) {
+        return { ok: false, reason: 'Unable to verify Discord server membership.' };
+    }
+
+    const guilds = await guildResponse.json();
+    const matchedGuilds = guilds.filter(g => allowedGuildIds.includes(String(g.id)));
+
+    if (!matchedGuilds.length) {
+        return { ok: false, reason: 'Discord account is not in the required server.' };
+    }
+
+    const requiredRoleIds = Array.isArray(providerSettings.requiredRoleIds) ? providerSettings.requiredRoleIds : [];
+    if (!requiredRoleIds.length) {
+        return { ok: true };
+    }
+
+    for (const guild of matchedGuilds) {
+        const memberResponse = await fetch(`https://discord.com/api/users/@me/guilds/${guild.id}/member`, {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+            },
+        });
+
+        if (!memberResponse.ok) {
+            continue;
+        }
+
+        const member = await memberResponse.json();
+        const roles = Array.isArray(member?.roles) ? member.roles.map(String) : [];
+        if (requiredRoleIds.some(role => roles.includes(String(role)))) {
+            return { ok: true };
+        }
+    }
+
+    return { ok: false, reason: 'Discord account does not have the required role.' };
+}
+
+function redirectToLoginWithError(response, reason) {
+    const params = new URLSearchParams();
+    if (reason) {
+        params.set('error', reason);
+    }
+    const suffix = params.toString();
+    const target = suffix ? `/login?${suffix}` : '/login';
+    return response.redirect(target);
+}
+
+router.post('/oauth/providers', async (_request, response) => {
+    try {
+        const settings = await getAdminSettings();
+        const providers = {
+            github: Boolean(settings?.oauth?.github?.enabled && settings?.oauth?.github?.clientId && settings?.oauth?.github?.clientSecret),
+            discord: Boolean(settings?.oauth?.discord?.enabled && settings?.oauth?.discord?.clientId && settings?.oauth?.discord?.clientSecret),
+        };
+
+        return response.json({ providers });
+    } catch (error) {
+        console.error('OAuth providers request failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.get('/oauth/start/:provider', async (request, response) => {
+    try {
+        const provider = String(request.params.provider || '').toLowerCase();
+        if (!['github', 'discord'].includes(provider)) {
+            return redirectToLoginWithError(response, 'unsupported_provider');
+        }
+
+        if (!request.session) {
+            return response.sendStatus(500);
+        }
+
+        const settings = await getAdminSettings();
+        const providerSettings = getOAuthProviderSettings(provider, settings);
+        if (!providerSettings?.enabled || !providerSettings?.clientId || !providerSettings?.clientSecret) {
+            return redirectToLoginWithError(response, 'provider_not_configured');
+        }
+
+        const state = crypto.randomBytes(24).toString('hex');
+        OAUTH_STATE_CACHE.set(state, { provider, issuedAt: Date.now() });
+        const callbackUri = `${getBaseUrl(request)}/api/users/oauth/callback/${provider}`;
+
+        if (provider === 'github') {
+            const authUrl = new URL('https://github.com/login/oauth/authorize');
+            authUrl.searchParams.set('client_id', providerSettings.clientId);
+            authUrl.searchParams.set('redirect_uri', callbackUri);
+            authUrl.searchParams.set('scope', 'read:user user:email');
+            authUrl.searchParams.set('state', state);
+            return response.redirect(authUrl.toString());
+        }
+
+        const authUrl = new URL('https://discord.com/api/oauth2/authorize');
+        const scopes = ['identify', 'email'];
+        if (providerSettings.requireGuildMembership || (providerSettings.allowedGuildIds || []).length > 0) {
+            scopes.push('guilds');
+        }
+        if ((providerSettings.requiredRoleIds || []).length > 0) {
+            scopes.push('guilds.members.read');
+        }
+
+        authUrl.searchParams.set('response_type', 'code');
+        authUrl.searchParams.set('client_id', providerSettings.clientId);
+        authUrl.searchParams.set('redirect_uri', callbackUri);
+        authUrl.searchParams.set('scope', Array.from(new Set(scopes)).join(' '));
+        authUrl.searchParams.set('state', state);
+        return response.redirect(authUrl.toString());
+    } catch (error) {
+        console.error('OAuth start failed:', error);
+        return redirectToLoginWithError(response, 'oauth_start_failed');
+    }
+});
+
+router.get('/oauth/callback/:provider', async (request, response) => {
+    try {
+        const provider = String(request.params.provider || '').toLowerCase();
+        const code = String(request.query.code || '');
+        const state = String(request.query.state || '');
+
+        if (!['github', 'discord'].includes(provider) || !code || !state) {
+            return redirectToLoginWithError(response, 'oauth_invalid_callback');
+        }
+
+        if (!request.session) {
+            return response.sendStatus(500);
+        }
+
+        const cachedState = OAUTH_STATE_CACHE.get(state);
+        OAUTH_STATE_CACHE.remove(state);
+        if (!cachedState || cachedState.provider !== provider) {
+            return redirectToLoginWithError(response, 'oauth_state_mismatch');
+        }
+
+        const settings = await getAdminSettings();
+        const providerSettings = getOAuthProviderSettings(provider, settings);
+        if (!providerSettings?.enabled || !providerSettings?.clientId || !providerSettings?.clientSecret) {
+            return redirectToLoginWithError(response, 'provider_not_configured');
+        }
+
+        const callbackUri = `${getBaseUrl(request)}/api/users/oauth/callback/${provider}`;
+
+        let accessToken = '';
+        if (provider === 'github') {
+            const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({
+                    client_id: providerSettings.clientId,
+                    client_secret: providerSettings.clientSecret,
+                    code,
+                    redirect_uri: callbackUri,
+                }),
+            });
+
+            if (!tokenRes.ok) {
+                return redirectToLoginWithError(response, 'oauth_token_failed');
+            }
+
+            const tokenData = await tokenRes.json();
+            accessToken = String(tokenData.access_token || '');
+        } else {
+            const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: new URLSearchParams({
+                    client_id: providerSettings.clientId,
+                    client_secret: providerSettings.clientSecret,
+                    grant_type: 'authorization_code',
+                    code,
+                    redirect_uri: callbackUri,
+                }).toString(),
+            });
+
+            if (!tokenRes.ok) {
+                return redirectToLoginWithError(response, 'oauth_token_failed');
+            }
+
+            const tokenData = await tokenRes.json();
+            accessToken = String(tokenData.access_token || '');
+        }
+
+        if (!accessToken) {
+            return redirectToLoginWithError(response, 'oauth_token_empty');
+        }
+
+        let profile = null;
+        if (provider === 'github') {
+            profile = await fetchGitHubProfile(accessToken);
+        } else {
+            const profileRes = await fetch('https://discord.com/api/users/@me', {
+                headers: { 'Authorization': `Bearer ${accessToken}` },
+            });
+
+            if (!profileRes.ok) {
+                return redirectToLoginWithError(response, 'oauth_profile_failed');
+            }
+
+            profile = await profileRes.json();
+        }
+
+        if (!profile?.id) {
+            return redirectToLoginWithError(response, 'oauth_profile_failed');
+        }
+
+        if (provider === 'discord') {
+            const membership = await validateDiscordGuildMembership(accessToken, providerSettings);
+            if (!membership.ok) {
+                return redirectToLoginWithError(response, 'discord_guild_check_failed');
+            }
+        }
+
+        let user = await findUserByOAuth(provider, String(profile.id));
+
+        if (!user) {
+            if (!providerSettings.allowAutoCreate) {
+                return redirectToLoginWithError(response, 'oauth_user_not_linked');
+            }
+
+            user = await createUserFromOAuth(provider, profile, settings);
+        } else if (!user.enabled) {
+            return redirectToLoginWithError(response, 'oauth_user_disabled');
+        }
+
+        if (!user.oauth || !user.oauth[provider] || String(user.oauth[provider].id) !== String(profile.id)) {
+            user.oauth = user.oauth || {};
+            user.oauth[provider] = provider === 'github'
+                ? {
+                    id: String(profile.id),
+                    login: String(profile.login || ''),
+                    email: String(profile.email || ''),
+                }
+                : {
+                    id: String(profile.id),
+                    username: String(profile.username || ''),
+                    email: String(profile.email || ''),
+                };
+            await storage.setItem(toKey(user.handle), user);
+        }
+
+        request.session.handle = user.handle;
+        return response.redirect('/');
+    } catch (error) {
+        console.error('OAuth callback failed:', error);
+        return redirectToLoginWithError(response, 'oauth_callback_failed');
+    }
 });
 
 router.post('/list', async (_request, response) => {

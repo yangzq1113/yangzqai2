@@ -97,6 +97,99 @@ async function getUsers() {
 }
 
 /**
+ * Get an admin overview payload.
+ * @returns {Promise<any>} Overview data
+ */
+async function getAdminOverview() {
+    try {
+        const response = await fetch('/api/users/overview', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to get admin overview');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error getting admin overview:', error);
+    }
+}
+
+/**
+ * Get global admin panel settings.
+ * @returns {Promise<any>} Settings payload
+ */
+async function getAdminPanelSettings() {
+    try {
+        const response = await fetch('/api/users/settings/get', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+
+        if (!response.ok) {
+            throw new Error('Failed to get admin settings');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error getting admin settings:', error);
+    }
+}
+
+/**
+ * Save global admin panel settings.
+ * @param {any} payload Settings payload
+ * @returns {Promise<any>} Saved settings
+ */
+async function saveAdminPanelSettings(payload) {
+    try {
+        const response = await fetch('/api/users/settings/save', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            toastr.error(data?.error || 'Unknown error', 'Failed to save admin settings');
+            throw new Error('Failed to save admin settings');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error saving admin settings:', error);
+    }
+}
+
+/**
+ * Set per-user storage quota.
+ * @param {string} handle User handle
+ * @param {number|null} quotaBytes Quota bytes, null to clear override
+ * @param {() => void} callback Callback on success
+ */
+async function setUserQuota(handle, quotaBytes, callback) {
+    try {
+        const response = await fetch('/api/users/set-quota', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ handle, storageQuotaBytes: quotaBytes }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json();
+            toastr.error(data?.error || 'Unknown error', 'Failed to set user quota');
+            throw new Error('Failed to set user quota');
+        }
+
+        callback();
+    } catch (error) {
+        console.error('Error setting user quota:', error);
+    }
+}
+
+/**
  * Enable a user account.
  * @param {string} handle User handle
  * @param {function} callback Success callback
@@ -777,15 +870,176 @@ async function changeAvatar(handle, avatar) {
 }
 
 async function openAdminPanel() {
+    let currentAdminSettings = null;
+
+    const bytesToMbInput = (value) => {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 0) {
+            return '-1';
+        }
+        return String(Math.floor(n / (1024 * 1024)));
+    };
+
+    const parseIdList = (text) => String(text || '')
+        .split(/[\n,]/g)
+        .map(x => x.trim())
+        .filter(Boolean);
+
+    function populateAuthSettingsForm(settings) {
+        if (!settings) {
+            return;
+        }
+
+        template.find('#defaultUserQuotaMbInput').val(bytesToMbInput(settings?.storage?.defaultUserQuotaBytes));
+
+        template.find('#oauthGithubEnabled').prop('checked', Boolean(settings?.oauth?.github?.enabled));
+        template.find('#oauthGithubAutoCreate').prop('checked', Boolean(settings?.oauth?.github?.allowAutoCreate));
+        template.find('#oauthGithubClientId').val(settings?.oauth?.github?.clientId || '');
+        template.find('#oauthGithubClientSecret').val(settings?.oauth?.github?.clientSecret || '');
+
+        template.find('#oauthDiscordEnabled').prop('checked', Boolean(settings?.oauth?.discord?.enabled));
+        template.find('#oauthDiscordAutoCreate').prop('checked', Boolean(settings?.oauth?.discord?.allowAutoCreate));
+        template.find('#oauthDiscordRequireGuild').prop('checked', Boolean(settings?.oauth?.discord?.requireGuildMembership));
+        template.find('#oauthDiscordClientId').val(settings?.oauth?.discord?.clientId || '');
+        template.find('#oauthDiscordClientSecret').val(settings?.oauth?.discord?.clientSecret || '');
+        template.find('#oauthDiscordAllowedGuilds').val((settings?.oauth?.discord?.allowedGuildIds || []).join('\n'));
+        template.find('#oauthDiscordRequiredRoles').val((settings?.oauth?.discord?.requiredRoleIds || []).join('\n'));
+    }
+
+    function collectAuthSettingsForm() {
+        const defaultQuotaMb = Number(template.find('#defaultUserQuotaMbInput').val());
+        const defaultQuotaBytes = Number.isFinite(defaultQuotaMb) && defaultQuotaMb >= 0
+            ? Math.floor(defaultQuotaMb * 1024 * 1024)
+            : -1;
+
+        return {
+            storage: {
+                defaultUserQuotaBytes: defaultQuotaBytes,
+            },
+            oauth: {
+                github: {
+                    enabled: template.find('#oauthGithubEnabled').is(':checked'),
+                    allowAutoCreate: template.find('#oauthGithubAutoCreate').is(':checked'),
+                    clientId: String(template.find('#oauthGithubClientId').val() || '').trim(),
+                    clientSecret: String(template.find('#oauthGithubClientSecret').val() || '').trim(),
+                },
+                discord: {
+                    enabled: template.find('#oauthDiscordEnabled').is(':checked'),
+                    allowAutoCreate: template.find('#oauthDiscordAutoCreate').is(':checked'),
+                    requireGuildMembership: template.find('#oauthDiscordRequireGuild').is(':checked'),
+                    clientId: String(template.find('#oauthDiscordClientId').val() || '').trim(),
+                    clientSecret: String(template.find('#oauthDiscordClientSecret').val() || '').trim(),
+                    allowedGuildIds: parseIdList(template.find('#oauthDiscordAllowedGuilds').val()),
+                    requiredRoleIds: parseIdList(template.find('#oauthDiscordRequiredRoles').val()),
+                },
+            },
+        };
+    }
+
+    async function promptAndSetQuota(user) {
+        const currentMb = user.storageQuotaBytes == null ? '-1' : String(Math.floor(Number(user.storageQuotaBytes) / (1024 * 1024)));
+        const result = await callGenericPopup(
+            'Set per-user quota in MB. Enter -1 to use default/unlimited.',
+            POPUP_TYPE.INPUT,
+            currentMb,
+            { okButton: 'Save', cancelButton: 'Cancel', wide: false, large: false },
+        );
+
+        if (result === POPUP_RESULT.CANCELLED || result === POPUP_RESULT.NEGATIVE) {
+            return;
+        }
+
+        const parsed = Number(result);
+        if (!Number.isFinite(parsed)) {
+            toastr.error('Please enter a valid number.', 'Invalid quota');
+            return;
+        }
+
+        const bytes = parsed < 0 ? null : Math.floor(parsed * 1024 * 1024);
+        await setUserQuota(user.handle, bytes, renderUsers);
+    }
+
+    async function renderOverview() {
+        const overview = await getAdminOverview();
+        if (!overview) {
+            return;
+        }
+
+        currentAdminSettings = overview.settings || currentAdminSettings;
+        if (currentAdminSettings) {
+            populateAuthSettingsForm(currentAdminSettings);
+        }
+
+        const summary = template.find('.adminOverviewSummary');
+        summary.empty();
+
+        const uptimeHours = Math.floor((overview.server?.uptimeSec || 0) / 3600);
+        const uptimeMinutes = Math.floor(((overview.server?.uptimeSec || 0) % 3600) / 60);
+        const now = overview.server?.now ? new Date(overview.server.now).toLocaleString() : '-';
+
+        summary.append(
+            $('<div class="flex-container flexFlowColumn flexNoGap"/>')
+                .append(`<div><strong>Node.js:</strong> ${overview.server?.nodeVersion || '-'}</div>`)
+                .append(`<div><strong>Platform:</strong> ${overview.server?.platform || '-'}</div>`)
+                .append(`<div><strong>Uptime:</strong> ${uptimeHours}h ${uptimeMinutes}m</div>`)
+                .append(`<div><strong>Now:</strong> ${now}</div>`),
+        );
+
+        const defaultQuota = Number(currentAdminSettings?.storage?.defaultUserQuotaBytes);
+        const quotaLabel = Number.isFinite(defaultQuota) && defaultQuota >= 0 ? humanFileSize(defaultQuota) : 'Unlimited';
+
+        summary.append(
+            $('<div class="flex-container flexFlowColumn flexNoGap"/>')
+                .append(`<div><strong>Total users:</strong> ${overview.totals?.users ?? 0}</div>`)
+                .append(`<div><strong>Enabled:</strong> ${overview.totals?.enabledUsers ?? 0}</div>`)
+                .append(`<div><strong>Admins:</strong> ${overview.totals?.adminUsers ?? 0}</div>`)
+                .append(`<div><strong>Password protected:</strong> ${overview.totals?.protectedUsers ?? 0}</div>`)
+                .append(`<div><strong>Total storage:</strong> ${humanFileSize(overview.totals?.storageBytes ?? 0)}</div>`)
+                .append(`<div><strong>Over quota users:</strong> ${overview.totals?.overQuotaUsers ?? 0}</div>`)
+                .append(`<div><strong>Default quota:</strong> ${quotaLabel}</div>`),
+        );
+
+        const usersList = template.find('.adminOverviewUsers');
+        usersList.empty();
+
+        for (const user of overview.users || []) {
+            const row = template.find('.adminOverviewUserTemplate .adminOverviewUser').clone();
+            const userQuota = Number(user.storageQuotaBytes);
+            const ratio = Number.isFinite(Number(user.storageUsageRatio)) ? Number(user.storageUsageRatio) : null;
+            const suffix = ratio != null ? ` · ${(ratio * 100).toFixed(1)}% of quota` : '';
+            row.find('.overviewUserName').text(`${user.name} (${user.handle})`);
+            row.find('.overviewUserMeta').text(`${user.admin ? 'Admin' : 'User'} · ${user.enabled ? 'Enabled' : 'Disabled'}${suffix}`);
+            row.find('.overviewUserStorage').text(`${humanFileSize(user.storageBytes || 0)} / ${userQuota >= 0 ? humanFileSize(userQuota) : 'Unlimited'}`);
+            usersList.append(row);
+        }
+
+        const security = template.find('.adminSecurityContent');
+        security.empty();
+
+        const adminWithoutPassword = overview.security?.adminWithoutPassword || [];
+        const disabledAdmins = overview.security?.disabledAdmins || [];
+        const disabledUsers = overview.security?.disabledUsers || [];
+
+        security
+            .append(`<div><strong>Admins without password:</strong> ${adminWithoutPassword.length ? adminWithoutPassword.join(', ') : 'None'}</div>`)
+            .append(`<div><strong>Disabled admins:</strong> ${disabledAdmins.length ? disabledAdmins.join(', ') : 'None'}</div>`)
+            .append(`<div><strong>Disabled users:</strong> ${disabledUsers.length ? disabledUsers.join(', ') : 'None'}</div>`);
+    }
+
     async function renderUsers() {
         const users = await getUsers();
         template.find('.usersList').empty();
         for (const user of users) {
             const userBlock = template.find('.userAccountTemplate .userAccount').clone();
+            const quotaLabel = user.storageQuotaBytes == null ? 'Default' : humanFileSize(Number(user.storageQuotaBytes));
+            const oauthProviders = Array.isArray(user.oauthProviders) && user.oauthProviders.length ? user.oauthProviders.join(', ') : 'None';
+
             userBlock.find('.userName').text(user.name);
             userBlock.find('.userHandle').text(user.handle);
             userBlock.find('.userStatus').text(user.enabled ? 'Enabled' : 'Disabled');
             userBlock.find('.userRole').text(user.admin ? 'Admin' : 'User');
+            userBlock.find('.userQuota').text(quotaLabel);
+            userBlock.find('.userOAuth').text(oauthProviders);
             userBlock.find('.avatar img').attr('src', user.avatar);
             userBlock.find('.hasPassword').toggle(user.password);
             userBlock.find('.noPassword').toggle(!user.password);
@@ -797,6 +1051,7 @@ async function openAdminPanel() {
             userBlock.find('.userChangePasswordButton').on('click', () => changePassword(user.handle, renderUsers));
             userBlock.find('.userDelete').on('click', () => deleteUser(user.handle, renderUsers));
             userBlock.find('.userChangeNameButton').on('click', async () => changeName(user.handle, user.name, renderUsers));
+            userBlock.find('.userQuotaButton').on('click', async () => promptAndSetQuota(user));
             userBlock.find('.userBackupButton').on('click', function () {
                 $(this).addClass('disabled').off('click');
                 backupUserData(user.handle, renderUsers);
@@ -821,15 +1076,38 @@ async function openAdminPanel() {
             });
             template.find('.usersList').append(userBlock);
         }
+
+        await renderOverview();
     }
 
     const template = $(await renderTemplateAsync('admin'));
+    currentAdminSettings = await getAdminPanelSettings();
+    populateAuthSettingsForm(currentAdminSettings);
 
     template.find('.adminNav > button').on('click', function () {
         const target = String($(this).data('target-tab'));
         template.find('.navTab').each(function () {
             $(this).toggle(this.classList.contains(target));
         });
+
+        if (target === 'adminOverviewTab' || target === 'adminSecurityTab' || target === 'authAndQuotaTab') {
+            renderOverview();
+        }
+    });
+
+    template.find('.overviewRefreshButton').on('click', renderOverview);
+
+    template.find('.saveAuthQuotaSettingsButton').on('click', async () => {
+        const payload = collectAuthSettingsForm();
+        const saved = await saveAdminPanelSettings(payload);
+        if (!saved) {
+            return;
+        }
+
+        currentAdminSettings = saved;
+        populateAuthSettingsForm(saved);
+        toastr.success('Admin settings saved.', 'Saved');
+        await renderOverview();
     });
 
     template.find('.createUserDisplayName').on('input', async function () {
@@ -852,6 +1130,8 @@ async function openAdminPanel() {
     callGenericPopup(template, POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: false, large: false, allowVerticalScrolling: true, allowHorizontalScrolling: false });
     renderUsers();
 }
+
+
 
 /**
  * Log out the current user.

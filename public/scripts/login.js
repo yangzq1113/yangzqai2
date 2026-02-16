@@ -39,9 +39,31 @@ async function getUserList() {
         return [];
     }
 
-    const userListObj = await response.json();
-    console.log(userListObj);
-    return userListObj;
+    return response.json();
+}
+
+/**
+ * Gets enabled OAuth providers from the server.
+ * @returns {Promise<{providers: {github?: boolean, discord?: boolean}}|null>}
+ */
+async function getOAuthProviders() {
+    try {
+        const response = await fetch('/api/users/oauth/providers', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': csrfToken,
+            },
+        });
+
+        if (!response.ok) {
+            return null;
+        }
+
+        return response.json();
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -95,7 +117,6 @@ async function sendRecoveryPart2(handle, code, newPassword) {
         return displayError(errorData.error || 'An error occurred');
     }
 
-    console.log(`Successfully recovered password for ${handle}!`);
     await performLogin(handle, newPassword);
 }
 
@@ -107,8 +128,8 @@ async function sendRecoveryPart2(handle, code, newPassword) {
  */
 async function performLogin(handle, password) {
     const userInfo = {
-        handle: handle,
-        password: password,
+        handle,
+        password,
     };
 
     try {
@@ -129,7 +150,6 @@ async function performLogin(handle, password) {
         const data = await response.json();
 
         if (data.handle) {
-            console.log(`Successfully logged in as ${handle}!`);
             redirectToHome();
         }
     } catch (error) {
@@ -144,9 +164,8 @@ async function performLogin(handle, password) {
  * @returns {Promise<void>}
  */
 async function onUserSelected(user) {
-    // No password, just log in
     if (!user.password) {
-        return await performLogin(user.handle, '');
+        return performLogin(user.handle, '');
     }
 
     $('#passwordRecoveryBlock').hide();
@@ -179,20 +198,12 @@ function displayError(message) {
 
 /**
  * Redirects the user to the home page.
- * Preserves the query string.
  */
 function redirectToHome() {
-    // Create a URL object based on the current location
     const currentUrl = new URL(window.location.href);
-
-    // After a login there's no need to preserve the
-    // noauto parameter (if present)
     currentUrl.searchParams.delete('noauto');
-
-    // Set the pathname to root and keep the updated query string
+    currentUrl.searchParams.delete('error');
     currentUrl.pathname = '/';
-
-    // Redirect to the new URL
     window.location.href = currentUrl.toString();
 }
 
@@ -215,15 +226,30 @@ function onCancelRecoveryClick() {
 }
 
 /**
+ * Configures OAuth buttons from provider payload.
+ * @param {{providers?: {github?: boolean, discord?: boolean}}|null} oauthPayload
+ */
+function configureOAuthButtons(oauthPayload) {
+    const providers = oauthPayload?.providers || {};
+
+    const githubEnabled = Boolean(providers.github);
+    const discordEnabled = Boolean(providers.discord);
+
+    $('#oauthGithubButton').attr('href', '/api/users/oauth/start/github').toggle(githubEnabled);
+    $('#oauthDiscordButton').attr('href', '/api/users/oauth/start/discord').toggle(discordEnabled);
+
+    $('#oauthLoginBlock').toggle(githubEnabled || discordEnabled);
+}
+
+/**
  * Configures the login page for normal login.
  * @param {import('../../src/users').UserViewModel[]} userList List of users
  */
 function configureNormalLogin(userList) {
-    console.log('Discreet login is disabled');
     $('#handleEntryBlock').hide();
     $('#normalLoginPrompt').show();
     $('#discreetLoginPrompt').hide();
-    console.log(userList);
+
     for (const user of userList) {
         const userBlock = $('<div></div>').addClass('userSelect');
         const avatarBlock = $('<div></div>').addClass('avatar');
@@ -240,7 +266,6 @@ function configureNormalLogin(userList) {
  * Configures the login page for discreet login.
  */
 function configureDiscreetLogin() {
-    console.log('Discreet login is enabled');
     $('#handleEntryBlock').show();
     $('#normalLoginPrompt').hide();
     $('#discreetLoginPrompt').show();
@@ -266,17 +291,49 @@ function configureDiscreetLogin() {
     });
 }
 
+function handleOAuthErrorParam() {
+    const params = new URLSearchParams(window.location.search);
+    const error = String(params.get('error') || '');
+    if (!error) {
+        return;
+    }
+
+    const messages = {
+        unsupported_provider: 'Unsupported OAuth provider.',
+        provider_not_configured: 'OAuth provider is not configured by admin.',
+        oauth_start_failed: 'Failed to start OAuth login.',
+        oauth_invalid_callback: 'OAuth callback is invalid.',
+        oauth_state_mismatch: 'OAuth state verification failed.',
+        oauth_token_failed: 'Failed to obtain OAuth access token.',
+        oauth_token_empty: 'OAuth provider returned an empty token.',
+        oauth_profile_failed: 'Failed to fetch OAuth profile.',
+        oauth_user_not_linked: 'No local account is linked to this OAuth identity.',
+        oauth_user_disabled: 'This account is currently disabled.',
+        discord_guild_check_failed: 'Discord account did not pass server membership checks.',
+        oauth_callback_failed: 'OAuth login failed. Please try again.',
+    };
+
+    displayError(messages[error] || 'OAuth login failed.');
+}
+
 (async function () {
     initAccessibility();
 
     csrfToken = await getCsrfToken();
-    const userList = await getUserList();
+    const [userList, oauthPayload] = await Promise.all([
+        getUserList(),
+        getOAuthProviders(),
+    ]);
 
     if (discreetLogin) {
         configureDiscreetLogin();
     } else {
         configureNormalLogin(userList);
     }
+
+    configureOAuthButtons(oauthPayload);
+    handleOAuthErrorParam();
+
     document.getElementById('shadow_popup').style.opacity = '';
     $('#cancelRecovery').on('click', onCancelRecoveryClick);
     $(document).on('keydown', (evt) => {

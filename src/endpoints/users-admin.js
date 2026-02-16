@@ -3,6 +3,12 @@ import { promises as fsPromises } from 'node:fs';
 import storage from 'node-persist';
 import express from 'express';
 import lodash from 'lodash';
+import {
+    getAdminSettings,
+    saveAdminSettings,
+    getEffectiveUserQuotaBytes,
+    getDirectorySizeBytes,
+} from '../admin-settings.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import {
     KEY_PREFIX,
@@ -18,6 +24,115 @@ import {
 import { DEFAULT_USER } from '../constants.js';
 
 export const router = express.Router();
+
+router.post('/overview', requireAdminMiddleware, async (_request, response) => {
+    try {
+        const adminSettings = await getAdminSettings();
+
+        /** @type {import('../users.js').User[]} */
+        const users = await storage.values(x => x.key.startsWith(KEY_PREFIX));
+
+        const usersWithStats = await Promise.all(users.map(async user => {
+            const directories = getUserDirectories(user.handle);
+            const storageBytes = await getDirectorySizeBytes(directories.root);
+            const effectiveQuotaBytes = getEffectiveUserQuotaBytes(user, adminSettings);
+
+            return {
+                handle: user.handle,
+                name: user.name,
+                admin: user.admin,
+                enabled: user.enabled,
+                password: Boolean(user.password),
+                created: user.created,
+                storageBytes: storageBytes,
+                storageQuotaBytes: effectiveQuotaBytes,
+                storageUsageRatio: effectiveQuotaBytes >= 0 ? storageBytes / Math.max(effectiveQuotaBytes, 1) : null,
+            };
+        }));
+
+        usersWithStats.sort((x, y) => (x.created ?? 0) - (y.created ?? 0));
+
+        const totals = {
+            users: usersWithStats.length,
+            enabledUsers: usersWithStats.filter(x => x.enabled).length,
+            adminUsers: usersWithStats.filter(x => x.admin).length,
+            protectedUsers: usersWithStats.filter(x => x.password).length,
+            storageBytes: usersWithStats.reduce((acc, user) => acc + user.storageBytes, 0),
+            overQuotaUsers: usersWithStats.filter(x => x.storageQuotaBytes >= 0 && x.storageBytes > x.storageQuotaBytes).length,
+        };
+
+        const security = {
+            adminWithoutPassword: usersWithStats.filter(x => x.admin && !x.password).map(x => x.handle),
+            disabledAdmins: usersWithStats.filter(x => x.admin && !x.enabled).map(x => x.handle),
+            disabledUsers: usersWithStats.filter(x => !x.enabled).map(x => x.handle),
+        };
+
+        return response.json({
+            server: {
+                nodeVersion: process.version,
+                platform: process.platform,
+                uptimeSec: Math.floor(process.uptime()),
+                now: Date.now(),
+            },
+            totals,
+            settings: adminSettings,
+            users: usersWithStats,
+            security,
+        });
+    } catch (error) {
+        console.error('Admin overview failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/settings/get', requireAdminMiddleware, async (_request, response) => {
+    try {
+        const settings = await getAdminSettings();
+        return response.json(settings);
+    } catch (error) {
+        console.error('Admin settings get failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/settings/save', requireAdminMiddleware, async (request, response) => {
+    try {
+        const saved = await saveAdminSettings(request.body || {});
+        return response.json(saved);
+    } catch (error) {
+        console.error('Admin settings save failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/set-quota', requireAdminMiddleware, async (request, response) => {
+    try {
+        const handle = String(request.body?.handle || '').trim();
+        if (!handle) {
+            return response.status(400).json({ error: 'Missing required fields' });
+        }
+
+        /** @type {import('../users.js').User} */
+        const user = await storage.getItem(toKey(handle));
+        if (!user) {
+            return response.status(404).json({ error: 'User not found' });
+        }
+
+        const rawQuota = request.body?.storageQuotaBytes;
+        const parsed = Number(rawQuota);
+        if (rawQuota === null || rawQuota === '' || rawQuota === undefined || !Number.isFinite(parsed) || parsed < 0) {
+            delete user.storageQuotaBytes;
+        } else {
+            user.storageQuotaBytes = Math.floor(parsed);
+        }
+
+        await storage.setItem(toKey(handle), user);
+        return response.sendStatus(204);
+    } catch (error) {
+        console.error('Set user quota failed:', error);
+        return response.sendStatus(500);
+    }
+});
 
 router.post('/get', requireAdminMiddleware, async (_request, response) => {
     try {
@@ -36,6 +151,8 @@ router.post('/get', requireAdminMiddleware, async (_request, response) => {
                         enabled: user.enabled,
                         created: user.created,
                         password: !!user.password,
+                        storageQuotaBytes: Number.isFinite(Number(user.storageQuotaBytes)) ? Number(user.storageQuotaBytes) : null,
+                        oauthProviders: Object.keys(user.oauth || {}),
                     }),
                 );
             }));
@@ -177,6 +294,8 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
 
         const salt = getPasswordSalt();
         const password = request.body.password ? getPasswordHash(request.body.password, salt) : '';
+        const adminSettings = await getAdminSettings();
+        const defaultQuotaBytes = Number(adminSettings?.storage?.defaultUserQuotaBytes);
 
         const newUser = {
             handle: handle,
@@ -186,6 +305,7 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
             salt: salt,
             admin: !!request.body.admin,
             enabled: true,
+            storageQuotaBytes: Number.isFinite(defaultQuotaBytes) && defaultQuotaBytes >= 0 ? Math.floor(defaultQuotaBytes) : undefined,
         };
 
         await storage.setItem(toKey(handle), newUser);

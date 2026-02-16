@@ -1,12 +1,22 @@
 <div class="adminTabs wide100p">
     <nav class="adminNav flex-container alignItemsCenter justifyCenter">
         <button type="button" class="manageUsersButton menu_button menu_button_icon" data-target-tab="usersList">
-            <h4 data-i18n="Manager Users">Manage Users</h4>
+            <h4>Manage Users</h4>
+        </button>
+        <button type="button" class="overviewButton menu_button menu_button_icon" data-target-tab="adminOverviewTab">
+            <h4>System Overview</h4>
+        </button>
+        <button type="button" class="securityButton menu_button menu_button_icon" data-target-tab="adminSecurityTab">
+            <h4>Security Status</h4>
+        </button>
+        <button type="button" class="authQuotaButton menu_button menu_button_icon" data-target-tab="authAndQuotaTab">
+            <h4>Auth & Limits</h4>
         </button>
         <button type="button" class="newUserButton menu_button menu_button_icon" data-target-tab="registerNewUserBlock">
-            <h4 data-i18n="New User">New User</h4>
+            <h4>New User</h4>
         </button>
     </nav>
+
     <div class="userAccountTemplate template_element">
         <div class="flex-container userAccount alignItemsCenter flexGap10">
             <div class="flex-container flexFlowColumn alignItemsCenter flexNoGap">
@@ -33,24 +43,20 @@
                     <small class="userHandle">&nbsp;</small>
                 </div>
                 <div class="flex-container flexFlowColumn flexNoGap">
-                    <span>
-                        <span data-i18n="Role:">Role:</span>
-                        <span class="userRole"></span>
-                    </span>
-                    <span>
-                        <span data-i18n="Status:">Status:</span>
-                        <span class="userStatus">&nbsp;</span>
-                    </span>
-                    <span>
-                        <span data-i18n="Created:">Created:</span>
-                        <span class="userCreated">&nbsp;</span>
-                    </span>
+                    <span><span>Role:</span> <span class="userRole"></span></span>
+                    <span><span>Status:</span> <span class="userStatus">&nbsp;</span></span>
+                    <span><span>Created:</span> <span class="userCreated">&nbsp;</span></span>
+                    <span><span>Quota:</span> <span class="userQuota">Unlimited</span></span>
+                    <span><span>OAuth:</span> <span class="userOAuth">None</span></span>
                 </div>
             </div>
             <div class="flex-container flexFlowColumn">
                 <div class="flex-container">
                     <div class="userChangeNameButton menu_button" title="Change user display name.">
                         <i class="fa-fw fa-solid fa-pencil"></i>
+                    </div>
+                    <div class="userQuotaButton menu_button" title="Set per-user storage quota.">
+                        <i class="fa-fw fa-solid fa-hard-drive"></i>
                     </div>
                     <div class="userEnableButton menu_button" title="Enable user account.">
                         <i class="fa-fw fa-solid fa-check"></i>
@@ -79,35 +85,96 @@
             </div>
         </div>
     </div>
-    <div class="navTab usersList flex-container flexFlowColumn">
+
+    <div class="navTab usersList flex-container flexFlowColumn"></div>
+
+    <div class="adminOverviewUserTemplate template_element">
+        <div class="adminOverviewUser flex-container alignItemsCenter spaceBetween flexGap10">
+            <div class="flex-container flexFlowColumn flexNoGap">
+                <strong class="overviewUserName"></strong>
+                <small class="overviewUserMeta"></small>
+            </div>
+            <div class="overviewUserStorage"></div>
+        </div>
     </div>
+
+    <div class="navTab adminOverviewTab flex-container flexFlowColumn flexGap10" style="display: none;">
+        <div class="flex-container alignItemsCenter spaceBetween">
+            <h4 class="margin0">Server Snapshot</h4>
+            <div class="overviewRefreshButton menu_button menu_button_icon">
+                <i class="fa-fw fa-solid fa-arrows-rotate"></i>
+                <span>Refresh</span>
+            </div>
+        </div>
+        <div class="adminOverviewSummary flex-container flexFlowColumn flexGap10"></div>
+        <h4 class="margin0">User Storage</h4>
+        <div class="adminOverviewUsers flex-container flexFlowColumn flexGap10"></div>
+    </div>
+
+    <div class="navTab adminSecurityTab flex-container flexFlowColumn flexGap10" style="display: none;">
+        <h4 class="margin0">Security Checks</h4>
+        <div class="adminSecurityContent flex-container flexFlowColumn flexGap10"></div>
+    </div>
+
+    <div class="navTab authAndQuotaTab flex-container flexFlowColumn flexGap10" style="display: none;">
+        <h4 class="margin0">Storage Quota</h4>
+        <div class="flex-container alignItemsCenter flexGap10">
+            <label for="defaultUserQuotaMbInput">Default quota for new users (MB)</label>
+            <input id="defaultUserQuotaMbInput" class="text_pole" type="number" min="-1" step="1" placeholder="-1 for unlimited" />
+        </div>
+
+        <h4 class="margin0">GitHub OAuth</h4>
+        <div class="flex-container flexFlowColumn flexGap10">
+            <label><input type="checkbox" id="oauthGithubEnabled" /> Enable GitHub OAuth login</label>
+            <label><input type="checkbox" id="oauthGithubAutoCreate" /> Auto-create user on first GitHub login</label>
+            <input id="oauthGithubClientId" class="text_pole" type="text" placeholder="GitHub Client ID" />
+            <input id="oauthGithubClientSecret" class="text_pole" type="password" placeholder="GitHub Client Secret" />
+        </div>
+
+        <h4 class="margin0">Discord OAuth</h4>
+        <div class="flex-container flexFlowColumn flexGap10">
+            <label><input type="checkbox" id="oauthDiscordEnabled" /> Enable Discord OAuth login</label>
+            <label><input type="checkbox" id="oauthDiscordAutoCreate" /> Auto-create user on first Discord login</label>
+            <label><input type="checkbox" id="oauthDiscordRequireGuild" /> Require membership in target server</label>
+            <input id="oauthDiscordClientId" class="text_pole" type="text" placeholder="Discord Client ID" />
+            <input id="oauthDiscordClientSecret" class="text_pole" type="password" placeholder="Discord Client Secret" />
+            <textarea id="oauthDiscordAllowedGuilds" class="text_pole" rows="2" placeholder="Allowed server IDs (comma or new line separated)"></textarea>
+            <textarea id="oauthDiscordRequiredRoles" class="text_pole" rows="2" placeholder="Required role IDs (optional, comma or new line separated)"></textarea>
+        </div>
+
+        <div class="flex-container">
+            <div class="saveAuthQuotaSettingsButton menu_button menu_button_icon">
+                <i class="fa-fw fa-solid fa-save"></i>
+                <span>Save Auth & Limit Settings</span>
+            </div>
+        </div>
+    </div>
+
     <div class="navTab registerNewUserBlock" style="display: none;">
         <form class="flex-container flexFlowColumn flexGap10 userCreateForm" action="javascript:void(0);">
             <div class="flex-container flexNoGap">
-                <span data-i18n="Display Name:">Display Name:</span>
+                <span>Display Name:</span>
                 <span class="warning">*</span>
                 <input name="_name" class="createUserDisplayName text_pole" type="text" placeholder="e.g. John Snow" autocomplete="username">
             </div>
             <div class="flex-container flexNoGap">
-                <span data-i18n="User Handle:">User Handle:</span>
+                <span>User Handle:</span>
                 <span class="warning">*</span>
                 <input name="handle" class="createUserHandle text_pole" placeholder="e.g. john-snow (lowercase letters, numbers, and dashes only)" type="text" pattern="[a-z0-9-]+">
             </div>
             <div class="flex-container flexNoGap">
-                <span data-i18n="Password:">Password:</span>
+                <span>Password:</span>
                 <input name="password" class="createUserPassword text_pole" type="password" placeholder="[ No password ]" autocomplete="new-password">
             </div>
             <div class="flex-container flexNoGap">
-                <span data-i18n="Confirm Password:">Confirm Password:</span>
+                <span>Confirm Password:</span>
                 <input name="confirm" class="createUserConfirmPassword text_pole" type="password" placeholder="[ No password ]" autocomplete="new-password">
             </div>
-            <span data-i18n="This will create a new subfolder...">
-                This will create a new subfolder in the /data/ directory with the user's handle as the folder name.
-            </span>
+            <span>This will create a new subfolder in the /data/ directory with the user's handle as the folder name.</span>
             <div class="flex-container justifyCenter">
                 <button type="submit" class="menu_button menu_button_icon newUserRegisterFinalizeButton">
                     <i class="fa-fw fa-solid fa-user-plus"></i>
-                    <span data-i18n="Create">Create</span>
+                    <span>Create</span>
                 </button>
             </div>
         </form>

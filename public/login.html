@@ -10,7 +10,6 @@
     <meta name="darkreader-lock">
     <meta name="robots" content="noindex, nofollow" />
     <style>
-        /* Put critical CSS here. The rest should go in stylesheets. */
         body {
             background-color: rgb(36, 36, 37);
         }
@@ -27,9 +26,9 @@
     <link rel="manifest" crossorigin="use-credentials" href="manifest.json">
     <link href="webfonts/NotoSans/stylesheet.css" rel="stylesheet">
     <link href="webfonts/NotoSansMono/stylesheet.css" rel="stylesheet">
-    <!-- fontawesome webfonts-->
     <link href="css/fontawesome.min.css" rel="stylesheet">
     <link href="css/solid.min.css" rel="stylesheet">
+    <link href="css/brands.min.css" rel="stylesheet">
     <link href="css/user.css" rel="stylesheet">
     <title>Luker</title>
 </head>
@@ -44,29 +43,35 @@
                             <img src="img/logo.png" alt="Luker" class="logo">
                             <span>Welcome to Luker</span>
                         </h2>
-                        <h3 id="normalLoginPrompt">
-                            Select an Account
-                        </h3>
-                        <h3 id="discreetLoginPrompt">
-                            Enter Login Details
-                        </h3>
+                        <h3 id="normalLoginPrompt">Select an Account</h3>
+                        <h3 id="discreetLoginPrompt">Enter Login Details</h3>
                         <div id="userListBlock" class="wide100p">
                             <div id="userList" class="flex-container justifySpaceEvenly"></div>
                             <div id="handleEntryBlock" style="display:none;" class="flex-container flexFlowColumn alignItemsCenter">
                                 <input id="userHandle" class="text_pole" type="text" placeholder="User handle" autocomplete="username">
                             </div>
-                            <div id="passwordEntryBlock" style="display:none;"
-                                class="flex-container flexFlowColumn alignItemsCenter">
+                            <div id="passwordEntryBlock" style="display:none;" class="flex-container flexFlowColumn alignItemsCenter">
                                 <input id="userPassword" class="text_pole" type="password" placeholder="Password" autocomplete="current-password">
                                 <a id="recoverPassword" href="#" onclick="return false;">Forgot password?</a>
                                 <div class="flex-container">
                                     <div id="loginButton" class="menu_button">Login</div>
                                 </div>
                             </div>
-                            <div id="passwordRecoveryBlock" style="display:none;" class="flex-container flexFlowColumn alignItemsCenter">
-                                <div id="recoverMessage">
-                                    Recovery code has been posted to the server console.
+                            <div id="oauthLoginBlock" style="display:none;" class="flex-container flexFlowColumn alignItemsCenter">
+                                <div class="oauthLoginTitle">Or continue with</div>
+                                <div class="flex-container flexGap10 justifyCenter">
+                                    <a id="oauthGithubButton" class="menu_button menu_button_icon" href="#" style="display:none;">
+                                        <i class="fa-brands fa-github"></i>
+                                        <span>GitHub</span>
+                                    </a>
+                                    <a id="oauthDiscordButton" class="menu_button menu_button_icon" href="#" style="display:none;">
+                                        <i class="fa-brands fa-discord"></i>
+                                        <span>Discord</span>
+                                    </a>
                                 </div>
+                            </div>
+                            <div id="passwordRecoveryBlock" style="display:none;" class="flex-container flexFlowColumn alignItemsCenter">
+                                <div id="recoverMessage">Recovery code has been posted to the server console.</div>
                                 <input id="recoveryCode" class="text_pole" type="text" placeholder="Recovery code">
                                 <input id="newPassword" class="text_pole" type="password" placeholder="New password" autocomplete="new-password">
                                 <div class="flex-container flexGap10">
@@ -75,8 +80,7 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="neutral_warning" id="errorMessage">
-                        </div>
+                        <div class="neutral_warning" id="errorMessage"></div>
                     </div>
                 </div>
             </div>
