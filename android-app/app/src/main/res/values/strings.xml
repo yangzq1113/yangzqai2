@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Luker</string>
+    <string name="loading_runtime">正在启动本地 Luker 服务…</string>
+    <string name="loading_webview">服务已启动，正在载入界面…</string>
+    <string name="loading_failed">服务启动失败，请重启应用。</string>
+</resources>

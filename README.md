@@ -33,6 +33,17 @@ Use `getContext()` as the primary integration surface.
 Detailed migration and API notes:
 - [`docs/luker-api-migration.md`](docs/luker-api-migration.md)
 
+## Android (Backend-in-App)
+
+Luker now includes an Android app workspace at `android-app/` that runs backend locally on the phone and opens it via WebView (`127.0.0.1`).
+
+- Android project docs: [`android-app/README.md`](android-app/README.md)
+- CI workflow: [`.github/workflows/android-apk.yml`](.github/workflows/android-apk.yml)
+
+Release model:
+- Every commit/push builds debug APK artifacts.
+- Tag releases (`v*`) build signed release APK and attach it to GitHub Release assets.
+
 ## Upstream Resources (SillyTavern)
 
 - GitHub: <https://github.com/SillyTavern/SillyTavern>
