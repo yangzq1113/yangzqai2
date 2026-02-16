@@ -262,9 +262,11 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Event linking priority: when an event clearly involves participants/locations/threads, include links for those relations.',
     'If relation-worthy nodes are updated but links are missing, your response is incomplete.',
     'If you decide not to add links in this batch, explain why in <thought> section [6] with explicit evidence.',
-    'For event links, always set both target_type and target_title; avoid omitting target_type.',
-    'When providing links, set target_type whenever you can infer it from schema semantics; do not default everything to entity.',
-    'If link target title matches a known character/location/thread concept, use that specific type to avoid duplicate same-title nodes.',
+    'Link locator rule: use target_ref (same-batch temporary reference) or target_node_id (existing node id). Do not use title/type matching.',
+    'Create-time linking rule: if a node needs links now, include links in that create call instead of deferring.',
+    'Post-update linking rule: when only relations change, use luker_rpg_extract_link_upsert.',
+    'For each create call, you may set optional ref to name this new node for later same-batch links.',
+    'Event strict link rule: event create must include links. If truly no relation can be grounded, set links: [] and provide no_link_reason.',
     'Summary rule: summary is abstraction, not raw text copy.',
     'Summary quality: emphasize causality, turning points, commitments, outcomes, and unresolved hooks.',
     'Length guide for summary: target around 300 Chinese characters (soft limit).',
@@ -2585,6 +2587,7 @@ function buildDynamicExtractTools(schema = [], options = {}) {
         );
         const fieldSet = new Set(filteredFields);
         const createProperties = {
+            ref: { type: 'string' },
             evidence_seqs: {
                 type: 'array',
                 items: { type: 'integer' },
@@ -2597,19 +2600,22 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                 },
                 additionalProperties: false,
             },
+            no_link_reason: { type: 'string' },
             links: {
                 type: 'array',
                 items: {
                     type: 'object',
                     properties: {
-                        target_type: { type: 'string' },
-                        target_title: { type: 'string' },
-                        target_summary: { type: 'string' },
+                        target_ref: { type: 'string' },
+                        target_node_id: { type: 'string' },
                         relation: { type: 'string' },
                         direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                     },
-                    required: ['target_title'],
-                    additionalProperties: true,
+                    anyOf: [
+                        { required: ['target_ref'] },
+                        { required: ['target_node_id'] },
+                    ],
+                    additionalProperties: false,
                 },
             },
         };
@@ -2627,6 +2633,12 @@ function buildDynamicExtractTools(schema = [], options = {}) {
             editFieldProperties[field] = { type: 'string' };
         }
 
+        const createRequiredColumns = filteredRequiredColumns
+            .filter(field => fieldSet.has(field) || field === 'title');
+        if (typeId === 'event' && !createRequiredColumns.includes('links')) {
+            createRequiredColumns.push('links');
+        }
+
         tools.push({
             type: 'function',
             function: {
@@ -2641,7 +2653,7 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                 parameters: {
                     type: 'object',
                     properties: createProperties,
-                    required: filteredRequiredColumns.filter(field => fieldSet.has(field) || field === 'title'),
+                    required: createRequiredColumns,
                     additionalProperties: false,
                 },
             },
@@ -2731,6 +2743,63 @@ function buildDynamicExtractTools(schema = [], options = {}) {
         }
     }
 
+    const linkUpsertToolName = 'luker_rpg_extract_link_upsert';
+    tools.push({
+        type: 'function',
+        function: {
+            name: linkUpsertToolName,
+            description: 'Upsert relation edges between semantic nodes. Use this when only links change.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    source_ref: { type: 'string' },
+                    source_node_id: { type: 'string' },
+                    links: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                target_ref: { type: 'string' },
+                                target_node_id: { type: 'string' },
+                                relation: { type: 'string' },
+                                direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
+                            },
+                            anyOf: [
+                                { required: ['target_ref'] },
+                                { required: ['target_node_id'] },
+                            ],
+                            additionalProperties: false,
+                        },
+                    },
+                    evidence_seqs: {
+                        type: 'array',
+                        items: { type: 'integer' },
+                    },
+                    evidence_seq_range: {
+                        type: 'object',
+                        properties: {
+                            from_seq: { type: 'integer' },
+                            to_seq: { type: 'integer' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+                required: ['links'],
+                anyOf: [
+                    { required: ['source_ref'] },
+                    { required: ['source_node_id'] },
+                ],
+                additionalProperties: false,
+            },
+        },
+    });
+    specByToolName.set(linkUpsertToolName, {
+        ...buildSpecFallback('link', { tableName: 'link' }),
+        id: 'link',
+        op: 'link_upsert',
+        toolName: linkUpsertToolName,
+    });
+
     tools.push({
         type: 'function',
         function: {
@@ -2747,6 +2816,36 @@ function buildDynamicExtractTools(schema = [], options = {}) {
     });
 
     return { tools, specByToolName };
+}
+
+function normalizeExtractLinks(rawLinks) {
+    if (!Array.isArray(rawLinks)) {
+        return [];
+    }
+    const normalized = [];
+    for (const rawLink of rawLinks) {
+        const link = rawLink && typeof rawLink === 'object' ? rawLink : null;
+        if (!link) {
+            continue;
+        }
+        const targetRef = normalizeText(link?.target_ref || link?.targetRef || '');
+        const targetNodeId = normalizeText(link?.target_node_id || link?.targetNodeId || '');
+        if (!targetRef && !targetNodeId) {
+            continue;
+        }
+        const relation = normalizeText(link?.relation || 'related') || 'related';
+        const directionRaw = String(link?.direction || 'bidirectional').toLowerCase();
+        const direction = ['outgoing', 'incoming', 'bidirectional'].includes(directionRaw)
+            ? directionRaw
+            : 'bidirectional';
+        normalized.push({
+            targetRef,
+            targetNodeId,
+            relation,
+            direction,
+        });
+    }
+    return normalized;
 }
 
 function buildCreateFromDynamicToolCall(call, spec) {
@@ -2791,13 +2890,45 @@ function buildCreateFromDynamicToolCall(call, spec) {
             type: String(spec.id || '').trim().toLowerCase(),
             title: normalizeText(titleValue),
             fields,
-            links: Array.isArray(args.links) ? args.links : [],
+            ref: normalizeText(args.ref || ''),
+            links: normalizeExtractLinks(args.links),
+            noLinkReason: normalizeText(args.no_link_reason || ''),
+            hasLinksProp: Object.prototype.hasOwnProperty.call(args, 'links'),
             evidence_seqs: Array.isArray(args.evidence_seqs) ? args.evidence_seqs : [],
             evidence_seq_range: args.evidence_seq_range && typeof args.evidence_seq_range === 'object'
                 ? args.evidence_seq_range
                 : null,
         },
         missingRequired,
+    };
+}
+
+function buildLinkUpsertFromToolCall(call) {
+    if (!call || typeof call !== 'object') {
+        return { payload: null, invalidReason: 'Invalid call.' };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const sourceNodeId = normalizeText(args.source_node_id || '');
+    const sourceRef = normalizeText(args.source_ref || '');
+    if (!sourceNodeId && !sourceRef) {
+        return { payload: null, invalidReason: 'source_node_id or source_ref is required.' };
+    }
+    const links = normalizeExtractLinks(args.links);
+    if (links.length === 0) {
+        return { payload: null, invalidReason: 'links must contain at least one valid target.' };
+    }
+    return {
+        payload: {
+            op: 'link_upsert',
+            sourceNodeId,
+            sourceRef,
+            links,
+            evidence_seqs: Array.isArray(args.evidence_seqs) ? args.evidence_seqs : [],
+            evidence_seq_range: args.evidence_seq_range && typeof args.evidence_seq_range === 'object'
+                ? args.evidence_seq_range
+                : null,
+        },
+        invalidReason: '',
     };
 }
 
@@ -3266,6 +3397,16 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                     ops.push(deletion.payload);
                     continue;
                 }
+                if (spec.op === 'link_upsert') {
+                    const linkOp = buildLinkUpsertFromToolCall(call);
+                    if (!linkOp.payload) {
+                        invalid = true;
+                        retryReason = `Link call invalid: ${linkOp.invalidReason}`;
+                        break;
+                    }
+                    ops.push(linkOp.payload);
+                    continue;
+                }
                 if (spec.op === 'edit') {
                     const editOp = buildEditFromDynamicToolCall(call, spec);
                     if (!editOp.payload) {
@@ -3295,8 +3436,23 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
                     retryReason = `Type "${spec.id}" missing required columns: ${mapped.missingRequired.join(', ')}.`;
                     break;
                 }
+                const safeTypeId = String(spec.id || '').trim().toLowerCase();
+                if (safeTypeId === 'event') {
+                    if (!mapped.payload?.hasLinksProp) {
+                        invalid = true;
+                        retryReason = 'Event create must include links. Use links: [] with no_link_reason if no relation is grounded.';
+                        break;
+                    }
+                    const eventLinkCount = Array.isArray(mapped.payload?.links) ? mapped.payload.links.length : 0;
+                    const eventNoLinkReason = normalizeText(mapped.payload?.noLinkReason || '');
+                    if (eventLinkCount === 0 && !eventNoLinkReason) {
+                        invalid = true;
+                        retryReason = 'Event create has empty links. Provide no_link_reason when no links are grounded.';
+                        break;
+                    }
+                }
                 if (mapped.payload) {
-                    calledTypes.add(String(spec.id || '').trim().toLowerCase());
+                    calledTypes.add(safeTypeId);
                     ops.push({
                         op: 'create',
                         ...mapped.payload,
@@ -3509,26 +3665,51 @@ function upsertSemanticNode(store, item, settings = null, options = {}) {
     return target;
 }
 
+function resolveExtractNodeId(store, {
+    nodeId = '',
+    ref = '',
+} = {}, options = {}) {
+    const normalizedNodeId = normalizeText(nodeId || '');
+    if (normalizedNodeId) {
+        const directNode = store?.nodes?.[normalizedNodeId];
+        if (directNode && !directNode.archived && directNode.level === LEVEL.SEMANTIC) {
+            return normalizedNodeId;
+        }
+    }
+    const normalizedRef = normalizeText(ref || '');
+    if (!normalizedRef) {
+        return '';
+    }
+    const refIndex = options?.refIndex instanceof Map ? options.refIndex : null;
+    if (!refIndex) {
+        return '';
+    }
+    const refNodeId = normalizeText(refIndex.get(normalizedRef) || '');
+    if (!refNodeId) {
+        return '';
+    }
+    const mappedNode = store?.nodes?.[refNodeId];
+    if (!mappedNode || mappedNode.archived || mappedNode.level !== LEVEL.SEMANTIC) {
+        return '';
+    }
+    return refNodeId;
+}
+
 function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqTo: 0 }, options = {}) {
     if (!sourceNode || !Array.isArray(rawLinks) || rawLinks.length === 0) {
         return;
     }
 
     for (const link of rawLinks) {
-        const targetTitle = normalizeText(link?.target_title || '');
-        if (!targetTitle) {
+        const targetNodeId = resolveExtractNodeId(store, {
+            nodeId: link?.targetNodeId || link?.target_node_id || '',
+            ref: link?.targetRef || link?.target_ref || '',
+        }, options);
+        if (!targetNodeId) {
             continue;
         }
-
-        const targetNode = upsertSemanticNode(store, {
-            type: String(link?.target_type || 'entity').toLowerCase(),
-            title: targetTitle,
-            fields: {
-                summary: normalizeText(link?.target_summary || ''),
-            },
-            seqTo: Number.isFinite(Number(defaultSeqRange?.seqTo)) ? Number(defaultSeqRange.seqTo) : undefined,
-        }, null, options);
-        if (!targetNode) {
+        const targetNode = store?.nodes?.[targetNodeId];
+        if (!targetNode || targetNode.archived || targetNode.level !== LEVEL.SEMANTIC) {
             continue;
         }
 
@@ -3803,6 +3984,9 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
         return false;
     }
 
+    const extractionRefIndex = new Map();
+    const pendingLinkJobs = [];
+
     for (const item of operations) {
         const op = String(item?.op || 'create').trim().toLowerCase();
         if (op === 'delete') {
@@ -3849,6 +4033,16 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
             targetNode.seqTo = Math.max(Number(targetNode.seqTo || 0), Number(evidence.seqTo || 0));
             continue;
         }
+        if (op === 'link_upsert') {
+            const evidence = buildEvidenceSeqRange(item, extractBatch);
+            pendingLinkJobs.push({
+                sourceNodeId: normalizeText(item?.sourceNodeId || ''),
+                sourceRef: normalizeText(item?.sourceRef || ''),
+                links: Array.isArray(item?.links) ? item.links : [],
+                evidence,
+            });
+            continue;
+        }
         const type = String(item?.type || 'semantic').toLowerCase();
         const title = normalizeText(item?.title || '');
         if (!type) {
@@ -3863,14 +4057,38 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
             seqTo: evidence.seqTo,
         }, settings, { maxSeq: extractionMaxSeq });
         if (targetNode) {
-            applyExtractedLinks(
-                store,
-                targetNode,
-                Array.isArray(item?.links) ? item.links : [],
+            const ref = normalizeText(item?.ref || '');
+            if (ref) {
+                extractionRefIndex.set(ref, targetNode.id);
+            }
+            pendingLinkJobs.push({
+                sourceNodeId: targetNode.id,
+                sourceRef: '',
+                links: Array.isArray(item?.links) ? item.links : [],
                 evidence,
-                { maxSeq: extractionMaxSeq },
-            );
+            });
         }
+    }
+
+    for (const job of pendingLinkJobs) {
+        const sourceNodeId = resolveExtractNodeId(store, {
+            nodeId: job?.sourceNodeId || '',
+            ref: job?.sourceRef || '',
+        }, { refIndex: extractionRefIndex });
+        if (!sourceNodeId) {
+            continue;
+        }
+        const sourceNode = store?.nodes?.[sourceNodeId];
+        if (!sourceNode || sourceNode.archived || sourceNode.level !== LEVEL.SEMANTIC) {
+            continue;
+        }
+        applyExtractedLinks(
+            store,
+            sourceNode,
+            Array.isArray(job?.links) ? job.links : [],
+            job?.evidence || { seqTo: 0 },
+            { maxSeq: extractionMaxSeq, refIndex: extractionRefIndex },
+        );
     }
 
     await runCompressionLoop(context, store, settings, {
