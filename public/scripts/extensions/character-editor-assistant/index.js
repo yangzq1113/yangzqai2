@@ -164,7 +164,6 @@ function registerLocaleData() {
         'Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.': '请查看模型分析并可补充要求。点“保存并更新”将应用模型修改；点“取消并恢复旧世界书”会恢复导入前绑定。',
         'Analyzing lorebook differences with model...': '正在用模型分析世界书差异...',
         'Model analysis failed: ${0}': '模型分析失败：${0}',
-        'Optional requirements (tell model what to keep or adjust before saving):': '可选要求（告诉模型在保存前应保留/调整哪些内容）：',
         'No analysis output.': '模型未返回分析内容。',
         'Model analysis is still running. Please wait or cancel to restore previous lorebook.': '模型分析仍在进行中。请等待或取消并恢复旧世界书。',
         'Finalize lorebook replacement: ${0} -> ${1}': '世界书替换完成：${0} -> ${1}',
@@ -237,7 +236,6 @@ function registerLocaleData() {
         'Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.': '請查看模型分析並可補充要求。按「儲存並更新」將套用模型修改；按「取消並恢復舊世界書」會恢復匯入前綁定。',
         'Analyzing lorebook differences with model...': '正在用模型分析世界書差異...',
         'Model analysis failed: ${0}': '模型分析失敗：${0}',
-        'Optional requirements (tell model what to keep or adjust before saving):': '可選要求（告訴模型在儲存前應保留/調整哪些內容）：',
         'No analysis output.': '模型未回傳分析內容。',
         'Model analysis is still running. Please wait or cancel to restore previous lorebook.': '模型分析仍在進行中。請等待或取消並恢復舊世界書。',
         'Finalize lorebook replacement: ${0} -> ${1}': '世界書替換完成：${0} -> ${1}',
@@ -1106,7 +1104,6 @@ function buildLorebookSyncDialogHtml(plan) {
         <textarea class="text_pole textarea_compact" rows="4" data-cea-sync-input placeholder="${escapeHtml(i18n('Type your requirement to continue this conversation...'))}"></textarea>
         <div class="menu_button menu_button_small" data-cea-sync-send>${escapeHtml(i18n('Send'))}</div>
     </div>
-    <div class="cea_sync_input_hint">${escapeHtml(i18n('Optional requirements (tell model what to keep or adjust before saving):'))}</div>
     <details class="cea_sync_history">
         <summary>${escapeHtml(i18n('History'))}</summary>
         <div class="cea_sync_history_list" data-cea-sync-history></div>
@@ -3054,7 +3051,6 @@ function ensureStyles() {
     width: fit-content;
     min-width: 4.2em;
 }
-.popup .cea_sync_input_hint { opacity:0.8; font-size:0.9em; }
 .popup .cea_sync_history { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
 .popup .cea_sync_history > summary { cursor:pointer; font-weight:600; opacity:0.9; }
 .popup .cea_sync_history_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
