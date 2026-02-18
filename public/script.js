@@ -1879,7 +1879,7 @@ export async function deleteLastMessage() {
     });
 }
 
-async function getChatBoundLorebookName(chatFile, groupId = null) {
+async function getChatBoundLorebookName(chatFile, groupId = null, { avatarUrl = '', characterName = '' } = {}) {
     const normalizedFileName = String(chatFile || '').trim().replace(/\.jsonl$/i, '');
     if (!normalizedFileName) {
         return '';
@@ -1902,8 +1902,8 @@ async function getChatBoundLorebookName(chatFile, groupId = null) {
             return typeof metadata?.world_info === 'string' ? metadata.world_info.trim() : '';
         }
 
-        const avatarUrl = String(characters?.[this_chid]?.avatar || '').trim();
-        if (!avatarUrl) {
+        const resolvedAvatarUrl = String(avatarUrl || characters?.[this_chid]?.avatar || '').trim();
+        if (!resolvedAvatarUrl) {
             return '';
         }
 
@@ -1911,9 +1911,9 @@ async function getChatBoundLorebookName(chatFile, groupId = null) {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                ch_name: String(characters?.[this_chid]?.name || name2 || ''),
+                ch_name: String(characterName || characters?.[this_chid]?.name || name2 || ''),
                 file_name: normalizedFileName,
-                avatar_url: avatarUrl,
+                avatar_url: resolvedAvatarUrl,
             }),
         });
 
@@ -1930,10 +1930,10 @@ async function getChatBoundLorebookName(chatFile, groupId = null) {
     }
 }
 
-async function maybeDeleteChatBoundLorebook(chatFile, groupId = null) {
-    const lorebookName = await getChatBoundLorebookName(chatFile, groupId);
+async function maybeDeleteChatBoundLorebook(chatFile, groupId = null, { avatarUrl = '', characterName = '' } = {}) {
+    const lorebookName = await getChatBoundLorebookName(chatFile, groupId, { avatarUrl, characterName });
     if (!lorebookName) {
-        return;
+        return { lorebookName: '', deleted: false };
     }
 
     const safeLorebookName = DOMPurify.sanitize(lorebookName);
@@ -1945,13 +1945,51 @@ async function maybeDeleteChatBoundLorebook(chatFile, groupId = null) {
     const result = await callGenericPopup(promptHtml, POPUP_TYPE.CONFIRM);
 
     if (result !== POPUP_RESULT.AFFIRMATIVE) {
-        return;
+        return { lorebookName, deleted: false };
     }
 
     const deleted = await deleteWorldInfo(lorebookName);
     if (!deleted) {
         toastr.warning(t`Lorebook could not be deleted.`, t`Delete Chat`);
     }
+
+    return { lorebookName, deleted: Boolean(deleted) };
+}
+
+function getCharacterBoundImportedLorebookName(character) {
+    const boundLorebook = String(character?.data?.extensions?.world || '').trim();
+    const embeddedBook = character?.data?.character_book;
+    if (!boundLorebook || !embeddedBook || !Array.isArray(embeddedBook?.entries)) {
+        return '';
+    }
+    return boundLorebook;
+}
+
+async function maybeDeleteCharacterBoundImportedLorebook(character, { alreadyPromptedLorebooks = new Set() } = {}) {
+    const lorebookName = getCharacterBoundImportedLorebookName(character);
+    if (!lorebookName || alreadyPromptedLorebooks.has(lorebookName)) {
+        return { lorebookName: '', deleted: false };
+    }
+
+    const safeLorebookName = DOMPurify.sanitize(lorebookName);
+    const promptHtml = [
+        `<h3>${t`Delete imported lorebook too?`}</h3>`,
+        `<p>${t`This character is bound to lorebook:`} <code>${safeLorebookName}</code></p>`,
+        `<p>${t`The character card includes an embedded lorebook for this binding.`}</p>`,
+        `<p>${t`If this lorebook is shared by other chats or characters, they will lose that binding too.`}</p>`,
+    ].join('');
+    const result = await callGenericPopup(promptHtml, POPUP_TYPE.CONFIRM);
+
+    if (result !== POPUP_RESULT.AFFIRMATIVE) {
+        return { lorebookName, deleted: false };
+    }
+
+    const deleted = await deleteWorldInfo(lorebookName);
+    if (!deleted) {
+        toastr.warning(t`Lorebook could not be deleted.`, t`Delete Character`);
+    }
+
+    return { lorebookName, deleted: Boolean(deleted) };
 }
 
 /**
@@ -12366,6 +12404,30 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
 
         const chid = characters.indexOf(character);
         const pastChats = await getPastCharacterChats(chid);
+        const promptedLorebooks = new Set();
+
+        if (deleteChats) {
+            for (const chat of pastChats) {
+                const fileName = String(chat?.file_name || '').trim().replace(/\.jsonl$/i, '');
+                if (!fileName) {
+                    continue;
+                }
+                const result = await maybeDeleteChatBoundLorebook(fileName, null, {
+                    avatarUrl: character.avatar,
+                    characterName: character.name,
+                });
+                if (result?.lorebookName) {
+                    promptedLorebooks.add(result.lorebookName);
+                }
+            }
+        }
+
+        const importedLorebookResult = await maybeDeleteCharacterBoundImportedLorebook(character, {
+            alreadyPromptedLorebooks: promptedLorebooks,
+        });
+        if (importedLorebookResult?.lorebookName) {
+            promptedLorebooks.add(importedLorebookResult.lorebookName);
+        }
 
         const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
 
