@@ -1,4 +1,4 @@
-import { CONNECT_API_MAP, saveSettings, saveSettingsDebounced, buildObjectPatchOperations } from '../../../script.js';
+import { CONNECT_API_MAP, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
@@ -856,7 +856,6 @@ const API_ALIAS_TO_CHAT_SOURCE = {
 const extractionTimers = new Map();
 const memoryStoreCache = new Map();
 const memoryStoreTargets = new Map();
-const memoryStorePersistedSnapshots = new Map();
 const memoryLoadTasks = new Map();
 let activeRuntimeInfoToast = null;
 let activeRecallAbortController = null;
@@ -1378,24 +1377,6 @@ async function loadMemoryStoreByTarget(context, target) {
     return normalizeStoreForRuntime(data || createEmptyStore());
 }
 
-function buildMemoryStorePatchOperations(previousStore, nextStore) {
-    return buildObjectPatchOperations(previousStore, nextStore, { maxOperations: 16000 });
-}
-
-async function patchMemoryStoreByTarget(context, target, operations) {
-    const ops = Array.isArray(operations) ? operations.filter(Boolean) : [];
-    if (ops.length === 0) {
-        return;
-    }
-    if (typeof context.patchChatState !== 'function') {
-        throw new Error('Chat state patch API is unavailable in extension context.');
-    }
-    const ok = await context.patchChatState(CHAT_STATE_NAMESPACE, ops, { target });
-    if (!ok) {
-        throw new Error('Failed to patch memory store.');
-    }
-}
-
 async function deleteMemoryStoreByTarget(context, target) {
     if (typeof context.deleteChatState !== 'function') {
         throw new Error('Chat state delete API is unavailable in extension context.');
@@ -1521,7 +1502,6 @@ async function ensureMemoryStoreLoaded(context, { force = false, targetHint = nu
     const task = (async () => {
         const loaded = await loadMemoryStoreByTarget(context, target);
         memoryStoreCache.set(chatKey, loaded);
-        memoryStorePersistedSnapshots.set(chatKey, structuredClone(loaded));
         return loaded;
     })();
     memoryLoadTasks.set(chatKey, task);
@@ -1543,13 +1523,18 @@ async function persistMemoryStoreByChatKey(context, chatKey, store) {
     if (!target) {
         return;
     }
-    const previous = memoryStorePersistedSnapshots.get(chatKey) || null;
-    const operations = buildMemoryStorePatchOperations(previous, store);
-    if (operations.length === 0) {
-        return;
+    if (typeof context.updateChatState !== 'function') {
+        throw new Error('Chat state update API is unavailable in extension context.');
     }
-    await patchMemoryStoreByTarget(context, target, operations);
-    memoryStorePersistedSnapshots.set(chatKey, structuredClone(store));
+    const nextStore = normalizeStoreForRuntime(store);
+    const result = await context.updateChatState(
+        CHAT_STATE_NAMESPACE,
+        () => nextStore,
+        { target, maxOperations: 16000 },
+    );
+    if (!result?.ok) {
+        throw new Error('Failed to persist memory store.');
+    }
 }
 
 function normalizeText(text) {
@@ -8914,7 +8899,6 @@ function bindUi() {
             memoryStoreTargets.set(chatKey, target);
         }
         memoryStoreCache.set(chatKey, createEmptyStore());
-        memoryStorePersistedSnapshots.delete(chatKey);
         if (target) {
             await deleteMemoryStoreByTarget(context, target);
         }

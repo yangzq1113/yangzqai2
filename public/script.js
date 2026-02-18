@@ -8383,6 +8383,79 @@ export async function patchChatState(namespace, operations, options = {}) {
 }
 
 /**
+ * Updates chat-bound plugin state by applying a reducer against the latest server state.
+ * @param {string} namespace Chat state namespace.
+ * @param {(currentState: object, meta?: { attempt: number, target: object, namespace: string }) => (object|null|undefined|Promise<object|null|undefined>)} updater
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit chat target.
+ * @param {number} [options.maxOperations] Max patch ops before fallback replace patch is used.
+ * @param {number} [options.maxRetries] Number of retry rounds when patch update fails.
+ * @returns {Promise<{ ok: boolean, state: object|null, updated: boolean }>} Update result.
+ */
+export async function updateChatState(namespace, updater, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace || typeof updater !== 'function') {
+            return { ok: false, state: null, updated: false };
+        }
+
+        const target = resolveChatStateTarget(options?.target || null);
+        if (!target) {
+            return { ok: false, state: null, updated: false };
+        }
+
+        const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
+            ? Number(options.maxOperations)
+            : 2000;
+        const maxRetries = Number.isInteger(options?.maxRetries) && options.maxRetries >= 0
+            ? Number(options.maxRetries)
+            : 1;
+
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            const currentStateRaw = await getChatState(stateNamespace, { target });
+            const currentState = normalizeJsonObject(currentStateRaw);
+            const nextStateRaw = await updater(cloneJsonValue(currentState), {
+                attempt,
+                target: cloneJsonValue(target),
+                namespace: stateNamespace,
+            });
+
+            if (nextStateRaw === undefined || nextStateRaw === null) {
+                return {
+                    ok: true,
+                    state: currentState,
+                    updated: false,
+                };
+            }
+
+            const nextState = normalizeJsonObject(nextStateRaw);
+            const operations = buildObjectPatchOperations(currentState, nextState, { maxOperations });
+            if (operations.length === 0) {
+                return {
+                    ok: true,
+                    state: nextState,
+                    updated: false,
+                };
+            }
+
+            const ok = await patchChatState(stateNamespace, operations, { target });
+            if (ok) {
+                return {
+                    ok: true,
+                    state: nextState,
+                    updated: true,
+                };
+            }
+        }
+
+        return { ok: false, state: null, updated: false };
+    } catch (error) {
+        console.warn('Incremental chat state update failed', error);
+        return { ok: false, state: null, updated: false };
+    }
+}
+
+/**
  * Deletes chat-bound plugin state payload for namespace.
  * @param {string} namespace Chat state namespace.
  * @param {object} [options] Additional options.
@@ -13845,6 +13918,39 @@ jQuery(async function () {
             } break;
             case 'replace_update': {
                 let onlineUrl = getCharacterSource(this_chid);
+                const previousCharacter = (characters[this_chid] && typeof characters[this_chid] === 'object')
+                    ? (typeof structuredClone === 'function'
+                        ? structuredClone(characters[this_chid])
+                        : JSON.parse(JSON.stringify(characters[this_chid])))
+                    : null;
+                const previousAvatar = String(previousCharacter?.avatar || characters[this_chid]?.avatar || '').trim();
+
+                async function emitCharacterReplacedEvent() {
+                    try {
+                        if (previousAvatar) {
+                            await getOneCharacter(previousAvatar);
+                        }
+                        const replacedIndex = previousAvatar
+                            ? characters.findIndex(item => String(item?.avatar || '').trim() === previousAvatar)
+                            : this_chid;
+                        const replacedCharacter = replacedIndex >= 0
+                            ? characters[replacedIndex]
+                            : characters[this_chid];
+                        if (!replacedCharacter) {
+                            return;
+                        }
+                        await eventSource.emit(event_types.CHARACTER_REPLACED, {
+                            detail: {
+                                id: replacedIndex >= 0 ? replacedIndex : this_chid,
+                                character: replacedCharacter,
+                                previousCharacter,
+                                source: 'replace_update',
+                            },
+                        });
+                    } catch (error) {
+                        console.warn('Failed to emit character replaced event', error);
+                    }
+                }
 
                 const POPUP_RESULT_URL = POPUP_RESULT.CUSTOM1, POPUP_RESULT_FILE = POPUP_RESULT.CUSTOM2;
                 const result = await Popup.show.confirm(t`Replace Character`,
@@ -13884,6 +13990,7 @@ jQuery(async function () {
                                 data.set(file, characters[this_chid].avatar);
                                 await processDroppedFiles([file], data);
                                 await postReplace();
+                                await emitCharacterReplacedEvent();
                             } catch {
                                 toastr.error('Failed to replace the character card.', 'Something went wrong');
                             }
@@ -13902,6 +14009,7 @@ jQuery(async function () {
                         onlineUrl = inputUrl;
                         await importFromExternalUrl(onlineUrl, { preserveFileName: characters[this_chid].avatar });
                         await postReplace();
+                        await emitCharacterReplacedEvent();
                         break;
                     }
                 }

@@ -1,6 +1,5 @@
 import {
     CONNECT_API_MAP,
-    buildObjectPatchOperations,
     converter,
     extension_prompt_roles,
     extension_prompt_types,
@@ -100,7 +99,6 @@ const API_ALIAS_TO_CHAT_SOURCE = {
 };
 
 const stateCache = new Map();
-const snapshotCache = new Map();
 const lorebookSnapshotCache = new Map();
 const lorebookSyncDialogLocks = new Set();
 
@@ -268,10 +266,6 @@ function clone(value) {
         return undefined;
     }
     return typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
-}
-
-function isPlainObject(value) {
-    return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function notifySuccess(message) {
@@ -591,48 +585,33 @@ function normalizeOperationState(state) {
     return normalized;
 }
 
-function normalizePersistedOperationSnapshot(state) {
-    return isPlainObject(state) ? clone(state) : {};
-}
-
 async function loadOperationState(context, { force = false } = {}) {
     const chatKey = getChatKey(context);
     if (!force && stateCache.has(chatKey)) {
         return clone(stateCache.get(chatKey));
     }
     const loaded = await context.getChatState(CHAT_STATE_NAMESPACE) || null;
-    const persistedSnapshot = normalizePersistedOperationSnapshot(loaded);
-    const normalized = normalizeOperationState(persistedSnapshot);
+    const normalized = normalizeOperationState(loaded);
     stateCache.set(chatKey, clone(normalized));
-    // Keep an exact server-shape snapshot for diffing, so first write uses `add` not invalid `replace`.
-    snapshotCache.set(chatKey, persistedSnapshot);
     return normalized;
 }
 
 async function persistOperationState(context, state) {
     const chatKey = getChatKey(context);
     const next = normalizeOperationState(state);
-    const previousSnapshot = normalizePersistedOperationSnapshot(snapshotCache.get(chatKey));
-
-    const applyPatchFrom = async (baseSnapshot) => {
-        const operations = buildObjectPatchOperations(normalizePersistedOperationSnapshot(baseSnapshot), next, { maxOperations: 5000 });
-        if (operations.length === 0) {
-            return true;
-        }
-        return await context.patchChatState(CHAT_STATE_NAMESPACE, operations);
-    };
-
-    let ok = await applyPatchFrom(previousSnapshot);
-    if (!ok) {
-        // Rebase once from freshest server state, then rebuild operations to avoid stale/invalid replace paths.
-        const latestSnapshot = normalizePersistedOperationSnapshot(await context.getChatState(CHAT_STATE_NAMESPACE));
-        ok = await applyPatchFrom(latestSnapshot);
-        if (!ok) {
-            throw new Error('Failed to persist operation state.');
-        }
+    if (typeof context.updateChatState !== 'function') {
+        throw new Error('Chat state update API is unavailable in extension context.');
     }
-    snapshotCache.set(chatKey, clone(next));
-    stateCache.set(chatKey, clone(next));
+    const result = await context.updateChatState(
+        CHAT_STATE_NAMESPACE,
+        () => next,
+        { maxOperations: 5000 },
+    );
+    if (!result?.ok) {
+        throw new Error('Failed to persist operation state.');
+    }
+    const persisted = normalizeOperationState(result.state || next);
+    stateCache.set(chatKey, clone(persisted));
 }
 
 function nextStateId(state, prefix = 'op') {
@@ -2677,12 +2656,18 @@ function ensureStyles() {
 .popup .cea_sync_chat_msg th, .popup .cea_sync_chat_msg td { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); padding:4px 6px; vertical-align:top; }
 .popup .cea_sync_popup .menu_button,
 .popup .cea_sync_popup .menu_button_small {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: auto;
     min-width: max-content;
     white-space: nowrap;
+    line-height: 1.2;
     writing-mode: horizontal-tb;
     text-orientation: mixed;
 }
+.popup .cea_sync_chat_text,
+.popup .cea_sync_chat_text :is(p, ul, ol, li, pre, table, th, td, h1, h2, h3, h4) { text-align:start; }
 .popup .cea_sync_turn_diff { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
 .popup .cea_sync_turn_diff > summary { cursor:pointer; font-weight:600; opacity:0.9; }
 .popup .cea_sync_turn_diff_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
@@ -2702,7 +2687,11 @@ function ensureStyles() {
 .popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
 .popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
 .popup .cea_sync_composer { display:flex; flex-direction:column; gap:8px; }
-.popup .cea_sync_composer [data-cea-sync-send] { align-self:flex-end; }
+.popup .cea_sync_composer [data-cea-sync-send] {
+    align-self:flex-end;
+    width: fit-content;
+    min-width: 4.2em;
+}
 .popup .cea_sync_input_hint { opacity:0.8; font-size:0.9em; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
