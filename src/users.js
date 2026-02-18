@@ -46,6 +46,7 @@ const QUOTA_ENFORCED_PATH_PREFIXES = [
     '/api/characters/edit',
     '/api/characters/import',
     '/api/characters/duplicate',
+    '/api/characters/state/set',
     '/api/settings/save',
     '/api/settings/patch',
     '/api/images/upload',

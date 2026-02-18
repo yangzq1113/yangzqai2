@@ -14,7 +14,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, tryReadFileSync, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
 import { readWorldInfoFile } from './worldinfo.js';
@@ -34,6 +34,8 @@ const isAndroid = process.platform === 'android';
 // Use shallow character data for the character list
 const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
+const CHARACTER_STATE_FILE_PREFIX = '.state.';
+const CHARACTER_STATE_FILE_SUFFIX = '.json';
 
 class DiskCache {
     /**
@@ -1053,6 +1055,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     const newAvatarName = `${newInternalName}.png`;
 
     const oldAvatarPath = path.join(request.user.directories.characters, oldAvatarName);
+    const newAvatarPath = path.join(request.user.directories.characters, newAvatarName);
 
     const oldChatsPath = path.join(request.user.directories.chats, oldInternalName);
     const newChatsPath = path.join(request.user.directories.chats, newInternalName);
@@ -1075,6 +1078,8 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             fs.cpSync(oldChatsPath, newChatsPath, { recursive: true });
             fs.rmSync(oldChatsPath, { recursive: true, force: true });
         }
+
+        renameAllCharacterStateSidecars(oldAvatarPath, newAvatarPath);
 
         // Remove the old character file
         fs.unlinkSync(oldAvatarPath);
@@ -1282,6 +1287,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(400);
     }
 
+    deleteAllCharacterStateSidecars(avatarPath);
     fs.unlinkSync(avatarPath);
     invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
     let dir_name = (request.body.avatar_url.replace('.png', ''));
@@ -1350,6 +1356,99 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
     }
 });
 
+router.post('/state/get', validateAvatarUrlMiddleware, function (request, response) {
+    try {
+        const avatarUrl = sanitize(String(request.body?.avatar_url || '').trim());
+        const namespace = normalizeCharacterStateNamespace(request.body?.namespace);
+        if (!avatarUrl) {
+            return response.status(400).send({ error: 'Expected body.avatar_url string.' });
+        }
+        if (!namespace) {
+            return response.status(400).send({ error: 'Expected body.namespace string.' });
+        }
+
+        const characterPath = path.join(request.user.directories.characters, avatarUrl);
+        const stateFilePath = getCharacterStateSidecarPath(characterPath, namespace);
+        if (!stateFilePath || !fs.existsSync(stateFilePath)) {
+            return response.send({ ok: true, data: null });
+        }
+
+        const raw = tryReadFileSync(stateFilePath);
+        if (!raw) {
+            return response.send({ ok: true, data: null });
+        }
+
+        const parsed = tryParse(raw);
+        if (!_.isObjectLike(parsed) || Array.isArray(parsed)) {
+            console.warn(`Invalid character state sidecar JSON: ${stateFilePath}`);
+            return response.send({ ok: true, data: null });
+        }
+
+        return response.send({ ok: true, data: parsed });
+    } catch (error) {
+        console.error('Error reading character state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+router.post('/state/set', validateAvatarUrlMiddleware, function (request, response) {
+    try {
+        const avatarUrl = sanitize(String(request.body?.avatar_url || '').trim());
+        const namespace = normalizeCharacterStateNamespace(request.body?.namespace);
+        const state = request.body?.data;
+        if (!avatarUrl) {
+            return response.status(400).send({ error: 'Expected body.avatar_url string.' });
+        }
+        if (!namespace) {
+            return response.status(400).send({ error: 'Expected body.namespace string.' });
+        }
+        if (!_.isObjectLike(state) || Array.isArray(state)) {
+            return response.status(400).send({ error: 'Expected body.data object.' });
+        }
+
+        const characterPath = path.join(request.user.directories.characters, avatarUrl);
+        if (!fs.existsSync(characterPath)) {
+            return response.status(404).send({ error: 'Character not found.' });
+        }
+        const stateFilePath = getCharacterStateSidecarPath(characterPath, namespace);
+        if (!stateFilePath) {
+            return response.status(400).send({ error: 'Invalid namespace for state sidecar path.' });
+        }
+
+        fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+        writeFileAtomicSync(stateFilePath, JSON.stringify(state), 'utf8');
+        return response.send({ ok: true });
+    } catch (error) {
+        console.error('Error writing character state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+router.post('/state/delete', validateAvatarUrlMiddleware, function (request, response) {
+    try {
+        const avatarUrl = sanitize(String(request.body?.avatar_url || '').trim());
+        const namespace = normalizeCharacterStateNamespace(request.body?.namespace);
+        if (!avatarUrl) {
+            return response.status(400).send({ error: 'Expected body.avatar_url string.' });
+        }
+        if (!namespace) {
+            return response.status(400).send({ error: 'Expected body.namespace string.' });
+        }
+
+        const characterPath = path.join(request.user.directories.characters, avatarUrl);
+        const stateFilePath = getCharacterStateSidecarPath(characterPath, namespace);
+        if (!stateFilePath || !fs.existsSync(stateFilePath)) {
+            return response.send({ ok: true, deleted: false });
+        }
+
+        fs.unlinkSync(stateFilePath);
+        return response.send({ ok: true, deleted: true });
+    } catch (error) {
+        console.error('Error deleting character state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/chats', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!request.body) return response.sendStatus(400);
@@ -1402,6 +1501,71 @@ function getPngName(file, directories) {
         i++;
     }
     return file;
+}
+
+function normalizeCharacterStateNamespace(namespace) {
+    const raw = String(namespace || '').trim().toLowerCase();
+    if (!raw) {
+        return '';
+    }
+    return raw.replace(/[^a-z0-9._-]/g, '_').slice(0, 96);
+}
+
+function getCharacterStateSidecarPath(characterFilePath, namespace) {
+    const safeNamespace = normalizeCharacterStateNamespace(namespace);
+    if (!safeNamespace) {
+        return '';
+    }
+    const parsed = path.parse(characterFilePath);
+    return path.join(parsed.dir, `${parsed.name}${CHARACTER_STATE_FILE_PREFIX}${safeNamespace}${CHARACTER_STATE_FILE_SUFFIX}`);
+}
+
+function getAllCharacterStateSidecarPaths(characterFilePath) {
+    const parsed = path.parse(characterFilePath);
+    if (!fs.existsSync(parsed.dir)) {
+        return [];
+    }
+    const prefix = `${parsed.name}${CHARACTER_STATE_FILE_PREFIX}`;
+    const files = fs.readdirSync(parsed.dir, { withFileTypes: true });
+    return files
+        .filter(entry => entry.isFile())
+        .map(entry => entry.name)
+        .filter(fileName => fileName.startsWith(prefix) && fileName.endsWith(CHARACTER_STATE_FILE_SUFFIX))
+        .map(fileName => path.join(parsed.dir, fileName));
+}
+
+function renameAllCharacterStateSidecars(sourceCharacterPath, targetCharacterPath) {
+    const sourceParsed = path.parse(sourceCharacterPath);
+    const targetParsed = path.parse(targetCharacterPath);
+    const sourcePrefix = `${sourceParsed.name}${CHARACTER_STATE_FILE_PREFIX}`;
+    const targetPrefix = `${targetParsed.name}${CHARACTER_STATE_FILE_PREFIX}`;
+    const sourceFiles = getAllCharacterStateSidecarPaths(sourceCharacterPath);
+    if (sourceFiles.length === 0) {
+        return;
+    }
+
+    for (const sourceFilePath of sourceFiles) {
+        const sourceName = path.basename(sourceFilePath);
+        const namespaceWithSuffix = sourceName.slice(sourcePrefix.length);
+        const targetName = `${targetPrefix}${namespaceWithSuffix}`;
+        const targetFilePath = path.join(targetParsed.dir, targetName);
+        if (fs.existsSync(targetFilePath)) {
+            throw new Error(`Character state sidecar rename collision: ${targetFilePath}`);
+        }
+        fs.copyFileSync(sourceFilePath, targetFilePath);
+        fs.unlinkSync(sourceFilePath);
+    }
+}
+
+function deleteAllCharacterStateSidecars(characterFilePath) {
+    const sidecars = getAllCharacterStateSidecarPaths(characterFilePath);
+    for (const sidecarPath of sidecars) {
+        try {
+            fs.unlinkSync(sidecarPath);
+        } catch (error) {
+            console.warn('Failed to delete character state sidecar:', sidecarPath, error);
+        }
+    }
 }
 
 /**
