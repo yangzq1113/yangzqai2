@@ -11,6 +11,7 @@ import Handlebars from 'handlebars';
 import css from '@adobe/css-tools';
 import Bowser from 'bowser';
 import DiffMatchPatch from 'diff-match-patch';
+import { html as diff2htmlHtml } from 'diff2html';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
 import SVGInject from '@iconfu/svg-inject';
 import showdown from 'showdown';
@@ -89,6 +90,7 @@ export default {
     css,
     Bowser,
     DiffMatchPatch,
+    diff2htmlHtml,
     Readability,
     isProbablyReaderable,
     SVGInject,
@@ -114,6 +116,7 @@ export {
     css,
     Bowser,
     DiffMatchPatch,
+    diff2htmlHtml,
     Readability,
     isProbablyReaderable,
     SVGInject,
