@@ -328,18 +328,15 @@ async function postSetupTasks(result) {
     const browserLaunchHostname = await cliArgs.getBrowserLaunchHostname(result);
     const browserLaunchUrl = cliArgs.getBrowserLaunchUrl(browserLaunchHostname);
     const browserLaunchApp = String(getConfigValue('browserLaunch.browser', 'default') ?? '');
+    const isAndroid = process.platform === 'android';
 
-    if (cliArgs.browserLaunchEnabled) {
+    if (cliArgs.browserLaunchEnabled && !isAndroid) {
         try {
             // TODO: This should be converted to a regular import when support for Node 18 is dropped
             const openModule = await import('open');
             const { default: open, apps } = openModule;
 
             function getBrowsers() {
-                const isAndroid = process.platform === 'android';
-                if (isAndroid) {
-                    return {};
-                }
                 return {
                     'firefox': apps.firefox,
                     'chrome': apps.chrome,
@@ -357,6 +354,8 @@ async function postSetupTasks(result) {
         } catch (error) {
             console.error('Failed to launch the browser. Open the URL manually.', error);
         }
+    } else if (cliArgs.browserLaunchEnabled && isAndroid) {
+        console.log('Skipping automatic browser launch on Android runtime.');
     }
 
     setWindowTitle('Luker WebServer');

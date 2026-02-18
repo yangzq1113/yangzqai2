@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 FunnyCups (https://github.com/funnycups) -->
 <resources>
     <string name="app_name">Luker</string>
     <string name="loading_runtime">正在启动本地 Luker 服务…</string>
     <string name="loading_webview">服务已启动，正在载入界面…</string>
     <string name="loading_failed">服务启动失败，请重启应用。</string>
+    <string name="loading_failed_with_reason">服务启动失败：%1$s</string>
+    <string name="loading_failed_timeout">服务启动超时：本地服务未在预期时间内就绪。</string>
 </resources>

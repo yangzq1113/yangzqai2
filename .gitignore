@@ -15,7 +15,7 @@ public/NovelAI Settings/
 public/TextGen Settings/
 public/instruct/
 public/context/
-public/scripts/extensions/third-party/
+public/scripts/extensions/third-party/*
 public/stats.json
 /uploads/
 *.jsonl
@@ -35,7 +35,7 @@ whitelist.txt
 .idea/
 secrets.json
 /dist
-/backups/
+/backups/*
 public/movingUI/
 public/QuickReplies/
 content.log
@@ -46,10 +46,9 @@ access.log
 /cache/
 public/css/user.css
 public/error/
-/plugins/
-/data
-/default/scaffold
-public/scripts/extensions/third-party
+/plugins/*
+/data/*
+/default/scaffold/*
 /certs
 .aider*
 .env
@@ -57,3 +56,19 @@ public/scripts/extensions/third-party
 yarn.lock
 *.code-workspace
 test-results/
+gradle-*.zip
+*.jks
+*.keystore
+nodejs-mobile-android*.zip
+luker_bootstrap*.txt
+luker_*logcat*.txt
+luker_*crash*.txt
+.gradle-local/
+android-app/app/.cxx/
+android-app/app/.externalNativeBuild/
+!/backups/!README.md
+!/plugins/.gitkeep
+!/plugins/package.json
+!/data/.gitkeep
+!/default/scaffold/README.md
+!/public/scripts/extensions/third-party/.gitkeep

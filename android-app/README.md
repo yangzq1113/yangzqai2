@@ -18,13 +18,34 @@ From repository root:
 
 ```bash
 npm ci --omit=dev
+bash android-app/scripts/build-android-apk.sh debug
+```
+
+Equivalent manual steps:
+
+```bash
 node android-app/scripts/fetch-nodejs-mobile.mjs
-gradle -p android-app :app:assembleDebug
+android-app/gradlew -p android-app :app:assembleDebug
 ```
 
 Debug APK output:
 
 `android-app/app/build/outputs/apk/debug/app-debug.apk`
+
+Runtime fetch policy:
+
+- Default runtime asset:
+  - `https://github.com/funnycups/nodejs-mobile/releases/download/v1.0.1/nodejs-mobile-android.zip`
+- By default the script enforces `Node major >= 24`.
+- Override knobs:
+  - `NODEJS_MOBILE_ASSET_URL` (direct runtime zip URL)
+  - `NODEJS_MOBILE_ASSET_NAME` (optional display/name hint)
+  - `NODEJS_MOBILE_ASSET_FILE` (local runtime zip path; if omitted, `./nodejs-mobile-android.zip` is auto-detected when present)
+  - `NODEJS_MOBILE_RUNTIME_MAJOR` (manual major version hint when URL/name does not include version)
+  - `NODEJS_MOBILE_TAG` (`latest` or concrete tag, used when no direct asset URL is provided)
+  - `NODEJS_MOBILE_OWNER` / `NODEJS_MOBILE_REPO` (used when no direct asset URL is provided)
+  - `NODEJS_MOBILE_MIN_MAJOR` (default `24`)
+  - `NODEJS_MOBILE_ENFORCE_MIN_MAJOR` (`1` by default; set `0` to bypass)
 
 ## Release build (signed)
 
@@ -38,11 +59,17 @@ Set environment variables before Gradle release build:
 Then run:
 
 ```bash
-gradle -p android-app :app:assembleRelease
+bash android-app/scripts/build-android-apk.sh release
 ```
+
+## CI model
+
+- `push` on any branch: build debug APK artifact.
+- `release.published`: build signed release APK and upload to the GitHub Release.
+- `workflow_dispatch`: supports manual `debug` / `release` selection.
 
 ## Update model
 
 - No in-app APK auto-update is implemented.
 - Recommend GitHub Release distribution with user-side APK overlay install.
-- App data stays in app-private storage and survives overlay install.
+- App data stays in app-private storage (`files/luker-data`) and survives overlay install.

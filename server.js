@@ -13,5 +13,6 @@ process.chdir(serverDirectory);
 try {
     await import('./src/server-main.js');
 } catch (error) {
-    console.error('A critical error has occurred while starting the server:', error);
+    console.error('A critical error has occurred while starting the server:', error?.stack || error);
+    process.exitCode = 1;
 }

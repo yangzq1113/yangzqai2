@@ -5,10 +5,18 @@ plugins {
 
 val projectRootDir = rootProject.projectDir.parentFile
 val generatedNodeProjectDir = layout.buildDirectory.dir("generated/nodejs-project")
+val jniLibsDir = file("src/main/jniLibs")
+val availableNodeAbis = jniLibsDir
+    .listFiles()
+    ?.filter { it.isDirectory && File(it, "libnode.so").isFile }
+    ?.map { it.name }
+    ?.toSet()
+    ?: emptySet()
 
 val prepareNodeProject by tasks.registering(Sync::class) {
     from(projectRootDir) {
         include("server.js")
+        include("webpack.config.js")
         include("package.json")
         include("package-lock.json")
         include("plugins.js")
@@ -37,6 +45,8 @@ val prepareNodeProject by tasks.registering(Sync::class) {
 android {
     namespace = "com.luker.app"
     compileSdk = 34
+    
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.luker.app"
@@ -44,6 +54,21 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+
+        ndk {
+            if (availableNodeAbis.isNotEmpty()) {
+                abiFilters += availableNodeAbis
+            } else {
+                // Safe default for most real devices when libnode ABI set has not been prepared yet.
+                abiFilters += "arm64-v8a"
+            }
+        }
     }
 
     val releaseStoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
