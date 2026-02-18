@@ -181,6 +181,8 @@ function registerLocaleData() {
         'Proposed ${0} operations in this round.': '本轮拟议 ${0} 个操作。',
         'Operation ${0}': '操作 ${0}',
         'Raw arguments': '原始参数',
+        'Rollback to this round': '回退到本轮',
+        'Rolled back to selected round.': '已回退到所选轮次。',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
@@ -255,6 +257,8 @@ function registerLocaleData() {
         'Proposed ${0} operations in this round.': '本輪擬議 ${0} 個操作。',
         'Operation ${0}': '操作 ${0}',
         'Raw arguments': '原始參數',
+        'Rollback to this round': '回退到本輪',
+        'Rolled back to selected round.': '已回退到所選輪次。',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 配置）',
         '(missing)': '（缺失）',
@@ -1267,7 +1271,36 @@ function buildFinalLorebookOperationSpecsFromDraft(targetBook, baselineEntries, 
     return output;
 }
 
-function renderLorebookSyncTurnDiffHtml(message) {
+function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries, draftEntries, conversationMessages) {
+    const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
+    const safeBaselineEntries = baselineEntries && typeof baselineEntries === 'object' ? baselineEntries : {};
+
+    for (const key of Object.keys(safeDraftEntries)) {
+        delete safeDraftEntries[key];
+    }
+    for (const [key, value] of Object.entries(safeBaselineEntries)) {
+        safeDraftEntries[String(key)] = clone(value);
+    }
+
+    const list = Array.isArray(conversationMessages) ? conversationMessages : [];
+    for (const item of list) {
+        const operations = Array.isArray(item?.operations) ? item.operations : [];
+        if (operations.length === 0) {
+            if (item && typeof item === 'object') {
+                item.operations = [];
+                item.diffPreviews = [];
+            }
+            continue;
+        }
+        const draftRound = applyDraftOperationsAndBuildPreviews(targetBook, safeDraftEntries, operations);
+        if (item && typeof item === 'object') {
+            item.operations = draftRound.appliedOperations;
+            item.diffPreviews = draftRound.diffPreviews;
+        }
+    }
+}
+
+function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1) {
     const safeMessage = message && typeof message === 'object' ? message : {};
     const hasTurnData = Object.hasOwn(safeMessage, 'diffPreviews') || Object.hasOwn(safeMessage, 'operations');
     if (!hasTurnData) {
@@ -1275,6 +1308,7 @@ function renderLorebookSyncTurnDiffHtml(message) {
     }
     const previews = Array.isArray(safeMessage.diffPreviews) ? safeMessage.diffPreviews : [];
     const operations = Array.isArray(safeMessage.operations) ? safeMessage.operations : [];
+    const canRollbackRound = Number.isInteger(messageIndex) && messageIndex >= 0 && operations.length > 0;
     const summaryText = previews.length > 0
         ? i18nFormat('Round diff (${0} operations)', previews.length)
         : i18n('Round diff');
@@ -1283,6 +1317,10 @@ function renderLorebookSyncTurnDiffHtml(message) {
         return `
 <details class="cea_sync_turn_diff">
     <summary>${escapeHtml(summaryText)}</summary>
+    ${canRollbackRound ? `
+    <div class="cea_sync_turn_actions">
+        <div class="menu_button menu_button_small" data-cea-sync-action="rollback-round" data-cea-sync-message-index="${messageIndex}">${escapeHtml(i18n('Rollback to this round'))}</div>
+    </div>` : ''}
     <div class="cea_sync_turn_diff_empty">${escapeHtml(i18n('No draft operations proposed in this round.'))}</div>
 </details>`;
     }
@@ -1290,6 +1328,10 @@ function renderLorebookSyncTurnDiffHtml(message) {
     return `
 <details class="cea_sync_turn_diff" open>
     <summary>${escapeHtml(summaryText)}</summary>
+    ${canRollbackRound ? `
+    <div class="cea_sync_turn_actions">
+        <div class="menu_button menu_button_small" data-cea-sync-action="rollback-round" data-cea-sync-message-index="${messageIndex}">${escapeHtml(i18n('Rollback to this round'))}</div>
+    </div>` : ''}
     <div class="cea_sync_turn_diff_list">
         ${previews.map((preview, index) => {
             const fields = Array.isArray(preview?.fields) ? preview.fields : [];
@@ -1329,7 +1371,7 @@ function renderLorebookSyncTurnDiffHtml(message) {
 
 function renderLorebookSyncChatMessages(messages, { loading = false, loadingText = '' } = {}) {
     const list = Array.isArray(messages) ? messages : [];
-    const html = list.map(item => {
+    const html = list.map((item, index) => {
         const role = String(item?.role || 'assistant');
         const text = String(item?.content || '').trim();
         if (!text) {
@@ -1344,7 +1386,7 @@ function renderLorebookSyncChatMessages(messages, { loading = false, loadingText
         return `
 <div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
     <div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>
-    ${renderLorebookSyncTurnDiffHtml(item)}
+    ${renderLorebookSyncTurnDiffHtml(item, index)}
 </div>`;
     }).join('');
 
@@ -1788,6 +1830,36 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     input.disabled = Boolean(disabled);
                     sendBtn.classList.toggle('disabled', Boolean(disabled));
                 };
+                const rollbackToMessage = (messageIndex) => {
+                    const index = asFiniteInteger(messageIndex, -1);
+                    if (!Number.isInteger(index) || index < 0 || index >= conversationMessages.length) {
+                        return;
+                    }
+                    if (isSending || input.disabled) {
+                        notifyWarning(i18n('Assistant is thinking...'));
+                        return;
+                    }
+                    const targetMessage = conversationMessages[index];
+                    const hasOperations = Array.isArray(targetMessage?.operations) && targetMessage.operations.length > 0;
+                    if (!hasOperations) {
+                        return;
+                    }
+
+                    let removeFrom = index;
+                    const previous = removeFrom > 0 ? conversationMessages[removeFrom - 1] : null;
+                    if (String(targetMessage?.role || '') === 'assistant' && String(previous?.role || '') === 'user') {
+                        removeFrom -= 1;
+                    }
+                    conversationMessages.splice(removeFrom);
+                    rebuildLorebookDraftEntriesFromConversation(
+                        plan.targetBook,
+                        baselineTargetEntries,
+                        draftTargetEntries,
+                        conversationMessages,
+                    );
+                    renderConversation(false);
+                    notifySuccess(i18n('Rolled back to selected round.'));
+                };
                 const handleSend = async () => {
                     if (isSending || input.disabled) {
                         return;
@@ -1842,6 +1914,14 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                 };
 
                 sendBtn.addEventListener('click', () => void handleSend());
+                chat.addEventListener('click', (event) => {
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-action="rollback-round"]') : null;
+                    if (!(target instanceof HTMLElement)) {
+                        return;
+                    }
+                    const messageIndex = target.getAttribute('data-cea-sync-message-index');
+                    rollbackToMessage(messageIndex);
+                });
                 input.addEventListener('keydown', (event) => {
                     if (event.key !== 'Enter' || event.shiftKey) {
                         return;
@@ -2670,6 +2750,7 @@ function ensureStyles() {
 .popup .cea_sync_chat_text :is(p, ul, ol, li, pre, table, th, td, h1, h2, h3, h4) { text-align:start; }
 .popup .cea_sync_turn_diff { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
 .popup .cea_sync_turn_diff > summary { cursor:pointer; font-weight:600; opacity:0.9; }
+.popup .cea_sync_turn_actions { margin-top:8px; display:flex; justify-content:flex-end; }
 .popup .cea_sync_turn_diff_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .popup .cea_sync_turn_diff_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; }
 .popup .cea_sync_turn_diff_title { font-weight:600; margin-bottom:6px; }
