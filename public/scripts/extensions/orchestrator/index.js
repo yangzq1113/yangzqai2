@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
+
 import { CONNECT_API_MAP, extension_prompt_roles, extension_prompt_types, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';

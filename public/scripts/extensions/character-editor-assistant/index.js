@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
+
 import {
     CONNECT_API_MAP,
     converter,
