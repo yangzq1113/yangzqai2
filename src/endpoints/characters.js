@@ -560,6 +560,50 @@ function readFromV2(char) {
 }
 
 /**
+ * Normalize mirrored V1/V2 fields after merge-attributes updates.
+ * Keep root and data.* synchronized when either side is updated.
+ * @param {object} character
+ * @param {object} update
+ */
+function normalizeMirroredCharacterFields(character, update) {
+    if (!character || typeof character !== 'object' || !update || typeof update !== 'object') {
+        return;
+    }
+
+    const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+    const updateData = update.data && typeof update.data === 'object' ? update.data : null;
+    const mirroredFields = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+    const touchedMirroredField = mirroredFields.some((field) => hasOwn(update, field) || Boolean(updateData && hasOwn(updateData, field)));
+    const touchedCreatorNotesField = hasOwn(update, 'creatorcomment') || Boolean(updateData && hasOwn(updateData, 'creator_notes'));
+
+    if (!touchedMirroredField && !touchedCreatorNotesField) {
+        return;
+    }
+    if (!character.data || typeof character.data !== 'object') {
+        character.data = {};
+    }
+
+    for (const field of mirroredFields) {
+        const hasRoot = hasOwn(update, field);
+        const hasData = Boolean(updateData && hasOwn(updateData, field));
+        if (!hasRoot && !hasData) {
+            continue;
+        }
+        const nextValue = String((hasData ? updateData[field] : update[field]) ?? '');
+        _.set(character, field, nextValue);
+        _.set(character, `data.${field}`, nextValue);
+    }
+
+    const hasRootCreatorNotes = hasOwn(update, 'creatorcomment');
+    const hasDataCreatorNotes = Boolean(updateData && hasOwn(updateData, 'creator_notes'));
+    if (hasRootCreatorNotes || hasDataCreatorNotes) {
+        const nextValue = String((hasDataCreatorNotes ? updateData.creator_notes : update.creatorcomment) ?? '');
+        _.set(character, 'creatorcomment', nextValue);
+        _.set(character, 'data.creator_notes', nextValue);
+    }
+}
+
+/**
  * Format character data to Spec V2 format.
  * @param {object} data Character data
  * @param {import('../users.js').UserDirectoryList} directories User directories
@@ -1255,6 +1299,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         _.unset(character, 'json_data');
 
         character = deepMerge(character, update);
+        normalizeMirroredCharacterFields(character, update);
 
         const validator = new TavernCardValidator(character);
         const targetImg = (update.avatar).replace('.png', '');
