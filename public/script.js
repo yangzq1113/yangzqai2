@@ -150,6 +150,7 @@ import {
 
 import {
     debounce,
+    cancelDebounce,
     delay,
     trimToEndSentence,
     countOccurrences,
@@ -700,6 +701,7 @@ export const saveCharacterDebounced = debounce(() => $('#create_button').trigger
  * The printing will also always reprint all filter options of the global list, to keep them up to date.
  */
 export const printCharactersDebounced = debounce(() => { printCharacters(false); }, DEFAULT_PRINT_TIMEOUT);
+let isCharacterDeletionInProgress = false;
 
 /**
  * @enum {number} Extension prompt types
@@ -11275,6 +11277,10 @@ function addAlternateGreeting(template, greeting, index, getArray, popup) {
  * @param {Event} [e] Event that triggered the function call.
  */
 export async function createOrEditCharacter(e) {
+    if (isCharacterDeletionInProgress) {
+        return;
+    }
+
     $('#rm_info_avatar').html('');
     const formData = new FormData(/** @type {HTMLFormElement} */($('#form_create').get(0)));
     formData.set('fav', String(fav_ch_checked));
@@ -12390,76 +12396,82 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         }
     }
 
-    const closeChatResult = await closeCurrentChat();
-    if (!closeChatResult) {
-        return;
-    }
-
-    for (const key of characterKey) {
-        const character = characters.find(x => x.avatar == key);
-        if (!character) {
-            toastr.warning(t`Character ${key} not found. Skipping deletion.`);
-            continue;
+    cancelDebounce(saveCharacterDebounced);
+    isCharacterDeletionInProgress = true;
+    try {
+        const closeChatResult = await closeCurrentChat();
+        if (!closeChatResult) {
+            return;
         }
 
-        const chid = characters.indexOf(character);
-        const pastChats = await getPastCharacterChats(chid);
-        const promptedLorebooks = new Set();
+        for (const key of characterKey) {
+            const character = characters.find(x => x.avatar == key);
+            if (!character) {
+                toastr.warning(t`Character ${key} not found. Skipping deletion.`);
+                continue;
+            }
 
-        if (deleteChats) {
-            for (const chat of pastChats) {
-                const fileName = String(chat?.file_name || '').trim().replace(/\.jsonl$/i, '');
-                if (!fileName) {
-                    continue;
-                }
-                const result = await maybeDeleteChatBoundLorebook(fileName, null, {
-                    avatarUrl: character.avatar,
-                    characterName: character.name,
-                });
-                if (result?.lorebookName) {
-                    promptedLorebooks.add(result.lorebookName);
+            const chid = characters.indexOf(character);
+            const pastChats = await getPastCharacterChats(chid);
+            const promptedLorebooks = new Set();
+
+            if (deleteChats) {
+                for (const chat of pastChats) {
+                    const fileName = String(chat?.file_name || '').trim().replace(/\.jsonl$/i, '');
+                    if (!fileName) {
+                        continue;
+                    }
+                    const result = await maybeDeleteChatBoundLorebook(fileName, null, {
+                        avatarUrl: character.avatar,
+                        characterName: character.name,
+                    });
+                    if (result?.lorebookName) {
+                        promptedLorebooks.add(result.lorebookName);
+                    }
                 }
             }
-        }
 
-        const importedLorebookResult = await maybeDeleteCharacterBoundImportedLorebook(character, {
-            alreadyPromptedLorebooks: promptedLorebooks,
-        });
-        if (importedLorebookResult?.lorebookName) {
-            promptedLorebooks.add(importedLorebookResult.lorebookName);
-        }
-
-        const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
-
-        const response = await fetch('/api/characters/delete', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(msg),
-            cache: 'no-cache',
-        });
-
-        if (!response.ok) {
-            toastr.error(`${response.status} ${response.statusText}`, t`Failed to delete character`);
-            continue;
-        }
-
-        accountStorage.removeItem(`AlertWI_${character.avatar}`);
-        accountStorage.removeItem(`AlertRegex_${character.avatar}`);
-        accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
-        delete tag_map[character.avatar];
-        select_rm_info('char_delete', character.name);
-
-        if (deleteChats) {
-            for (const chat of pastChats) {
-                const name = chat.file_name.replace('.jsonl', '');
-                await eventSource.emit(event_types.CHAT_DELETED, name);
+            const importedLorebookResult = await maybeDeleteCharacterBoundImportedLorebook(character, {
+                alreadyPromptedLorebooks: promptedLorebooks,
+            });
+            if (importedLorebookResult?.lorebookName) {
+                promptedLorebooks.add(importedLorebookResult.lorebookName);
             }
+
+            const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
+
+            const response = await fetch('/api/characters/delete', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify(msg),
+                cache: 'no-cache',
+            });
+
+            if (!response.ok) {
+                toastr.error(`${response.status} ${response.statusText}`, t`Failed to delete character`);
+                continue;
+            }
+
+            accountStorage.removeItem(`AlertWI_${character.avatar}`);
+            accountStorage.removeItem(`AlertRegex_${character.avatar}`);
+            accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
+            delete tag_map[character.avatar];
+            select_rm_info('char_delete', character.name);
+
+            if (deleteChats) {
+                for (const chat of pastChats) {
+                    const name = chat.file_name.replace('.jsonl', '');
+                    await eventSource.emit(event_types.CHAT_DELETED, name);
+                }
+            }
+
+            await eventSource.emit(event_types.CHARACTER_DELETED, { id: chid, character: character });
         }
 
-        await eventSource.emit(event_types.CHARACTER_DELETED, { id: chid, character: character });
+        await removeCharacterFromUI();
+    } finally {
+        isCharacterDeletionInProgress = false;
     }
-
-    await removeCharacterFromUI();
 }
 
 /**
