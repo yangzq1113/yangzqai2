@@ -5,11 +5,13 @@ import { CONNECT_API_MAP, extension_prompt_roles, extension_prompt_types, saveSe
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
+import { diff2htmlHtml } from '../../../lib.js';
 
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
+const DIFF2HTML_STYLE_LINK_ID = 'luker_diff2html_style_link';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
@@ -246,11 +248,12 @@ function registerLocaleData() {
         'Pending approval': '待审批',
         'Approve changes': '批准执行',
         'Reject changes': '拒绝执行',
-        'View diff': '查看 diff',
         'Pending changes diff': '待审批变更详情',
-        'No diff details available.': '暂无可展示的差异详情。',
         'Before': '变更前',
         'After': '变更后',
+        'Line diff': '逐行差异',
+        'Line diff (+${0} -${1})': '逐行差异（+${0} -${1}）',
+        '...(${0} more lines)': '...（还有 ${0} 行）',
         'Not set': '未设置',
         'Raw arguments': '原始参数',
         'Operation ${0}': '操作 ${0}',
@@ -265,7 +268,6 @@ function registerLocaleData() {
         'Send to AI': '发送给 AI',
         'Stop': '终止',
         'Clear Session': '清空会话',
-        'New Session': '新建会话',
         'Apply to Global': '应用到全局',
         'Apply to Character': '应用到角色卡',
         'Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...': '输入给 AI 的需求，例如：保持紧凑节奏，并用我提供的场景做一次模拟...',
@@ -428,11 +430,12 @@ function registerLocaleData() {
         'Pending approval': '待審批',
         'Approve changes': '批准執行',
         'Reject changes': '拒絕執行',
-        'View diff': '查看 diff',
         'Pending changes diff': '待審批變更詳情',
-        'No diff details available.': '暫無可展示的差異詳情。',
         'Before': '變更前',
         'After': '變更後',
+        'Line diff': '逐行差異',
+        'Line diff (+${0} -${1})': '逐行差異（+${0} -${1}）',
+        '...(${0} more lines)': '...（還有 ${0} 行）',
         'Not set': '未設定',
         'Raw arguments': '原始參數',
         'Operation ${0}': '操作 ${0}',
@@ -447,7 +450,6 @@ function registerLocaleData() {
         'Send to AI': '傳送給 AI',
         'Stop': '終止',
         'Clear Session': '清空會話',
-        'New Session': '新建會話',
         'Apply to Global': '套用到全域',
         'Apply to Character': '套用到角色卡',
         'Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...': '輸入給 AI 的需求，例如：保持緊湊節奏，並用我提供的場景做一次模擬...',
@@ -3381,23 +3383,21 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
     };
 }
 
-function trimAiIterationMessages(session, maxMessages = 40) {
-    if (!session || !Array.isArray(session.messages)) {
+function trimAiIterationMessages(session) {
+    if (!session) {
         return;
     }
-    const limit = Math.max(10, Math.min(200, Math.floor(Number(maxMessages) || 40)));
-    if (session.messages.length > limit) {
-        session.messages = session.messages.slice(session.messages.length - limit);
+    if (!Array.isArray(session.messages)) {
+        session.messages = [];
     }
 }
 
-function trimAiIterationToolHistory(session, maxItems = 100) {
-    if (!session || !Array.isArray(session.toolHistory)) {
+function trimAiIterationToolHistory(session) {
+    if (!session) {
         return;
     }
-    const limit = Math.max(20, Math.min(500, Math.floor(Number(maxItems) || 100)));
-    if (session.toolHistory.length > limit) {
-        session.toolHistory = session.toolHistory.slice(session.toolHistory.length - limit);
+    if (!Array.isArray(session.toolHistory)) {
+        session.toolHistory = [];
     }
 }
 
@@ -3538,23 +3538,60 @@ function summarizeStageForUi(stage) {
     };
 }
 
-function renderAiIterationConversation(session) {
+function renderAiIterationConversation(session, { loading = false, loadingText = '' } = {}) {
     const items = Array.isArray(session?.messages) ? session.messages : [];
-    if (items.length === 0) {
+    if (items.length === 0 && !loading) {
         return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No messages yet. Start by telling AI what you want to optimize.'))}</div>`;
     }
-    return items.map((item) => {
+    const html = items.map((item) => {
         const role = String(item?.role || 'assistant').toLowerCase();
         const auto = Boolean(item?.auto);
         const label = auto ? 'AUTO' : (role === 'user' ? 'You' : 'AI');
         const bubbleClass = role === 'user' ? 'user' : 'assistant';
-        const text = String(item?.content || '').trim();
+        const text = stripIterationThoughtForDisplay(item?.content || '');
         return `
 <div class="luker_orch_iter_msg ${bubbleClass}">
     <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
     <div class="luker_orch_iter_msg_body">${escapeHtml(text || '(empty)')}</div>
 </div>`;
     }).join('');
+    if (!loading) {
+        return html;
+    }
+    const label = String(loadingText || i18n('AI iteration is running...'));
+    return `${html}
+<div class="luker_orch_iter_msg assistant loading">
+    <div class="luker_orch_iter_msg_body"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> ${escapeHtml(label)}</div>
+</div>`;
+}
+
+const AI_ITERATION_EDITABLE_TOOL_NAMES = new Set([
+    'luker_orch_set_stage',
+    'luker_orch_remove_stage',
+    'luker_orch_set_node',
+    'luker_orch_remove_node',
+    'luker_orch_set_preset',
+    'luker_orch_remove_preset',
+]);
+
+function isAiIterationEditableToolCallName(name) {
+    return AI_ITERATION_EDITABLE_TOOL_NAMES.has(String(name || '').trim());
+}
+
+function splitAiIterationToolCallsForApproval(toolCalls) {
+    const all = Array.isArray(toolCalls) ? toolCalls : [];
+    const approvalCalls = [];
+    for (const call of all) {
+        const name = String(call?.name || '').trim();
+        if (isAiIterationEditableToolCallName(name)) {
+            approvalCalls.push(call);
+            continue;
+        }
+    }
+    return {
+        allCalls: all,
+        approvalCalls,
+    };
 }
 
 function summarizeIterationToolCalls(toolCalls) {
@@ -3565,8 +3602,6 @@ function summarizeIterationToolCalls(toolCalls) {
         node_remove: 0,
         preset_set: 0,
         preset_remove: 0,
-        simulate: 0,
-        finalize: 0,
         other: 0,
     };
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
@@ -3577,8 +3612,6 @@ function summarizeIterationToolCalls(toolCalls) {
         else if (name === 'luker_orch_remove_node') counts.node_remove += 1;
         else if (name === 'luker_orch_set_preset') counts.preset_set += 1;
         else if (name === 'luker_orch_remove_preset') counts.preset_remove += 1;
-        else if (name === 'luker_orch_simulate') counts.simulate += 1;
-        else if (name === 'luker_orch_finalize_iteration') counts.finalize += 1;
         else counts.other += 1;
     }
     const lines = [];
@@ -3588,26 +3621,188 @@ function summarizeIterationToolCalls(toolCalls) {
     if (counts.node_remove > 0) lines.push(`删除节点 ${counts.node_remove}`);
     if (counts.preset_set > 0) lines.push(`更新预设 ${counts.preset_set}`);
     if (counts.preset_remove > 0) lines.push(`删除预设 ${counts.preset_remove}`);
-    if (counts.simulate > 0) lines.push(`执行模拟 ${counts.simulate}`);
-    if (counts.finalize > 0) lines.push(`完成迭代 ${counts.finalize}`);
     if (counts.other > 0) lines.push(`其他操作 ${counts.other}`);
     return lines;
 }
 
-function trimDiffText(value, maxLength = 1600) {
+function stripIterationThoughtForDisplay(value) {
     const text = String(value ?? '');
-    if (text.length <= maxLength) {
-        return text;
+    if (!text) {
+        return '';
     }
-    return `${text.slice(0, maxLength)}\n...(${text.length - maxLength} chars truncated)`;
+    const withoutBlocks = text.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, '');
+    const withoutTags = withoutBlocks.replace(/<\/?thought\b[^>]*>/gi, '');
+    return withoutTags.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function formatDiffValue(value) {
     const text = String(value ?? '').trim();
-    return text ? trimDiffText(text) : i18n('Not set');
+    return text ? text : i18n('Not set');
 }
 
-function buildAiIterationPendingDiffEntries(session, pending) {
+const LINE_DIFF_LONG_CHAR_THRESHOLD = 900;
+const LINE_DIFF_LONG_LINE_THRESHOLD = 18;
+const LINE_DIFF_LCS_MAX_CELLS = 240000;
+
+function splitLineDiffText(text) {
+    const normalized = String(text ?? '').replace(/\r\n/g, '\n');
+    return normalized.length > 0 ? normalized.split('\n') : [];
+}
+
+function buildLineDiffOperations(beforeLines, afterLines) {
+    const a = Array.isArray(beforeLines) ? beforeLines : [];
+    const b = Array.isArray(afterLines) ? afterLines : [];
+    if (a.length === 0 && b.length === 0) {
+        return [];
+    }
+    if (a.length === 0) {
+        return [{ type: 'insert', lines: b.slice() }];
+    }
+    if (b.length === 0) {
+        return [{ type: 'delete', lines: a.slice() }];
+    }
+    if ((a.length * b.length) > LINE_DIFF_LCS_MAX_CELLS) {
+        return [
+            { type: 'delete', lines: a.slice() },
+            { type: 'insert', lines: b.slice() },
+        ];
+    }
+
+    const dp = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+    for (let i = a.length - 1; i >= 0; i--) {
+        for (let j = b.length - 1; j >= 0; j--) {
+            dp[i][j] = a[i] === b[j]
+                ? (dp[i + 1][j + 1] + 1)
+                : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+    }
+
+    const operations = [];
+    const push = (type, line) => {
+        const last = operations[operations.length - 1];
+        if (last && last.type === type) {
+            last.lines.push(line);
+            return;
+        }
+        operations.push({ type, lines: [line] });
+    };
+
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+        if (a[i] === b[j]) {
+            push('equal', a[i]);
+            i += 1;
+            j += 1;
+            continue;
+        }
+        if (dp[i + 1][j] >= dp[i][j + 1]) {
+            push('delete', a[i]);
+            i += 1;
+            continue;
+        }
+        push('insert', b[j]);
+        j += 1;
+    }
+    while (i < a.length) {
+        push('delete', a[i]);
+        i += 1;
+    }
+    while (j < b.length) {
+        push('insert', b[j]);
+        j += 1;
+    }
+    return operations;
+}
+
+function buildLineDiffRows(beforeValue, afterValue) {
+    const beforeText = String(beforeValue ?? '');
+    const afterText = String(afterValue ?? '');
+    const operations = buildLineDiffOperations(splitLineDiffText(beforeText), splitLineDiffText(afterText));
+    const stats = { added: 0, removed: 0, unchanged: 0 };
+
+    for (const operation of operations) {
+        const type = String(operation?.type || 'equal');
+        const lines = Array.isArray(operation?.lines) ? operation.lines : [];
+        for (const line of lines) {
+            if (type === 'insert') {
+                stats.added += 1;
+                continue;
+            }
+            if (type === 'delete') {
+                stats.removed += 1;
+                continue;
+            }
+            stats.unchanged += 1;
+        }
+    }
+
+    const maxChars = Math.max(beforeText.length, afterText.length);
+    const lineCount = stats.added + stats.removed + stats.unchanged;
+    const isLong = lineCount > LINE_DIFF_LONG_LINE_THRESHOLD || maxChars > LINE_DIFF_LONG_CHAR_THRESHOLD;
+
+    return {
+        operations,
+        added: stats.added,
+        removed: stats.removed,
+        unchanged: stats.unchanged,
+        openByDefault: !isLong,
+    };
+}
+
+function buildUnifiedDiffPatch(operations, { beforeCount = 0, afterCount = 0, fileLabel = 'field' } = {}) {
+    const safeLabel = String(fileLabel || 'field').replace(/[^a-zA-Z0-9_.-]+/g, '_') || 'field';
+    const beforeStart = Number(beforeCount) > 0 ? 1 : 0;
+    const afterStart = Number(afterCount) > 0 ? 1 : 0;
+    const lines = [];
+    for (const operation of Array.isArray(operations) ? operations : []) {
+        const type = String(operation?.type || 'equal');
+        const opLines = Array.isArray(operation?.lines) ? operation.lines : [];
+        const prefix = type === 'insert'
+            ? '+'
+            : (type === 'delete' ? '-' : ' ');
+        for (const line of opLines) {
+            lines.push(`${prefix}${String(line ?? '')}`);
+        }
+    }
+    return [
+        `diff --git a/${safeLabel}.txt b/${safeLabel}.txt`,
+        'index 0000000..1111111 100644',
+        `--- a/${safeLabel}.txt`,
+        `+++ b/${safeLabel}.txt`,
+        `@@ -${beforeStart},${Number(beforeCount) || 0} +${afterStart},${Number(afterCount) || 0} @@`,
+        ...lines,
+        '',
+    ].join('\n');
+}
+
+function renderIterationLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
+    const beforeText = String(beforeValue ?? '');
+    const afterText = String(afterValue ?? '');
+    const payload = buildLineDiffRows(beforeValue, afterValue);
+    const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
+    const patch = buildUnifiedDiffPatch(payload.operations, {
+        beforeCount: splitLineDiffText(beforeText).length,
+        afterCount: splitLineDiffText(afterText).length,
+        fileLabel,
+    });
+    const rendered = diff2htmlHtml(patch, {
+        drawFileList: false,
+        outputFormat: 'side-by-side',
+        matching: 'lines',
+        diffStyle: 'word',
+    }).replace('d2h-light-color-scheme', 'd2h-dark-color-scheme');
+    return `
+<details class="luker_orch_line_diff"${payload.openByDefault ? ' open' : ''}>
+    <summary>
+        <span>${escapeHtml(summary)}</span>
+        <span class="luker_orch_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
+    </summary>
+    <div class="luker_orch_line_diff_pre">${rendered}</div>
+</details>`;
+}
+
+function buildAiIterationPendingDiffState(session, pending) {
     const entries = [];
     const workingProfile = structuredClone(session?.workingProfile || { spec: { stages: [] }, presets: {} });
     const stages = Array.isArray(workingProfile?.spec?.stages) ? workingProfile.spec.stages : [];
@@ -3615,6 +3810,9 @@ function buildAiIterationPendingDiffEntries(session, pending) {
 
     for (const call of Array.isArray(pending?.toolCalls) ? pending.toolCalls : []) {
         const name = String(call?.name || '').trim();
+        if (!isAiIterationEditableToolCallName(name)) {
+            continue;
+        }
         const args = call?.args && typeof call.args === 'object' ? call.args : {};
         const item = {
             name,
@@ -3845,51 +4043,41 @@ function buildAiIterationPendingDiffEntries(session, pending) {
         entries.push(item);
     }
 
-    return entries;
+    return {
+        entries,
+        projectedProfile: workingProfile,
+    };
 }
 
-function renderAiIterationPendingDiffHtml(session) {
-    const pending = session?.pendingApproval;
-    const entries = buildAiIterationPendingDiffEntries(session, pending);
-    if (!entries.length) {
-        return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No diff details available.'))}</div>`;
+function renderAiIterationDiffEntriesHtml(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    if (!list.length) {
+        return '';
     }
-    return `
-<div class="luker_orch_iter_diff_popup">
-    ${entries.map((entry, index) => `
+    return list.map((entry, index) => `
 <div class="luker_orch_iter_diff_item">
     <div class="luker_orch_iter_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(entry.summary || entry.name || ''))}</div>
     <div class="luker_orch_iter_diff_fields">
         ${(entry.fields || []).map(field => `
 <div class="luker_orch_iter_diff_field">
     <div class="luker_orch_iter_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
-    <div class="luker_orch_iter_diff_blocks">
-        <div class="luker_orch_iter_diff_block before">
-            <div class="luker_orch_iter_diff_block_title">${escapeHtml(i18n('Before'))}</div>
-            <pre>${escapeHtml(String(field?.before ?? ''))}</pre>
-        </div>
-        <div class="luker_orch_iter_diff_block after">
-            <div class="luker_orch_iter_diff_block_title">${escapeHtml(i18n('After'))}</div>
-            <pre>${escapeHtml(String(field?.after ?? ''))}</pre>
-        </div>
-    </div>
+    ${renderIterationLineDiffHtml(field?.before ?? '', field?.after ?? '', String(field?.label || 'field'))}
 </div>`).join('')}
     </div>
     <details class="luker_orch_iter_diff_raw">
         <summary>${escapeHtml(i18n('Raw arguments'))}</summary>
         <pre>${escapeHtml(JSON.stringify(entry.rawArgs || {}, null, 2))}</pre>
     </details>
-</div>`).join('')}
-</div>`;
+</div>`).join('');
 }
 
-function renderAiIterationPendingApproval(session, popupId) {
+function renderAiIterationPendingApproval(session, popupId, pendingEntries = []) {
     const pending = session?.pendingApproval;
     if (!pending) {
         return '';
     }
     const summaryLines = summarizeIterationToolCalls(pending.toolCalls || []);
-    const assistantText = String(pending.assistantText || '').trim();
+    const assistantText = stripIterationThoughtForDisplay(pending.assistantText || '');
     return `
 <div class="luker_orch_iter_pending_block">
     <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Pending approval'))}</div>
@@ -3898,16 +4086,24 @@ function renderAiIterationPendingApproval(session, popupId) {
     <div class="luker_orch_iter_pending_ops">
         ${summaryLines.length > 0 ? summaryLines.map(item => `<div class="luker_orch_iter_pending_op">${escapeHtml(item)}</div>`).join('') : `<div class="luker_orch_iter_pending_op">${escapeHtml(i18n('No editable operations were produced.'))}</div>`}
     </div>
+    ${Array.isArray(pendingEntries) && pendingEntries.length > 0 ? `
+    <details class="luker_orch_iter_pending_diff_inline" open>
+        <summary>${escapeHtml(i18n('Pending changes diff'))}</summary>
+        <div class="luker_orch_iter_diff_popup">
+            ${renderAiIterationDiffEntriesHtml(pendingEntries)}
+        </div>
+    </details>` : ''}
     <div class="luker_orch_iter_actions">
-        <div id="${popupId}_view_diff" class="menu_button menu_button_small">${escapeHtml(i18n('View diff'))}</div>
         <div id="${popupId}_approve" class="menu_button">${escapeHtml(i18n('Approve changes'))}</div>
         <div id="${popupId}_reject" class="menu_button">${escapeHtml(i18n('Reject changes'))}</div>
     </div>
 </div>`;
 }
 
-function renderAiIterationWorkingProfile(session) {
-    const profile = session?.workingProfile || {};
+function renderAiIterationWorkingProfile(session, { profileOverride = null, previewPending = false } = {}) {
+    const profile = profileOverride && typeof profileOverride === 'object'
+        ? profileOverride
+        : (session?.workingProfile || {});
     const stages = Array.isArray(profile?.spec?.stages) ? profile.spec.stages : [];
     const stageCards = stages.map((stage) => {
         const info = summarizeStageForUi(stage);
@@ -3927,6 +4123,7 @@ function renderAiIterationWorkingProfile(session) {
 <div class="luker_orch_iter_profile_meta">
     <div><b>${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</b></div>
     <div>${escapeHtml(`Revision #${Number(session?.revision || 1)}`)}</div>
+    ${previewPending ? `<div>${escapeHtml(i18n('AI suggested changes are waiting for approval.'))}</div>` : ''}
     ${simulationSummary ? `<div>${escapeHtml(simulationSummary)}</div>` : ''}
 </div>
 <div class="luker_orch_iter_stage_list">${stageCards || `<div class="luker_orch_iter_empty">(no stages)</div>`}</div>
@@ -3952,7 +4149,6 @@ function buildAiIterationSystemPrompt(settings) {
 
 function buildAiIterationUserPrompt(session, userInputText) {
     const recentConversation = (Array.isArray(session?.messages) ? session.messages : [])
-        .slice(-20)
         .map(item => `${String(item?.role || 'assistant').toUpperCase()}: ${String(item?.content || '')}`)
         .join('\n\n');
     const workingProfileText = JSON.stringify({
@@ -4396,13 +4592,15 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
     };
 }
 
-async function runAiIterationTurn(context, settings, session, userText, abortSignal = null, { auto = false } = {}) {
+async function runAiIterationTurn(context, settings, session, userText, abortSignal = null, { auto = false, appendUserMessage = true } = {}) {
     const text = String(userText || '').trim();
     if (!text) {
         return { ok: false, message: 'empty_input' };
     }
-    session.messages.push({ role: 'user', content: text, auto: Boolean(auto), at: Date.now() });
-    trimAiIterationMessages(session);
+    if (appendUserMessage) {
+        session.messages.push({ role: 'user', content: text, auto: Boolean(auto), at: Date.now() });
+        trimAiIterationMessages(session);
+    }
 
     const aiSuggestApiPresetName = String(settings.aiSuggestApiPresetName || '').trim();
     const suggestPresetName = String(settings.aiSuggestPresetName || '').trim();
@@ -4434,7 +4632,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         allowNoToolCalls: true,
     });
     const toolCalls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
-    const assistantText = String(detailed?.assistantText || '').trim();
+    const assistantText = stripIterationThoughtForDisplay(detailed?.assistantText || '');
     if (toolCalls.length === 0) {
         if (assistantText) {
             session.messages.push({
@@ -4450,13 +4648,43 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         }
         throw new Error(i18n('Function output is invalid.'));
     }
-    session.pendingApproval = {
-        assistantText,
-        toolCalls,
-        createdAt: Date.now(),
-    };
+    const split = splitAiIterationToolCallsForApproval(toolCalls);
+    if (split.approvalCalls.length > 0) {
+        session.pendingApproval = {
+            assistantText,
+            toolCalls: split.approvalCalls,
+            executionToolCalls: split.allCalls,
+            createdAt: Date.now(),
+        };
+        session.updatedAt = Date.now();
+        return { ok: true, pending: true };
+    }
+
+    if (assistantText) {
+        session.messages.push({
+            role: 'assistant',
+            content: assistantText,
+            auto: false,
+            at: Date.now(),
+        });
+    }
+    const executionResult = await executeAiIterationToolCalls(context, session, split.allCalls, abortSignal);
+    recordAiIterationToolHistory(session, split.allCalls, executionResult, 'auto');
+    session.messages.push({
+        role: 'assistant',
+        content: buildFriendlyIterationExecutionSummary(executionResult),
+        auto: false,
+        at: Date.now(),
+    });
+    trimAiIterationMessages(session);
+    session.pendingApproval = null;
     session.updatedAt = Date.now();
-    return { ok: true, pending: true };
+    return {
+        ok: true,
+        pending: false,
+        autoApplied: true,
+        executionResult,
+    };
 }
 
 async function applyAiIterationSessionToGlobal(context, settings, session, root) {
@@ -4514,9 +4742,7 @@ function buildAiIterationPopupHtml(popupId, session) {
                 <div id="${popupId}_send" class="menu_button">${escapeHtml(i18n('Send to AI'))}</div>
                 <div id="${popupId}_stop" class="menu_button">${escapeHtml(i18n('Stop'))}</div>
                 <div id="${popupId}_clear" class="menu_button">${escapeHtml(i18n('Clear Session'))}</div>
-                <div id="${popupId}_new" class="menu_button">${escapeHtml(i18n('New Session'))}</div>
             </div>
-            <div id="${popupId}_status" class="luker_orch_iter_status"></div>
         </div>
         <div class="luker_orch_iter_col">
             <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Working profile'))}</div>
@@ -4537,15 +4763,23 @@ async function openAiIterationStudio(context, settings, root) {
     const namespace = `.lukerOrchIter_${popupId}`;
     const selector = `#${popupId}`;
     const popupHtml = buildAiIterationPopupHtml(popupId, session);
+    let isRunning = false;
 
     const rerender = () => {
         const popupRoot = jQuery(selector);
         if (!popupRoot.length) {
             return;
         }
-        popupRoot.find(`#${popupId}_conversation`).html(renderAiIterationConversation(session));
-        popupRoot.find(`#${popupId}_pending`).html(renderAiIterationPendingApproval(session, popupId));
-        popupRoot.find(`#${popupId}_profile`).html(renderAiIterationWorkingProfile(session));
+        const pendingState = buildAiIterationPendingDiffState(session, session?.pendingApproval);
+        popupRoot.find(`#${popupId}_conversation`).html(renderAiIterationConversation(session, {
+            loading: isRunning,
+            loadingText: i18n('AI iteration is running...'),
+        }));
+        popupRoot.find(`#${popupId}_pending`).html(renderAiIterationPendingApproval(session, popupId, pendingState.entries));
+        popupRoot.find(`#${popupId}_profile`).html(renderAiIterationWorkingProfile(session, {
+            profileOverride: session?.pendingApproval ? pendingState.projectedProfile : null,
+            previewPending: Boolean(session?.pendingApproval),
+        }));
     };
 
     const setStatus = (text) => {
@@ -4554,6 +4788,28 @@ async function openAiIterationStudio(context, settings, root) {
             return;
         }
         popupRoot.find(`#${popupId}_status`).text(String(text || ''));
+    };
+
+    const maybeRunAutoContinue = async (executionResult, controller, source = 'approved') => {
+        if (!executionResult || typeof executionResult !== 'object') {
+            return false;
+        }
+        if (executionResult.finalized) {
+            setStatus(source === 'approved'
+                ? i18n('Changes approved and applied.')
+                : i18n('AI iteration updated.'));
+            rerender();
+            return true;
+        }
+        if (executionResult.continueRequested || (Array.isArray(executionResult.simulations) && executionResult.simulations.length > 0)) {
+            setStatus(i18n('Running auto-continue...'));
+            const autoPrompt = buildAiIterationAutoContinuePrompt(executionResult);
+            const followUp = await runAiIterationTurn(context, settings, session, autoPrompt, controller.signal, { auto: true });
+            setStatus(followUp?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
+            rerender();
+            return true;
+        }
+        return false;
     };
 
     const popupPromise = context.callGenericPopup(
@@ -4586,11 +4842,24 @@ async function openAiIterationStudio(context, settings, root) {
         }
         const controller = new AbortController();
         activeAiIterationAbortController = controller;
+        session.messages.push({ role: 'user', content: text, auto: false, at: Date.now() });
+        trimAiIterationMessages(session);
+        input.val('');
+        isRunning = true;
+        rerender();
         setStatus(i18n('AI iteration is running...'));
         try {
-            const result = await runAiIterationTurn(context, settings, session, text, controller.signal);
-            input.val('');
-            setStatus(result?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
+            const result = await runAiIterationTurn(context, settings, session, text, controller.signal, { appendUserMessage: false });
+            if (result?.pending) {
+                setStatus(i18n('AI suggested changes are waiting for approval.'));
+            } else if (result?.autoApplied) {
+                const didHandle = await maybeRunAutoContinue(result.executionResult, controller, 'auto');
+                if (!didHandle) {
+                    setStatus(i18n('AI iteration updated.'));
+                }
+            } else {
+                setStatus(i18n('AI iteration updated.'));
+            }
             rerender();
         } catch (error) {
             if (isAbortError(error, controller.signal)) {
@@ -4602,6 +4871,8 @@ async function openAiIterationStudio(context, settings, root) {
             if (activeAiIterationAbortController === controller) {
                 activeAiIterationAbortController = null;
             }
+            isRunning = false;
+            rerender();
         }
     });
 
@@ -4612,16 +4883,6 @@ async function openAiIterationStudio(context, settings, root) {
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_clear`, function () {
-        session.messages = [];
-        session.lastSimulation = null;
-        session.toolHistory = [];
-        session.pendingApproval = null;
-        session.updatedAt = Date.now();
-        setStatus(i18n('Iteration session reset.'));
-        rerender();
-    });
-
-    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_new`, function () {
         uiState.aiIterationSession = createAiIterationSession(context, settings);
         const nextSession = uiState.aiIterationSession;
         session.id = nextSession.id;
@@ -4651,9 +4912,12 @@ async function openAiIterationStudio(context, settings, root) {
         }
         const controller = new AbortController();
         activeAiIterationAbortController = controller;
+        isRunning = true;
+        rerender();
         const pendingSnapshot = {
             assistantText: String(pending.assistantText || ''),
             toolCalls: Array.isArray(pending.toolCalls) ? structuredClone(pending.toolCalls) : [],
+            executionToolCalls: Array.isArray(pending.executionToolCalls) ? structuredClone(pending.executionToolCalls) : [],
             createdAt: Number(pending.createdAt || Date.now()),
         };
         session.pendingApproval = null;
@@ -4668,8 +4932,11 @@ async function openAiIterationStudio(context, settings, root) {
                     at: Date.now(),
                 });
             }
-            const result = await executeAiIterationToolCalls(context, session, pendingSnapshot.toolCalls || [], controller.signal);
-            recordAiIterationToolHistory(session, pendingSnapshot.toolCalls || [], result, 'approved');
+            const executionToolCalls = pendingSnapshot.executionToolCalls.length > 0
+                ? pendingSnapshot.executionToolCalls
+                : pendingSnapshot.toolCalls;
+            const result = await executeAiIterationToolCalls(context, session, executionToolCalls, controller.signal);
+            recordAiIterationToolHistory(session, executionToolCalls, result, 'approved');
             session.messages.push({
                 role: 'assistant',
                 content: buildFriendlyIterationExecutionSummary(result),
@@ -4677,16 +4944,8 @@ async function openAiIterationStudio(context, settings, root) {
                 at: Date.now(),
             });
             trimAiIterationMessages(session);
-            if (result?.finalized) {
-                setStatus(i18n('Changes approved and applied.'));
-                rerender();
-            } else if (result?.continueRequested || (Array.isArray(result?.simulations) && result.simulations.length > 0)) {
-                setStatus(i18n('Running auto-continue...'));
-                const autoPrompt = buildAiIterationAutoContinuePrompt(result);
-                const followUp = await runAiIterationTurn(context, settings, session, autoPrompt, controller.signal, { auto: true });
-                setStatus(followUp?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
-                rerender();
-            } else {
+            const didHandle = await maybeRunAutoContinue(result, controller, 'approved');
+            if (!didHandle) {
                 setStatus(i18n('Changes approved and applied. Waiting for your next instruction.'));
                 rerender();
             }
@@ -4704,21 +4963,9 @@ async function openAiIterationStudio(context, settings, root) {
             if (activeAiIterationAbortController === controller) {
                 activeAiIterationAbortController = null;
             }
+            isRunning = false;
+            rerender();
         }
-    });
-
-    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_view_diff`, async function () {
-        const pending = session?.pendingApproval;
-        if (!pending) {
-            return;
-        }
-        const html = renderAiIterationPendingDiffHtml(session);
-        await context.callGenericPopup(
-            html,
-            context.POPUP_TYPE.TEXT,
-            i18n('Pending changes diff'),
-            { wide: true, wider: true, large: true, allowVerticalScrolling: true },
-        );
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_reject`, function () {
@@ -5281,6 +5528,14 @@ function bindUi() {
 }
 
 function ensureStyles() {
+    if (!document.getElementById(DIFF2HTML_STYLE_LINK_ID)) {
+        const link = document.createElement('link');
+        link.id = DIFF2HTML_STYLE_LINK_ID;
+        link.rel = 'stylesheet';
+        link.type = 'text/css';
+        link.href = 'css/diff2html.min.css';
+        document.head.append(link);
+    }
     if (jQuery(`#${ORCH_STYLE_ID}`).length) {
         return;
     }
@@ -5470,6 +5725,17 @@ function ensureStyles() {
     font-size: 0.9rem;
     opacity: 0.92;
 }
+.luker_orch_iter_pending_diff_inline {
+    margin-top: 2px;
+    border-top: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    padding-top: 8px;
+}
+.luker_orch_iter_pending_diff_inline > summary {
+    cursor: pointer;
+    font-weight: 600;
+    opacity: 0.9;
+    margin-bottom: 6px;
+}
 .luker_orch_iter_diff_popup {
     display: grid;
     gap: 10px;
@@ -5501,38 +5767,39 @@ function ensureStyles() {
     font-size: 0.92rem;
     opacity: 0.86;
 }
-.luker_orch_iter_diff_blocks {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-}
-.luker_orch_iter_diff_block {
+.luker_orch_line_diff {
     border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
     border-radius: 6px;
     background: rgba(0,0,0,0.2);
-    padding: 6px;
-    min-width: 0;
 }
-.luker_orch_iter_diff_block_title {
-    font-size: 0.84rem;
-    opacity: 0.8;
-    margin-bottom: 4px;
+.luker_orch_line_diff > summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    font-size: 0.9rem;
 }
-.luker_orch_iter_diff_block pre {
+.luker_orch_line_diff_meta {
+    opacity: 0.78;
+    font-size: 0.88rem;
+}
+.luker_orch_line_diff_pre {
     margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.35;
-    font-size: 0.85rem;
-    max-height: 220px;
+    padding: 6px;
+    border-top: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    max-height: 320px;
     overflow: auto;
 }
-.luker_orch_iter_diff_block.before {
-    background: rgba(180, 60, 60, 0.12);
-}
-.luker_orch_iter_diff_block.after {
-    background: rgba(51, 143, 87, 0.14);
-}
+.luker_orch_line_diff .d2h-file-header { display: none; }
+.luker_orch_line_diff .d2h-file-wrapper { margin-bottom: 0; border: none; border-radius: 0; }
+.luker_orch_line_diff .d2h-files-diff { border-top: none; }
+.luker_orch_line_diff .d2h-file-side-diff { overflow-x: auto; overflow-y: hidden; }
+.luker_orch_line_diff .d2h-diff-table { font-size: 0.82rem; }
+.luker_orch_line_diff .d2h-code-side-line,
+.luker_orch_line_diff .d2h-code-line,
+.luker_orch_line_diff .d2h-code-line-ctn { user-select: text; }
 .luker_orch_iter_diff_raw summary {
     cursor: pointer;
     font-size: 0.9rem;
@@ -5611,19 +5878,11 @@ function ensureStyles() {
     word-break: break-word;
     line-height: 1.4;
 }
-.luker_orch_iter_status {
-    margin-top: 2px;
-    min-height: 2.1em;
-    padding: 8px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    background: rgba(33, 107, 189, 0.18);
-    color: var(--SmartThemeBodyColor, #e8eef7);
-    font-size: 0.95rem;
-    line-height: 1.35;
-    font-weight: 600;
-    white-space: pre-wrap;
-    word-break: break-word;
+.luker_orch_iter_msg.loading .luker_orch_iter_msg_body {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    opacity: 0.92;
 }
 .luker_orch_iter_empty {
     opacity: 0.8;
@@ -5676,9 +5935,6 @@ function ensureStyles() {
     }
     .luker_orch_iter_col {
         min-height: 320px;
-    }
-    .luker_orch_iter_diff_blocks {
-        grid-template-columns: 1fr;
     }
 }
 </style>`);
