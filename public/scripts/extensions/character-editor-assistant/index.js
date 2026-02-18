@@ -1357,6 +1357,29 @@ function selectApprovedFinalOperations(operationSpecs, approvalMap) {
     });
 }
 
+function buildFinalDiffReviewContext(operationSpecs, approvalMap) {
+    const specs = Array.isArray(operationSpecs) ? operationSpecs : [];
+    const summary = getFinalOperationApprovalSummary(specs, approvalMap);
+    const decisions = specs.map(spec => {
+        const kind = String(spec?.kind || '').trim();
+        const entryUid = asFiniteInteger(spec?.args?.entry_uid, null);
+        const key = buildLorebookOperationApprovalKey(spec);
+        const status = key ? String(approvalMap?.get?.(key) || 'pending') : 'pending';
+        return {
+            kind,
+            entry_uid: Number.isInteger(entryUid) ? entryUid : null,
+            status,
+        };
+    });
+    return {
+        total: Number(specs.length),
+        approved: Number(summary.approved),
+        rejected: Number(summary.rejected),
+        pending: Number(summary.pending),
+        decisions,
+    };
+}
+
 function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries, draftEntries, conversationMessages) {
     const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
     const safeBaselineEntries = baselineEntries && typeof baselineEntries === 'object' ? baselineEntries : {};
@@ -2012,7 +2035,7 @@ async function requestModelLorebookDiffAnalysis(context, plan) {
     };
 }
 
-async function requestModelLorebookConversationReply(context, plan, conversationMessages, { draftEntries = {} } = {}) {
+async function requestModelLorebookConversationReply(context, plan, conversationMessages, { draftEntries = {}, finalOperationSpecs = [], approvalMap = null } = {}) {
     const targetBook = String(plan?.targetBook || '').trim();
     if (!targetBook) {
         return { assistantText: '', operations: [] };
@@ -2030,12 +2053,15 @@ async function requestModelLorebookConversationReply(context, plan, conversation
     const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
     const draftEntryUids = Array.from(collectLorebookEntryUids(safeDraftEntries).values()).sort((a, b) => a - b).slice(0, 80);
     const draftEntrySample = draftEntryUids.map(uid => compactEntryForModel(getLorebookEntryByUid(safeDraftEntries, uid), uid));
+    const reviewContext = buildFinalDiffReviewContext(finalOperationSpecs, approvalMap);
 
     const systemPrompt = [
         'You are assisting the user in reviewing lorebook diffs.',
         'Continue the conversation and answer the user message directly.',
         'After your reply, you may provide tool calls to propose draft lorebook edits for this round.',
         'Tool calls are draft-only proposals and will not be auto-applied immediately.',
+        'Respect review decisions: rejected operations are intentionally excluded.',
+        'Do not re-propose rejected {kind, entry_uid} operations unless user explicitly asks to reconsider them.',
         'Use tool calls only when proposing concrete entry changes; otherwise return no tool calls.',
         'Be concise, practical, and grounded in the provided diff context.',
         `Target lorebook is "${targetBook}".`,
@@ -2045,6 +2071,7 @@ async function requestModelLorebookConversationReply(context, plan, conversation
         JSON.stringify({
             context: contextPayload,
             conversation_history: history,
+            final_diff_review: reviewContext,
             draft_entry_count: Number(draftEntryUids.length),
             draft_entry_sample: draftEntrySample,
         }),
@@ -2292,6 +2319,8 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     try {
                         const reply = await requestModelLorebookConversationReply(context, plan, conversationMessages, {
                             draftEntries: draftTargetEntries,
+                            finalOperationSpecs: getCurrentFinalOperationSpecs(),
+                            approvalMap: operationApprovalMap,
                         });
                         const proposedOperations = Array.isArray(reply?.operations) ? reply.operations : [];
                         const draftRound = applyDraftOperationsAndBuildPreviews(
@@ -2859,6 +2888,7 @@ function createOperationEnvelope(state, kind, args, source = 'tool', { targetAva
 }
 
 async function submitOperation(context, operation, { avatar = '' } = {}) {
+    const settings = getSettings();
     const targetAvatar = String(avatar || operation?.targetAvatar || '').trim();
     const state = await loadOperationState(context, { avatar: targetAvatar });
 
