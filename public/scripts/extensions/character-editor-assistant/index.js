@@ -29,13 +29,11 @@ const DEFAULT_TOOL_PROMPT = [
     'Use tool calls only when user intent is explicitly about creating/updating/deleting character card info or lorebook entries.',
     'You may call multiple tools in one response.',
     'Never delete lorebook entries unless user intent is explicit.',
-    'If a tool result says pending approval, explain briefly and wait.',
 ].join('\n');
 
 const defaultSettings = {
     enabled: false,
     replaceLorebookSyncEnabled: true,
-    requireApproval: true,
     autoInjectPrompt: true,
     lorebookSyncLlmPresetName: '',
     lorebookSyncApiPresetName: '',
@@ -120,7 +118,6 @@ function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Character Editor Assistant': '角色卡编辑助手',
         'Enabled': '启用',
-        'Require approval before applying tool edits': '工具修改需审批后生效',
         'Inject tool instruction into generation context': '将工具说明注入生成上下文',
         'Enable lorebook sync popup after Replace/Update': '替换/更新角色卡后启用世界书同步弹窗',
         'Lorebook sync LLM preset name': '世界书同步 LLM 预设名',
@@ -129,23 +126,17 @@ function registerLocaleData() {
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Tool instruction prompt': '工具说明提示词',
         'Refresh': '刷新',
-        'Pending operations': '待审批操作',
         'History': '修改历史',
         'Approve': '批准',
         'Reject': '拒绝',
         'View diff': '查看 diff',
         'Rollback': '回滚',
-        'No pending operations.': '暂无待审批操作。',
         'No history yet.': '暂无历史记录。',
         'Character editor tools are ready.': '角色编辑工具已就绪。',
         'Current chat has no active character.': '当前聊天没有活动角色卡。',
-        'Operation queued for approval: ${0}': '操作已进入待审批队列：${0}',
         'Operation applied: ${0}': '操作已生效：${0}',
-        'Operation approved: ${0}': '操作已批准：${0}',
-        'Operation rejected.': '操作已拒绝。',
         'Rollback completed.': '回滚完成。',
         'Rollback failed: ${0}': '回滚失败：${0}',
-        'Operation diff': '操作差异',
         'Before': '修改前',
         'After': '修改后',
         'No meaningful changes detected.': '未检测到可展示的变更。',
@@ -158,26 +149,23 @@ function registerLocaleData() {
         'Old lorebook': '旧世界书',
         'New lorebook': '新世界书',
         'Candidate sync operations': '候选同步操作',
-        'Lorebook sync result: pending ${0}, applied ${1}, failed ${2}': '世界书同步结果：待审批 ${0}，已生效 ${1}，失败 ${2}',
+        'Lorebook sync result: applied ${0}, failed ${1}': '世界书同步结果：已生效 ${0}，失败 ${1}',
         'A lorebook sync dialog is already open for this character.': '该角色已有世界书同步弹窗正在处理中。',
         'Save and update': '保存并更新',
-        'Cancel and keep raw update': '取消并原样更新',
+        'Cancel and restore previous lorebook': '取消并恢复旧世界书',
         'Analyze then update': '模型分析后更新',
         'Direct replace': '直接替换',
         'Do not replace': '不替换',
         'Choose how to handle lorebook update': '请选择世界书更新方式',
-        'No replacement applied. Keeping current lorebook state.': '未执行替换，保持当前世界书状态。',
         'No replacement applied. Restored previous lorebook binding: ${0}': '未执行替换，已恢复旧世界书绑定：${0}',
-        'Review model analysis and optionally add requirements. Save will apply model edits; cancel will keep raw update.': '请查看模型分析并可补充要求。点“保存并更新”将应用模型修改；点“取消并原样更新”则直接按新卡原样覆盖。',
+        'Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.': '请查看模型分析并可补充要求。点“保存并更新”将应用模型修改；点“取消并恢复旧世界书”会恢复导入前绑定。',
         'Analyzing lorebook differences with model...': '正在用模型分析世界书差异...',
         'Model analysis failed: ${0}': '模型分析失败：${0}',
         'Optional requirements (tell model what to keep or adjust before saving):': '可选要求（告诉模型在保存前应保留/调整哪些内容）：',
         'No analysis output.': '模型未返回分析内容。',
-        'Model analysis is still running. Please wait or cancel for raw update.': '模型分析仍在进行中。请等待或取消并原样更新。',
-        'No valid model edits generated. Falling back to raw update.': '模型未生成有效修改，已回退为原样更新。',
+        'Model analysis is still running. Please wait or cancel to restore previous lorebook.': '模型分析仍在进行中。请等待或取消并恢复旧世界书。',
         'Finalize lorebook replacement: ${0} -> ${1}': '世界书替换完成：${0} -> ${1}',
         'Lorebook finalization skipped due failed operations.': '存在失败操作，已跳过世界书最终替换。',
-        'There are pending approvals. Final replacement will run after approvals.': '存在待审批操作，最终替换将在审批后执行。',
         'Send': '发送',
         'Type your requirement to continue this conversation...': '输入你的要求继续对话...',
         'Assistant is thinking...': '模型思考中...',
@@ -191,6 +179,12 @@ function registerLocaleData() {
         'Raw arguments': '原始参数',
         'Rollback to this round': '回退到本轮',
         'Rolled back to selected round.': '已回退到所选轮次。',
+        'Pending review': '待审批',
+        'Approved': '已通过',
+        'Rejected': '已拒绝',
+        'All final diffs must be approved before saving.': '保存前必须通过所有最终差异项。',
+        'Rejected diffs exist. Cancel to restore previous lorebook.': '存在已拒绝差异项，请取消并恢复旧世界书。',
+        'No final diff to apply. Continue editing or cancel.': '没有可应用的最终差异，请继续编辑或取消。',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
@@ -198,7 +192,6 @@ function registerLocaleData() {
     addLocaleData('zh-tw', {
         'Character Editor Assistant': '角色卡編輯助手',
         'Enabled': '啟用',
-        'Require approval before applying tool edits': '工具修改需審批後生效',
         'Inject tool instruction into generation context': '將工具說明注入生成上下文',
         'Enable lorebook sync popup after Replace/Update': '替換/更新角色卡後啟用世界書同步彈窗',
         'Lorebook sync LLM preset name': '世界書同步 LLM 預設名',
@@ -207,23 +200,17 @@ function registerLocaleData() {
         'Tool-call retries on invalid/missing tool call (N)': '工具調用重試次數（無效/缺失時）',
         'Tool instruction prompt': '工具說明提示詞',
         'Refresh': '刷新',
-        'Pending operations': '待審批操作',
         'History': '修改歷史',
         'Approve': '批准',
         'Reject': '拒絕',
         'View diff': '查看 diff',
         'Rollback': '回滾',
-        'No pending operations.': '暫無待審批操作。',
         'No history yet.': '暫無歷史記錄。',
         'Character editor tools are ready.': '角色編輯工具已就緒。',
         'Current chat has no active character.': '當前聊天沒有活動角色卡。',
-        'Operation queued for approval: ${0}': '操作已進入待審批隊列：${0}',
         'Operation applied: ${0}': '操作已生效：${0}',
-        'Operation approved: ${0}': '操作已批准：${0}',
-        'Operation rejected.': '操作已拒絕。',
         'Rollback completed.': '回滾完成。',
         'Rollback failed: ${0}': '回滾失敗：${0}',
-        'Operation diff': '操作差異',
         'Before': '修改前',
         'After': '修改後',
         'No meaningful changes detected.': '未檢測到可展示的變更。',
@@ -236,26 +223,23 @@ function registerLocaleData() {
         'Old lorebook': '舊世界書',
         'New lorebook': '新世界書',
         'Candidate sync operations': '候選同步操作',
-        'Lorebook sync result: pending ${0}, applied ${1}, failed ${2}': '世界書同步結果：待審批 ${0}，已生效 ${1}，失敗 ${2}',
+        'Lorebook sync result: applied ${0}, failed ${1}': '世界書同步結果：已生效 ${0}，失敗 ${1}',
         'A lorebook sync dialog is already open for this character.': '該角色已有世界書同步彈窗正在處理中。',
         'Save and update': '儲存並更新',
-        'Cancel and keep raw update': '取消並原樣更新',
+        'Cancel and restore previous lorebook': '取消並恢復舊世界書',
         'Analyze then update': '模型分析後更新',
         'Direct replace': '直接替換',
         'Do not replace': '不替換',
         'Choose how to handle lorebook update': '請選擇世界書更新方式',
-        'No replacement applied. Keeping current lorebook state.': '未執行替換，保持當前世界書狀態。',
         'No replacement applied. Restored previous lorebook binding: ${0}': '未執行替換，已恢復舊世界書綁定：${0}',
-        'Review model analysis and optionally add requirements. Save will apply model edits; cancel will keep raw update.': '請查看模型分析並可補充要求。按「儲存並更新」將套用模型修改；按「取消並原樣更新」則直接按新卡原樣覆蓋。',
+        'Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.': '請查看模型分析並可補充要求。按「儲存並更新」將套用模型修改；按「取消並恢復舊世界書」會恢復匯入前綁定。',
         'Analyzing lorebook differences with model...': '正在用模型分析世界書差異...',
         'Model analysis failed: ${0}': '模型分析失敗：${0}',
         'Optional requirements (tell model what to keep or adjust before saving):': '可選要求（告訴模型在儲存前應保留/調整哪些內容）：',
         'No analysis output.': '模型未回傳分析內容。',
-        'Model analysis is still running. Please wait or cancel for raw update.': '模型分析仍在進行中。請等待或取消並原樣更新。',
-        'No valid model edits generated. Falling back to raw update.': '模型未產生有效修改，已回退為原樣更新。',
+        'Model analysis is still running. Please wait or cancel to restore previous lorebook.': '模型分析仍在進行中。請等待或取消並恢復舊世界書。',
         'Finalize lorebook replacement: ${0} -> ${1}': '世界書替換完成：${0} -> ${1}',
         'Lorebook finalization skipped due failed operations.': '存在失敗操作，已跳過世界書最終替換。',
-        'There are pending approvals. Final replacement will run after approvals.': '存在待審批操作，最終替換將在審批後執行。',
         'Send': '發送',
         'Type your requirement to continue this conversation...': '輸入你的要求繼續對話...',
         'Assistant is thinking...': '模型思考中...',
@@ -269,6 +253,12 @@ function registerLocaleData() {
         'Raw arguments': '原始參數',
         'Rollback to this round': '回退到本輪',
         'Rolled back to selected round.': '已回退到所選輪次。',
+        'Pending review': '待審批',
+        'Approved': '已通過',
+        'Rejected': '已拒絕',
+        'All final diffs must be approved before saving.': '儲存前必須通過所有最終差異項。',
+        'Rejected diffs exist. Cancel to restore previous lorebook.': '存在已拒絕差異項，請取消並恢復舊世界書。',
+        'No final diff to apply. Continue editing or cancel.': '沒有可套用的最終差異，請繼續編輯或取消。',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 配置）',
         '(missing)': '（缺失）',
@@ -335,7 +325,6 @@ function ensureSettings() {
     const settings = extension_settings[MODULE_NAME];
     settings.enabled = Boolean(settings.enabled);
     settings.replaceLorebookSyncEnabled = settings.replaceLorebookSyncEnabled !== false;
-    settings.requireApproval = settings.requireApproval !== false;
     settings.autoInjectPrompt = settings.autoInjectPrompt !== false;
     settings.lorebookSyncLlmPresetName = String(settings.lorebookSyncLlmPresetName || '').trim();
     settings.lorebookSyncApiPresetName = String(settings.lorebookSyncApiPresetName || '').trim();
@@ -569,7 +558,6 @@ function createEmptyState() {
     return {
         version: 1,
         nextId: 1,
-        pending: [],
         journal: [],
         updatedAt: Date.now(),
     };
@@ -579,9 +567,6 @@ function normalizeOperationState(state) {
     const normalized = state && typeof state === 'object' ? clone(state) : createEmptyState();
     normalized.version = 1;
     normalized.nextId = Math.max(1, Number(normalized.nextId || 1));
-    normalized.pending = Array.isArray(normalized.pending)
-        ? normalized.pending.filter(item => item && typeof item === 'object' && String(item.id || '').trim())
-        : [];
     normalized.journal = Array.isArray(normalized.journal)
         ? normalized.journal.filter(item => item && typeof item === 'object' && String(item.id || '').trim())
         : [];
@@ -1108,7 +1093,7 @@ function buildLorebookSyncDialogHtml(plan) {
 
     return `
 <div class="cea_sync_popup">
-    <div class="cea_sync_intro">${escapeHtml(i18n('Review model analysis and optionally add requirements. Save will apply model edits; cancel will keep raw update.'))}</div>
+    <div class="cea_sync_intro">${escapeHtml(i18n('Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.'))}</div>
     <div class="cea_sync_meta">
         <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Old lorebook'))}:</b> ${escapeHtml(String(safePlan.sourceBook || i18n('(empty)')))}</div>
         <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('New lorebook'))}:</b> ${escapeHtml(String(safePlan.targetBook || i18n('(empty)')))}</div>
@@ -1324,6 +1309,47 @@ function buildFinalLorebookOperationSpecsFromDraft(targetBook, baselineEntries, 
     return output;
 }
 
+function buildLorebookOperationApprovalKey(operation) {
+    const kind = String(operation?.kind || '').trim();
+    const uid = asFiniteInteger(operation?.args?.entry_uid, null);
+    if (!kind || !Number.isInteger(uid) || uid < 0) {
+        return '';
+    }
+    return `${kind}:${uid}`;
+}
+
+function markOperationsPendingApproval(operations, approvalMap) {
+    const map = approvalMap instanceof Map ? approvalMap : new Map();
+    for (const operation of Array.isArray(operations) ? operations : []) {
+        const key = buildLorebookOperationApprovalKey(operation);
+        if (!key) {
+            continue;
+        }
+        map.set(key, 'pending');
+    }
+}
+
+function getFinalOperationApprovalSummary(operationSpecs, approvalMap) {
+    const map = approvalMap instanceof Map ? approvalMap : new Map();
+    const summary = {
+        approved: 0,
+        pending: 0,
+        rejected: 0,
+    };
+    for (const operation of Array.isArray(operationSpecs) ? operationSpecs : []) {
+        const key = buildLorebookOperationApprovalKey(operation);
+        const state = key ? String(map.get(key) || 'pending') : 'pending';
+        if (state === 'approved') {
+            summary.approved += 1;
+        } else if (state === 'rejected') {
+            summary.rejected += 1;
+        } else {
+            summary.pending += 1;
+        }
+    }
+    return summary;
+}
+
 function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries, draftEntries, conversationMessages) {
     const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
     const safeBaselineEntries = baselineEntries && typeof baselineEntries === 'object' ? baselineEntries : {};
@@ -1353,7 +1379,7 @@ function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries
     }
 }
 
-function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1) {
+function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1, approvalMap = null) {
     const safeMessage = message && typeof message === 'object' ? message : {};
     const hasTurnData = Object.hasOwn(safeMessage, 'diffPreviews') || Object.hasOwn(safeMessage, 'operations');
     if (!hasTurnData) {
@@ -1389,10 +1415,23 @@ function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1) {
         ${previews.map((preview, index) => {
             const fields = Array.isArray(preview?.fields) ? preview.fields : [];
             const meta = Array.isArray(preview?.meta) ? preview.meta : [];
-            const rawArgs = operations[index]?.args || preview?.rawArgs || {};
+            const operation = operations[index] || null;
+            const rawArgs = operation?.args || preview?.rawArgs || {};
+            const operationKey = buildLorebookOperationApprovalKey(operation);
+            const approvalState = operationKey ? String(approvalMap?.get?.(operationKey) || 'pending') : 'pending';
+            const approvalLabel = approvalState === 'approved'
+                ? i18n('Approved')
+                : (approvalState === 'rejected' ? i18n('Rejected') : i18n('Pending review'));
             return `
 <div class="cea_sync_turn_diff_item">
     <div class="cea_sync_turn_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(preview?.title || ''))}</div>
+    <div class="cea_sync_turn_diff_actions">
+        <div class="cea_sync_turn_diff_status ${escapeHtml(approvalState)}">${escapeHtml(approvalLabel)}</div>
+        ${operationKey ? `
+        <div class="menu_button menu_button_small" data-cea-sync-action="approve-diff" data-cea-sync-message-index="${messageIndex}" data-cea-sync-op-index="${index}">${escapeHtml(i18n('Approve'))}</div>
+        <div class="menu_button menu_button_small" data-cea-sync-action="reject-diff" data-cea-sync-message-index="${messageIndex}" data-cea-sync-op-index="${index}">${escapeHtml(i18n('Reject'))}</div>
+        ` : ''}
+    </div>
     ${meta.length > 0 ? `<div class="cea_sync_turn_diff_meta">${meta.map(item => `
         <div class="cea_sync_turn_diff_meta_item"><b>${escapeHtml(String(item?.label || ''))}:</b> ${escapeHtml(String(item?.value || ''))}</div>
     `).join('')}</div>` : ''}
@@ -1422,7 +1461,7 @@ function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1) {
 </details>`;
 }
 
-function renderLorebookSyncChatMessages(messages, { loading = false, loadingText = '' } = {}) {
+function renderLorebookSyncChatMessages(messages, { loading = false, loadingText = '', approvalMap = null } = {}) {
     const list = Array.isArray(messages) ? messages : [];
     const html = list.map((item, index) => {
         const role = String(item?.role || 'assistant');
@@ -1439,7 +1478,7 @@ function renderLorebookSyncChatMessages(messages, { loading = false, loadingText
         return `
 <div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
     <div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>
-    ${renderLorebookSyncTurnDiffHtml(item, index)}
+    ${renderLorebookSyncTurnDiffHtml(item, index, approvalMap)}
 </div>`;
     }).join('');
 
@@ -2060,7 +2099,6 @@ async function finalizeLorebookSyncReplacement(context, previousSnapshot, curren
 async function submitGeneratedOperations(context, operationSpecs, source = 'character_update_lorebook_sync', { targetAvatar = '' } = {}) {
     const specs = Array.isArray(operationSpecs) ? operationSpecs : [];
     const avatar = String(targetAvatar || '').trim();
-    let pending = 0;
     let applied = 0;
     let failed = 0;
     const errors = [];
@@ -2069,18 +2107,14 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
             const state = await loadOperationState(context, { avatar });
             const operation = createOperationEnvelope(state, spec.kind, spec.args, source, { targetAvatar: avatar });
             await persistOperationState(context, state, { avatar });
-            const result = await submitOperation(context, operation, { avatar });
-            if (String(result?.status || '') === 'pending') {
-                pending++;
-            } else {
-                applied++;
-            }
+            await submitOperation(context, operation, { avatar });
+            applied++;
         } catch (error) {
             failed++;
             errors.push(String(error?.message || error));
         }
     }
-    return { pending, applied, failed, errors };
+    return { applied, failed, errors };
 }
 
 async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, currentCharacter = null) {
@@ -2125,6 +2159,12 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
     const conversationMessages = [];
     const baselineTargetEntries = clone(effectiveCurrentSnapshot?.entries || {}) || {};
     const draftTargetEntries = clone(baselineTargetEntries) || {};
+    const operationApprovalMap = new Map();
+    const getCurrentFinalOperationSpecs = () => buildFinalLorebookOperationSpecsFromDraft(
+        plan.targetBook,
+        baselineTargetEntries,
+        draftTargetEntries,
+    );
 
     const popup = new Popup(
         buildLorebookSyncDialogHtml(plan),
@@ -2136,7 +2176,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
             large: true,
             allowVerticalScrolling: true,
             okButton: i18n('Save and update'),
-            cancelButton: i18n('Cancel and keep raw update'),
+            cancelButton: i18n('Cancel and restore previous lorebook'),
             onOpen: (instance) => {
                 const chat = instance?.content?.querySelector('[data-cea-sync-chat]');
                 const input = instance?.content?.querySelector('[data-cea-sync-input]');
@@ -2146,7 +2186,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     return;
                 }
                 const renderConversation = (loading = false, loadingText = '') => {
-                    chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading, loadingText });
+                    chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading, loadingText, approvalMap: operationApprovalMap });
                     chat.scrollTop = chat.scrollHeight;
                 };
                 const renderHistory = async () => {
@@ -2188,6 +2228,13 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                         draftTargetEntries,
                         conversationMessages,
                     );
+                    const finalSpecs = getCurrentFinalOperationSpecs();
+                    for (const key of Array.from(operationApprovalMap.keys())) {
+                        const exists = finalSpecs.some(spec => buildLorebookOperationApprovalKey(spec) === key);
+                        if (!exists) {
+                            operationApprovalMap.delete(key);
+                        }
+                    }
                     renderConversation(false);
                     notifySuccess(i18n('Rolled back to selected round.'));
                 };
@@ -2245,6 +2292,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                             draftTargetEntries,
                             proposedOperations,
                         );
+                        markOperationsPendingApproval(draftRound.appliedOperations, operationApprovalMap);
                         const assistantText = String(reply?.assistantText || '').trim();
                         if (assistantText) {
                             conversationMessages.push({
@@ -2276,12 +2324,31 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
 
                 sendBtn.addEventListener('click', () => void handleSend());
                 chat.addEventListener('click', (event) => {
-                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-action="rollback-round"]') : null;
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-action]') : null;
                     if (!(target instanceof HTMLElement)) {
                         return;
                     }
-                    const messageIndex = target.getAttribute('data-cea-sync-message-index');
-                    rollbackToMessage(messageIndex);
+                    const action = String(target.getAttribute('data-cea-sync-action') || '').trim();
+                    if (action === 'rollback-round') {
+                        const messageIndex = target.getAttribute('data-cea-sync-message-index');
+                        rollbackToMessage(messageIndex);
+                        return;
+                    }
+                    if (action === 'approve-diff' || action === 'reject-diff') {
+                        const messageIndex = asFiniteInteger(target.getAttribute('data-cea-sync-message-index'), -1);
+                        const opIndex = asFiniteInteger(target.getAttribute('data-cea-sync-op-index'), -1);
+                        if (!Number.isInteger(messageIndex) || !Number.isInteger(opIndex) || messageIndex < 0 || opIndex < 0) {
+                            return;
+                        }
+                        const message = conversationMessages[messageIndex];
+                        const operation = Array.isArray(message?.operations) ? message.operations[opIndex] : null;
+                        const key = buildLorebookOperationApprovalKey(operation);
+                        if (!key) {
+                            return;
+                        }
+                        operationApprovalMap.set(key, action === 'approve-diff' ? 'approved' : 'rejected');
+                        renderConversation(false);
+                    }
                 });
                 history.addEventListener('click', async (event) => {
                     const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-history-action="rollback"]') : null;
@@ -2315,12 +2382,28 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
             },
             onClosing: (instance) => {
                 if (!analysisReady && Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
-                    notifyWarning(i18n('Model analysis is still running. Please wait or cancel for raw update.'));
+                    notifyWarning(i18n('Model analysis is still running. Please wait or cancel to restore previous lorebook.'));
                     return false;
                 }
                 if (isSending && Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
                     notifyWarning(i18n('Assistant is thinking...'));
                     return false;
+                }
+                if (Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
+                    const finalSpecs = getCurrentFinalOperationSpecs();
+                    if (finalSpecs.length === 0) {
+                        notifyWarning(i18n('No final diff to apply. Continue editing or cancel.'));
+                        return false;
+                    }
+                    const summary = getFinalOperationApprovalSummary(finalSpecs, operationApprovalMap);
+                    if (summary.rejected > 0) {
+                        notifyWarning(i18n('Rejected diffs exist. Cancel to restore previous lorebook.'));
+                        return false;
+                    }
+                    if (summary.pending > 0) {
+                        notifyWarning(i18n('All final diffs must be approved before saving.'));
+                        return false;
+                    }
                 }
                 return true;
             },
@@ -2347,7 +2430,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                 const input = popup.content.querySelector('[data-cea-sync-input]');
                 const sendBtn = popup.content.querySelector('[data-cea-sync-send]');
                 if (chat instanceof HTMLElement) {
-                    chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading: false });
+                    chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading: false, approvalMap: operationApprovalMap });
                     chat.scrollTop = chat.scrollHeight;
                 }
                 if (input instanceof HTMLTextAreaElement) {
@@ -2362,43 +2445,33 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
 
     const popupResult = await popupPromise;
 
-    // Cancel means "raw update".
+    // Cancel means restore previous lorebook binding.
     if (popupResult !== POPUP_RESULT.AFFIRMATIVE) {
-        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        const restored = await restorePreviousLorebookBinding(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
         await refreshUiState(context);
-        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
+        notifyWarning(i18nFormat('No replacement applied. Restored previous lorebook binding: ${0}', restored.previousBook || '(none)'));
         return;
     }
 
     await analysisPromise;
 
-    const operationSpecs = buildFinalLorebookOperationSpecsFromDraft(
-        plan.targetBook,
-        baselineTargetEntries,
-        draftTargetEntries,
-    );
+    const operationSpecs = getCurrentFinalOperationSpecs();
     if (operationSpecs.length === 0) {
-        notifyWarning(i18n('No valid model edits generated. Falling back to raw update.'));
-        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
-        await refreshUiState(context);
-        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
+        notifyWarning(i18n('No final diff to apply. Continue editing or cancel.'));
         return;
     }
 
     const result = await submitGeneratedOperations(context, operationSpecs, 'character_update_lorebook_sync', { targetAvatar });
-    if (result.failed === 0 && result.pending === 0) {
+    if (result.failed === 0) {
         const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
         if (finalized.previousBook || finalized.targetBook) {
             notifySuccess(i18nFormat('Finalize lorebook replacement: ${0} -> ${1}', finalized.previousBook || '(none)', finalized.targetBook || '(none)'));
         }
     } else {
         notifyWarning(i18n('Lorebook finalization skipped due failed operations.'));
-        if (result.pending > 0) {
-            notifyWarning(i18n('There are pending approvals. Final replacement will run after approvals.'));
-        }
     }
     await refreshUiState(context);
-    notifySuccess(i18nFormat('Lorebook sync result: pending ${0}, applied ${1}, failed ${2}', result.pending, result.applied, result.failed));
+    notifySuccess(i18nFormat('Lorebook sync result: applied ${0}, failed ${1}', result.applied, result.failed));
     if (result.failed > 0) {
         notifyWarning(result.errors[0] || 'Some operations failed.');
     }
@@ -2641,133 +2714,6 @@ function getEntryPreviewValue(entry, key) {
     return source[key];
 }
 
-async function buildPendingOperationDiffPreview(context, operation) {
-    const record = getActiveCharacterRecord(context);
-    const kind = String(operation?.kind || '');
-    const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
-    const preview = {
-        title: buildOperationSummary(operation),
-        fields: [],
-        meta: [],
-    };
-
-    if (kind === 'character_fields') {
-        const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
-        const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
-        for (const key of rootFieldNames) {
-            if (!Object.hasOwn(args, key)) {
-                continue;
-            }
-            pushDiffField(preview.fields, key, String(record.character?.[key] ?? ''), String(args[key] ?? ''));
-        }
-        for (const key of dataFieldNames) {
-            if (!Object.hasOwn(args, key)) {
-                continue;
-            }
-            pushDiffField(preview.fields, key, String(record.character?.data?.[key] ?? ''), String(args[key] ?? ''));
-        }
-        return preview;
-    }
-
-    if (kind === 'set_primary_lorebook') {
-        const beforeName = getPrimaryLorebookName(record.character);
-        const afterName = String(args.book_name || '').trim();
-        pushDiffField(preview.fields, 'primary lorebook', beforeName, afterName);
-        return preview;
-    }
-
-    if (kind === 'lorebook_upsert_entry' || kind === 'lorebook_delete_entry') {
-        const requestedBookName = String(args.book_name || '').trim();
-        const primaryBookName = getPrimaryLorebookName(record.character);
-        const targetBookName = requestedBookName || primaryBookName;
-        const rawBookData = targetBookName ? await context.loadWorldInfo(targetBookName) : null;
-        const hasBook = Boolean(targetBookName && rawBookData && typeof rawBookData === 'object');
-        const lorebookData = hasBook ? rawBookData : { entries: {} };
-        if (!lorebookData.entries || typeof lorebookData.entries !== 'object') {
-            lorebookData.entries = {};
-        }
-
-        const parsedUid = asFiniteInteger(args.entry_uid, null);
-        const entryUid = Number.isInteger(parsedUid) && parsedUid >= 0 ? parsedUid : getLorebookNextUid(lorebookData);
-        const beforeEntry = Object.hasOwn(lorebookData.entries, entryUid) ? clone(lorebookData.entries[entryUid]) : null;
-
-        preview.meta.push({
-            label: i18n('Target lorebook'),
-            value: targetBookName || i18n('(missing lorebook)'),
-        });
-        preview.meta.push({
-            label: i18n('Entry UID'),
-            value: String(entryUid),
-        });
-
-        if (kind === 'lorebook_delete_entry') {
-            pushDiffField(preview.fields, 'entry', beforeEntry ? 'exists' : i18n('(empty)'), i18n('(deleted)'), { force: true });
-            if (beforeEntry) {
-                pushDiffField(preview.fields, 'keywords', getEntryPreviewValue(beforeEntry, 'key'), i18n('(deleted)'), { force: true });
-                pushDiffField(preview.fields, 'secondary keywords', getEntryPreviewValue(beforeEntry, 'keysecondary'), i18n('(deleted)'), { force: true });
-                pushDiffField(preview.fields, 'comment', getEntryPreviewValue(beforeEntry, 'comment'), i18n('(deleted)'), { force: true });
-                pushDiffField(preview.fields, 'content', getEntryPreviewValue(beforeEntry, 'content'), i18n('(deleted)'), { force: true });
-            }
-            return preview;
-        }
-
-        const afterEntry = applyLorebookEntryArgs(beforeEntry, args, entryUid);
-        const fieldSpecs = [
-            { label: 'comment', key: 'comment', touched: Object.hasOwn(args, 'comment') },
-            { label: 'content', key: 'content', touched: Object.hasOwn(args, 'content') },
-            { label: 'keywords', key: 'key', touched: Object.hasOwn(args, 'key_csv') },
-            { label: 'secondary keywords', key: 'keysecondary', touched: Object.hasOwn(args, 'secondary_key_csv') },
-            { label: 'selective logic', key: 'selectiveLogic', touched: Object.hasOwn(args, 'selective_logic') || Object.hasOwn(args, 'secondary_key_csv') },
-            { label: 'order', key: 'order', touched: Object.hasOwn(args, 'order') },
-            { label: 'position', key: 'position', touched: Object.hasOwn(args, 'position') },
-            { label: 'depth', key: 'depth', touched: Object.hasOwn(args, 'depth') },
-            { label: 'enabled', key: 'enabled', touched: Object.hasOwn(args, 'enabled') || Object.hasOwn(args, 'disable') },
-            { label: 'constant', key: 'constant', touched: Object.hasOwn(args, 'constant') },
-        ];
-        for (const spec of fieldSpecs) {
-            if (!spec.touched) {
-                continue;
-            }
-            const beforeValue = beforeEntry ? getEntryPreviewValue(beforeEntry, spec.key) : i18n('(new entry)');
-            const afterValue = getEntryPreviewValue(afterEntry, spec.key);
-            pushDiffField(preview.fields, spec.label, beforeValue, afterValue, { force: !beforeEntry });
-        }
-        return preview;
-    }
-
-    return preview;
-}
-
-function renderPendingOperationDiffHtml(preview) {
-    const safePreview = preview && typeof preview === 'object' ? preview : { title: '', fields: [], meta: [] };
-    const meta = Array.isArray(safePreview.meta) ? safePreview.meta : [];
-    const fields = Array.isArray(safePreview.fields) ? safePreview.fields : [];
-    if (fields.length === 0) {
-        return `<div class="cea_item_meta">${escapeHtml(i18n('No meaningful changes detected.'))}</div>`;
-    }
-    return `
-<div class="cea_diff_popup">
-    ${meta.length > 0 ? `<div class="cea_diff_meta">${meta.map(item => `
-        <div class="cea_diff_meta_item"><b>${escapeHtml(String(item?.label || ''))}:</b> ${escapeHtml(String(item?.value || ''))}</div>
-    `).join('')}</div>` : ''}
-    ${fields.map(field => `
-        <div class="cea_diff_item">
-            <div class="cea_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
-            <div class="cea_diff_blocks">
-                <div class="cea_diff_block before">
-                    <div class="cea_diff_block_title">${escapeHtml(i18n('Before'))}</div>
-                    <pre>${escapeHtml(String(field?.before ?? ''))}</pre>
-                </div>
-                <div class="cea_diff_block after">
-                    <div class="cea_diff_block_title">${escapeHtml(i18n('After'))}</div>
-                    <pre>${escapeHtml(String(field?.after ?? ''))}</pre>
-                </div>
-            </div>
-        </div>
-    `).join('')}
-</div>`;
-}
-
 async function applyLorebookUpsertOperation(context, record, operation) {
     const args = operation.args && typeof operation.args === 'object' ? operation.args : {};
     const bookName = await resolveTargetLorebook(context, record, {
@@ -2912,20 +2858,8 @@ function createOperationEnvelope(state, kind, args, source = 'tool', { targetAva
 }
 
 async function submitOperation(context, operation, { avatar = '' } = {}) {
-    const settings = getSettings();
     const targetAvatar = String(avatar || operation?.targetAvatar || '').trim();
     const state = await loadOperationState(context, { avatar: targetAvatar });
-
-    if (settings.requireApproval) {
-        state.pending.push(operation);
-        state.updatedAt = Date.now();
-        await persistOperationState(context, state, { avatar: targetAvatar });
-        return {
-            status: 'pending',
-            operation_id: operation.id,
-            summary: buildOperationSummary(operation),
-        };
-    }
 
     const applied = await applyOperationNow(context, operation, { avatar: targetAvatar });
     const journalEntry = {
@@ -2947,55 +2881,6 @@ async function submitOperation(context, operation, { avatar = '' } = {}) {
         journal_id: journalEntry.id,
         summary: journalEntry.summary,
     };
-}
-
-function getPendingOperationById(state, operationId) {
-    const id = String(operationId || '').trim();
-    if (!id) {
-        return { operation: null, index: -1 };
-    }
-    const index = state.pending.findIndex(item => String(item?.id || '') === id);
-    return {
-        operation: index >= 0 ? state.pending[index] : null,
-        index,
-    };
-}
-
-async function approvePendingOperation(context, operationId) {
-    const settings = getSettings();
-    const state = await loadOperationState(context, { force: true });
-    const { operation, index } = getPendingOperationById(state, operationId);
-    if (!operation || index < 0) {
-        throw new Error('Pending operation not found.');
-    }
-
-    const targetAvatar = String(operation?.targetAvatar || '').trim();
-    const applied = await applyOperationNow(context, operation, { avatar: targetAvatar });
-    state.pending.splice(index, 1);
-    const journalEntry = {
-        id: nextStateId(state, 'tx'),
-        operationId: operation.id,
-        kind: applied.kind,
-        source: 'approval',
-        summary: String(applied.summary || buildOperationSummary(operation)),
-        data: clone(applied.data || {}),
-        createdAt: Date.now(),
-    };
-    appendJournal(state, journalEntry, settings);
-    state.updatedAt = Date.now();
-    await persistOperationState(context, state, { avatar: targetAvatar });
-    return journalEntry;
-}
-
-async function rejectPendingOperation(context, operationId) {
-    const state = await loadOperationState(context, { force: true });
-    const { index } = getPendingOperationById(state, operationId);
-    if (index < 0) {
-        throw new Error('Pending operation not found.');
-    }
-    state.pending.splice(index, 1);
-    state.updatedAt = Date.now();
-    await persistOperationState(context, state);
 }
 
 function getJournalById(state, journalId) {
@@ -3141,6 +3026,11 @@ function ensureStyles() {
 .popup .cea_sync_turn_diff_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .popup .cea_sync_turn_diff_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; }
 .popup .cea_sync_turn_diff_title { font-weight:600; margin-bottom:6px; }
+.popup .cea_sync_turn_diff_actions { display:flex; align-items:center; gap:6px; margin-bottom:8px; flex-wrap:wrap; }
+.popup .cea_sync_turn_diff_status { padding:3px 8px; border-radius:999px; font-size:0.85em; line-height:1.2; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 22%, transparent); }
+.popup .cea_sync_turn_diff_status.approved { background:color-mix(in oklab, #4caf50 18%, transparent); }
+.popup .cea_sync_turn_diff_status.rejected { background:color-mix(in oklab, #d9534f 16%, transparent); }
+.popup .cea_sync_turn_diff_status.pending { background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
 .popup .cea_sync_turn_diff_meta { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
 .popup .cea_sync_turn_diff_meta_item { padding:4px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
 .popup .cea_sync_turn_diff_fields { display:flex; flex-direction:column; gap:8px; }
@@ -3175,30 +3065,6 @@ function ensureStyles() {
 }
 `;
     document.head.append(style);
-}
-
-function renderPendingItems(state) {
-    const items = Array.isArray(state?.pending) ? state.pending : [];
-    if (items.length === 0) {
-        return `<div class="cea_item_meta">${escapeHtml(i18n('No pending operations.'))}</div>`;
-    }
-    return items.map(item => {
-        const summary = buildOperationSummary(item);
-        return `
-<div class="cea_item" data-op-id="${escapeHtml(item.id)}">
-    <div class="cea_item_top">
-        <div>
-            <div><b>${escapeHtml(summary)}</b></div>
-            <div class="cea_item_meta">${escapeHtml(new Date(Number(item.createdAt || Date.now())).toLocaleString())}</div>
-        </div>
-        <div class="cea_item_actions">
-            <div class="menu_button menu_button_small" data-cea-action="view-diff" data-op-id="${escapeHtml(item.id)}">${escapeHtml(i18n('View diff'))}</div>
-            <div class="menu_button menu_button_small" data-cea-action="approve" data-op-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Approve'))}</div>
-            <div class="menu_button menu_button_small" data-cea-action="reject" data-op-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Reject'))}</div>
-        </div>
-    </div>
-</div>`;
-    }).join('');
 }
 
 function renderJournalItems(state) {
@@ -3264,11 +3130,7 @@ async function handleToolOperation(kind, args) {
     await persistOperationState(context, state);
 
     const result = await submitOperation(context, operation);
-    if (result.status === 'pending') {
-        notifyWarning(i18nFormat('Operation queued for approval: ${0}', result.summary));
-    } else {
-        notifySuccess(i18nFormat('Operation applied: ${0}', result.summary));
-    }
+    notifySuccess(i18nFormat('Operation applied: ${0}', result.summary));
     await refreshUiState(context);
     return result;
 }
@@ -3391,7 +3253,6 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="cea_enabled" type="checkbox"/> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="cea_require_approval" type="checkbox"/> ${escapeHtml(i18n('Require approval before applying tool edits'))}</label>
             <label class="checkbox_label"><input id="cea_auto_inject" type="checkbox"/> ${escapeHtml(i18n('Inject tool instruction into generation context'))}</label>
             <label class="checkbox_label"><input id="cea_replace_sync" type="checkbox"/> ${escapeHtml(i18n('Enable lorebook sync popup after Replace/Update'))}</label>
             <label for="cea_sync_llm_preset">${escapeHtml(i18n('Lorebook sync LLM preset name'))}</label>
@@ -3408,8 +3269,6 @@ function ensureUi() {
                 <div class="cea_row">
                     <div class="menu_button" id="cea_refresh">${escapeHtml(i18n('Refresh'))}</div>
                 </div>
-                <div><b>${escapeHtml(i18n('Pending operations'))}</b></div>
-                <div id="cea_pending"></div>
                 <div><b>${escapeHtml(i18n('History'))}</b></div>
                 <div id="cea_history"></div>
             </div>
@@ -3433,7 +3292,6 @@ async function refreshUiState(context = getContext()) {
     }
     const settings = getSettings();
     root.find('#cea_enabled').prop('checked', Boolean(settings.enabled));
-    root.find('#cea_require_approval').prop('checked', Boolean(settings.requireApproval));
     root.find('#cea_auto_inject').prop('checked', Boolean(settings.autoInjectPrompt));
     root.find('#cea_replace_sync').prop('checked', Boolean(settings.replaceLorebookSyncEnabled));
     root.find('#cea_plain_text_calls').prop('checked', Boolean(settings.plainTextFunctionCallMode));
@@ -3443,7 +3301,6 @@ async function refreshUiState(context = getContext()) {
 
     try {
         const state = await loadOperationState(context);
-        root.find('#cea_pending').html(renderPendingItems(state));
         root.find('#cea_history').html(renderJournalItems(state));
     } catch (error) {
         console.warn(`[${MODULE_NAME}] Failed to refresh UI state`, error);
@@ -3464,13 +3321,6 @@ function bindUi() {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
         syncPromptInjection(context);
-        refreshUiState(context);
-    });
-
-    root.on('change.cea', '#cea_require_approval', function () {
-        const settings = getSettings();
-        settings.requireApproval = Boolean(jQuery(this).prop('checked'));
-        saveSettingsDebounced();
         refreshUiState(context);
     });
 
@@ -3520,58 +3370,6 @@ function bindUi() {
 
     root.on('click.cea', '#cea_refresh', async function () {
         await refreshUiState(context);
-    });
-
-    root.on('click.cea', '[data-cea-action="view-diff"]', async function () {
-        const opId = String(jQuery(this).data('op-id') || '');
-        if (!opId) {
-            return;
-        }
-        try {
-            const state = await loadOperationState(context, { force: true });
-            const { operation } = getPendingOperationById(state, opId);
-            if (!operation) {
-                throw new Error('Pending operation not found.');
-            }
-            const preview = await buildPendingOperationDiffPreview(context, operation);
-            const html = renderPendingOperationDiffHtml(preview);
-            await context.callGenericPopup(
-                html,
-                context.POPUP_TYPE.TEXT,
-                i18n('Operation diff'),
-                { wide: true, wider: true, large: true, allowVerticalScrolling: true },
-            );
-        } catch (error) {
-            notifyError(String(error?.message || error));
-        }
-    });
-
-    root.on('click.cea', '[data-cea-action="approve"]', async function () {
-        const opId = String(jQuery(this).data('op-id') || '');
-        if (!opId) {
-            return;
-        }
-        try {
-            const entry = await approvePendingOperation(context, opId);
-            notifySuccess(i18nFormat('Operation approved: ${0}', entry.summary || opId));
-            await refreshUiState(context);
-        } catch (error) {
-            notifyError(String(error?.message || error));
-        }
-    });
-
-    root.on('click.cea', '[data-cea-action="reject"]', async function () {
-        const opId = String(jQuery(this).data('op-id') || '');
-        if (!opId) {
-            return;
-        }
-        try {
-            await rejectPendingOperation(context, opId);
-            notifySuccess(i18n('Operation rejected.'));
-            await refreshUiState(context);
-        } catch (error) {
-            notifyError(String(error?.message || error));
-        }
     });
 
     root.on('click.cea', '[data-cea-action="rollback"]', async function () {
