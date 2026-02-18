@@ -182,9 +182,8 @@ function registerLocaleData() {
         'Pending review': '待审批',
         'Approved': '已通过',
         'Rejected': '已拒绝',
-        'All final diffs must be approved before saving.': '保存前必须通过所有最终差异项。',
-        'Rejected diffs exist. Cancel to restore previous lorebook.': '存在已拒绝差异项，请取消并恢复旧世界书。',
-        'No final diff to apply. Continue editing or cancel.': '没有可应用的最终差异，请继续编辑或取消。',
+        'All final diffs must be reviewed before saving.': '保存前必须处理所有最终差异项（通过或拒绝）。',
+        'No approved diff to apply. Finalizing without additional changes.': '没有已通过差异项，将直接完成同步且不追加修改。',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
@@ -256,9 +255,8 @@ function registerLocaleData() {
         'Pending review': '待審批',
         'Approved': '已通過',
         'Rejected': '已拒絕',
-        'All final diffs must be approved before saving.': '儲存前必須通過所有最終差異項。',
-        'Rejected diffs exist. Cancel to restore previous lorebook.': '存在已拒絕差異項，請取消並恢復舊世界書。',
-        'No final diff to apply. Continue editing or cancel.': '沒有可套用的最終差異，請繼續編輯或取消。',
+        'All final diffs must be reviewed before saving.': '儲存前必須處理所有最終差異項（通過或拒絕）。',
+        'No approved diff to apply. Finalizing without additional changes.': '沒有已通過差異項，將直接完成同步且不追加修改。',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 配置）',
         '(missing)': '（缺失）',
@@ -1350,6 +1348,15 @@ function getFinalOperationApprovalSummary(operationSpecs, approvalMap) {
     return summary;
 }
 
+function selectApprovedFinalOperations(operationSpecs, approvalMap) {
+    const map = approvalMap instanceof Map ? approvalMap : new Map();
+    return (Array.isArray(operationSpecs) ? operationSpecs : []).filter(operation => {
+        const key = buildLorebookOperationApprovalKey(operation);
+        const state = key ? String(map.get(key) || 'pending') : 'pending';
+        return state === 'approved';
+    });
+}
+
 function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries, draftEntries, conversationMessages) {
     const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
     const safeBaselineEntries = baselineEntries && typeof baselineEntries === 'object' ? baselineEntries : {};
@@ -2391,17 +2398,9 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                 }
                 if (Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
                     const finalSpecs = getCurrentFinalOperationSpecs();
-                    if (finalSpecs.length === 0) {
-                        notifyWarning(i18n('No final diff to apply. Continue editing or cancel.'));
-                        return false;
-                    }
                     const summary = getFinalOperationApprovalSummary(finalSpecs, operationApprovalMap);
-                    if (summary.rejected > 0) {
-                        notifyWarning(i18n('Rejected diffs exist. Cancel to restore previous lorebook.'));
-                        return false;
-                    }
                     if (summary.pending > 0) {
-                        notifyWarning(i18n('All final diffs must be approved before saving.'));
+                        notifyWarning(i18n('All final diffs must be reviewed before saving.'));
                         return false;
                     }
                 }
@@ -2456,25 +2455,27 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
     await analysisPromise;
 
     const operationSpecs = getCurrentFinalOperationSpecs();
-    if (operationSpecs.length === 0) {
-        notifyWarning(i18n('No final diff to apply. Continue editing or cancel.'));
-        return;
-    }
-
-    const result = await submitGeneratedOperations(context, operationSpecs, 'character_update_lorebook_sync', { targetAvatar });
-    if (result.failed === 0) {
-        const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
-        if (finalized.previousBook || finalized.targetBook) {
-            notifySuccess(i18nFormat('Finalize lorebook replacement: ${0} -> ${1}', finalized.previousBook || '(none)', finalized.targetBook || '(none)'));
+    const approvedOperationSpecs = selectApprovedFinalOperations(operationSpecs, operationApprovalMap);
+    let result = { applied: 0, failed: 0, errors: [] };
+    if (approvedOperationSpecs.length > 0) {
+        result = await submitGeneratedOperations(context, approvedOperationSpecs, 'character_update_lorebook_sync', { targetAvatar });
+        if (result.failed > 0) {
+            notifyWarning(i18n('Lorebook finalization skipped due failed operations.'));
+            await refreshUiState(context);
+            notifySuccess(i18nFormat('Lorebook sync result: applied ${0}, failed ${1}', result.applied, result.failed));
+            notifyWarning(result.errors[0] || 'Some operations failed.');
+            return;
         }
     } else {
-        notifyWarning(i18n('Lorebook finalization skipped due failed operations.'));
+        notifyWarning(i18n('No approved diff to apply. Finalizing without additional changes.'));
+    }
+
+    const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+    if (finalized.previousBook || finalized.targetBook) {
+        notifySuccess(i18nFormat('Finalize lorebook replacement: ${0} -> ${1}', finalized.previousBook || '(none)', finalized.targetBook || '(none)'));
     }
     await refreshUiState(context);
     notifySuccess(i18nFormat('Lorebook sync result: applied ${0}, failed ${1}', result.applied, result.failed));
-    if (result.failed > 0) {
-        notifyWarning(result.errors[0] || 'Some operations failed.');
-    }
 }
 
 async function primeActiveCharacterLorebookSnapshot(context) {
