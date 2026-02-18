@@ -65,7 +65,7 @@ bash android-app/scripts/build-android-apk.sh release
 ## CI model
 
 - `push` on any branch: build debug APK artifact.
-- `release.published`: build signed release APK and upload to the GitHub Release.
+- `push` on any tag: build signed release APK and publish/update the GitHub Release for that tag.
 - `workflow_dispatch`: supports manual `debug` / `release` selection.
 
 ## Update model

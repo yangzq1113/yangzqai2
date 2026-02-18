@@ -42,7 +42,7 @@ Luker now includes an Android app workspace at `android-app/` that runs backend 
 
 Release model:
 - Every commit/push builds debug APK artifacts.
-- Published GitHub Releases build signed release APK and attach it to that Release.
+- Tag pushes build signed release APK and publish/update a GitHub Release for that tag.
 
 ## Upstream Resources (SillyTavern)
 

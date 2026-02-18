@@ -17,9 +17,8 @@ on:
   push:
     branches:
       - "**"
-  release:
-    types:
-      - published
+    tags:
+      - "*"
 
 permissions:
   contents: write
@@ -35,7 +34,7 @@ jobs:
   build-debug-apk:
     if: >
       github.repository == 'funnycups/Luker' &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'debug'))
+      ((github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'debug'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -68,7 +67,7 @@ jobs:
   build-release-apk:
     if: >
       github.repository == 'funnycups/Luker' &&
-      (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'release'))
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && github.event.inputs.build_type == 'release'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -89,6 +88,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Validate release signing secrets
+        run: |
+          test -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}"
+          test -n "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+          test -n "${{ secrets.ANDROID_KEY_ALIAS }}"
+          test -n "${{ secrets.ANDROID_KEY_PASSWORD }}"
+
       - name: Decode Android keystore
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android-app/release.keystore
 
@@ -107,8 +113,11 @@ jobs:
           path: android-app/app/build/outputs/apk/release/*.apk
 
       - name: Publish release assets
-        if: github.event_name == 'release'
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             android-app/app/build/outputs/apk/release/*.apk
