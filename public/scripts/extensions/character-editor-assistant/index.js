@@ -60,6 +60,7 @@ function registerLocaleData() {
         'History': '修改历史',
         'Approve': '批准',
         'Reject': '拒绝',
+        'View diff': '查看 diff',
         'Rollback': '回滚',
         'No pending operations.': '暂无待审批操作。',
         'No history yet.': '暂无历史记录。',
@@ -71,6 +72,16 @@ function registerLocaleData() {
         'Operation rejected.': '操作已拒绝。',
         'Rollback completed.': '回滚完成。',
         'Rollback failed: ${0}': '回滚失败：${0}',
+        'Operation diff': '操作差异',
+        'Before': '修改前',
+        'After': '修改后',
+        'No meaningful changes detected.': '未检测到可展示的变更。',
+        'Target lorebook': '目标世界书',
+        'Entry UID': '条目 UID',
+        '(empty)': '（空）',
+        '(deleted)': '（已删除）',
+        '(new entry)': '（新建条目）',
+        '(missing lorebook)': '（世界书不存在）',
         'Need explicit user intent before deletion.': '删除前需要用户明确意图。',
     });
     addLocaleData('zh-tw', {
@@ -84,6 +95,7 @@ function registerLocaleData() {
         'History': '修改歷史',
         'Approve': '批准',
         'Reject': '拒絕',
+        'View diff': '查看 diff',
         'Rollback': '回滾',
         'No pending operations.': '暫無待審批操作。',
         'No history yet.': '暫無歷史記錄。',
@@ -95,6 +107,16 @@ function registerLocaleData() {
         'Operation rejected.': '操作已拒絕。',
         'Rollback completed.': '回滾完成。',
         'Rollback failed: ${0}': '回滾失敗：${0}',
+        'Operation diff': '操作差異',
+        'Before': '修改前',
+        'After': '修改後',
+        'No meaningful changes detected.': '未檢測到可展示的變更。',
+        'Target lorebook': '目標世界書',
+        'Entry UID': '條目 UID',
+        '(empty)': '（空）',
+        '(deleted)': '（已刪除）',
+        '(new entry)': '（新建條目）',
+        '(missing lorebook)': '（世界書不存在）',
         'Need explicit user intent before deletion.': '刪除前需要用戶明確意圖。',
     });
 }
@@ -475,6 +497,186 @@ function applyLorebookEntryArgs(baseEntry, args, entryUid) {
     return entry;
 }
 
+function normalizeDiffValue(value, emptyLabel = '(empty)') {
+    if (value === null || value === undefined) {
+        return i18n(emptyLabel);
+    }
+    if (Array.isArray(value)) {
+        const text = value.map(item => String(item ?? '').trim()).filter(Boolean).join(', ');
+        return text || i18n(emptyLabel);
+    }
+    if (typeof value === 'boolean') {
+        return value ? 'true' : 'false';
+    }
+    const text = String(value);
+    if (!text.trim()) {
+        return i18n(emptyLabel);
+    }
+    return text;
+}
+
+function clipDiffText(value, maxLength = 1200) {
+    const text = String(value ?? '');
+    if (text.length <= maxLength) {
+        return text;
+    }
+    return `${text.slice(0, maxLength)}\n...`;
+}
+
+function pushDiffField(fields, label, before, after, { force = false } = {}) {
+    const beforeText = clipDiffText(normalizeDiffValue(before));
+    const afterText = clipDiffText(normalizeDiffValue(after));
+    if (!force && beforeText === afterText) {
+        return;
+    }
+    fields.push({
+        label: String(label || 'field'),
+        before: beforeText,
+        after: afterText,
+    });
+}
+
+function getEntryPreviewValue(entry, key) {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    if (key === 'key') {
+        return Array.isArray(source.key) ? source.key : [];
+    }
+    if (key === 'keysecondary') {
+        return Array.isArray(source.keysecondary) ? source.keysecondary : [];
+    }
+    if (key === 'enabled') {
+        return !Boolean(source.disable);
+    }
+    return source[key];
+}
+
+async function buildPendingOperationDiffPreview(context, operation) {
+    const record = getActiveCharacterRecord(context);
+    const kind = String(operation?.kind || '');
+    const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
+    const preview = {
+        title: buildOperationSummary(operation),
+        fields: [],
+        meta: [],
+    };
+
+    if (kind === 'character_fields') {
+        const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
+        const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
+        for (const key of rootFieldNames) {
+            if (!Object.hasOwn(args, key)) {
+                continue;
+            }
+            pushDiffField(preview.fields, key, String(record.character?.[key] ?? ''), String(args[key] ?? ''));
+        }
+        for (const key of dataFieldNames) {
+            if (!Object.hasOwn(args, key)) {
+                continue;
+            }
+            pushDiffField(preview.fields, key, String(record.character?.data?.[key] ?? ''), String(args[key] ?? ''));
+        }
+        return preview;
+    }
+
+    if (kind === 'set_primary_lorebook') {
+        const beforeName = getPrimaryLorebookName(record.character);
+        const afterName = String(args.book_name || '').trim();
+        pushDiffField(preview.fields, 'primary lorebook', beforeName, afterName);
+        return preview;
+    }
+
+    if (kind === 'lorebook_upsert_entry' || kind === 'lorebook_delete_entry') {
+        const requestedBookName = String(args.book_name || '').trim();
+        const primaryBookName = getPrimaryLorebookName(record.character);
+        const targetBookName = requestedBookName || primaryBookName;
+        const rawBookData = targetBookName ? await context.loadWorldInfo(targetBookName) : null;
+        const hasBook = Boolean(targetBookName && rawBookData && typeof rawBookData === 'object');
+        const lorebookData = hasBook ? rawBookData : { entries: {} };
+        if (!lorebookData.entries || typeof lorebookData.entries !== 'object') {
+            lorebookData.entries = {};
+        }
+
+        const parsedUid = asFiniteInteger(args.entry_uid, null);
+        const entryUid = Number.isInteger(parsedUid) && parsedUid >= 0 ? parsedUid : getLorebookNextUid(lorebookData);
+        const beforeEntry = Object.hasOwn(lorebookData.entries, entryUid) ? clone(lorebookData.entries[entryUid]) : null;
+
+        preview.meta.push({
+            label: i18n('Target lorebook'),
+            value: targetBookName || i18n('(missing lorebook)'),
+        });
+        preview.meta.push({
+            label: i18n('Entry UID'),
+            value: String(entryUid),
+        });
+
+        if (kind === 'lorebook_delete_entry') {
+            pushDiffField(preview.fields, 'entry', beforeEntry ? 'exists' : i18n('(empty)'), i18n('(deleted)'), { force: true });
+            if (beforeEntry) {
+                pushDiffField(preview.fields, 'keywords', getEntryPreviewValue(beforeEntry, 'key'), i18n('(deleted)'), { force: true });
+                pushDiffField(preview.fields, 'secondary keywords', getEntryPreviewValue(beforeEntry, 'keysecondary'), i18n('(deleted)'), { force: true });
+                pushDiffField(preview.fields, 'comment', getEntryPreviewValue(beforeEntry, 'comment'), i18n('(deleted)'), { force: true });
+                pushDiffField(preview.fields, 'content', getEntryPreviewValue(beforeEntry, 'content'), i18n('(deleted)'), { force: true });
+            }
+            return preview;
+        }
+
+        const afterEntry = applyLorebookEntryArgs(beforeEntry, args, entryUid);
+        const fieldSpecs = [
+            { label: 'comment', key: 'comment', touched: Object.hasOwn(args, 'comment') },
+            { label: 'content', key: 'content', touched: Object.hasOwn(args, 'content') },
+            { label: 'keywords', key: 'key', touched: Object.hasOwn(args, 'key_csv') },
+            { label: 'secondary keywords', key: 'keysecondary', touched: Object.hasOwn(args, 'secondary_key_csv') },
+            { label: 'selective logic', key: 'selectiveLogic', touched: Object.hasOwn(args, 'selective_logic') || Object.hasOwn(args, 'secondary_key_csv') },
+            { label: 'order', key: 'order', touched: Object.hasOwn(args, 'order') },
+            { label: 'position', key: 'position', touched: Object.hasOwn(args, 'position') },
+            { label: 'depth', key: 'depth', touched: Object.hasOwn(args, 'depth') },
+            { label: 'enabled', key: 'enabled', touched: Object.hasOwn(args, 'enabled') || Object.hasOwn(args, 'disable') },
+            { label: 'constant', key: 'constant', touched: Object.hasOwn(args, 'constant') },
+        ];
+        for (const spec of fieldSpecs) {
+            if (!spec.touched) {
+                continue;
+            }
+            const beforeValue = beforeEntry ? getEntryPreviewValue(beforeEntry, spec.key) : i18n('(new entry)');
+            const afterValue = getEntryPreviewValue(afterEntry, spec.key);
+            pushDiffField(preview.fields, spec.label, beforeValue, afterValue, { force: !beforeEntry });
+        }
+        return preview;
+    }
+
+    return preview;
+}
+
+function renderPendingOperationDiffHtml(preview) {
+    const safePreview = preview && typeof preview === 'object' ? preview : { title: '', fields: [], meta: [] };
+    const meta = Array.isArray(safePreview.meta) ? safePreview.meta : [];
+    const fields = Array.isArray(safePreview.fields) ? safePreview.fields : [];
+    if (fields.length === 0) {
+        return `<div class="cea_item_meta">${escapeHtml(i18n('No meaningful changes detected.'))}</div>`;
+    }
+    return `
+<div class="cea_diff_popup">
+    ${meta.length > 0 ? `<div class="cea_diff_meta">${meta.map(item => `
+        <div class="cea_diff_meta_item"><b>${escapeHtml(String(item?.label || ''))}:</b> ${escapeHtml(String(item?.value || ''))}</div>
+    `).join('')}</div>` : ''}
+    ${fields.map(field => `
+        <div class="cea_diff_item">
+            <div class="cea_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
+            <div class="cea_diff_blocks">
+                <div class="cea_diff_block before">
+                    <div class="cea_diff_block_title">${escapeHtml(i18n('Before'))}</div>
+                    <pre>${escapeHtml(String(field?.before ?? ''))}</pre>
+                </div>
+                <div class="cea_diff_block after">
+                    <div class="cea_diff_block_title">${escapeHtml(i18n('After'))}</div>
+                    <pre>${escapeHtml(String(field?.after ?? ''))}</pre>
+                </div>
+            </div>
+        </div>
+    `).join('')}
+</div>`;
+}
+
 async function applyLorebookUpsertOperation(context, record, operation) {
     const args = operation.args && typeof operation.args === 'object' ? operation.args : {};
     const bookName = await resolveTargetLorebook(context, record, {
@@ -783,6 +985,17 @@ function ensureStyles() {
 #${UI_BLOCK_ID} .cea_item_meta { opacity:0.75; font-size:0.9em; }
 #${UI_BLOCK_ID} .cea_status { opacity:0.85; }
 #${UI_BLOCK_ID} .cea_item_actions { display:flex; gap:6px; flex-wrap:wrap; }
+#${UI_BLOCK_ID} .cea_diff_popup { display:flex; flex-direction:column; gap:10px; }
+#${UI_BLOCK_ID} .cea_diff_meta { display:flex; flex-wrap:wrap; gap:8px; }
+#${UI_BLOCK_ID} .cea_diff_meta_item { padding:6px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
+#${UI_BLOCK_ID} .cea_diff_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:8px; padding:8px; }
+#${UI_BLOCK_ID} .cea_diff_label { font-weight:600; margin-bottom:6px; }
+#${UI_BLOCK_ID} .cea_diff_blocks { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+#${UI_BLOCK_ID} .cea_diff_block { border-radius:8px; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); padding:6px; min-height:72px; }
+#${UI_BLOCK_ID} .cea_diff_block_title { font-size:0.9em; opacity:0.75; margin-bottom:4px; }
+#${UI_BLOCK_ID} .cea_diff_block pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; max-height:280px; overflow:auto; }
+#${UI_BLOCK_ID} .cea_diff_block.before { background: color-mix(in oklab, #d9534f 12%, transparent); }
+#${UI_BLOCK_ID} .cea_diff_block.after { background: color-mix(in oklab, #4caf50 14%, transparent); }
 #${UI_BLOCK_ID} .cea_row .menu_button {
     display: inline-flex;
     width: auto;
@@ -792,6 +1005,9 @@ function ensureStyles() {
     text-orientation: mixed;
     align-items: center;
     justify-content: center;
+}
+@media (max-width: 900px) {
+    #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
 }
 `;
     document.head.append(style);
@@ -812,6 +1028,7 @@ function renderPendingItems(state) {
             <div class="cea_item_meta">${escapeHtml(new Date(Number(item.createdAt || Date.now())).toLocaleString())}</div>
         </div>
         <div class="cea_item_actions">
+            <div class="menu_button menu_button_small" data-cea-action="view-diff" data-op-id="${escapeHtml(item.id)}">${escapeHtml(i18n('View diff'))}</div>
             <div class="menu_button menu_button_small" data-cea-action="approve" data-op-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Approve'))}</div>
             <div class="menu_button menu_button_small" data-cea-action="reject" data-op-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Reject'))}</div>
         </div>
@@ -1095,6 +1312,30 @@ function bindUi() {
 
     root.on('click.cea', '#cea_refresh', async function () {
         await refreshUiState(context);
+    });
+
+    root.on('click.cea', '[data-cea-action="view-diff"]', async function () {
+        const opId = String(jQuery(this).data('op-id') || '');
+        if (!opId) {
+            return;
+        }
+        try {
+            const state = await loadOperationState(context, { force: true });
+            const { operation } = getPendingOperationById(state, opId);
+            if (!operation) {
+                throw new Error('Pending operation not found.');
+            }
+            const preview = await buildPendingOperationDiffPreview(context, operation);
+            const html = renderPendingOperationDiffHtml(preview);
+            await context.callGenericPopup(
+                html,
+                context.POPUP_TYPE.TEXT,
+                i18n('Operation diff'),
+                { wide: true, wider: true, large: true, allowVerticalScrolling: true },
+            );
+        } catch (error) {
+            notifyError(String(error?.message || error));
+        }
     });
 
     root.on('click.cea', '[data-cea-action="approve"]', async function () {
