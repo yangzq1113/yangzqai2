@@ -1593,6 +1593,20 @@ function buildLorebookModelContextPayload(plan, requirements = '', analysisSumma
     };
 }
 
+function buildLorebookSyncBaselineData(embeddedImport, baselineEntries) {
+    const embeddedData = embeddedImport?.data;
+    if (embeddedData && typeof embeddedData === 'object') {
+        const data = clone(embeddedData);
+        if (!data.entries || typeof data.entries !== 'object') {
+            data.entries = {};
+        }
+        return data;
+    }
+    return {
+        entries: clone(baselineEntries || {}) || {},
+    };
+}
+
 function buildLorebookSyncModelTools() {
     return [
         {
@@ -2193,6 +2207,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
     const conversationMessages = [];
     const baselineTargetEntries = clone(effectiveCurrentSnapshot?.entries || {}) || {};
     const draftTargetEntries = clone(baselineTargetEntries) || {};
+    const baselineLorebookData = buildLorebookSyncBaselineData(embeddedImport, baselineTargetEntries);
     const operationApprovalMap = new Map();
     const getCurrentFinalOperationSpecs = () => buildFinalLorebookOperationSpecsFromDraft(
         plan.targetBook,
@@ -2482,6 +2497,10 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
     }
 
     await analysisPromise;
+
+    if (String(plan.targetBook || '').trim()) {
+        await context.saveWorldInfo(plan.targetBook, clone(baselineLorebookData), true);
+    }
 
     const operationSpecs = getCurrentFinalOperationSpecs();
     const approvedOperationSpecs = selectApprovedFinalOperations(operationSpecs, operationApprovalMap);
