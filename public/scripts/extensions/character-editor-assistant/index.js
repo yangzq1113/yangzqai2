@@ -4,21 +4,20 @@
 import {
     CONNECT_API_MAP,
     converter,
-    extension_prompt_roles,
-    extension_prompt_types,
     saveSettingsDebounced,
+    select_selected_character,
 } from '../../../script.js';
-import { DOMPurify } from '../../../lib.js';
+import { DOMPurify, diff2htmlHtml } from '../../../lib.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../popup.js';
-import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
+import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, reloadEditor, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
 
 const MODULE_NAME = 'character_editor_assistant';
 const UI_BLOCK_ID = 'character_editor_assistant_settings';
 const STYLE_ID = 'character_editor_assistant_style';
-const PROMPT_KEY = 'character_editor_assistant_prompt';
+const DIFF2HTML_STYLE_LINK_ID = 'luker_diff2html_style_link';
 
 const TOOL_NAMES = Object.freeze({
     UPDATE_FIELDS: 'luker_card_update_fields',
@@ -27,22 +26,12 @@ const TOOL_NAMES = Object.freeze({
     DELETE_ENTRY: 'luker_card_delete_lorebook_entry',
 });
 
-const DEFAULT_TOOL_PROMPT = [
-    'You can edit the CURRENT character card and its PRIMARY bound lorebook by using function tools.',
-    'Use tool calls only when user intent is explicitly about creating/updating/deleting character card info or lorebook entries.',
-    'You may call multiple tools in one response.',
-    'Never delete lorebook entries unless user intent is explicit.',
-].join('\n');
-
 const defaultSettings = {
-    enabled: false,
     replaceLorebookSyncEnabled: true,
-    autoInjectPrompt: true,
     lorebookSyncLlmPresetName: '',
     lorebookSyncApiPresetName: '',
     plainTextFunctionCallMode: false,
     toolCallRetryMax: 2,
-    toolInstructionPrompt: DEFAULT_TOOL_PROMPT,
     maxJournalEntries: 120,
 };
 
@@ -103,6 +92,7 @@ const API_ALIAS_TO_CHAT_SOURCE = {
 const stateCache = new Map();
 const lorebookSnapshotCache = new Map();
 const lorebookSyncDialogLocks = new Set();
+const editorStudioDialogLocks = new Set();
 
 function isPlainTextFunctionCallModeEnabled(settings = null) {
     const currentSettings = settings && typeof settings === 'object' ? settings : getSettings();
@@ -120,20 +110,21 @@ function i18nFormat(text, ...values) {
 function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Character Editor Assistant': '角色卡编辑助手',
-        'Enabled': '启用',
-        'Inject tool instruction into generation context': '将工具说明注入生成上下文',
+        'Open Editor': '打开编辑器',
+        'Character Editor': '角色编辑器',
         'Enable lorebook sync popup after Replace/Update': '替换/更新角色卡后启用世界书同步弹窗',
-        'Lorebook sync LLM preset name': '世界书同步 LLM 预设名',
-        'Lorebook sync API preset name': '世界书同步 API 预设名',
+        'Model request LLM preset name': '模型请求 LLM 预设名',
+        'Model request API preset name': '模型请求 API 预设名',
         'Plain-text function-call mode': '纯文本函数调用模式',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
-        'Tool instruction prompt': '工具说明提示词',
         'Refresh': '刷新',
         'History': '修改历史',
         'Approve': '批准',
         'Reject': '拒绝',
         'View diff': '查看 diff',
         'Rollback': '回滚',
+        'Delete': '删除',
+        'Clear history': '清空历史',
         'No history yet.': '暂无历史记录。',
         'Character editor tools are ready.': '角色编辑工具已就绪。',
         'Current chat has no active character.': '当前聊天没有活动角色卡。',
@@ -142,18 +133,21 @@ function registerLocaleData() {
         'Rollback failed: ${0}': '回滚失败：${0}',
         'Before': '修改前',
         'After': '修改后',
+        'Line diff': '逐行差异',
+        'Line diff (+${0} -${1})': '逐行差异（+${0} -${1}）',
+        '...(${0} more lines)': '...（还有 ${0} 行）',
         'No meaningful changes detected.': '未检测到可展示的变更。',
         'Target lorebook': '目标世界书',
         'Entry UID': '条目 UID',
         '(empty)': '（空）',
         '(deleted)': '（已删除）',
-        '(new entry)': '（新建条目）',
         '(missing lorebook)': '（世界书不存在）',
         'Old lorebook': '旧世界书',
         'New lorebook': '新世界书',
         'Candidate sync operations': '候选同步操作',
         'Lorebook sync result: applied ${0}, failed ${1}': '世界书同步结果：已生效 ${0}，失败 ${1}',
         'A lorebook sync dialog is already open for this character.': '该角色已有世界书同步弹窗正在处理中。',
+        'An editor is already open for this character.': '该角色已有编辑器正在处理中。',
         'Save and update': '保存并更新',
         'Cancel and restore previous lorebook': '取消并恢复旧世界书',
         'Analyze then update': '模型分析后更新',
@@ -171,6 +165,7 @@ function registerLocaleData() {
         'Send': '发送',
         'Type your requirement to continue this conversation...': '输入你的要求继续对话...',
         'Assistant is thinking...': '模型思考中...',
+        'Applying approved changes...': '正在应用已批准变更...',
         'Message cannot be empty.': '消息不能为空。',
         'Model reply failed: ${0}': '模型回复失败：${0}',
         'Round diff': '本轮差异',
@@ -186,26 +181,40 @@ function registerLocaleData() {
         'Rejected': '已拒绝',
         'All final diffs must be reviewed before saving.': '保存前必须处理所有最终差异项（通过或拒绝）。',
         'No approved diff to apply. Finalizing without additional changes.': '没有已通过差异项，将直接完成同步且不追加修改。',
+        'Please approve or reject pending changes first.': '请先批准或拒绝待审批变更。',
+        'AI proposed changes are waiting for approval.': 'AI 提出的变更正在等待审批。',
+        'Approve batch': '批准本批次',
+        'Reject batch': '拒绝本批次',
+        'Changes applied.': '变更已应用。',
+        'Changes rejected.': '变更已拒绝。',
+        'Apply failed: ${0}': '应用失败：${0}',
+        'Delete this history record?': '删除这条历史记录？',
+        'Clear all history records?': '清空所有历史记录？',
+        'History record deleted.': '历史记录已删除。',
+        'History cleared.': '历史记录已清空。',
+        'Delete failed: ${0}': '删除失败：${0}',
+        'Clear failed: ${0}': '清空失败：${0}',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
     });
     addLocaleData('zh-tw', {
         'Character Editor Assistant': '角色卡編輯助手',
-        'Enabled': '啟用',
-        'Inject tool instruction into generation context': '將工具說明注入生成上下文',
+        'Open Editor': '開啟編輯器',
+        'Character Editor': '角色編輯器',
         'Enable lorebook sync popup after Replace/Update': '替換/更新角色卡後啟用世界書同步彈窗',
-        'Lorebook sync LLM preset name': '世界書同步 LLM 預設名',
-        'Lorebook sync API preset name': '世界書同步 API 預設名',
+        'Model request LLM preset name': '模型請求 LLM 預設名',
+        'Model request API preset name': '模型請求 API 預設名',
         'Plain-text function-call mode': '純文本函數調用模式',
         'Tool-call retries on invalid/missing tool call (N)': '工具調用重試次數（無效/缺失時）',
-        'Tool instruction prompt': '工具說明提示詞',
         'Refresh': '刷新',
         'History': '修改歷史',
         'Approve': '批准',
         'Reject': '拒絕',
         'View diff': '查看 diff',
         'Rollback': '回滾',
+        'Delete': '刪除',
+        'Clear history': '清空歷史',
         'No history yet.': '暫無歷史記錄。',
         'Character editor tools are ready.': '角色編輯工具已就緒。',
         'Current chat has no active character.': '當前聊天沒有活動角色卡。',
@@ -214,18 +223,21 @@ function registerLocaleData() {
         'Rollback failed: ${0}': '回滾失敗：${0}',
         'Before': '修改前',
         'After': '修改後',
+        'Line diff': '逐行差異',
+        'Line diff (+${0} -${1})': '逐行差異（+${0} -${1}）',
+        '...(${0} more lines)': '...（還有 ${0} 行）',
         'No meaningful changes detected.': '未檢測到可展示的變更。',
         'Target lorebook': '目標世界書',
         'Entry UID': '條目 UID',
         '(empty)': '（空）',
         '(deleted)': '（已刪除）',
-        '(new entry)': '（新建條目）',
         '(missing lorebook)': '（世界書不存在）',
         'Old lorebook': '舊世界書',
         'New lorebook': '新世界書',
         'Candidate sync operations': '候選同步操作',
         'Lorebook sync result: applied ${0}, failed ${1}': '世界書同步結果：已生效 ${0}，失敗 ${1}',
         'A lorebook sync dialog is already open for this character.': '該角色已有世界書同步彈窗正在處理中。',
+        'An editor is already open for this character.': '該角色已有編輯器正在處理中。',
         'Save and update': '儲存並更新',
         'Cancel and restore previous lorebook': '取消並恢復舊世界書',
         'Analyze then update': '模型分析後更新',
@@ -243,6 +255,7 @@ function registerLocaleData() {
         'Send': '發送',
         'Type your requirement to continue this conversation...': '輸入你的要求繼續對話...',
         'Assistant is thinking...': '模型思考中...',
+        'Applying approved changes...': '正在套用已批准變更...',
         'Message cannot be empty.': '訊息不能為空。',
         'Model reply failed: ${0}': '模型回覆失敗：${0}',
         'Round diff': '本輪差異',
@@ -258,6 +271,19 @@ function registerLocaleData() {
         'Rejected': '已拒絕',
         'All final diffs must be reviewed before saving.': '儲存前必須處理所有最終差異項（通過或拒絕）。',
         'No approved diff to apply. Finalizing without additional changes.': '沒有已通過差異項，將直接完成同步且不追加修改。',
+        'Please approve or reject pending changes first.': '請先批准或拒絕待審批變更。',
+        'AI proposed changes are waiting for approval.': 'AI 提出的變更正在等待審批。',
+        'Approve batch': '批准本批次',
+        'Reject batch': '拒絕本批次',
+        'Changes applied.': '變更已套用。',
+        'Changes rejected.': '變更已拒絕。',
+        'Apply failed: ${0}': '套用失敗：${0}',
+        'Delete this history record?': '刪除這條歷史記錄？',
+        'Clear all history records?': '清空所有歷史記錄？',
+        'History record deleted.': '歷史記錄已刪除。',
+        'History cleared.': '歷史記錄已清空。',
+        'Delete failed: ${0}': '刪除失敗：${0}',
+        'Clear failed: ${0}': '清空失敗：${0}',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 配置）',
         '(missing)': '（缺失）',
@@ -322,14 +348,11 @@ function ensureSettings() {
         extension_settings[MODULE_NAME] = clone(defaultSettings);
     }
     const settings = extension_settings[MODULE_NAME];
-    settings.enabled = Boolean(settings.enabled);
     settings.replaceLorebookSyncEnabled = settings.replaceLorebookSyncEnabled !== false;
-    settings.autoInjectPrompt = settings.autoInjectPrompt !== false;
     settings.lorebookSyncLlmPresetName = String(settings.lorebookSyncLlmPresetName || '').trim();
     settings.lorebookSyncApiPresetName = String(settings.lorebookSyncApiPresetName || '').trim();
     settings.plainTextFunctionCallMode = Boolean(settings.plainTextFunctionCallMode);
     settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(settings.toolCallRetryMax || defaultSettings.toolCallRetryMax) || 0)));
-    settings.toolInstructionPrompt = String(settings.toolInstructionPrompt || '').trim() || DEFAULT_TOOL_PROMPT;
     settings.maxJournalEntries = Math.max(20, Math.min(500, Number(settings.maxJournalEntries || defaultSettings.maxJournalEntries)));
 }
 
@@ -452,14 +475,12 @@ function getLorebookSyncRequestPresetOptions(context = getContext()) {
     const currentChatSource = String(context?.chatCompletionSettings?.chat_completion_source || '').trim();
     const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(selectedApiProfileName, currentChatSource);
     const requestApi = resolveRequestApiFromConnectionProfileName(context, selectedApiProfileName);
-    const hasConnectionProfile = Boolean(getConnectionProfileByName(selectedApiProfileName));
 
     return {
         llmPresetName,
         requestApi,
         apiSettingsOverride,
-        // Backward compatibility: if a legacy OpenAI preset name is still stored here, keep supporting it.
-        apiPresetName: hasConnectionProfile ? '' : selectedApiProfileName,
+        apiPresetName: '',
     };
 }
 
@@ -582,33 +603,39 @@ function getCharacterOperationStateKey(context, avatar = '') {
     return String(record.avatar || '').trim();
 }
 
-function readPersistedOperationStateFromCharacter(character) {
-    if (!character || typeof character !== 'object') {
-        return null;
+async function getOperationStateSidecar(context, avatar) {
+    const response = await fetch('/api/characters/state/get', {
+        method: 'POST',
+        headers: context.getRequestHeaders(),
+        body: JSON.stringify({
+            avatar_url: avatar,
+            namespace: MODULE_NAME,
+        }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`Character state read failed (${response.status}): ${detail || response.statusText}`);
     }
-    const raw = character?.data?.extensions?.[MODULE_NAME]?.operationState;
-    return raw && typeof raw === 'object' ? raw : null;
+    const payload = await response.json().catch(() => null);
+    return payload && typeof payload === 'object' ? payload.data : null;
 }
 
-function buildOperationStateCharacterPatch(state) {
-    return {
-        data: {
-            extensions: {
-                [MODULE_NAME]: {
-                    operationState: clone(state),
-                },
-            },
-        },
-    };
-}
-
-function getCharacterByAvatar(context, avatar) {
-    const targetAvatar = String(avatar || '').trim();
-    if (!targetAvatar) {
-        return null;
+async function setOperationStateSidecar(context, avatar, state) {
+    const response = await fetch('/api/characters/state/set', {
+        method: 'POST',
+        headers: context.getRequestHeaders(),
+        body: JSON.stringify({
+            avatar_url: avatar,
+            namespace: MODULE_NAME,
+            data: clone(state),
+        }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`Character state write failed (${response.status}): ${detail || response.statusText}`);
     }
-    const list = Array.isArray(context?.characters) ? context.characters : [];
-    return list.find(item => String(item?.avatar || '').trim() === targetAvatar) || null;
 }
 
 async function loadOperationState(context, { force = false, avatar = '' } = {}) {
@@ -617,7 +644,7 @@ async function loadOperationState(context, { force = false, avatar = '' } = {}) 
         return clone(stateCache.get(key));
     }
     const record = getActiveCharacterRecord(context, { avatar });
-    const loaded = readPersistedOperationStateFromCharacter(record.character);
+    const loaded = await getOperationStateSidecar(context, record.avatar);
     const normalized = normalizeOperationState(loaded);
     stateCache.set(key, clone(normalized));
     return normalized;
@@ -627,12 +654,35 @@ async function persistOperationState(context, state, { avatar = '' } = {}) {
     const key = getCharacterOperationStateKey(context, avatar);
     const record = getActiveCharacterRecord(context, { avatar });
     const next = normalizeOperationState(state);
+    await setOperationStateSidecar(context, record.avatar, next);
+    stateCache.set(key, clone(next));
+}
 
-    await mergeCharacterAttributes(context, record.avatar, buildOperationStateCharacterPatch(next));
+async function deleteHistoryRecord(context, journalId, { avatar = '' } = {}) {
+    const id = String(journalId || '').trim();
+    if (!id) {
+        return false;
+    }
+    const state = await loadOperationState(context, { force: true, avatar });
+    const { index } = getJournalById(state, id);
+    if (index < 0) {
+        return false;
+    }
+    state.journal.splice(index, 1);
+    state.updatedAt = Date.now();
+    await persistOperationState(context, state, { avatar });
+    return true;
+}
 
-    const refreshed = getCharacterByAvatar(context, record.avatar) || record.character;
-    const persisted = normalizeOperationState(readPersistedOperationStateFromCharacter(refreshed) || next);
-    stateCache.set(key, clone(persisted));
+async function clearHistoryRecords(context, { avatar = '' } = {}) {
+    const state = await loadOperationState(context, { force: true, avatar });
+    if (!Array.isArray(state.journal) || state.journal.length === 0) {
+        return false;
+    }
+    state.journal = [];
+    state.updatedAt = Date.now();
+    await persistOperationState(context, state, { avatar });
+    return true;
 }
 
 function nextStateId(state, prefix = 'op') {
@@ -661,20 +711,55 @@ function getActiveCharacterRecord(context, { avatar = '' } = {}) {
         throw new Error(`Character not found for avatar: ${preferredAvatar}`);
     }
 
-    const characterIndex = Number(context.characterId);
-    const character = characters[characterIndex];
-    if (!character) {
-        throw new Error('No active character selected.');
+    const directIndex = context?.characterId;
+    const directCharacter = characters?.[directIndex];
+    if (directCharacter) {
+        const resolvedAvatar = String(directCharacter?.avatar || '').trim();
+        if (resolvedAvatar) {
+            const resolvedIndex = Number.isInteger(Number(directIndex))
+                ? Number(directIndex)
+                : characters.findIndex(item => String(item?.avatar || '').trim() === resolvedAvatar);
+            return {
+                characterIndex: resolvedIndex,
+                character: directCharacter,
+                avatar: resolvedAvatar,
+            };
+        }
     }
-    const resolvedAvatar = String(character.avatar || '').trim();
-    if (!resolvedAvatar) {
-        throw new Error('Active character avatar is missing.');
+
+    const currentChatId = String(context?.chatId || '').trim();
+    if (currentChatId) {
+        const characterIndex = characters.findIndex(item => String(item?.chat || '').trim() === currentChatId);
+        if (characterIndex >= 0) {
+            const character = characters[characterIndex];
+            const resolvedAvatar = String(character?.avatar || '').trim();
+            if (resolvedAvatar) {
+                return {
+                    characterIndex,
+                    character,
+                    avatar: resolvedAvatar,
+                };
+            }
+        }
     }
-    return {
-        characterIndex,
-        character,
-        avatar: resolvedAvatar,
-    };
+
+    const activeName = String(context?.name2 || '').trim();
+    if (activeName) {
+        const characterIndex = characters.findIndex(item => String(item?.name || '').trim() === activeName);
+        if (characterIndex >= 0) {
+            const character = characters[characterIndex];
+            const resolvedAvatar = String(character?.avatar || '').trim();
+            if (resolvedAvatar) {
+                return {
+                    characterIndex,
+                    character,
+                    avatar: resolvedAvatar,
+                };
+            }
+        }
+    }
+
+    throw new Error('No active character selected.');
 }
 
 async function mergeCharacterAttributes(context, avatar, patch) {
@@ -693,6 +778,17 @@ async function mergeCharacterAttributes(context, avatar, patch) {
         throw new Error(`Character merge failed (${response.status}): ${detail || response.statusText}`);
     }
     await context.getOneCharacter(avatar);
+    const currentIndex = Number(context?.characterId);
+    const currentCharacter = Number.isInteger(currentIndex) && currentIndex >= 0
+        ? context?.characters?.[currentIndex]
+        : null;
+    if (String(currentCharacter?.avatar || '').trim() === String(avatar || '').trim()) {
+        try {
+            select_selected_character(currentIndex, { switchMenu: false });
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to refresh character editor state after merge`, error);
+        }
+    }
 }
 
 async function syncWorldBindingUi(context, worldName = '') {
@@ -738,6 +834,23 @@ async function syncWorldBindingUi(context, worldName = '') {
     // Character data can land slightly later; re-apply once after the current tick.
     setTimeout(applyButtonState, 0);
     setTimeout(applyButtonState, 120);
+}
+
+async function refreshWorldInfoEditorUi(bookName = '') {
+    const targetBook = String(bookName || '').trim();
+    try {
+        await updateWorldInfoList();
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to refresh world info list`, error);
+    }
+    if (!targetBook) {
+        return;
+    }
+    try {
+        reloadEditor(targetBook, false);
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to reload world info editor`, error);
+    }
 }
 
 function getPrimaryLorebookName(character) {
@@ -1047,22 +1160,14 @@ async function restorePreviousLorebookBinding(context, previousSnapshot, current
     };
 }
 
-function clipModelText(text, max = 500) {
-    const source = String(text ?? '');
-    if (source.length <= max) {
-        return source;
-    }
-    return `${source.slice(0, max)}...`;
-}
-
 function compactEntryForModel(entry, uid) {
     const normalized = normalizeLorebookEntryForSync(entry, uid);
     return {
         uid: normalized.uid,
         key: normalized.key,
         keysecondary: normalized.keysecondary,
-        comment: clipModelText(normalized.comment, 240),
-        content: clipModelText(normalized.content, 900),
+        comment: String(normalized.comment ?? ''),
+        content: String(normalized.content ?? ''),
         selectiveLogic: normalized.selectiveLogic,
         order: normalized.order,
         position: normalized.position,
@@ -1182,7 +1287,7 @@ function buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, after
     };
 
     if (kind === 'lorebook_delete_entry') {
-        pushDiffField(preview.fields, 'entry', beforeEntry ? 'exists' : i18n('(empty)'), i18n('(deleted)'), { force: true });
+        pushDiffField(preview.fields, 'entry', beforeEntry ? 'exists' : '', i18n('(deleted)'), { force: true });
         if (beforeEntry) {
             pushDiffField(preview.fields, 'keywords', getEntryPreviewValue(beforeEntry, 'key'), i18n('(deleted)'), { force: true });
             pushDiffField(preview.fields, 'secondary keywords', getEntryPreviewValue(beforeEntry, 'keysecondary'), i18n('(deleted)'), { force: true });
@@ -1208,7 +1313,7 @@ function buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, after
         if (!spec.touched) {
             continue;
         }
-        const beforeValue = beforeEntry ? getEntryPreviewValue(beforeEntry, spec.key) : i18n('(new entry)');
+        const beforeValue = beforeEntry ? getEntryPreviewValue(beforeEntry, spec.key) : '';
         const afterValue = afterEntry ? getEntryPreviewValue(afterEntry, spec.key) : i18n('(deleted)');
         pushDiffField(preview.fields, spec.label, beforeValue, afterValue, { force: !beforeEntry });
     }
@@ -1217,7 +1322,7 @@ function buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, after
         pushDiffField(
             preview.fields,
             'entry',
-            beforeEntry ? 'exists' : i18n('(empty)'),
+            beforeEntry ? 'exists' : '',
             afterEntry ? 'exists' : i18n('(deleted)'),
             { force: true },
         );
@@ -1409,6 +1514,181 @@ function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries
     }
 }
 
+const LINE_DIFF_LONG_CHAR_THRESHOLD = 900;
+const LINE_DIFF_LONG_LINE_THRESHOLD = 18;
+const LINE_DIFF_LCS_MAX_CELLS = 240000;
+
+function splitLineDiffText(text) {
+    const normalized = String(text ?? '').replace(/\r\n/g, '\n');
+    return normalized.length > 0 ? normalized.split('\n') : [];
+}
+
+function buildLineDiffOperations(beforeLines, afterLines) {
+    const a = Array.isArray(beforeLines) ? beforeLines : [];
+    const b = Array.isArray(afterLines) ? afterLines : [];
+    if (a.length === 0 && b.length === 0) {
+        return [];
+    }
+    if (a.length === 0) {
+        return [{ type: 'insert', lines: b.slice() }];
+    }
+    if (b.length === 0) {
+        return [{ type: 'delete', lines: a.slice() }];
+    }
+    if ((a.length * b.length) > LINE_DIFF_LCS_MAX_CELLS) {
+        return [
+            { type: 'delete', lines: a.slice() },
+            { type: 'insert', lines: b.slice() },
+        ];
+    }
+
+    const dp = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+    for (let i = a.length - 1; i >= 0; i--) {
+        for (let j = b.length - 1; j >= 0; j--) {
+            dp[i][j] = a[i] === b[j]
+                ? (dp[i + 1][j + 1] + 1)
+                : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+    }
+
+    const operations = [];
+    const push = (type, line) => {
+        const last = operations[operations.length - 1];
+        if (last && last.type === type) {
+            last.lines.push(line);
+            return;
+        }
+        operations.push({ type, lines: [line] });
+    };
+
+    let i = 0;
+    let j = 0;
+    while (i < a.length && j < b.length) {
+        if (a[i] === b[j]) {
+            push('equal', a[i]);
+            i += 1;
+            j += 1;
+            continue;
+        }
+        if (dp[i + 1][j] >= dp[i][j + 1]) {
+            push('delete', a[i]);
+            i += 1;
+            continue;
+        }
+        push('insert', b[j]);
+        j += 1;
+    }
+    while (i < a.length) {
+        push('delete', a[i]);
+        i += 1;
+    }
+    while (j < b.length) {
+        push('insert', b[j]);
+        j += 1;
+    }
+    return operations;
+}
+
+function buildLineDiffRows(beforeValue, afterValue) {
+    const beforeText = String(beforeValue ?? '');
+    const afterText = String(afterValue ?? '');
+    const operations = buildLineDiffOperations(splitLineDiffText(beforeText), splitLineDiffText(afterText));
+    const stats = { added: 0, removed: 0, unchanged: 0 };
+
+    for (const operation of operations) {
+        const type = String(operation?.type || 'equal');
+        const lines = Array.isArray(operation?.lines) ? operation.lines : [];
+        for (const line of lines) {
+            if (type === 'insert') {
+                stats.added += 1;
+                continue;
+            }
+            if (type === 'delete') {
+                stats.removed += 1;
+                continue;
+            }
+            stats.unchanged += 1;
+        }
+    }
+
+    const maxChars = Math.max(beforeText.length, afterText.length);
+    const lineCount = stats.added + stats.removed + stats.unchanged;
+    const isLong = lineCount > LINE_DIFF_LONG_LINE_THRESHOLD || maxChars > LINE_DIFF_LONG_CHAR_THRESHOLD;
+
+    return {
+        operations,
+        added: stats.added,
+        removed: stats.removed,
+        unchanged: stats.unchanged,
+        openByDefault: !isLong,
+    };
+}
+
+function buildUnifiedDiffPatch(operations, { beforeCount = 0, afterCount = 0, fileLabel = 'field' } = {}) {
+    const safeLabel = String(fileLabel || 'field').replace(/[^a-zA-Z0-9_.-]+/g, '_') || 'field';
+    const beforeStart = Number(beforeCount) > 0 ? 1 : 0;
+    const afterStart = Number(afterCount) > 0 ? 1 : 0;
+    const lines = [];
+    for (const operation of Array.isArray(operations) ? operations : []) {
+        const type = String(operation?.type || 'equal');
+        const opLines = Array.isArray(operation?.lines) ? operation.lines : [];
+        const prefix = type === 'insert'
+            ? '+'
+            : (type === 'delete' ? '-' : ' ');
+        for (const line of opLines) {
+            lines.push(`${prefix}${String(line ?? '')}`);
+        }
+    }
+    return [
+        `diff --git a/${safeLabel}.txt b/${safeLabel}.txt`,
+        'index 0000000..1111111 100644',
+        `--- a/${safeLabel}.txt`,
+        `+++ b/${safeLabel}.txt`,
+        `@@ -${beforeStart},${Number(beforeCount) || 0} +${afterStart},${Number(afterCount) || 0} @@`,
+        ...lines,
+        '',
+    ].join('\n');
+}
+
+function sanitizeRenderedLineDiffHtml(rawHtml) {
+    const source = String(rawHtml || '');
+    if (!source) {
+        return '';
+    }
+    const holder = document.createElement('div');
+    holder.innerHTML = source;
+    holder.querySelectorAll('.d2h-emptyplaceholder, .d2h-code-side-emptyplaceholder').forEach((node) => {
+        node.textContent = '';
+    });
+    return holder.innerHTML;
+}
+
+function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
+    const beforeText = String(beforeValue ?? '');
+    const afterText = String(afterValue ?? '');
+    const payload = buildLineDiffRows(beforeValue, afterValue);
+    const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
+    const patch = buildUnifiedDiffPatch(payload.operations, {
+        beforeCount: splitLineDiffText(beforeText).length,
+        afterCount: splitLineDiffText(afterText).length,
+        fileLabel,
+    });
+    const rendered = sanitizeRenderedLineDiffHtml(diff2htmlHtml(patch, {
+        drawFileList: false,
+        outputFormat: 'side-by-side',
+        matching: 'lines',
+        diffStyle: 'word',
+    }).replace('d2h-light-color-scheme', 'd2h-dark-color-scheme'));
+    return `
+<details class="cea_line_diff"${payload.openByDefault ? ' open' : ''}>
+    <summary>
+        <span>${escapeHtml(summary)}</span>
+        <span class="cea_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
+    </summary>
+    <div class="cea_line_diff_pre">${rendered}</div>
+</details>`;
+}
+
 function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1, approvalMap = null) {
     const safeMessage = message && typeof message === 'object' ? message : {};
     const hasTurnData = Object.hasOwn(safeMessage, 'diffPreviews') || Object.hasOwn(safeMessage, 'operations');
@@ -1469,16 +1749,7 @@ function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1, approvalMap 
         ${fields.map(field => `
 <div class="cea_sync_turn_diff_field">
     <div class="cea_sync_turn_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
-    <div class="cea_sync_turn_diff_blocks">
-        <div class="cea_sync_turn_diff_block before">
-            <div class="cea_sync_turn_diff_block_title">${escapeHtml(i18n('Before'))}</div>
-            <pre>${escapeHtml(String(field?.before ?? ''))}</pre>
-        </div>
-        <div class="cea_sync_turn_diff_block after">
-            <div class="cea_sync_turn_diff_block_title">${escapeHtml(i18n('After'))}</div>
-            <pre>${escapeHtml(String(field?.after ?? ''))}</pre>
-        </div>
-    </div>
+    ${renderLineDiffHtml(field?.before ?? '', field?.after ?? '', String(field?.label || 'field'))}
 </div>`).join('')}
     </div>
     <details class="cea_sync_turn_diff_raw">
@@ -1576,7 +1847,7 @@ async function selectLorebookSyncMode(plan) {
 }
 
 function buildLorebookModelContextPayload(plan, requirements = '', analysisSummary = '') {
-    const candidateItems = Array.isArray(plan?.diffItems) ? plan.diffItems.slice(0, 120) : [];
+    const candidateItems = Array.isArray(plan?.diffItems) ? plan.diffItems : [];
     return {
         source_lorebook: String(plan?.sourceBook || ''),
         target_lorebook: String(plan?.targetBook || ''),
@@ -1678,20 +1949,31 @@ function extractToolCallsFromResponse(responseData) {
 }
 
 function renderLorebookSyncHistoryItems(state) {
-    const items = Array.isArray(state?.journal) ? state.journal.slice().reverse().slice(0, 20) : [];
+    const items = Array.isArray(state?.journal) ? state.journal.slice().reverse() : [];
+    const toolbar = items.length > 0
+        ? `<div class="cea_sync_history_toolbar"><div class="menu_button menu_button_small" data-cea-sync-history-action="clear">${escapeHtml(i18n('Clear history'))}</div></div>`
+        : '';
     if (items.length === 0) {
-        return `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
+        return `${toolbar}<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
     }
-    return items.map(item => `
+    return `${toolbar}${items.map(item => {
+        const journalId = String(item?.id || '').trim();
+        const actions = [];
+        if (journalId && String(item?.kind || '') !== 'rollback') {
+            actions.push(`<div class="menu_button menu_button_small" data-cea-sync-history-action="rollback" data-cea-sync-history-id="${escapeHtml(journalId)}">${escapeHtml(i18n('Rollback'))}</div>`);
+        }
+        if (journalId) {
+            actions.push(`<div class="menu_button menu_button_small" data-cea-sync-history-action="delete" data-cea-sync-history-id="${escapeHtml(journalId)}">${escapeHtml(i18n('Delete'))}</div>`);
+        }
+        return `
 <div class="cea_sync_history_item">
     <div class="cea_sync_history_item_main">
         <div class="cea_sync_history_item_summary">${escapeHtml(String(item?.summary || item?.kind || ''))}</div>
         <div class="cea_sync_history_item_time">${escapeHtml(new Date(Number(item?.createdAt || Date.now())).toLocaleString())}</div>
     </div>
-    ${String(item?.kind || '') === 'rollback'
-        ? ''
-        : `<div class="menu_button menu_button_small" data-cea-sync-history-action="rollback" data-cea-sync-history-id="${escapeHtml(String(item?.id || ''))}">${escapeHtml(i18n('Rollback'))}</div>`}
-</div>`).join('');
+    ${actions.length > 0 ? `<div class="cea_sync_history_item_actions">${actions.join('')}</div>` : ''}
+</div>`;
+    }).join('')}`;
 }
 
 function getResponseMessageContent(responseData) {
@@ -2061,11 +2343,10 @@ async function requestModelLorebookConversationReply(context, plan, conversation
             role: String(item?.role || ''),
             content: String(item?.content || '').trim(),
         }))
-        .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content)
-        .slice(-20);
+        .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content);
 
     const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
-    const draftEntryUids = Array.from(collectLorebookEntryUids(safeDraftEntries).values()).sort((a, b) => a - b).slice(0, 80);
+    const draftEntryUids = Array.from(collectLorebookEntryUids(safeDraftEntries).values()).sort((a, b) => a - b);
     const draftEntrySample = draftEntryUids.map(uid => compactEntryForModel(getLorebookEntryByUid(safeDraftEntries, uid), uid));
     const reviewContext = buildFinalDiffReviewContext(finalOperationSpecs, approvalMap);
 
@@ -2163,6 +2444,791 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
         }
     }
     return { applied, failed, errors };
+}
+
+function buildCharacterEditorModelTools() {
+    return [
+        {
+            type: 'function',
+            function: {
+                name: TOOL_NAMES.UPDATE_FIELDS,
+                description: 'Update current character card fields.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        name: { type: 'string' },
+                        description: { type: 'string' },
+                        personality: { type: 'string' },
+                        scenario: { type: 'string' },
+                        mes_example: { type: 'string' },
+                        system_prompt: { type: 'string' },
+                        post_history_instructions: { type: 'string' },
+                        creator_notes: { type: 'string' },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: TOOL_NAMES.SET_PRIMARY_BOOK,
+                description: 'Set or clear current character primary lorebook binding.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        book_name: { type: 'string' },
+                        create_if_missing: { type: 'boolean' },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: TOOL_NAMES.UPSERT_ENTRY,
+                description: 'Create or update one lorebook entry.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        book_name: { type: 'string' },
+                        create_if_missing: { type: 'boolean' },
+                        entry_uid: { type: 'integer' },
+                        key_csv: { type: 'string' },
+                        secondary_key_csv: { type: 'string' },
+                        comment: { type: 'string' },
+                        content: { type: 'string' },
+                        selective_logic: { type: 'integer' },
+                        order: { type: 'integer' },
+                        position: { type: 'integer' },
+                        depth: { type: 'integer' },
+                        enabled: { type: 'boolean' },
+                        disable: { type: 'boolean' },
+                        constant: { type: 'boolean' },
+                    },
+                    required: ['entry_uid'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: TOOL_NAMES.DELETE_ENTRY,
+                description: 'Delete one lorebook entry by UID.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        book_name: { type: 'string' },
+                        entry_uid: { type: 'integer' },
+                    },
+                    required: ['entry_uid'],
+                    additionalProperties: false,
+                },
+            },
+        },
+    ];
+}
+
+function normalizeCharacterEditorOperationsFromCalls(rawCalls) {
+    const output = [];
+    const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
+    const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
+    for (const call of Array.isArray(rawCalls) ? rawCalls : []) {
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        if (name === TOOL_NAMES.UPDATE_FIELDS) {
+            const normalizedArgs = {};
+            for (const key of [...rootFieldNames, ...dataFieldNames]) {
+                if (Object.hasOwn(args, key)) {
+                    normalizedArgs[key] = String(args[key] ?? '');
+                }
+            }
+            if (Object.keys(normalizedArgs).length > 0) {
+                output.push({ kind: 'character_fields', args: normalizedArgs });
+            }
+            continue;
+        }
+        if (name === TOOL_NAMES.SET_PRIMARY_BOOK) {
+            const normalizedArgs = {};
+            if (Object.hasOwn(args, 'book_name')) {
+                normalizedArgs.book_name = String(args.book_name ?? '');
+            }
+            if (Object.hasOwn(args, 'create_if_missing')) {
+                normalizedArgs.create_if_missing = Boolean(args.create_if_missing);
+            }
+            output.push({ kind: 'set_primary_lorebook', args: normalizedArgs });
+            continue;
+        }
+        if (name === TOOL_NAMES.UPSERT_ENTRY) {
+            const uid = asFiniteInteger(args.entry_uid, null);
+            if (!Number.isInteger(uid) || uid < 0) {
+                continue;
+            }
+            const normalizedArgs = { entry_uid: uid };
+            const passThrough = ['book_name', 'key_csv', 'secondary_key_csv', 'comment', 'content'];
+            for (const key of passThrough) {
+                if (Object.hasOwn(args, key)) {
+                    normalizedArgs[key] = String(args[key] ?? '');
+                }
+            }
+            const intFields = ['selective_logic', 'order', 'position', 'depth'];
+            for (const key of intFields) {
+                if (!Object.hasOwn(args, key)) {
+                    continue;
+                }
+                const value = asFiniteInteger(args[key], null);
+                if (value !== null) {
+                    normalizedArgs[key] = value;
+                }
+            }
+            const boolFields = ['create_if_missing', 'enabled', 'disable', 'constant'];
+            for (const key of boolFields) {
+                if (Object.hasOwn(args, key)) {
+                    normalizedArgs[key] = Boolean(args[key]);
+                }
+            }
+            output.push({ kind: 'lorebook_upsert_entry', args: normalizedArgs });
+            continue;
+        }
+        if (name === TOOL_NAMES.DELETE_ENTRY) {
+            const uid = asFiniteInteger(args.entry_uid, null);
+            if (!Number.isInteger(uid) || uid < 0) {
+                continue;
+            }
+            const normalizedArgs = { entry_uid: uid };
+            if (Object.hasOwn(args, 'book_name')) {
+                normalizedArgs.book_name = String(args.book_name ?? '');
+            }
+            output.push({ kind: 'lorebook_delete_entry', args: normalizedArgs });
+        }
+    }
+    return output;
+}
+
+function buildCharacterEditorOperationKey(operation) {
+    const kind = String(operation?.kind || '').trim();
+    if (!kind) {
+        return '';
+    }
+    if (kind === 'lorebook_upsert_entry' || kind === 'lorebook_delete_entry') {
+        const uid = asFiniteInteger(operation?.args?.entry_uid, null);
+        const bookName = String(operation?.args?.book_name || '').trim();
+        return `${kind}:${bookName}:${Number.isInteger(uid) ? uid : '?'}`;
+    }
+    if (kind === 'set_primary_lorebook') {
+        return `${kind}:${String(operation?.args?.book_name || '').trim()}`;
+    }
+    if (kind === 'character_fields') {
+        const keys = Object.keys(operation?.args || {}).sort().join(',');
+        return `${kind}:${keys}`;
+    }
+    return `${kind}:${JSON.stringify(operation?.args || {})}`;
+}
+
+async function buildCharacterEditorContextPayload(context, avatar = '') {
+    const record = getActiveCharacterRecord(context, { avatar });
+    const character = record.character || {};
+    const primaryBook = getPrimaryLorebookName(character);
+    const lorebookData = primaryBook ? await loadLorebookData(context, primaryBook) : { entries: {} };
+    const operationState = await loadOperationState(context, { avatar: record.avatar });
+    const recentJournal = Array.isArray(operationState?.journal) ? operationState.journal : [];
+    const entryUids = Object.keys(lorebookData.entries || {}).map(uid => asFiniteInteger(uid, null)).filter(uid => Number.isInteger(uid) && uid >= 0).sort((a, b) => a - b);
+    const entrySample = entryUids.map(uid => compactEntryForModel(lorebookData.entries[uid], uid));
+    return {
+        avatar: record.avatar,
+        name: String(character?.name || ''),
+        fields: {
+            description: String(character?.description || ''),
+            personality: String(character?.personality || ''),
+            scenario: String(character?.scenario || ''),
+            mes_example: String(character?.mes_example || ''),
+            system_prompt: String(character?.data?.system_prompt || ''),
+            post_history_instructions: String(character?.data?.post_history_instructions || ''),
+            creator_notes: String(character?.data?.creator_notes || ''),
+        },
+        primary_lorebook: {
+            name: primaryBook,
+            entry_count: Number(Object.keys(lorebookData.entries || {}).length),
+            sample: entrySample,
+        },
+        recent_journal: recentJournal.map(item => ({
+            kind: String(item?.kind || ''),
+            summary: String(item?.summary || ''),
+        })),
+    };
+}
+
+async function requestModelCharacterEditorConversationReply(context, conversationMessages, { avatar = '', rejectedOperationKeys = [] } = {}) {
+    const payload = await buildCharacterEditorContextPayload(context, avatar);
+    const history = (Array.isArray(conversationMessages) ? conversationMessages : [])
+        .map(item => ({
+            role: String(item?.role || ''),
+            content: String(item?.content || '').trim(),
+        }))
+        .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content);
+    const systemPrompt = [
+        'You are editing the current character card and its primary lorebook.',
+        'Continue the conversation naturally, and propose edits only when needed.',
+        'Use tool calls for concrete edits.',
+        `Available tools: ${Object.values(TOOL_NAMES).join(', ')}`,
+        'Do not repeat rejected operation keys unless user explicitly asks to reconsider.',
+    ].join('\n');
+    const userPrompt = [
+        'Character editor conversation payload:',
+        JSON.stringify({
+            context: payload,
+            conversation_history: history,
+            rejected_operation_keys: Array.isArray(rejectedOperationKeys) ? rejectedOperationKeys : [],
+        }),
+    ].join('\n\n');
+    const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
+    const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+    const settings = getSettings();
+    const allowedToolNames = Object.values(TOOL_NAMES);
+    const { calls: rawCalls, assistantText } = await requestLorebookToolCallsWithRetry(
+        settings,
+        requestMessages,
+        {
+            tools: buildCharacterEditorModelTools(),
+            allowedNames: allowedToolNames,
+            requestPresetOptions,
+        },
+    );
+    return {
+        assistantText: String(assistantText || '').trim(),
+        operations: normalizeCharacterEditorOperationsFromCalls(rawCalls),
+    };
+}
+
+function buildCharacterFieldsDiffPreview(operation, draftCharacter) {
+    const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
+    const preview = { title: buildOperationSummary(operation), fields: [], meta: [], rawArgs: clone(args) };
+    const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
+    const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
+    for (const key of rootFieldNames) {
+        if (!Object.hasOwn(args, key)) {
+            continue;
+        }
+        const beforeValue = String(draftCharacter?.[key] ?? '');
+        const afterValue = String(args[key] ?? '');
+        pushDiffField(preview.fields, key, beforeValue, afterValue, { force: true });
+        draftCharacter[key] = afterValue;
+    }
+    const data = draftCharacter?.data && typeof draftCharacter.data === 'object' ? draftCharacter.data : {};
+    if (!draftCharacter.data || typeof draftCharacter.data !== 'object') {
+        draftCharacter.data = data;
+    }
+    for (const key of dataFieldNames) {
+        if (!Object.hasOwn(args, key)) {
+            continue;
+        }
+        const beforeValue = String(data?.[key] ?? '');
+        const afterValue = String(args[key] ?? '');
+        pushDiffField(preview.fields, key, beforeValue, afterValue, { force: true });
+        data[key] = afterValue;
+    }
+    if (preview.fields.length === 0) {
+        pushDiffField(preview.fields, 'fields', '', '', { force: true });
+    }
+    return preview;
+}
+
+function buildPrimaryLorebookDiffPreview(operation, draftCharacter) {
+    const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
+    const beforeName = getPrimaryLorebookName(draftCharacter);
+    const afterName = String(args.book_name || '').trim();
+    const preview = {
+        title: buildOperationSummary(operation),
+        fields: [],
+        meta: [],
+        rawArgs: clone(args),
+    };
+    pushDiffField(preview.fields, 'primary lorebook', beforeName || '', afterName || '', { force: true });
+    if (!draftCharacter.data || typeof draftCharacter.data !== 'object') {
+        draftCharacter.data = {};
+    }
+    if (!draftCharacter.data.extensions || typeof draftCharacter.data.extensions !== 'object') {
+        draftCharacter.data.extensions = {};
+    }
+    draftCharacter.data.extensions.world = afterName;
+    return preview;
+}
+
+async function buildCharacterEditorDiffPreviews(context, operations, { avatar = '' } = {}) {
+    const record = getActiveCharacterRecord(context, { avatar });
+    const draftCharacter = clone(record.character || {});
+    const lorebookCache = new Map();
+    const getDraftLorebook = async (bookName) => {
+        const key = String(bookName || '').trim();
+        if (!key) {
+            return null;
+        }
+        if (lorebookCache.has(key)) {
+            return lorebookCache.get(key);
+        }
+        const loaded = await loadLorebookData(context, key);
+        const cached = clone(loaded || { entries: {} }) || { entries: {} };
+        if (!cached.entries || typeof cached.entries !== 'object') {
+            cached.entries = {};
+        }
+        lorebookCache.set(key, cached);
+        return cached;
+    };
+
+    const previews = [];
+    for (const operation of Array.isArray(operations) ? operations : []) {
+        const kind = String(operation?.kind || '').trim();
+        if (kind === 'character_fields') {
+            previews.push(buildCharacterFieldsDiffPreview(operation, draftCharacter));
+            continue;
+        }
+        if (kind === 'set_primary_lorebook') {
+            previews.push(buildPrimaryLorebookDiffPreview(operation, draftCharacter));
+            continue;
+        }
+        if (kind === 'lorebook_upsert_entry' || kind === 'lorebook_delete_entry') {
+            const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
+            const entryUid = asFiniteInteger(args.entry_uid, null);
+            const bookName = String(args.book_name || '').trim() || getPrimaryLorebookName(draftCharacter);
+            if (!bookName || !Number.isInteger(entryUid) || entryUid < 0) {
+                previews.push({
+                    title: buildOperationSummary(operation),
+                    fields: [{ label: 'operation', before: '', after: 'invalid args' }],
+                    meta: [],
+                    rawArgs: clone(args),
+                });
+                continue;
+            }
+            const lorebookData = await getDraftLorebook(bookName);
+            const beforeEntry = getLorebookEntryByUid(lorebookData?.entries, entryUid);
+            let afterEntry = beforeEntry ? clone(beforeEntry) : null;
+            if (kind === 'lorebook_upsert_entry') {
+                afterEntry = applyLorebookEntryArgs(beforeEntry, args, entryUid);
+                lorebookData.entries[String(entryUid)] = clone(afterEntry);
+            } else {
+                delete lorebookData.entries[String(entryUid)];
+                afterEntry = null;
+            }
+            previews.push(buildLorebookDraftDiffPreview(
+                { kind, args: { ...clone(args), book_name: bookName, entry_uid: entryUid } },
+                bookName,
+                beforeEntry,
+                afterEntry,
+            ));
+            continue;
+        }
+        previews.push({
+            title: buildOperationSummary(operation),
+            fields: [{ label: 'operation', before: '', after: '' }],
+            meta: [],
+            rawArgs: clone(operation?.args || {}),
+        });
+    }
+    return previews;
+}
+
+function renderCharacterEditorBatchDiffItems(previews, operations) {
+    const safePreviews = Array.isArray(previews) ? previews : [];
+    const safeOperations = Array.isArray(operations) ? operations : [];
+    return safePreviews.map((preview, index) => {
+        const fields = Array.isArray(preview?.fields) ? preview.fields : [];
+        const meta = Array.isArray(preview?.meta) ? preview.meta : [];
+        const operation = safeOperations[index] || null;
+        const rawArgs = operation?.args || preview?.rawArgs || {};
+        return `
+<div class="cea_sync_turn_diff_item">
+    <div class="cea_sync_turn_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(preview?.title || ''))}</div>
+    ${meta.length > 0 ? `<div class="cea_sync_turn_diff_meta">${meta.map(item => `
+        <div class="cea_sync_turn_diff_meta_item"><b>${escapeHtml(String(item?.label || ''))}:</b> ${escapeHtml(String(item?.value || ''))}</div>
+    `).join('')}</div>` : ''}
+    <div class="cea_sync_turn_diff_fields">
+        ${fields.map(field => `
+<div class="cea_sync_turn_diff_field">
+    <div class="cea_sync_turn_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
+    ${renderLineDiffHtml(field?.before ?? '', field?.after ?? '', String(field?.label || 'field'))}
+</div>`).join('')}
+    </div>
+    <details class="cea_sync_turn_diff_raw">
+        <summary>${escapeHtml(i18n('Raw arguments'))}</summary>
+        <pre>${escapeHtml(JSON.stringify(rawArgs, null, 2))}</pre>
+    </details>
+</div>`;
+    }).join('');
+}
+
+function renderCharacterEditorRoundDiffHtml(previews, operations, { open = true } = {}) {
+    const safePreviews = Array.isArray(previews) ? previews : [];
+    const summary = safePreviews.length > 0
+        ? i18nFormat('Round diff (${0} operations)', safePreviews.length)
+        : i18n('Round diff');
+    if (safePreviews.length === 0) {
+        return `
+<details class="cea_sync_turn_diff"${open ? ' open' : ''}>
+    <summary>${escapeHtml(summary)}</summary>
+    <div class="cea_sync_turn_diff_empty">${escapeHtml(i18n('No draft operations proposed in this round.'))}</div>
+</details>`;
+    }
+    return `
+<details class="cea_sync_turn_diff"${open ? ' open' : ''}>
+    <summary>${escapeHtml(summary)}</summary>
+    <div class="cea_sync_turn_diff_list">
+        ${renderCharacterEditorBatchDiffItems(safePreviews, operations)}
+    </div>
+</details>`;
+}
+
+function renderCharacterEditorChatMessages(messages, { loading = false, loadingText = '' } = {}) {
+    const list = Array.isArray(messages) ? messages : [];
+    const html = list.map(item => {
+        const role = String(item?.role || 'assistant');
+        const text = String(item?.content || '').trim();
+        const previews = Array.isArray(item?.diffPreviews) ? item.diffPreviews : [];
+        const operations = Array.isArray(item?.operations) ? item.operations : [];
+        const hasDiffData = previews.length > 0 || operations.length > 0;
+        if (!text && !hasDiffData) {
+            return '';
+        }
+        if (role === 'user') {
+            return `
+<div class="cea_sync_chat_msg cea_sync_chat_msg_user">
+    <pre>${escapeHtml(text)}</pre>
+</div>`;
+        }
+        return `
+<div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
+    ${text ? `<div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>` : ''}
+    ${hasDiffData ? renderCharacterEditorRoundDiffHtml(previews, operations, { open: false }) : ''}
+</div>`;
+    }).join('');
+    if (!loading) {
+        return html;
+    }
+    const loadingLabel = String(loadingText || i18n('Assistant is thinking...'));
+    return `${html}
+<div class="cea_sync_chat_msg cea_sync_chat_msg_assistant cea_sync_chat_msg_loading">
+    <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+    <span>${escapeHtml(loadingLabel)}</span>
+</div>`;
+}
+
+function renderCharacterEditorPendingHtml(pending) {
+    if (!pending || typeof pending !== 'object') {
+        return '';
+    }
+    const previews = Array.isArray(pending.diffPreviews) ? pending.diffPreviews : [];
+    const operations = Array.isArray(pending.operations) ? pending.operations : [];
+    return `
+<div class="cea_editor_pending">
+    <div class="cea_editor_pending_hint">${escapeHtml(i18n('AI proposed changes are waiting for approval.'))}</div>
+    ${renderCharacterEditorRoundDiffHtml(previews, operations, { open: true })}
+    <div class="cea_editor_pending_actions">
+        <div class="menu_button" data-cea-editor-action="approve-batch">${escapeHtml(i18n('Approve batch'))}</div>
+        <div class="menu_button" data-cea-editor-action="reject-batch">${escapeHtml(i18n('Reject batch'))}</div>
+    </div>
+</div>`;
+}
+
+function buildCharacterEditorPopupHtml(record) {
+    const characterName = String(record?.character?.name || '').trim() || '(unknown)';
+    const primaryBook = String(getPrimaryLorebookName(record?.character || {}) || i18n('(empty)'));
+    return `
+<div class="cea_sync_popup">
+    <div class="cea_sync_intro">${escapeHtml(i18n('Character Editor'))}</div>
+    <div class="cea_sync_meta">
+        <div class="cea_sync_meta_item"><b>Character:</b> ${escapeHtml(characterName)}</div>
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Target lorebook'))}:</b> ${escapeHtml(primaryBook)}</div>
+    </div>
+    <div class="cea_sync_chat" data-cea-editor-chat></div>
+    <div class="cea_sync_composer">
+        <textarea class="text_pole textarea_compact" rows="4" data-cea-editor-input placeholder="${escapeHtml(i18n('Type your requirement to continue this conversation...'))}"></textarea>
+        <div class="menu_button menu_button_small" data-cea-editor-send>${escapeHtml(i18n('Send'))}</div>
+    </div>
+    <div data-cea-editor-pending></div>
+    <details class="cea_sync_history">
+        <summary>${escapeHtml(i18n('History'))}</summary>
+        <div class="cea_sync_history_list" data-cea-editor-history></div>
+    </details>
+</div>`;
+}
+
+async function openCharacterEditorPopup(context = getContext()) {
+    const settings = getSettings();
+    let record;
+    try {
+        record = getActiveCharacterRecord(context);
+    } catch {
+        notifyWarning(i18n('Current chat has no active character.'));
+        return;
+    }
+    const avatar = String(record.avatar || '').trim();
+    if (!avatar) {
+        notifyWarning(i18n('Current chat has no active character.'));
+        return;
+    }
+    if (editorStudioDialogLocks.has(avatar)) {
+        notifyWarning(i18n('An editor is already open for this character.'));
+        return;
+    }
+    editorStudioDialogLocks.add(avatar);
+
+    const conversationMessages = [];
+    let pendingApproval = null;
+    let isSending = false;
+    const rejectedOperationKeys = new Set();
+
+    const popup = new Popup(
+        buildCharacterEditorPopupHtml(record),
+        POPUP_TYPE.TEXT,
+        i18n('Character Editor'),
+        {
+            wide: true,
+            wider: true,
+            large: true,
+            allowVerticalScrolling: true,
+            okButton: i18n('Close'),
+            onOpen: (instance) => {
+                const chat = instance?.content?.querySelector('[data-cea-editor-chat]');
+                const input = instance?.content?.querySelector('[data-cea-editor-input]');
+                const sendBtn = instance?.content?.querySelector('[data-cea-editor-send]');
+                const pendingSlot = instance?.content?.querySelector('[data-cea-editor-pending]');
+                const history = instance?.content?.querySelector('[data-cea-editor-history]');
+                if (!(chat instanceof HTMLElement) || !(input instanceof HTMLTextAreaElement) || !(sendBtn instanceof HTMLElement) || !(pendingSlot instanceof HTMLElement) || !(history instanceof HTMLElement)) {
+                    return;
+                }
+                const renderConversation = (loading = false, loadingText = '') => {
+                    chat.innerHTML = renderCharacterEditorChatMessages(conversationMessages, { loading, loadingText });
+                    chat.scrollTop = chat.scrollHeight;
+                };
+                const renderPending = () => {
+                    pendingSlot.innerHTML = renderCharacterEditorPendingHtml(pendingApproval);
+                };
+                const renderHistory = async () => {
+                    try {
+                        const state = await loadOperationState(context, { force: true, avatar });
+                        history.innerHTML = renderLorebookSyncHistoryItems(state);
+                    } catch {
+                        history.innerHTML = `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
+                    }
+                };
+                const setComposerState = (disabled) => {
+                    input.disabled = Boolean(disabled);
+                    sendBtn.classList.toggle('disabled', Boolean(disabled));
+                };
+                const handleSend = async () => {
+                    if (isSending || input.disabled) {
+                        return;
+                    }
+                    if (pendingApproval) {
+                        notifyWarning(i18n('Please approve or reject pending changes first.'));
+                        return;
+                    }
+                    const userText = String(input.value || '').trim();
+                    if (!userText) {
+                        notifyWarning(i18n('Message cannot be empty.'));
+                        return;
+                    }
+                    conversationMessages.push({ role: 'user', content: userText });
+                    input.value = '';
+                    isSending = true;
+                    setComposerState(true);
+                    renderConversation(true, i18n('Assistant is thinking...'));
+                    try {
+                        const reply = await requestModelCharacterEditorConversationReply(
+                            context,
+                            conversationMessages,
+                            {
+                                avatar,
+                                rejectedOperationKeys: Array.from(rejectedOperationKeys.values()),
+                            },
+                        );
+                        const operations = Array.isArray(reply?.operations) ? reply.operations : [];
+                        const diffPreviews = operations.length > 0
+                            ? await buildCharacterEditorDiffPreviews(context, operations, { avatar })
+                            : [];
+                        const assistantText = String(reply?.assistantText || '').trim()
+                            || (operations.length > 0
+                                ? i18nFormat('Proposed ${0} operations in this round.', operations.length)
+                                : i18n('No draft operations proposed in this round.'));
+                        const assistantMessage = {
+                            role: 'assistant',
+                            content: assistantText,
+                        };
+                        if (operations.length > 0) {
+                            assistantMessage.operations = operations;
+                            assistantMessage.diffPreviews = diffPreviews;
+                        }
+                        conversationMessages.push(assistantMessage);
+                        pendingApproval = operations.length > 0 ? { operations, diffPreviews } : null;
+                        renderPending();
+                    } catch (error) {
+                        conversationMessages.push({
+                            role: 'assistant',
+                            content: i18nFormat('Model reply failed: ${0}', String(error?.message || error || '')),
+                        });
+                    } finally {
+                        isSending = false;
+                        setComposerState(false);
+                        renderConversation(false);
+                    }
+                };
+
+                sendBtn.addEventListener('click', () => void handleSend());
+                input.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter' || event.shiftKey) {
+                        return;
+                    }
+                    event.preventDefault();
+                    void handleSend();
+                });
+                pendingSlot.addEventListener('click', async (event) => {
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-editor-action]') : null;
+                    if (!(target instanceof HTMLElement) || !pendingApproval || isSending) {
+                        return;
+                    }
+                    const action = String(target.getAttribute('data-cea-editor-action') || '').trim();
+                    if (action === 'reject-batch') {
+                        for (const operation of pendingApproval.operations) {
+                            const key = buildCharacterEditorOperationKey(operation);
+                            if (key) {
+                                rejectedOperationKeys.add(key);
+                            }
+                        }
+                        pendingApproval = null;
+                        renderPending();
+                        conversationMessages.push({ role: 'assistant', content: i18n('Changes rejected.') });
+                        renderConversation(false);
+                        return;
+                    }
+                    if (action === 'approve-batch') {
+                        const snapshot = pendingApproval;
+                        pendingApproval = null;
+                        renderPending();
+                        isSending = true;
+                        setComposerState(true);
+                        renderConversation(true, i18n('Applying approved changes...'));
+                        try {
+                            const result = await submitGeneratedOperations(
+                                context,
+                                snapshot.operations,
+                                'character_editor_popup',
+                                { targetAvatar: avatar },
+                            );
+                            if (result.failed > 0) {
+                                conversationMessages.push({ role: 'assistant', content: i18nFormat('Apply failed: ${0}', String(result.errors[0] || 'unknown error')) });
+                            } else {
+                                conversationMessages.push({ role: 'assistant', content: i18n('Changes applied.') });
+                            }
+                            await refreshUiState(context);
+                            await renderHistory();
+                            await primeActiveCharacterLorebookSnapshot(context);
+                        } catch (error) {
+                            pendingApproval = snapshot;
+                            renderPending();
+                            conversationMessages.push({ role: 'assistant', content: i18nFormat('Apply failed: ${0}', String(error?.message || error || '')) });
+                        } finally {
+                            isSending = false;
+                            setComposerState(false);
+                            renderConversation(false);
+                        }
+                    }
+                });
+                history.addEventListener('click', async (event) => {
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-history-action]') : null;
+                    if (!(target instanceof HTMLElement)) {
+                        return;
+                    }
+                    const action = String(target.getAttribute('data-cea-sync-history-action') || '').trim();
+                    const journalId = String(target.getAttribute('data-cea-sync-history-id') || '').trim();
+                    try {
+                        if (action === 'clear') {
+                            if (!window.confirm(i18n('Clear all history records?'))) {
+                                return;
+                            }
+                            await clearHistoryRecords(context, { avatar });
+                            await renderHistory();
+                            await refreshUiState(context);
+                            notifySuccess(i18n('History cleared.'));
+                            return;
+                        }
+                        if (!journalId) {
+                            return;
+                        }
+                        if (action === 'delete') {
+                            if (!window.confirm(i18n('Delete this history record?'))) {
+                                return;
+                            }
+                            const deleted = await deleteHistoryRecord(context, journalId, { avatar });
+                            if (!deleted) {
+                                throw new Error('Journal entry not found.');
+                            }
+                            await renderHistory();
+                            await refreshUiState(context);
+                            notifySuccess(i18n('History record deleted.'));
+                            return;
+                        }
+                        if (action === 'rollback') {
+                            const state = await loadOperationState(context, { force: true, avatar });
+                            const { entry } = getJournalById(state, journalId);
+                            if (!entry) {
+                                throw new Error('Journal entry not found.');
+                            }
+                            if (String(entry.kind || '') === 'rollback') {
+                                throw new Error('Rollback is not supported for rollback records.');
+                            }
+                            const summary = await rollbackJournalEntry(context, entry, { avatar });
+                            const rollbackLog = {
+                                id: nextStateId(state, 'tx'),
+                                operationId: entry.operationId,
+                                kind: 'rollback',
+                                source: 'manual',
+                                summary,
+                                data: { targetJournalId: entry.id },
+                                createdAt: Date.now(),
+                            };
+                            appendJournal(state, rollbackLog, settings);
+                            state.updatedAt = Date.now();
+                            await persistOperationState(context, state, { avatar });
+                            await renderHistory();
+                            await refreshUiState(context);
+                            await primeActiveCharacterLorebookSnapshot(context);
+                            notifySuccess(i18n('Rollback completed.'));
+                        }
+                    } catch (error) {
+                        if (action === 'rollback') {
+                            notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
+                            return;
+                        }
+                        if (action === 'delete') {
+                            notifyError(i18nFormat('Delete failed: ${0}', error?.message || error));
+                            return;
+                        }
+                        if (action === 'clear') {
+                            notifyError(i18nFormat('Clear failed: ${0}', error?.message || error));
+                        }
+                    }
+                });
+
+                renderConversation(false);
+                renderPending();
+                void renderHistory();
+            },
+            onClosing: () => {
+                if (isSending) {
+                    notifyWarning(i18n('Assistant is thinking...'));
+                    return false;
+                }
+                return true;
+            },
+        },
+    );
+
+    try {
+        await popup.show();
+    } finally {
+        editorStudioDialogLocks.delete(avatar);
+    }
 }
 
 async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, currentCharacter = null) {
@@ -2402,21 +3468,57 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     }
                 });
                 history.addEventListener('click', async (event) => {
-                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-history-action="rollback"]') : null;
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-history-action]') : null;
                     if (!(target instanceof HTMLElement)) {
                         return;
                     }
+                    const action = String(target.getAttribute('data-cea-sync-history-action') || '').trim();
                     const journalId = String(target.getAttribute('data-cea-sync-history-id') || '').trim();
-                    if (!journalId) {
-                        return;
-                    }
                     try {
-                        await rollbackHistoryEntry(journalId);
-                        await renderHistory();
-                        await refreshUiState(context);
-                        notifySuccess(i18n('Rollback completed.'));
+                        if (action === 'clear') {
+                            if (!window.confirm(i18n('Clear all history records?'))) {
+                                return;
+                            }
+                            await clearHistoryRecords(context, { avatar: targetAvatar });
+                            await renderHistory();
+                            await refreshUiState(context);
+                            notifySuccess(i18n('History cleared.'));
+                            return;
+                        }
+                        if (!journalId) {
+                            return;
+                        }
+                        if (action === 'delete') {
+                            if (!window.confirm(i18n('Delete this history record?'))) {
+                                return;
+                            }
+                            const deleted = await deleteHistoryRecord(context, journalId, { avatar: targetAvatar });
+                            if (!deleted) {
+                                throw new Error('Journal entry not found.');
+                            }
+                            await renderHistory();
+                            await refreshUiState(context);
+                            notifySuccess(i18n('History record deleted.'));
+                            return;
+                        }
+                        if (action === 'rollback') {
+                            await rollbackHistoryEntry(journalId);
+                            await renderHistory();
+                            await refreshUiState(context);
+                            notifySuccess(i18n('Rollback completed.'));
+                        }
                     } catch (error) {
-                        notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
+                        if (action === 'rollback') {
+                            notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
+                            return;
+                        }
+                        if (action === 'delete') {
+                            notifyError(i18nFormat('Delete failed: ${0}', error?.message || error));
+                            return;
+                        }
+                        if (action === 'clear') {
+                            notifyError(i18nFormat('Clear failed: ${0}', error?.message || error));
+                        }
                     }
                 });
                 input.addEventListener('keydown', (event) => {
@@ -2710,20 +3812,21 @@ function applyLorebookEntryArgs(baseEntry, args, entryUid) {
     return entry;
 }
 
-function normalizeDiffValue(value, emptyLabel = '(empty)') {
+function normalizeDiffValue(value, emptyLabel = '') {
+    const emptyText = emptyLabel ? i18n(emptyLabel) : '';
     if (value === null || value === undefined) {
-        return i18n(emptyLabel);
+        return emptyText;
     }
     if (Array.isArray(value)) {
         const text = value.map(item => String(item ?? '').trim()).filter(Boolean).join(', ');
-        return text || i18n(emptyLabel);
+        return text || emptyText;
     }
     if (typeof value === 'boolean') {
         return value ? 'true' : 'false';
     }
     const text = String(value);
     if (!text.trim()) {
-        return i18n(emptyLabel);
+        return emptyText;
     }
     return text;
 }
@@ -2782,6 +3885,7 @@ async function applyLorebookUpsertOperation(context, record, operation) {
 
     data.entries[uid] = nextEntry;
     await context.saveWorldInfo(bookName, data, true);
+    await refreshWorldInfoEditorUi(bookName);
 
     return {
         summary: `Upserted lorebook entry #${uid} in ${bookName}`,
@@ -2819,6 +3923,7 @@ async function applyLorebookDeleteOperation(context, record, operation) {
 
     delete data.entries[entryUid];
     await context.saveWorldInfo(bookName, data, true);
+    await refreshWorldInfoEditorUi(bookName);
 
     return {
         summary: `Deleted lorebook entry #${entryUid} from ${bookName}`,
@@ -2849,6 +3954,7 @@ async function applyPrimaryLorebookOperation(context, record, operation) {
             },
         },
     });
+    await syncWorldBindingUi(context, targetName);
 
     return {
         summary: `Set primary lorebook: ${beforeName || '(none)'} -> ${targetName || '(none)'}`,
@@ -2982,6 +4088,7 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
                 },
             },
         });
+        await syncWorldBindingUi(context, beforeName);
         return `Rolled back primary lorebook to ${beforeName || '(none)'}`;
     }
 
@@ -2998,6 +4105,7 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
             delete lorebookData.entries[entryUid];
         }
         await context.saveWorldInfo(bookName, lorebookData, true);
+        await refreshWorldInfoEditorUi(bookName);
         return `Rolled back lorebook entry #${entryUid} in ${bookName}`;
     }
 
@@ -3005,6 +4113,14 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
 }
 
 function ensureStyles() {
+    if (!document.getElementById(DIFF2HTML_STYLE_LINK_ID)) {
+        const link = document.createElement('link');
+        link.id = DIFF2HTML_STYLE_LINK_ID;
+        link.rel = 'stylesheet';
+        link.type = 'text/css';
+        link.href = 'css/diff2html.min.css';
+        document.head.append(link);
+    }
     if (document.getElementById(STYLE_ID)) {
         return;
     }
@@ -3029,11 +4145,13 @@ function ensureStyles() {
 #${UI_BLOCK_ID} .cea_diff_block pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; max-height:280px; overflow:auto; }
 #${UI_BLOCK_ID} .cea_diff_block.before { background: color-mix(in oklab, #d9534f 12%, transparent); }
 #${UI_BLOCK_ID} .cea_diff_block.after { background: color-mix(in oklab, #4caf50 14%, transparent); }
-#${UI_BLOCK_ID} .cea_row .menu_button {
+#${UI_BLOCK_ID} .menu_button,
+#${UI_BLOCK_ID} .menu_button_small {
     display: inline-flex;
     width: auto;
     min-width: max-content;
     white-space: nowrap;
+    word-break: keep-all;
     writing-mode: horizontal-tb;
     text-orientation: mixed;
     align-items: center;
@@ -3085,12 +4203,21 @@ function ensureStyles() {
 .popup .cea_sync_turn_diff_meta_item { padding:4px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
 .popup .cea_sync_turn_diff_fields { display:flex; flex-direction:column; gap:8px; }
 .popup .cea_sync_turn_diff_label { font-weight:600; margin-bottom:4px; }
-.popup .cea_sync_turn_diff_blocks { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.popup .cea_sync_turn_diff_block { border-radius:8px; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); padding:6px; min-height:72px; }
-.popup .cea_sync_turn_diff_block_title { font-size:0.9em; opacity:0.75; margin-bottom:4px; }
-.popup .cea_sync_turn_diff_block pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; max-height:220px; overflow:auto; }
-.popup .cea_sync_turn_diff_block.before { background: color-mix(in oklab, #d9534f 10%, transparent); }
-.popup .cea_sync_turn_diff_block.after { background: color-mix(in oklab, #4caf50 12%, transparent); }
+.popup .cea_line_diff { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent); }
+.popup .cea_line_diff > summary { cursor:pointer; padding:6px 8px; font-size:0.9em; display:flex; gap:8px; align-items:center; justify-content:space-between; }
+.popup .cea_line_diff_meta { opacity:0.75; font-size:0.88em; }
+.popup .cea_line_diff_pre { margin:0; padding:6px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); max-height:320px; overflow:auto; }
+.popup .cea_line_diff .d2h-file-header { display:none; }
+.popup .cea_line_diff .d2h-file-wrapper { margin-bottom:0; border:none; border-radius:0; }
+.popup .cea_line_diff .d2h-files-diff { border-top:none; }
+.popup .cea_line_diff .d2h-file-side-diff { overflow-x:auto; overflow-y:hidden; }
+.popup .cea_line_diff .d2h-diff-table { font-size:0.82rem; }
+.popup .cea_line_diff .d2h-diff-table td { position:relative; }
+.popup .cea_line_diff .d2h-code-linenumber,
+.popup .cea_line_diff .d2h-code-side-linenumber { top:0; left:0; }
+.popup .cea_line_diff .d2h-code-side-line,
+.popup .cea_line_diff .d2h-code-line,
+.popup .cea_line_diff .d2h-code-line-ctn { user-select:text; }
 .popup .cea_sync_turn_diff_raw > summary { cursor:pointer; opacity:0.8; }
 .popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
 .popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
@@ -3100,17 +4227,21 @@ function ensureStyles() {
     width: fit-content;
     min-width: 4.2em;
 }
+.popup .cea_editor_pending { margin-top:8px; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
+.popup .cea_editor_pending_hint { opacity:0.92; font-weight:600; }
+.popup .cea_editor_pending_actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
 .popup .cea_sync_history { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
 .popup .cea_sync_history > summary { cursor:pointer; font-weight:600; opacity:0.9; }
+.popup .cea_sync_history_toolbar { display:flex; justify-content:flex-end; margin:8px 0; }
 .popup .cea_sync_history_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .popup .cea_sync_history_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }
 .popup .cea_sync_history_item_main { min-width:0; flex:1; }
+.popup .cea_sync_history_item_actions { display:flex; gap:6px; flex-wrap:wrap; }
 .popup .cea_sync_history_item_summary { font-weight:600; line-height:1.35; word-break:break-word; }
 .popup .cea_sync_history_item_time { opacity:0.75; font-size:0.9em; margin-top:4px; }
 .popup .cea_sync_history_empty { opacity:0.8; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
-    .popup .cea_sync_turn_diff_blocks { grid-template-columns:1fr; }
 }
 `;
     document.head.append(style);
@@ -3118,45 +4249,30 @@ function ensureStyles() {
 
 function renderJournalItems(state) {
     const items = Array.isArray(state?.journal) ? state.journal.slice().reverse() : [];
+    const toolbar = items.length > 0
+        ? `<div class="cea_row"><div class="menu_button menu_button_small" id="cea_clear_history">${escapeHtml(i18n('Clear history'))}</div></div>`
+        : '';
     if (items.length === 0) {
-        return `<div class="cea_item_meta">${escapeHtml(i18n('No history yet.'))}</div>`;
+        return `${toolbar}<div class="cea_item_meta">${escapeHtml(i18n('No history yet.'))}</div>`;
     }
-    return items.map(item => `
+    return `${toolbar}${items.map(item => `
 <div class="cea_item" data-journal-id="${escapeHtml(item.id)}">
     <div class="cea_item_top">
         <div>
             <div><b>${escapeHtml(String(item.summary || item.kind || ''))}</b></div>
             <div class="cea_item_meta">${escapeHtml(new Date(Number(item.createdAt || Date.now())).toLocaleString())}</div>
         </div>
-        ${String(item.kind || '') === 'rollback'
-            ? ''
-            : `<div class="cea_item_actions">
-            <div class="menu_button menu_button_small" data-cea-action="rollback" data-journal-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Rollback'))}</div>
-        </div>`}
+        <div class="cea_item_actions">
+            ${String(item.kind || '') === 'rollback'
+                ? ''
+                : `<div class="menu_button menu_button_small" data-cea-action="rollback" data-journal-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Rollback'))}</div>`}
+            <div class="menu_button menu_button_small" data-cea-action="delete" data-journal-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Delete'))}</div>
+        </div>
     </div>
-</div>`).join('');
-}
-
-function syncPromptInjection(context) {
-    const settings = getSettings();
-    if (!settings.enabled || !settings.autoInjectPrompt) {
-        context.setExtensionPrompt(PROMPT_KEY, '', extension_prompt_types.NONE, 0, true, extension_prompt_roles.SYSTEM);
-        return;
-    }
-    context.setExtensionPrompt(
-        PROMPT_KEY,
-        String(settings.toolInstructionPrompt || '').trim(),
-        extension_prompt_types.IN_PROMPT,
-        0,
-        true,
-        extension_prompt_roles.SYSTEM,
-    );
+</div>`).join('')}`;
 }
 
 function canUseToolsInCurrentContext(context) {
-    if (!getSettings().enabled) {
-        return false;
-    }
     try {
         getActiveCharacterRecord(context);
         return true;
@@ -3301,18 +4417,17 @@ function ensureUi() {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <label class="checkbox_label"><input id="cea_enabled" type="checkbox"/> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="cea_auto_inject" type="checkbox"/> ${escapeHtml(i18n('Inject tool instruction into generation context'))}</label>
+            <div class="cea_row">
+                <div class="menu_button" id="cea_open_editor_popup">${escapeHtml(i18n('Open Editor'))}</div>
+            </div>
             <label class="checkbox_label"><input id="cea_replace_sync" type="checkbox"/> ${escapeHtml(i18n('Enable lorebook sync popup after Replace/Update'))}</label>
-            <label for="cea_sync_llm_preset">${escapeHtml(i18n('Lorebook sync LLM preset name'))}</label>
+            <label for="cea_sync_llm_preset">${escapeHtml(i18n('Model request LLM preset name'))}</label>
             <select id="cea_sync_llm_preset" class="text_pole"></select>
-            <label for="cea_sync_api_preset">${escapeHtml(i18n('Lorebook sync API preset name'))}</label>
+            <label for="cea_sync_api_preset">${escapeHtml(i18n('Model request API preset name'))}</label>
             <select id="cea_sync_api_preset" class="text_pole"></select>
             <label class="checkbox_label"><input id="cea_plain_text_calls" type="checkbox"/> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
             <label for="cea_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="cea_tool_retries" class="text_pole" type="number" min="0" max="10" step="1"/>
-            <label for="cea_prompt">${escapeHtml(i18n('Tool instruction prompt'))}</label>
-            <textarea id="cea_prompt" class="text_pole textarea_compact" rows="6"></textarea>
 
             <div class="cea_panel">
                 <div class="cea_row">
@@ -3340,13 +4455,10 @@ async function refreshUiState(context = getContext()) {
         return;
     }
     const settings = getSettings();
-    root.find('#cea_enabled').prop('checked', Boolean(settings.enabled));
-    root.find('#cea_auto_inject').prop('checked', Boolean(settings.autoInjectPrompt));
     root.find('#cea_replace_sync').prop('checked', Boolean(settings.replaceLorebookSyncEnabled));
     root.find('#cea_plain_text_calls').prop('checked', Boolean(settings.plainTextFunctionCallMode));
     root.find('#cea_tool_retries').val(String(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax));
     refreshPresetSelectors(root, context, settings);
-    root.find('#cea_prompt').val(String(settings.toolInstructionPrompt || DEFAULT_TOOL_PROMPT));
 
     try {
         const state = await loadOperationState(context);
@@ -3361,24 +4473,8 @@ function bindUi() {
     if (!root.length) {
         return;
     }
-    const context = getContext();
 
     root.off('.cea');
-
-    root.on('change.cea', '#cea_enabled', function () {
-        const settings = getSettings();
-        settings.enabled = Boolean(jQuery(this).prop('checked'));
-        saveSettingsDebounced();
-        syncPromptInjection(context);
-        refreshUiState(context);
-    });
-
-    root.on('change.cea', '#cea_auto_inject', function () {
-        const settings = getSettings();
-        settings.autoInjectPrompt = Boolean(jQuery(this).prop('checked'));
-        saveSettingsDebounced();
-        syncPromptInjection(context);
-    });
 
     root.on('change.cea', '#cea_replace_sync', function () {
         const settings = getSettings();
@@ -3410,23 +4506,51 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.on('input.cea', '#cea_prompt', function () {
-        const settings = getSettings();
-        settings.toolInstructionPrompt = String(jQuery(this).val() || '').trim() || DEFAULT_TOOL_PROMPT;
-        saveSettingsDebounced();
-        syncPromptInjection(context);
-    });
-
     root.on('click.cea', '#cea_refresh', async function () {
-        await refreshUiState(context);
+        await refreshUiState();
     });
 
-    root.on('click.cea', '[data-cea-action="rollback"]', async function () {
-        const journalId = String(jQuery(this).data('journal-id') || '');
-        if (!journalId) {
+    root.on('click.cea', '#cea_open_editor_popup', async function () {
+        await openCharacterEditorPopup(getContext());
+    });
+
+    root.on('click.cea', '#cea_clear_history', async function () {
+        const context = getContext();
+        if (!window.confirm(i18n('Clear all history records?'))) {
             return;
         }
         try {
+            await clearHistoryRecords(context);
+            notifySuccess(i18n('History cleared.'));
+            await refreshUiState(context);
+        } catch (error) {
+            notifyError(i18nFormat('Clear failed: ${0}', error?.message || error));
+        }
+    });
+
+    root.on('click.cea', '[data-cea-action]', async function () {
+        const context = getContext();
+        const action = String(jQuery(this).data('cea-action') || '').trim();
+        const journalId = String(jQuery(this).data('journal-id') || '');
+        if (!journalId || !action) {
+            return;
+        }
+        try {
+            if (action === 'delete') {
+                if (!window.confirm(i18n('Delete this history record?'))) {
+                    return;
+                }
+                const deleted = await deleteHistoryRecord(context, journalId);
+                if (!deleted) {
+                    throw new Error('Journal entry not found.');
+                }
+                notifySuccess(i18n('History record deleted.'));
+                await refreshUiState(context);
+                return;
+            }
+            if (action !== 'rollback') {
+                return;
+            }
             const settings = getSettings();
             const state = await loadOperationState(context, { force: true });
             const { entry } = getJournalById(state, journalId);
@@ -3454,43 +4578,49 @@ function bindUi() {
             notifySuccess(i18n('Rollback completed.'));
             await refreshUiState(context);
         } catch (error) {
-            notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
+            if (action === 'rollback') {
+                notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
+                return;
+            }
+            if (action === 'delete') {
+                notifyError(i18nFormat('Delete failed: ${0}', error?.message || error));
+            }
         }
     });
 }
 
 jQuery(async () => {
-    const context = getContext();
     registerLocaleData();
     ensureSettings();
-    registerTools(context);
-    syncPromptInjection(context);
+    registerTools(getContext());
     ensureUi();
     setStatus(i18n('Character editor tools are ready.'));
-    await refreshUiState(context);
-    await primeActiveCharacterLorebookSnapshot(context);
+    await refreshUiState();
+    await primeActiveCharacterLorebookSnapshot(getContext());
 
-    context.eventSource.on(context.eventTypes.CHAT_CHANGED, async () => {
-        syncPromptInjection(context);
-        await refreshUiState(context);
-        await primeActiveCharacterLorebookSnapshot(context);
+    const eventSource = getContext().eventSource;
+    const eventTypes = getContext().eventTypes;
+
+    eventSource.on(eventTypes.CHAT_CHANGED, async () => {
+        await refreshUiState();
+        await primeActiveCharacterLorebookSnapshot(getContext());
     });
 
-    context.eventSource.on(context.eventTypes.TOOL_CALLS_PERFORMED, async () => {
-        await refreshUiState(context);
-        await primeActiveCharacterLorebookSnapshot(context);
+    eventSource.on(eventTypes.TOOL_CALLS_PERFORMED, async () => {
+        await refreshUiState();
+        await primeActiveCharacterLorebookSnapshot(getContext());
     });
 
-    context.eventSource.on(context.eventTypes.OAI_PRESET_CHANGED_AFTER, async () => {
-        await refreshUiState(context);
+    eventSource.on(eventTypes.OAI_PRESET_CHANGED_AFTER, async () => {
+        await refreshUiState();
     });
 
-    context.eventSource.on(context.eventTypes.SETTINGS_UPDATED, async () => {
-        await refreshUiState(context);
+    eventSource.on(eventTypes.SETTINGS_UPDATED, async () => {
+        await refreshUiState();
     });
 
-    const characterReplacedEvent = context.eventTypes?.CHARACTER_REPLACED || 'character_replaced';
-    context.eventSource.on(characterReplacedEvent, async (event) => {
-        await handleCharacterReplacedLorebookSync(context, event);
+    const characterReplacedEvent = eventTypes?.CHARACTER_REPLACED || 'character_replaced';
+    eventSource.on(characterReplacedEvent, async (event) => {
+        await handleCharacterReplacedLorebookSync(getContext(), event);
     });
 });
