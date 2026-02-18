@@ -589,7 +589,11 @@ function normalizeOperationState(state) {
     return normalized;
 }
 
-function getCharacterOperationStateKey(context) {
+function getCharacterOperationStateKey(context, avatar = '') {
+    const preferredAvatar = String(avatar || '').trim();
+    if (preferredAvatar) {
+        return preferredAvatar;
+    }
     const record = getActiveCharacterRecord(context);
     return String(record.avatar || '').trim();
 }
@@ -623,21 +627,21 @@ function getCharacterByAvatar(context, avatar) {
     return list.find(item => String(item?.avatar || '').trim() === targetAvatar) || null;
 }
 
-async function loadOperationState(context, { force = false } = {}) {
-    const key = getCharacterOperationStateKey(context);
+async function loadOperationState(context, { force = false, avatar = '' } = {}) {
+    const key = getCharacterOperationStateKey(context, avatar);
     if (!force && stateCache.has(key)) {
         return clone(stateCache.get(key));
     }
-    const record = getActiveCharacterRecord(context);
+    const record = getActiveCharacterRecord(context, { avatar });
     const loaded = readPersistedOperationStateFromCharacter(record.character);
     const normalized = normalizeOperationState(loaded);
     stateCache.set(key, clone(normalized));
     return normalized;
 }
 
-async function persistOperationState(context, state) {
-    const key = getCharacterOperationStateKey(context);
-    const record = getActiveCharacterRecord(context);
+async function persistOperationState(context, state, { avatar = '' } = {}) {
+    const key = getCharacterOperationStateKey(context, avatar);
+    const record = getActiveCharacterRecord(context, { avatar });
     const next = normalizeOperationState(state);
 
     await mergeCharacterAttributes(context, record.avatar, buildOperationStateCharacterPatch(next));
@@ -653,23 +657,39 @@ function nextStateId(state, prefix = 'op') {
     return id;
 }
 
-function getActiveCharacterRecord(context) {
+function getActiveCharacterRecord(context, { avatar = '' } = {}) {
     if (context.groupId) {
         throw new Error('Character editor assistant is unavailable in group chats.');
     }
+    const preferredAvatar = String(avatar || '').trim();
+    const characters = Array.isArray(context?.characters) ? context.characters : [];
+
+    if (preferredAvatar) {
+        const characterIndex = characters.findIndex(item => String(item?.avatar || '').trim() === preferredAvatar);
+        if (characterIndex >= 0) {
+            const character = characters[characterIndex];
+            return {
+                characterIndex,
+                character,
+                avatar: preferredAvatar,
+            };
+        }
+        throw new Error(`Character not found for avatar: ${preferredAvatar}`);
+    }
+
     const characterIndex = Number(context.characterId);
-    const character = context.characters?.[characterIndex];
+    const character = characters[characterIndex];
     if (!character) {
         throw new Error('No active character selected.');
     }
-    const avatar = String(character.avatar || '').trim();
-    if (!avatar) {
+    const resolvedAvatar = String(character.avatar || '').trim();
+    if (!resolvedAvatar) {
         throw new Error('Active character avatar is missing.');
     }
     return {
         characterIndex,
         character,
-        avatar,
+        avatar: resolvedAvatar,
     };
 }
 
@@ -2037,18 +2057,19 @@ async function finalizeLorebookSyncReplacement(context, previousSnapshot, curren
     };
 }
 
-async function submitGeneratedOperations(context, operationSpecs, source = 'character_update_lorebook_sync') {
+async function submitGeneratedOperations(context, operationSpecs, source = 'character_update_lorebook_sync', { targetAvatar = '' } = {}) {
     const specs = Array.isArray(operationSpecs) ? operationSpecs : [];
+    const avatar = String(targetAvatar || '').trim();
     let pending = 0;
     let applied = 0;
     let failed = 0;
     const errors = [];
     for (const spec of specs) {
         try {
-            const state = await loadOperationState(context);
-            const operation = createOperationEnvelope(state, spec.kind, spec.args, source);
-            await persistOperationState(context, state);
-            const result = await submitOperation(context, operation);
+            const state = await loadOperationState(context, { avatar });
+            const operation = createOperationEnvelope(state, spec.kind, spec.args, source, { targetAvatar: avatar });
+            await persistOperationState(context, state, { avatar });
+            const result = await submitOperation(context, operation, { avatar });
             if (String(result?.status || '') === 'pending') {
                 pending++;
             } else {
@@ -2072,6 +2093,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
         }
         : currentSnapshot;
     const plan = buildLorebookSyncPlan(previousSnapshot, effectiveCurrentSnapshot);
+    const targetAvatar = String(currentCharacter?.avatar || effectiveCurrentSnapshot?.avatar || '').trim();
     if (!plan.targetBook && !embeddedImport?.bookName && !plan.sourceBook) {
         return;
     }
@@ -2129,7 +2151,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                 };
                 const renderHistory = async () => {
                     try {
-                        const opState = await loadOperationState(context, { force: true });
+                        const opState = await loadOperationState(context, { force: true, avatar: targetAvatar });
                         history.innerHTML = renderLorebookSyncHistoryItems(opState);
                     } catch {
                         history.innerHTML = `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
@@ -2175,7 +2197,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                         return;
                     }
                     const settings = getSettings();
-                    const state = await loadOperationState(context, { force: true });
+                    const state = await loadOperationState(context, { force: true, avatar: targetAvatar });
                     const { entry } = getJournalById(state, id);
                     if (!entry) {
                         throw new Error('Journal entry not found.');
@@ -2183,7 +2205,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     if (String(entry.kind || '') === 'rollback') {
                         throw new Error('Rollback is not supported for rollback records.');
                     }
-                    const summary = await rollbackJournalEntry(context, entry);
+                    const summary = await rollbackJournalEntry(context, entry, { avatar: targetAvatar });
                     const rollbackLog = {
                         id: nextStateId(state, 'tx'),
                         operationId: entry.operationId,
@@ -2197,7 +2219,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     };
                     appendJournal(state, rollbackLog, settings);
                     state.updatedAt = Date.now();
-                    await persistOperationState(context, state);
+                    await persistOperationState(context, state, { avatar: targetAvatar });
                 };
                 const handleSend = async () => {
                     if (isSending || input.disabled) {
@@ -2363,7 +2385,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
         return;
     }
 
-    const result = await submitGeneratedOperations(context, operationSpecs);
+    const result = await submitGeneratedOperations(context, operationSpecs, 'character_update_lorebook_sync', { targetAvatar });
     if (result.failed === 0 && result.pending === 0) {
         const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
         if (finalized.previousBook || finalized.targetBook) {
@@ -2843,8 +2865,8 @@ async function applyPrimaryLorebookOperation(context, record, operation) {
     };
 }
 
-async function applyOperationNow(context, operation) {
-    const record = getActiveCharacterRecord(context);
+async function applyOperationNow(context, operation, { avatar = '' } = {}) {
+    const record = getActiveCharacterRecord(context, { avatar: avatar || operation?.targetAvatar || '' });
     const kind = String(operation?.kind || '');
     if (!kind) {
         throw new Error('Operation kind is missing.');
@@ -2874,24 +2896,30 @@ function appendJournal(state, entry, settings) {
     }
 }
 
-function createOperationEnvelope(state, kind, args, source = 'tool') {
-    return {
+function createOperationEnvelope(state, kind, args, source = 'tool', { targetAvatar = '' } = {}) {
+    const operation = {
         id: nextStateId(state, 'op'),
         kind: String(kind || '').trim(),
         args: args && typeof args === 'object' ? clone(args) : {},
         source: String(source || 'tool'),
         createdAt: Date.now(),
     };
+    const avatar = String(targetAvatar || '').trim();
+    if (avatar) {
+        operation.targetAvatar = avatar;
+    }
+    return operation;
 }
 
-async function submitOperation(context, operation) {
+async function submitOperation(context, operation, { avatar = '' } = {}) {
     const settings = getSettings();
-    const state = await loadOperationState(context);
+    const targetAvatar = String(avatar || operation?.targetAvatar || '').trim();
+    const state = await loadOperationState(context, { avatar: targetAvatar });
 
     if (settings.requireApproval) {
         state.pending.push(operation);
         state.updatedAt = Date.now();
-        await persistOperationState(context, state);
+        await persistOperationState(context, state, { avatar: targetAvatar });
         return {
             status: 'pending',
             operation_id: operation.id,
@@ -2899,7 +2927,7 @@ async function submitOperation(context, operation) {
         };
     }
 
-    const applied = await applyOperationNow(context, operation);
+    const applied = await applyOperationNow(context, operation, { avatar: targetAvatar });
     const journalEntry = {
         id: nextStateId(state, 'tx'),
         operationId: operation.id,
@@ -2911,7 +2939,7 @@ async function submitOperation(context, operation) {
     };
     appendJournal(state, journalEntry, settings);
     state.updatedAt = Date.now();
-    await persistOperationState(context, state);
+    await persistOperationState(context, state, { avatar: targetAvatar });
 
     return {
         status: 'applied',
@@ -2941,7 +2969,8 @@ async function approvePendingOperation(context, operationId) {
         throw new Error('Pending operation not found.');
     }
 
-    const applied = await applyOperationNow(context, operation);
+    const targetAvatar = String(operation?.targetAvatar || '').trim();
+    const applied = await applyOperationNow(context, operation, { avatar: targetAvatar });
     state.pending.splice(index, 1);
     const journalEntry = {
         id: nextStateId(state, 'tx'),
@@ -2954,7 +2983,7 @@ async function approvePendingOperation(context, operationId) {
     };
     appendJournal(state, journalEntry, settings);
     state.updatedAt = Date.now();
-    await persistOperationState(context, state);
+    await persistOperationState(context, state, { avatar: targetAvatar });
     return journalEntry;
 }
 
@@ -2978,8 +3007,8 @@ function getJournalById(state, journalId) {
     };
 }
 
-async function rollbackJournalEntry(context, journalEntry) {
-    const record = getActiveCharacterRecord(context);
+async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {}) {
+    const record = getActiveCharacterRecord(context, { avatar });
     const kind = String(journalEntry?.kind || '');
     const data = journalEntry?.data && typeof journalEntry.data === 'object' ? journalEntry.data : {};
 
