@@ -13,7 +13,6 @@ import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../popup.js';
 import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
 
 const MODULE_NAME = 'character_editor_assistant';
-const CHAT_STATE_NAMESPACE = MODULE_NAME;
 const UI_BLOCK_ID = 'character_editor_assistant_settings';
 const STYLE_ID = 'character_editor_assistant_style';
 const PROMPT_KEY = 'character_editor_assistant_prompt';
@@ -566,18 +565,6 @@ function refreshPresetSelectors(root, context, settings) {
     }
 }
 
-function getChatKey(context) {
-    if (context.groupId) {
-        return `group:${String(context.chatId || '')}`;
-    }
-    const avatar = String(context.characters?.[context.characterId]?.avatar || '').trim();
-    const chatId = String(context.chatId || '').trim();
-    if (!avatar || !chatId) {
-        return 'invalid';
-    }
-    return `char:${avatar}:${chatId}`;
-}
-
 function createEmptyState() {
     return {
         version: 1,
@@ -602,33 +589,62 @@ function normalizeOperationState(state) {
     return normalized;
 }
 
-async function loadOperationState(context, { force = false } = {}) {
-    const chatKey = getChatKey(context);
-    if (!force && stateCache.has(chatKey)) {
-        return clone(stateCache.get(chatKey));
+function getCharacterOperationStateKey(context) {
+    const record = getActiveCharacterRecord(context);
+    return String(record.avatar || '').trim();
+}
+
+function readPersistedOperationStateFromCharacter(character) {
+    if (!character || typeof character !== 'object') {
+        return null;
     }
-    const loaded = await context.getChatState(CHAT_STATE_NAMESPACE) || null;
+    const raw = character?.data?.extensions?.[MODULE_NAME]?.operationState;
+    return raw && typeof raw === 'object' ? raw : null;
+}
+
+function buildOperationStateCharacterPatch(state) {
+    return {
+        data: {
+            extensions: {
+                [MODULE_NAME]: {
+                    operationState: clone(state),
+                },
+            },
+        },
+    };
+}
+
+function getCharacterByAvatar(context, avatar) {
+    const targetAvatar = String(avatar || '').trim();
+    if (!targetAvatar) {
+        return null;
+    }
+    const list = Array.isArray(context?.characters) ? context.characters : [];
+    return list.find(item => String(item?.avatar || '').trim() === targetAvatar) || null;
+}
+
+async function loadOperationState(context, { force = false } = {}) {
+    const key = getCharacterOperationStateKey(context);
+    if (!force && stateCache.has(key)) {
+        return clone(stateCache.get(key));
+    }
+    const record = getActiveCharacterRecord(context);
+    const loaded = readPersistedOperationStateFromCharacter(record.character);
     const normalized = normalizeOperationState(loaded);
-    stateCache.set(chatKey, clone(normalized));
+    stateCache.set(key, clone(normalized));
     return normalized;
 }
 
 async function persistOperationState(context, state) {
-    const chatKey = getChatKey(context);
+    const key = getCharacterOperationStateKey(context);
+    const record = getActiveCharacterRecord(context);
     const next = normalizeOperationState(state);
-    if (typeof context.updateChatState !== 'function') {
-        throw new Error('Chat state update API is unavailable in extension context.');
-    }
-    const result = await context.updateChatState(
-        CHAT_STATE_NAMESPACE,
-        () => next,
-        { maxOperations: 5000 },
-    );
-    if (!result?.ok) {
-        throw new Error('Failed to persist operation state.');
-    }
-    const persisted = normalizeOperationState(result.state || next);
-    stateCache.set(chatKey, clone(persisted));
+
+    await mergeCharacterAttributes(context, record.avatar, buildOperationStateCharacterPatch(next));
+
+    const refreshed = getCharacterByAvatar(context, record.avatar) || record.character;
+    const persisted = normalizeOperationState(readPersistedOperationStateFromCharacter(refreshed) || next);
+    stateCache.set(key, clone(persisted));
 }
 
 function nextStateId(state, prefix = 'op') {
@@ -1085,6 +1101,10 @@ function buildLorebookSyncDialogHtml(plan) {
         <div class="menu_button menu_button_small" data-cea-sync-send>${escapeHtml(i18n('Send'))}</div>
     </div>
     <div class="cea_sync_input_hint">${escapeHtml(i18n('Optional requirements (tell model what to keep or adjust before saving):'))}</div>
+    <details class="cea_sync_history">
+        <summary>${escapeHtml(i18n('History'))}</summary>
+        <div class="cea_sync_history_list" data-cea-sync-history></div>
+    </details>
 </div>`;
 }
 
@@ -1552,6 +1572,23 @@ function extractToolCallsFromResponse(responseData) {
         }
     }
     return output;
+}
+
+function renderLorebookSyncHistoryItems(state) {
+    const items = Array.isArray(state?.journal) ? state.journal.slice().reverse().slice(0, 20) : [];
+    if (items.length === 0) {
+        return `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
+    }
+    return items.map(item => `
+<div class="cea_sync_history_item">
+    <div class="cea_sync_history_item_main">
+        <div class="cea_sync_history_item_summary">${escapeHtml(String(item?.summary || item?.kind || ''))}</div>
+        <div class="cea_sync_history_item_time">${escapeHtml(new Date(Number(item?.createdAt || Date.now())).toLocaleString())}</div>
+    </div>
+    ${String(item?.kind || '') === 'rollback'
+        ? ''
+        : `<div class="menu_button menu_button_small" data-cea-sync-history-action="rollback" data-cea-sync-history-id="${escapeHtml(String(item?.id || ''))}">${escapeHtml(i18n('Rollback'))}</div>`}
+</div>`).join('');
 }
 
 function getResponseMessageContent(responseData) {
@@ -2082,12 +2119,21 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                 const chat = instance?.content?.querySelector('[data-cea-sync-chat]');
                 const input = instance?.content?.querySelector('[data-cea-sync-input]');
                 const sendBtn = instance?.content?.querySelector('[data-cea-sync-send]');
-                if (!(chat instanceof HTMLElement) || !(input instanceof HTMLTextAreaElement) || !(sendBtn instanceof HTMLElement)) {
+                const history = instance?.content?.querySelector('[data-cea-sync-history]');
+                if (!(chat instanceof HTMLElement) || !(input instanceof HTMLTextAreaElement) || !(sendBtn instanceof HTMLElement) || !(history instanceof HTMLElement)) {
                     return;
                 }
                 const renderConversation = (loading = false, loadingText = '') => {
                     chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading, loadingText });
                     chat.scrollTop = chat.scrollHeight;
+                };
+                const renderHistory = async () => {
+                    try {
+                        const opState = await loadOperationState(context, { force: true });
+                        history.innerHTML = renderLorebookSyncHistoryItems(opState);
+                    } catch {
+                        history.innerHTML = `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
+                    }
                 };
                 const setComposerState = (disabled) => {
                     input.disabled = Boolean(disabled);
@@ -2122,6 +2168,36 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     );
                     renderConversation(false);
                     notifySuccess(i18n('Rolled back to selected round.'));
+                };
+                const rollbackHistoryEntry = async (journalId) => {
+                    const id = String(journalId || '').trim();
+                    if (!id) {
+                        return;
+                    }
+                    const settings = getSettings();
+                    const state = await loadOperationState(context, { force: true });
+                    const { entry } = getJournalById(state, id);
+                    if (!entry) {
+                        throw new Error('Journal entry not found.');
+                    }
+                    if (String(entry.kind || '') === 'rollback') {
+                        throw new Error('Rollback is not supported for rollback records.');
+                    }
+                    const summary = await rollbackJournalEntry(context, entry);
+                    const rollbackLog = {
+                        id: nextStateId(state, 'tx'),
+                        operationId: entry.operationId,
+                        kind: 'rollback',
+                        source: 'manual',
+                        summary,
+                        data: {
+                            targetJournalId: entry.id,
+                        },
+                        createdAt: Date.now(),
+                    };
+                    appendJournal(state, rollbackLog, settings);
+                    state.updatedAt = Date.now();
+                    await persistOperationState(context, state);
                 };
                 const handleSend = async () => {
                     if (isSending || input.disabled) {
@@ -2185,6 +2261,24 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     const messageIndex = target.getAttribute('data-cea-sync-message-index');
                     rollbackToMessage(messageIndex);
                 });
+                history.addEventListener('click', async (event) => {
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-history-action="rollback"]') : null;
+                    if (!(target instanceof HTMLElement)) {
+                        return;
+                    }
+                    const journalId = String(target.getAttribute('data-cea-sync-history-id') || '').trim();
+                    if (!journalId) {
+                        return;
+                    }
+                    try {
+                        await rollbackHistoryEntry(journalId);
+                        await renderHistory();
+                        await refreshUiState(context);
+                        notifySuccess(i18n('Rollback completed.'));
+                    } catch (error) {
+                        notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
+                    }
+                });
                 input.addEventListener('keydown', (event) => {
                     if (event.key !== 'Enter' || event.shiftKey) {
                         return;
@@ -2195,6 +2289,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
 
                 setComposerState(true);
                 renderConversation(true, i18n('Analyzing lorebook differences with model...'));
+                void renderHistory();
             },
             onClosing: (instance) => {
                 if (!analysisReady && Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
@@ -3037,6 +3132,14 @@ function ensureStyles() {
     min-width: 4.2em;
 }
 .popup .cea_sync_input_hint { opacity:0.8; font-size:0.9em; }
+.popup .cea_sync_history { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
+.popup .cea_sync_history > summary { cursor:pointer; font-weight:600; opacity:0.9; }
+.popup .cea_sync_history_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.popup .cea_sync_history_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }
+.popup .cea_sync_history_item_main { min-width:0; flex:1; }
+.popup .cea_sync_history_item_summary { font-weight:600; line-height:1.35; word-break:break-word; }
+.popup .cea_sync_history_item_time { opacity:0.75; font-size:0.9em; margin-top:4px; }
+.popup .cea_sync_history_empty { opacity:0.8; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
     .popup .cea_sync_turn_diff_blocks { grid-template-columns:1fr; }
@@ -3081,9 +3184,11 @@ function renderJournalItems(state) {
             <div><b>${escapeHtml(String(item.summary || item.kind || ''))}</b></div>
             <div class="cea_item_meta">${escapeHtml(new Date(Number(item.createdAt || Date.now())).toLocaleString())}</div>
         </div>
-        <div class="cea_item_actions">
+        ${String(item.kind || '') === 'rollback'
+            ? ''
+            : `<div class="cea_item_actions">
             <div class="menu_button menu_button_small" data-cea-action="rollback" data-journal-id="${escapeHtml(item.id)}">${escapeHtml(i18n('Rollback'))}</div>
-        </div>
+        </div>`}
     </div>
 </div>`).join('');
 }
@@ -3451,6 +3556,9 @@ function bindUi() {
             const { entry } = getJournalById(state, journalId);
             if (!entry) {
                 throw new Error('Journal entry not found.');
+            }
+            if (String(entry.kind || '') === 'rollback') {
+                throw new Error('Rollback is not supported for rollback records.');
             }
             const summary = await rollbackJournalEntry(context, entry);
             const rollbackLog = {
