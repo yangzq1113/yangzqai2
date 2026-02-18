@@ -1,12 +1,17 @@
 import {
+    CONNECT_API_MAP,
     buildObjectPatchOperations,
+    converter,
     extension_prompt_roles,
     extension_prompt_types,
     saveSettingsDebounced,
 } from '../../../script.js';
+import { DOMPurify } from '../../../lib.js';
+import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
-import { newWorldInfoEntryTemplate } from '../../world-info.js';
+import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../popup.js';
+import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
 
 const MODULE_NAME = 'character_editor_assistant';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
@@ -31,14 +36,73 @@ const DEFAULT_TOOL_PROMPT = [
 
 const defaultSettings = {
     enabled: false,
+    replaceLorebookSyncEnabled: true,
     requireApproval: true,
     autoInjectPrompt: true,
+    lorebookSyncLlmPresetName: '',
+    lorebookSyncApiPresetName: '',
     toolInstructionPrompt: DEFAULT_TOOL_PROMPT,
     maxJournalEntries: 120,
 };
 
+const CHAT_MODEL_SETTING_BY_SOURCE = {
+    [chat_completion_sources.OPENAI]: 'openai_model',
+    [chat_completion_sources.CLAUDE]: 'claude_model',
+    [chat_completion_sources.OPENROUTER]: 'openrouter_model',
+    [chat_completion_sources.AI21]: 'ai21_model',
+    [chat_completion_sources.MAKERSUITE]: 'google_model',
+    [chat_completion_sources.VERTEXAI]: 'vertexai_model',
+    [chat_completion_sources.MISTRALAI]: 'mistralai_model',
+    [chat_completion_sources.CUSTOM]: 'custom_model',
+    [chat_completion_sources.COHERE]: 'cohere_model',
+    [chat_completion_sources.PERPLEXITY]: 'perplexity_model',
+    [chat_completion_sources.GROQ]: 'groq_model',
+    [chat_completion_sources.ELECTRONHUB]: 'electronhub_model',
+    [chat_completion_sources.CHUTES]: 'chutes_model',
+    [chat_completion_sources.NANOGPT]: 'nanogpt_model',
+    [chat_completion_sources.DEEPSEEK]: 'deepseek_model',
+    [chat_completion_sources.AIMLAPI]: 'aimlapi_model',
+    [chat_completion_sources.XAI]: 'xai_model',
+    [chat_completion_sources.POLLINATIONS]: 'pollinations_model',
+    [chat_completion_sources.MOONSHOT]: 'moonshot_model',
+    [chat_completion_sources.FIREWORKS]: 'fireworks_model',
+    [chat_completion_sources.COMETAPI]: 'cometapi_model',
+    [chat_completion_sources.AZURE_OPENAI]: 'azure_openai_model',
+    [chat_completion_sources.ZAI]: 'zai_model',
+    [chat_completion_sources.SILICONFLOW]: 'siliconflow_model',
+};
+
+const API_ALIAS_TO_CHAT_SOURCE = {
+    openai: chat_completion_sources.OPENAI,
+    claude: chat_completion_sources.CLAUDE,
+    openrouter: chat_completion_sources.OPENROUTER,
+    ai21: chat_completion_sources.AI21,
+    makersuite: chat_completion_sources.MAKERSUITE,
+    vertexai: chat_completion_sources.VERTEXAI,
+    mistralai: chat_completion_sources.MISTRALAI,
+    custom: chat_completion_sources.CUSTOM,
+    cohere: chat_completion_sources.COHERE,
+    perplexity: chat_completion_sources.PERPLEXITY,
+    groq: chat_completion_sources.GROQ,
+    electronhub: chat_completion_sources.ELECTRONHUB,
+    chutes: chat_completion_sources.CHUTES,
+    nanogpt: chat_completion_sources.NANOGPT,
+    deepseek: chat_completion_sources.DEEPSEEK,
+    aimlapi: chat_completion_sources.AIMLAPI,
+    xai: chat_completion_sources.XAI,
+    pollinations: chat_completion_sources.POLLINATIONS,
+    moonshot: chat_completion_sources.MOONSHOT,
+    fireworks: chat_completion_sources.FIREWORKS,
+    cometapi: chat_completion_sources.COMETAPI,
+    azure_openai: chat_completion_sources.AZURE_OPENAI,
+    zai: chat_completion_sources.ZAI,
+    siliconflow: chat_completion_sources.SILICONFLOW,
+};
+
 const stateCache = new Map();
 const snapshotCache = new Map();
+const lorebookSnapshotCache = new Map();
+const lorebookSyncDialogLocks = new Set();
 
 function i18n(text) {
     return translate(String(text || ''));
@@ -54,6 +118,9 @@ function registerLocaleData() {
         'Enabled': '启用',
         'Require approval before applying tool edits': '工具修改需审批后生效',
         'Inject tool instruction into generation context': '将工具说明注入生成上下文',
+        'Enable lorebook sync popup after Replace/Update': '替换/更新角色卡后启用世界书同步弹窗',
+        'Lorebook sync LLM preset name': '世界书同步 LLM 预设名',
+        'Lorebook sync API preset name': '世界书同步 API 预设名',
         'Tool instruction prompt': '工具说明提示词',
         'Refresh': '刷新',
         'Pending operations': '待审批操作',
@@ -82,13 +149,52 @@ function registerLocaleData() {
         '(deleted)': '（已删除）',
         '(new entry)': '（新建条目）',
         '(missing lorebook)': '（世界书不存在）',
-        'Need explicit user intent before deletion.': '删除前需要用户明确意图。',
+        'Old lorebook': '旧世界书',
+        'New lorebook': '新世界书',
+        'Candidate sync operations': '候选同步操作',
+        'Lorebook sync result: pending ${0}, applied ${1}, failed ${2}': '世界书同步结果：待审批 ${0}，已生效 ${1}，失败 ${2}',
+        'A lorebook sync dialog is already open for this character.': '该角色已有世界书同步弹窗正在处理中。',
+        'Save and update': '保存并更新',
+        'Cancel and keep raw update': '取消并原样更新',
+        'Analyze then update': '模型分析后更新',
+        'Direct replace': '直接替换',
+        'Do not replace': '不替换',
+        'Choose how to handle lorebook update': '请选择世界书更新方式',
+        'No replacement applied. Keeping current lorebook state.': '未执行替换，保持当前世界书状态。',
+        'No replacement applied. Restored previous lorebook binding: ${0}': '未执行替换，已恢复旧世界书绑定：${0}',
+        'Review model analysis and optionally add requirements. Save will apply model edits; cancel will keep raw update.': '请查看模型分析并可补充要求。点“保存并更新”将应用模型修改；点“取消并原样更新”则直接按新卡原样覆盖。',
+        'Analyzing lorebook differences with model...': '正在用模型分析世界书差异...',
+        'Model analysis failed: ${0}': '模型分析失败：${0}',
+        'Optional requirements (tell model what to keep or adjust before saving):': '可选要求（告诉模型在保存前应保留/调整哪些内容）：',
+        'No analysis output.': '模型未返回分析内容。',
+        'Model analysis is still running. Please wait or cancel for raw update.': '模型分析仍在进行中。请等待或取消并原样更新。',
+        'No valid model edits generated. Falling back to raw update.': '模型未生成有效修改，已回退为原样更新。',
+        'Finalize lorebook replacement: ${0} -> ${1}': '世界书替换完成：${0} -> ${1}',
+        'Lorebook finalization skipped due failed operations.': '存在失败操作，已跳过世界书最终替换。',
+        'There are pending approvals. Final replacement will run after approvals.': '存在待审批操作，最终替换将在审批后执行。',
+        'Send': '发送',
+        'Type your requirement to continue this conversation...': '输入你的要求继续对话...',
+        'Assistant is thinking...': '模型思考中...',
+        'Message cannot be empty.': '消息不能为空。',
+        'Model reply failed: ${0}': '模型回复失败：${0}',
+        'Round diff': '本轮差异',
+        'Round diff (${0} operations)': '本轮差异（${0} 个操作）',
+        'No draft operations proposed in this round.': '本轮没有拟议变更。',
+        'Proposed ${0} operations in this round.': '本轮拟议 ${0} 个操作。',
+        'Operation ${0}': '操作 ${0}',
+        'Raw arguments': '原始参数',
+        '(Current preset)': '（当前预设）',
+        '(Current API config)': '（当前 API 配置）',
+        '(missing)': '（缺失）',
     });
     addLocaleData('zh-tw', {
         'Character Editor Assistant': '角色卡編輯助手',
         'Enabled': '啟用',
         'Require approval before applying tool edits': '工具修改需審批後生效',
         'Inject tool instruction into generation context': '將工具說明注入生成上下文',
+        'Enable lorebook sync popup after Replace/Update': '替換/更新角色卡後啟用世界書同步彈窗',
+        'Lorebook sync LLM preset name': '世界書同步 LLM 預設名',
+        'Lorebook sync API preset name': '世界書同步 API 預設名',
         'Tool instruction prompt': '工具說明提示詞',
         'Refresh': '刷新',
         'Pending operations': '待審批操作',
@@ -117,7 +223,43 @@ function registerLocaleData() {
         '(deleted)': '（已刪除）',
         '(new entry)': '（新建條目）',
         '(missing lorebook)': '（世界書不存在）',
-        'Need explicit user intent before deletion.': '刪除前需要用戶明確意圖。',
+        'Old lorebook': '舊世界書',
+        'New lorebook': '新世界書',
+        'Candidate sync operations': '候選同步操作',
+        'Lorebook sync result: pending ${0}, applied ${1}, failed ${2}': '世界書同步結果：待審批 ${0}，已生效 ${1}，失敗 ${2}',
+        'A lorebook sync dialog is already open for this character.': '該角色已有世界書同步彈窗正在處理中。',
+        'Save and update': '儲存並更新',
+        'Cancel and keep raw update': '取消並原樣更新',
+        'Analyze then update': '模型分析後更新',
+        'Direct replace': '直接替換',
+        'Do not replace': '不替換',
+        'Choose how to handle lorebook update': '請選擇世界書更新方式',
+        'No replacement applied. Keeping current lorebook state.': '未執行替換，保持當前世界書狀態。',
+        'No replacement applied. Restored previous lorebook binding: ${0}': '未執行替換，已恢復舊世界書綁定：${0}',
+        'Review model analysis and optionally add requirements. Save will apply model edits; cancel will keep raw update.': '請查看模型分析並可補充要求。按「儲存並更新」將套用模型修改；按「取消並原樣更新」則直接按新卡原樣覆蓋。',
+        'Analyzing lorebook differences with model...': '正在用模型分析世界書差異...',
+        'Model analysis failed: ${0}': '模型分析失敗：${0}',
+        'Optional requirements (tell model what to keep or adjust before saving):': '可選要求（告訴模型在儲存前應保留/調整哪些內容）：',
+        'No analysis output.': '模型未回傳分析內容。',
+        'Model analysis is still running. Please wait or cancel for raw update.': '模型分析仍在進行中。請等待或取消並原樣更新。',
+        'No valid model edits generated. Falling back to raw update.': '模型未產生有效修改，已回退為原樣更新。',
+        'Finalize lorebook replacement: ${0} -> ${1}': '世界書替換完成：${0} -> ${1}',
+        'Lorebook finalization skipped due failed operations.': '存在失敗操作，已跳過世界書最終替換。',
+        'There are pending approvals. Final replacement will run after approvals.': '存在待審批操作，最終替換將在審批後執行。',
+        'Send': '發送',
+        'Type your requirement to continue this conversation...': '輸入你的要求繼續對話...',
+        'Assistant is thinking...': '模型思考中...',
+        'Message cannot be empty.': '訊息不能為空。',
+        'Model reply failed: ${0}': '模型回覆失敗：${0}',
+        'Round diff': '本輪差異',
+        'Round diff (${0} operations)': '本輪差異（${0} 個操作）',
+        'No draft operations proposed in this round.': '本輪沒有擬議變更。',
+        'Proposed ${0} operations in this round.': '本輪擬議 ${0} 個操作。',
+        'Operation ${0}': '操作 ${0}',
+        'Raw arguments': '原始參數',
+        '(Current preset)': '（目前預設）',
+        '(Current API config)': '（目前 API 配置）',
+        '(missing)': '（缺失）',
     });
 }
 
@@ -126,6 +268,10 @@ function clone(value) {
         return undefined;
     }
     return typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+}
+
+function isPlainObject(value) {
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function notifySuccess(message) {
@@ -180,8 +326,11 @@ function ensureSettings() {
     }
     const settings = extension_settings[MODULE_NAME];
     settings.enabled = Boolean(settings.enabled);
+    settings.replaceLorebookSyncEnabled = settings.replaceLorebookSyncEnabled !== false;
     settings.requireApproval = settings.requireApproval !== false;
     settings.autoInjectPrompt = settings.autoInjectPrompt !== false;
+    settings.lorebookSyncLlmPresetName = String(settings.lorebookSyncLlmPresetName || '').trim();
+    settings.lorebookSyncApiPresetName = String(settings.lorebookSyncApiPresetName || '').trim();
     settings.toolInstructionPrompt = String(settings.toolInstructionPrompt || '').trim() || DEFAULT_TOOL_PROMPT;
     settings.maxJournalEntries = Math.max(20, Math.min(500, Number(settings.maxJournalEntries || defaultSettings.maxJournalEntries)));
 }
@@ -189,6 +338,221 @@ function ensureSettings() {
 function getSettings() {
     ensureSettings();
     return extension_settings[MODULE_NAME];
+}
+
+function getConnectionProfiles() {
+    const profiles = extension_settings?.connectionManager?.profiles;
+    if (!Array.isArray(profiles)) {
+        return [];
+    }
+    return profiles
+        .filter(profile => profile && typeof profile === 'object' && String(profile.mode || '') === 'cc');
+}
+
+function getConnectionProfileByName(name = '') {
+    const target = String(name || '').trim();
+    if (!target) {
+        return null;
+    }
+    return getConnectionProfiles().find(profile => String(profile.name || '').trim() === target) || null;
+}
+
+function resolveChatSourceFromApiAlias(value, defaultSource = '') {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) {
+        return String(defaultSource || '').trim();
+    }
+
+    if (API_ALIAS_TO_CHAT_SOURCE[normalized]) {
+        return API_ALIAS_TO_CHAT_SOURCE[normalized];
+    }
+
+    const mapEntry = Object.entries(CONNECT_API_MAP || {})
+        .find(([alias]) => String(alias || '').toLowerCase() === normalized)?.[1];
+    if (mapEntry?.selected === 'openai' && mapEntry?.source) {
+        return String(mapEntry.source);
+    }
+
+    return String(defaultSource || '').trim();
+}
+
+function resolveRequestApiFromConnectionProfileName(context, profileName = '') {
+    const defaultApi = String(context?.mainApi || 'openai').trim() || 'openai';
+    const profile = getConnectionProfileByName(profileName);
+    if (!profile) {
+        return defaultApi;
+    }
+
+    const alias = String(profile.api || '').trim().toLowerCase();
+    if (!alias) {
+        return defaultApi;
+    }
+
+    const mapEntry = CONNECT_API_MAP?.[alias];
+    const selectedApi = String(mapEntry?.selected || '').trim();
+    if (selectedApi) {
+        return selectedApi;
+    }
+
+    if (alias === 'koboldhorde') {
+        return 'kobold';
+    }
+    return defaultApi;
+}
+
+function buildApiSettingsOverrideFromConnectionProfileName(profileName, defaultSource = '') {
+    const profile = getConnectionProfileByName(profileName);
+    if (!profile) {
+        return null;
+    }
+
+    const overrides = {};
+    const source = resolveChatSourceFromApiAlias(profile.api, defaultSource);
+    if (source) {
+        overrides.chat_completion_source = source;
+    }
+
+    const resolvedSource = String(source || defaultSource || '').trim();
+    const modelField = CHAT_MODEL_SETTING_BY_SOURCE[resolvedSource];
+    const modelValue = String(profile.model || '').trim();
+    if (modelField && modelValue) {
+        overrides[modelField] = modelValue;
+    }
+
+    const apiUrlValue = String(profile['api-url'] || '').trim();
+    if (apiUrlValue) {
+        if (resolvedSource === chat_completion_sources.CUSTOM) {
+            overrides.custom_url = apiUrlValue;
+        } else if (resolvedSource === chat_completion_sources.VERTEXAI) {
+            overrides.vertexai_region = apiUrlValue;
+        } else if (resolvedSource === chat_completion_sources.ZAI) {
+            overrides.zai_endpoint = apiUrlValue;
+        }
+    }
+
+    const promptPostProcessing = String(profile['prompt-post-processing'] || '').trim();
+    if (promptPostProcessing) {
+        overrides.custom_prompt_post_processing = promptPostProcessing;
+    }
+
+    const proxyName = String(profile.proxy || '').trim();
+    if (proxyName && Array.isArray(proxies)) {
+        const proxyPreset = proxies.find(item => String(item?.name || '').trim() === proxyName);
+        if (proxyPreset) {
+            overrides.reverse_proxy = String(proxyPreset.url || '');
+            overrides.proxy_password = String(proxyPreset.password || '');
+        }
+    }
+
+    return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function getLorebookSyncRequestPresetOptions(context = getContext()) {
+    const settings = getSettings();
+    const llmPresetName = String(settings.lorebookSyncLlmPresetName || '').trim();
+    const selectedApiProfileName = String(settings.lorebookSyncApiPresetName || '').trim();
+    const currentChatSource = String(context?.chatCompletionSettings?.chat_completion_source || '').trim();
+    const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(selectedApiProfileName, currentChatSource);
+    const requestApi = resolveRequestApiFromConnectionProfileName(context, selectedApiProfileName);
+    const hasConnectionProfile = Boolean(getConnectionProfileByName(selectedApiProfileName));
+
+    return {
+        llmPresetName,
+        requestApi,
+        apiSettingsOverride,
+        // Backward compatibility: if a legacy OpenAI preset name is still stored here, keep supporting it.
+        apiPresetName: hasConnectionProfile ? '' : selectedApiProfileName,
+    };
+}
+
+function buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, { llmPresetName = '', requestApi = '' } = {}) {
+    const baseMessages = [
+        { role: 'system', content: String(systemPrompt || '').trim() },
+        { role: 'user', content: String(userPrompt || '').trim() },
+    ].filter(item => item.content);
+
+    if (typeof context?.buildPresetAwarePromptMessages !== 'function') {
+        return baseMessages;
+    }
+
+    const selectedPromptPresetName = String(llmPresetName || '').trim();
+    const envelopeApi = selectedPromptPresetName ? 'openai' : (String(requestApi || context?.mainApi || 'openai').trim() || 'openai');
+    try {
+        const built = context.buildPresetAwarePromptMessages({
+            messages: baseMessages,
+            envelopeOptions: {
+                includeCharacterCard: true,
+                api: envelopeApi,
+                promptPresetName: selectedPromptPresetName,
+            },
+            promptPresetName: selectedPromptPresetName,
+        });
+        if (Array.isArray(built) && built.length > 0) {
+            return built;
+        }
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to build preset-aware messages`, error);
+    }
+
+    return baseMessages;
+}
+
+function getOpenAIPresetNames(context) {
+    const manager = context.getPresetManager?.('openai');
+    if (!manager || typeof manager.getAllPresets !== 'function') {
+        return [];
+    }
+    const names = manager.getAllPresets();
+    if (!Array.isArray(names)) {
+        return [];
+    }
+    return [...new Set(names.map(name => String(name || '').trim()).filter(Boolean))];
+}
+
+function getConnectionProfileNames() {
+    return getConnectionProfiles()
+        .map(profile => String(profile.name || '').trim())
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+}
+
+function renderOpenAIPresetOptions(context, selectedName = '') {
+    const selected = String(selectedName || '').trim();
+    const names = getOpenAIPresetNames(context);
+    const options = [`<option value="">${escapeHtml(i18n('(Current preset)'))}</option>`];
+    for (const name of names) {
+        options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+    }
+    if (selected && !names.includes(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function renderConnectionProfileOptions(selectedName = '') {
+    const selected = String(selectedName || '').trim();
+    const names = getConnectionProfileNames();
+    const options = [`<option value="">${escapeHtml(i18n('(Current API config)'))}</option>`];
+    for (const name of names) {
+        options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+    }
+    if (selected && !names.includes(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function refreshPresetSelectors(root, context, settings) {
+    const llmSelect = root.find('#cea_sync_llm_preset');
+    if (llmSelect.length) {
+        llmSelect.html(renderOpenAIPresetOptions(context, settings.lorebookSyncLlmPresetName));
+        llmSelect.val(String(settings.lorebookSyncLlmPresetName || '').trim());
+    }
+    const apiSelect = root.find('#cea_sync_api_preset');
+    if (apiSelect.length) {
+        apiSelect.html(renderConnectionProfileOptions(settings.lorebookSyncApiPresetName));
+        apiSelect.val(String(settings.lorebookSyncApiPresetName || '').trim());
+    }
 }
 
 function getChatKey(context) {
@@ -227,25 +591,42 @@ function normalizeOperationState(state) {
     return normalized;
 }
 
+function normalizePersistedOperationSnapshot(state) {
+    return isPlainObject(state) ? clone(state) : {};
+}
+
 async function loadOperationState(context, { force = false } = {}) {
     const chatKey = getChatKey(context);
     if (!force && stateCache.has(chatKey)) {
         return clone(stateCache.get(chatKey));
     }
     const loaded = await context.getChatState(CHAT_STATE_NAMESPACE) || null;
-    const normalized = normalizeOperationState(loaded);
+    const persistedSnapshot = normalizePersistedOperationSnapshot(loaded);
+    const normalized = normalizeOperationState(persistedSnapshot);
     stateCache.set(chatKey, clone(normalized));
-    snapshotCache.set(chatKey, clone(normalized));
+    // Keep an exact server-shape snapshot for diffing, so first write uses `add` not invalid `replace`.
+    snapshotCache.set(chatKey, persistedSnapshot);
     return normalized;
 }
 
 async function persistOperationState(context, state) {
     const chatKey = getChatKey(context);
-    const previous = snapshotCache.get(chatKey) || null;
     const next = normalizeOperationState(state);
-    const operations = buildObjectPatchOperations(previous, next, { maxOperations: 5000 });
-    if (operations.length > 0) {
-        const ok = await context.patchChatState(CHAT_STATE_NAMESPACE, operations);
+    const previousSnapshot = normalizePersistedOperationSnapshot(snapshotCache.get(chatKey));
+
+    const applyPatchFrom = async (baseSnapshot) => {
+        const operations = buildObjectPatchOperations(normalizePersistedOperationSnapshot(baseSnapshot), next, { maxOperations: 5000 });
+        if (operations.length === 0) {
+            return true;
+        }
+        return await context.patchChatState(CHAT_STATE_NAMESPACE, operations);
+    };
+
+    let ok = await applyPatchFrom(previousSnapshot);
+    if (!ok) {
+        // Rebase once from freshest server state, then rebuild operations to avoid stale/invalid replace paths.
+        const latestSnapshot = normalizePersistedOperationSnapshot(await context.getChatState(CHAT_STATE_NAMESPACE));
+        ok = await applyPatchFrom(latestSnapshot);
         if (!ok) {
             throw new Error('Failed to persist operation state.');
         }
@@ -296,6 +677,51 @@ async function mergeCharacterAttributes(context, avatar, patch) {
         throw new Error(`Character merge failed (${response.status}): ${detail || response.statusText}`);
     }
     await context.getOneCharacter(avatar);
+}
+
+async function syncWorldBindingUi(context, worldName = '') {
+    const targetWorld = String(worldName || '').trim();
+    const chid = Number(context?.characterId);
+
+    if (jQuery('#character_world').length) {
+        jQuery('#character_world').val(targetWorld).trigger('change');
+    }
+    if (Number.isInteger(chid) && chid >= 0) {
+        jQuery('#set_character_world').data('chid', chid);
+    }
+
+    try {
+        await updateWorldInfoList();
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to refresh world info list`, error);
+    }
+
+    const applyButtonState = () => {
+        try {
+            // First, apply the canonical check against the actual character binding.
+            if (Number.isInteger(chid) && chid >= 0) {
+                setWorldInfoButtonClass(chid);
+            }
+
+            // If binding exists but UI still not green, force class as a fallback.
+            const shouldBeSet = Boolean(targetWorld);
+            const isSet = jQuery('#set_character_world').hasClass('world_set')
+                || jQuery('#world_button').hasClass('world_set');
+            if (shouldBeSet && !isSet) {
+                setWorldInfoButtonClass(undefined, true);
+            } else if (!shouldBeSet && isSet) {
+                setWorldInfoButtonClass(undefined, false);
+            }
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to refresh world info button state`, error);
+        }
+    };
+
+    applyButtonState();
+
+    // Character data can land slightly later; re-apply once after the current tick.
+    setTimeout(applyButtonState, 0);
+    setTimeout(applyButtonState, 120);
 }
 
 function getPrimaryLorebookName(character) {
@@ -374,6 +800,1232 @@ async function loadLorebookData(context, bookName) {
         return data;
     }
     return { entries: {} };
+}
+
+function normalizeLorebookEntryForSync(entry, uid) {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const normalizedUid = Number.isInteger(asFiniteInteger(uid, null))
+        ? Number(asFiniteInteger(uid, 0))
+        : Number(asFiniteInteger(source.uid, 0) || 0);
+    return {
+        uid: normalizedUid,
+        comment: String(source.comment ?? ''),
+        content: String(source.content ?? ''),
+        key: Array.isArray(source.key) ? source.key.map(item => String(item ?? '').trim()).filter(Boolean) : [],
+        keysecondary: Array.isArray(source.keysecondary) ? source.keysecondary.map(item => String(item ?? '').trim()).filter(Boolean) : [],
+        selectiveLogic: asFiniteInteger(source.selectiveLogic, 0) ?? 0,
+        order: asFiniteInteger(source.order, 0) ?? 0,
+        position: asFiniteInteger(source.position, 0) ?? 0,
+        depth: asFiniteInteger(source.depth, 0) ?? 0,
+        disable: Boolean(source.disable),
+        constant: Boolean(source.constant),
+    };
+}
+
+function areLorebookEntriesEqualForSync(a, b) {
+    return JSON.stringify(normalizeLorebookEntryForSync(a, a?.uid ?? 0)) === JSON.stringify(normalizeLorebookEntryForSync(b, b?.uid ?? 0));
+}
+
+function buildLorebookEntryUpsertArgs(bookName, uid, entry) {
+    const normalized = normalizeLorebookEntryForSync(entry, uid);
+    return {
+        book_name: String(bookName || '').trim(),
+        entry_uid: Number(normalized.uid),
+        key_csv: normalized.key.join(', '),
+        secondary_key_csv: normalized.keysecondary.join(', '),
+        comment: normalized.comment,
+        content: normalized.content,
+        selective_logic: Number(normalized.selectiveLogic),
+        order: Number(normalized.order),
+        position: Number(normalized.position),
+        depth: Number(normalized.depth),
+        disable: Boolean(normalized.disable),
+        constant: Boolean(normalized.constant),
+    };
+}
+
+async function captureCharacterLorebookSnapshot(context, character) {
+    const target = character && typeof character === 'object' ? character : null;
+    const avatar = String(target?.avatar || '').trim();
+    const characterName = String(target?.name || '').trim();
+    const bookName = getPrimaryLorebookName(target);
+    let entries = {};
+    if (bookName) {
+        try {
+            const data = await loadLorebookData(context, bookName);
+            entries = clone(data.entries || {}) || {};
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to snapshot lorebook '${bookName}'`, error);
+        }
+    }
+    return {
+        avatar,
+        characterName,
+        bookName,
+        entries,
+        capturedAt: Date.now(),
+    };
+}
+
+function buildLorebookSyncPlan(previousSnapshot, currentSnapshot) {
+    const previous = previousSnapshot && typeof previousSnapshot === 'object' ? previousSnapshot : {};
+    const current = currentSnapshot && typeof currentSnapshot === 'object' ? currentSnapshot : {};
+    const sourceBook = String(previous.bookName || '').trim();
+    const targetBook = String(current.bookName || '').trim();
+    const previousEntries = previous.entries && typeof previous.entries === 'object' ? previous.entries : {};
+    const currentEntries = current.entries && typeof current.entries === 'object' ? current.entries : {};
+
+    const operations = [];
+    const diffItems = [];
+    const maxOperations = 300;
+    for (const [rawUid, oldEntryRaw] of Object.entries(previousEntries)) {
+        const uid = asFiniteInteger(rawUid, asFiniteInteger(oldEntryRaw?.uid, null));
+        if (!Number.isInteger(uid) || uid < 0) {
+            continue;
+        }
+        const oldEntry = normalizeLorebookEntryForSync(oldEntryRaw, uid);
+        const newEntry = Object.hasOwn(currentEntries, uid)
+            ? normalizeLorebookEntryForSync(currentEntries[uid], uid)
+            : (Object.hasOwn(currentEntries, String(uid))
+                ? normalizeLorebookEntryForSync(currentEntries[String(uid)], uid)
+                : null);
+        if (newEntry && areLorebookEntriesEqualForSync(oldEntry, newEntry)) {
+            continue;
+        }
+        diffItems.push({
+            uid,
+            reason: newEntry ? 'changed' : 'missing',
+            oldEntry,
+            newEntry,
+        });
+        if (targetBook && operations.length < maxOperations) {
+            operations.push({
+                kind: 'lorebook_upsert_entry',
+                args: buildLorebookEntryUpsertArgs(targetBook, uid, oldEntry),
+            });
+        }
+    }
+
+    // Add reverse-side diffs so model can see entries that exist only in the new lorebook.
+    for (const [rawUid, newEntryRaw] of Object.entries(currentEntries)) {
+        const uid = asFiniteInteger(rawUid, asFiniteInteger(newEntryRaw?.uid, null));
+        if (!Number.isInteger(uid) || uid < 0) {
+            continue;
+        }
+        const oldEntryRaw = Object.hasOwn(previousEntries, uid)
+            ? previousEntries[uid]
+            : (Object.hasOwn(previousEntries, String(uid)) ? previousEntries[String(uid)] : null);
+        if (oldEntryRaw) {
+            continue;
+        }
+        const newEntry = normalizeLorebookEntryForSync(newEntryRaw, uid);
+        diffItems.push({
+            uid,
+            reason: 'added',
+            oldEntry: null,
+            newEntry,
+        });
+    }
+
+    return {
+        sourceBook,
+        targetBook,
+        sourceCharacterName: String(previous.characterName || '').trim(),
+        targetCharacterName: String(current.characterName || '').trim(),
+        sourceEntryCount: Object.keys(previousEntries).length,
+        targetEntryCount: Object.keys(currentEntries).length,
+        diffItems,
+        operations,
+    };
+}
+
+function getEmbeddedLorebookImportPayload(character) {
+    const target = character && typeof character === 'object' ? character : null;
+    const rawBook = target?.data?.character_book;
+    if (!rawBook || !Array.isArray(rawBook.entries)) {
+        return null;
+    }
+    const safeBook = clone(rawBook);
+    const bookName = String(safeBook?.name || `${String(target?.name || 'Character')}'s Lorebook`).trim();
+    if (!bookName) {
+        return null;
+    }
+    try {
+        const converted = convertCharacterBook(safeBook);
+        if (!converted || typeof converted !== 'object' || !converted.entries || typeof converted.entries !== 'object') {
+            return null;
+        }
+        return {
+            bookName,
+            data: converted,
+        };
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to convert embedded character book`, error);
+        return null;
+    }
+}
+
+async function applyDirectLorebookReplace(context, previousSnapshot, currentSnapshot, currentCharacter) {
+    const previousBook = String(previousSnapshot?.bookName || '').trim();
+    const embeddedImport = getEmbeddedLorebookImportPayload(currentCharacter);
+    const fallbackTargetBook = String(currentSnapshot?.bookName || '').trim();
+    const targetBook = embeddedImport?.bookName || fallbackTargetBook;
+    const targetData = embeddedImport?.data || (targetBook ? { entries: clone(currentSnapshot?.entries || {}) } : null);
+    if (!targetBook || !targetData || !targetData.entries || typeof targetData.entries !== 'object') {
+        throw new Error('No target lorebook data available for direct replacement.');
+    }
+
+    // Write target first, then delete old one to avoid destructive half-success state.
+    await context.saveWorldInfo(targetBook, targetData, true);
+
+    if (previousBook && previousBook !== targetBook) {
+        const existingPrevious = await context.loadWorldInfo(previousBook);
+        if (existingPrevious) {
+            const deleted = await deleteWorldInfo(previousBook);
+            if (!deleted) {
+                throw new Error(`Failed to delete old lorebook '${previousBook}'.`);
+            }
+        }
+    }
+
+    const avatar = String(currentSnapshot?.avatar || currentCharacter?.avatar || '').trim();
+    if (avatar) {
+        await mergeCharacterAttributes(context, avatar, {
+            data: {
+                extensions: {
+                    world: targetBook,
+                },
+            },
+        });
+    }
+    await syncWorldBindingUi(context, targetBook);
+
+    return {
+        previousBook,
+        targetBook,
+    };
+}
+
+async function restorePreviousLorebookBinding(context, previousSnapshot, currentSnapshot, currentCharacter) {
+    const previousBook = String(previousSnapshot?.bookName || '').trim();
+    const avatar = String(currentSnapshot?.avatar || currentCharacter?.avatar || '').trim();
+    if (!avatar) {
+        return {
+            previousBook,
+            applied: false,
+        };
+    }
+
+    await mergeCharacterAttributes(context, avatar, {
+        data: {
+            extensions: {
+                world: previousBook,
+            },
+        },
+    });
+    await syncWorldBindingUi(context, previousBook);
+
+    return {
+        previousBook,
+        applied: true,
+    };
+}
+
+function clipModelText(text, max = 500) {
+    const source = String(text ?? '');
+    if (source.length <= max) {
+        return source;
+    }
+    return `${source.slice(0, max)}...`;
+}
+
+function compactEntryForModel(entry, uid) {
+    const normalized = normalizeLorebookEntryForSync(entry, uid);
+    return {
+        uid: normalized.uid,
+        key: normalized.key,
+        keysecondary: normalized.keysecondary,
+        comment: clipModelText(normalized.comment, 240),
+        content: clipModelText(normalized.content, 900),
+        selectiveLogic: normalized.selectiveLogic,
+        order: normalized.order,
+        position: normalized.position,
+        depth: normalized.depth,
+        disable: normalized.disable,
+        constant: normalized.constant,
+    };
+}
+
+function renderLorebookSyncAnalysisMarkdown(markdownText) {
+    const source = String(markdownText || '').trim();
+    if (!source) {
+        return `<div class="cea_sync_analysis_empty">${escapeHtml(i18n('No analysis output.'))}</div>`;
+    }
+    try {
+        const html = converter?.makeHtml
+            ? converter.makeHtml(source)
+            : `<pre>${escapeHtml(source)}</pre>`;
+        return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+    } catch {
+        return `<pre>${escapeHtml(source)}</pre>`;
+    }
+}
+
+function buildLorebookSyncDialogHtml(plan) {
+    const safePlan = plan && typeof plan === 'object' ? plan : {};
+
+    return `
+<div class="cea_sync_popup">
+    <div class="cea_sync_intro">${escapeHtml(i18n('Review model analysis and optionally add requirements. Save will apply model edits; cancel will keep raw update.'))}</div>
+    <div class="cea_sync_meta">
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Old lorebook'))}:</b> ${escapeHtml(String(safePlan.sourceBook || i18n('(empty)')))}</div>
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('New lorebook'))}:</b> ${escapeHtml(String(safePlan.targetBook || i18n('(empty)')))}</div>
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Candidate sync operations'))}:</b> ${escapeHtml(String(Number(safePlan.operations?.length || 0)))}</div>
+    </div>
+    <div class="cea_sync_chat" data-cea-sync-chat>
+    </div>
+    <div class="cea_sync_composer">
+        <textarea class="text_pole textarea_compact" rows="4" data-cea-sync-input placeholder="${escapeHtml(i18n('Type your requirement to continue this conversation...'))}"></textarea>
+        <div class="menu_button menu_button_small" data-cea-sync-send>${escapeHtml(i18n('Send'))}</div>
+    </div>
+    <div class="cea_sync_input_hint">${escapeHtml(i18n('Optional requirements (tell model what to keep or adjust before saving):'))}</div>
+</div>`;
+}
+
+function getLorebookEntryByUid(entries, uid) {
+    if (!entries || typeof entries !== 'object') {
+        return null;
+    }
+    if (Object.hasOwn(entries, uid)) {
+        return entries[uid] ?? null;
+    }
+    const key = String(uid);
+    if (Object.hasOwn(entries, key)) {
+        return entries[key] ?? null;
+    }
+    return null;
+}
+
+function collectLorebookEntryUids(entries) {
+    const output = new Set();
+    for (const [rawUid, entry] of Object.entries(entries && typeof entries === 'object' ? entries : {})) {
+        const uid = asFiniteInteger(rawUid, asFiniteInteger(entry?.uid, null));
+        if (Number.isInteger(uid) && uid >= 0) {
+            output.add(uid);
+        }
+    }
+    return output;
+}
+
+function normalizeModelOperationsFromCalls(rawCalls, targetBook) {
+    const normalizedOperations = [];
+    for (const call of Array.isArray(rawCalls) ? rawCalls : []) {
+        const kind = String(call?.name || '').trim();
+        if (kind !== 'lorebook_upsert_entry' && kind !== 'lorebook_delete_entry') {
+            continue;
+        }
+        const normalizedArgs = normalizeModelOperationArgs(kind, call.args, targetBook);
+        if (!normalizedArgs) {
+            continue;
+        }
+        normalizedOperations.push({
+            kind,
+            args: normalizedArgs,
+        });
+    }
+    const dedupeMap = new Map();
+    for (const item of normalizedOperations) {
+        const uid = String(item?.args?.entry_uid ?? '');
+        const key = `${String(item.kind)}:${uid}`;
+        dedupeMap.set(key, item);
+    }
+    return Array.from(dedupeMap.values());
+}
+
+function buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, afterEntry) {
+    const kind = String(operation?.kind || '');
+    const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
+    const entryUid = asFiniteInteger(args.entry_uid, null);
+    const preview = {
+        title: buildOperationSummary(operation),
+        fields: [],
+        meta: [
+            {
+                label: i18n('Target lorebook'),
+                value: String(targetBook || i18n('(missing lorebook)')),
+            },
+            {
+                label: i18n('Entry UID'),
+                value: Number.isInteger(entryUid) ? String(entryUid) : '?',
+            },
+        ],
+        rawArgs: clone(args || {}),
+    };
+
+    if (kind === 'lorebook_delete_entry') {
+        pushDiffField(preview.fields, 'entry', beforeEntry ? 'exists' : i18n('(empty)'), i18n('(deleted)'), { force: true });
+        if (beforeEntry) {
+            pushDiffField(preview.fields, 'keywords', getEntryPreviewValue(beforeEntry, 'key'), i18n('(deleted)'), { force: true });
+            pushDiffField(preview.fields, 'secondary keywords', getEntryPreviewValue(beforeEntry, 'keysecondary'), i18n('(deleted)'), { force: true });
+            pushDiffField(preview.fields, 'comment', getEntryPreviewValue(beforeEntry, 'comment'), i18n('(deleted)'), { force: true });
+            pushDiffField(preview.fields, 'content', getEntryPreviewValue(beforeEntry, 'content'), i18n('(deleted)'), { force: true });
+        }
+        return preview;
+    }
+
+    const fieldSpecs = [
+        { label: 'comment', key: 'comment', touched: Object.hasOwn(args, 'comment') },
+        { label: 'content', key: 'content', touched: Object.hasOwn(args, 'content') },
+        { label: 'keywords', key: 'key', touched: Object.hasOwn(args, 'key_csv') },
+        { label: 'secondary keywords', key: 'keysecondary', touched: Object.hasOwn(args, 'secondary_key_csv') },
+        { label: 'selective logic', key: 'selectiveLogic', touched: Object.hasOwn(args, 'selective_logic') || Object.hasOwn(args, 'secondary_key_csv') },
+        { label: 'order', key: 'order', touched: Object.hasOwn(args, 'order') },
+        { label: 'position', key: 'position', touched: Object.hasOwn(args, 'position') },
+        { label: 'depth', key: 'depth', touched: Object.hasOwn(args, 'depth') },
+        { label: 'enabled', key: 'enabled', touched: Object.hasOwn(args, 'enabled') || Object.hasOwn(args, 'disable') },
+        { label: 'constant', key: 'constant', touched: Object.hasOwn(args, 'constant') },
+    ];
+    for (const spec of fieldSpecs) {
+        if (!spec.touched) {
+            continue;
+        }
+        const beforeValue = beforeEntry ? getEntryPreviewValue(beforeEntry, spec.key) : i18n('(new entry)');
+        const afterValue = afterEntry ? getEntryPreviewValue(afterEntry, spec.key) : i18n('(deleted)');
+        pushDiffField(preview.fields, spec.label, beforeValue, afterValue, { force: !beforeEntry });
+    }
+
+    if (preview.fields.length === 0) {
+        pushDiffField(
+            preview.fields,
+            'entry',
+            beforeEntry ? 'exists' : i18n('(empty)'),
+            afterEntry ? 'exists' : i18n('(deleted)'),
+            { force: true },
+        );
+    }
+    return preview;
+}
+
+function applyDraftOperationsAndBuildPreviews(targetBook, draftEntries, operationSpecs) {
+    const entries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
+    const normalized = Array.isArray(operationSpecs) ? operationSpecs : [];
+    const previews = [];
+    const appliedOperations = [];
+
+    for (const spec of normalized) {
+        const kind = String(spec?.kind || '');
+        const args = spec?.args && typeof spec.args === 'object' ? spec.args : {};
+        const uid = asFiniteInteger(args.entry_uid, null);
+        if (!Number.isInteger(uid) || uid < 0) {
+            continue;
+        }
+
+        const beforeEntryRaw = getLorebookEntryByUid(entries, uid);
+        const beforeEntry = beforeEntryRaw ? clone(beforeEntryRaw) : null;
+        let afterEntry = beforeEntry ? clone(beforeEntry) : null;
+
+        if (kind === 'lorebook_upsert_entry') {
+            afterEntry = applyLorebookEntryArgs(beforeEntry, args, uid);
+            entries[String(uid)] = clone(afterEntry);
+        } else if (kind === 'lorebook_delete_entry') {
+            delete entries[String(uid)];
+            afterEntry = null;
+        } else {
+            continue;
+        }
+
+        previews.push(buildLorebookDraftDiffPreview(spec, targetBook, beforeEntry, afterEntry));
+        appliedOperations.push({
+            kind,
+            args: clone(args),
+        });
+    }
+
+    return {
+        appliedOperations,
+        diffPreviews: previews,
+    };
+}
+
+function buildFinalLorebookOperationSpecsFromDraft(targetBook, baselineEntries, draftEntries) {
+    const safeTargetBook = String(targetBook || '').trim();
+    if (!safeTargetBook) {
+        return [];
+    }
+    const baseline = baselineEntries && typeof baselineEntries === 'object' ? baselineEntries : {};
+    const draft = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
+    const uids = new Set([
+        ...collectLorebookEntryUids(baseline),
+        ...collectLorebookEntryUids(draft),
+    ]);
+    const sorted = Array.from(uids.values()).sort((a, b) => a - b);
+    const output = [];
+
+    for (const uid of sorted) {
+        const beforeRaw = getLorebookEntryByUid(baseline, uid);
+        const afterRaw = getLorebookEntryByUid(draft, uid);
+        if (beforeRaw && !afterRaw) {
+            output.push({
+                kind: 'lorebook_delete_entry',
+                args: {
+                    book_name: safeTargetBook,
+                    entry_uid: uid,
+                },
+            });
+            continue;
+        }
+        if (!afterRaw) {
+            continue;
+        }
+        if (!beforeRaw || !areLorebookEntriesEqualForSync(beforeRaw, afterRaw)) {
+            output.push({
+                kind: 'lorebook_upsert_entry',
+                args: buildLorebookEntryUpsertArgs(safeTargetBook, uid, afterRaw),
+            });
+        }
+    }
+
+    return output;
+}
+
+function renderLorebookSyncTurnDiffHtml(message) {
+    const safeMessage = message && typeof message === 'object' ? message : {};
+    const hasTurnData = Object.hasOwn(safeMessage, 'diffPreviews') || Object.hasOwn(safeMessage, 'operations');
+    if (!hasTurnData) {
+        return '';
+    }
+    const previews = Array.isArray(safeMessage.diffPreviews) ? safeMessage.diffPreviews : [];
+    const operations = Array.isArray(safeMessage.operations) ? safeMessage.operations : [];
+    const summaryText = previews.length > 0
+        ? i18nFormat('Round diff (${0} operations)', previews.length)
+        : i18n('Round diff');
+
+    if (previews.length === 0) {
+        return `
+<details class="cea_sync_turn_diff">
+    <summary>${escapeHtml(summaryText)}</summary>
+    <div class="cea_sync_turn_diff_empty">${escapeHtml(i18n('No draft operations proposed in this round.'))}</div>
+</details>`;
+    }
+
+    return `
+<details class="cea_sync_turn_diff" open>
+    <summary>${escapeHtml(summaryText)}</summary>
+    <div class="cea_sync_turn_diff_list">
+        ${previews.map((preview, index) => {
+            const fields = Array.isArray(preview?.fields) ? preview.fields : [];
+            const meta = Array.isArray(preview?.meta) ? preview.meta : [];
+            const rawArgs = operations[index]?.args || preview?.rawArgs || {};
+            return `
+<div class="cea_sync_turn_diff_item">
+    <div class="cea_sync_turn_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(preview?.title || ''))}</div>
+    ${meta.length > 0 ? `<div class="cea_sync_turn_diff_meta">${meta.map(item => `
+        <div class="cea_sync_turn_diff_meta_item"><b>${escapeHtml(String(item?.label || ''))}:</b> ${escapeHtml(String(item?.value || ''))}</div>
+    `).join('')}</div>` : ''}
+    <div class="cea_sync_turn_diff_fields">
+        ${fields.map(field => `
+<div class="cea_sync_turn_diff_field">
+    <div class="cea_sync_turn_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
+    <div class="cea_sync_turn_diff_blocks">
+        <div class="cea_sync_turn_diff_block before">
+            <div class="cea_sync_turn_diff_block_title">${escapeHtml(i18n('Before'))}</div>
+            <pre>${escapeHtml(String(field?.before ?? ''))}</pre>
+        </div>
+        <div class="cea_sync_turn_diff_block after">
+            <div class="cea_sync_turn_diff_block_title">${escapeHtml(i18n('After'))}</div>
+            <pre>${escapeHtml(String(field?.after ?? ''))}</pre>
+        </div>
+    </div>
+</div>`).join('')}
+    </div>
+    <details class="cea_sync_turn_diff_raw">
+        <summary>${escapeHtml(i18n('Raw arguments'))}</summary>
+        <pre>${escapeHtml(JSON.stringify(rawArgs, null, 2))}</pre>
+    </details>
+</div>`;
+        }).join('')}
+    </div>
+</details>`;
+}
+
+function renderLorebookSyncChatMessages(messages, { loading = false, loadingText = '' } = {}) {
+    const list = Array.isArray(messages) ? messages : [];
+    const html = list.map(item => {
+        const role = String(item?.role || 'assistant');
+        const text = String(item?.content || '').trim();
+        if (!text) {
+            return '';
+        }
+        if (role === 'user') {
+            return `
+<div class="cea_sync_chat_msg cea_sync_chat_msg_user">
+    <pre>${escapeHtml(text)}</pre>
+</div>`;
+        }
+        return `
+<div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
+    <div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>
+    ${renderLorebookSyncTurnDiffHtml(item)}
+</div>`;
+    }).join('');
+
+    if (!loading) {
+        return html;
+    }
+    const loadingLabel = String(loadingText || i18n('Assistant is thinking...'));
+    return `${html}
+<div class="cea_sync_chat_msg cea_sync_chat_msg_assistant cea_sync_chat_msg_loading">
+    <i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i>
+    <span>${escapeHtml(loadingLabel)}</span>
+</div>`;
+}
+
+function buildLorebookSyncModeChoiceHtml(plan) {
+    const safePlan = plan && typeof plan === 'object' ? plan : {};
+    return `
+<div class="cea_sync_popup">
+    <div class="cea_sync_intro">${escapeHtml(i18n('Choose how to handle lorebook update'))}</div>
+    <div class="cea_sync_meta">
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Old lorebook'))}:</b> ${escapeHtml(String(safePlan.sourceBook || i18n('(empty)')))}</div>
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('New lorebook'))}:</b> ${escapeHtml(String(safePlan.targetBook || i18n('(empty)')))}</div>
+        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Candidate sync operations'))}:</b> ${escapeHtml(String(Number(safePlan.operations?.length || 0)))}</div>
+    </div>
+</div>`;
+}
+
+async function selectLorebookSyncMode(plan) {
+    const popup = new Popup(
+        buildLorebookSyncModeChoiceHtml(plan),
+        POPUP_TYPE.CONFIRM,
+        '',
+        {
+            wide: true,
+            wider: true,
+            allowVerticalScrolling: true,
+            okButton: false,
+            cancelButton: false,
+            defaultResult: POPUP_RESULT.CUSTOM1,
+            customButtons: [
+                {
+                    text: i18n('Analyze then update'),
+                    result: POPUP_RESULT.CUSTOM1,
+                },
+                {
+                    text: i18n('Direct replace'),
+                    result: POPUP_RESULT.CUSTOM2,
+                },
+                {
+                    text: i18n('Do not replace'),
+                    result: POPUP_RESULT.CUSTOM3,
+                },
+            ],
+        },
+    );
+
+    const result = await popup.show();
+    if (result === POPUP_RESULT.CUSTOM2) {
+        return 'direct_replace';
+    }
+    if (result === POPUP_RESULT.CUSTOM3 || result === POPUP_RESULT.CANCELLED) {
+        return 'skip_replace';
+    }
+    return 'analyze_then_update';
+}
+
+function buildLorebookModelContextPayload(plan, requirements = '', analysisSummary = '') {
+    const candidateItems = Array.isArray(plan?.diffItems) ? plan.diffItems.slice(0, 120) : [];
+    return {
+        source_lorebook: String(plan?.sourceBook || ''),
+        target_lorebook: String(plan?.targetBook || ''),
+        source_entry_count: Number(plan?.sourceEntryCount || 0),
+        target_entry_count: Number(plan?.targetEntryCount || 0),
+        candidates: candidateItems.map(item => ({
+            uid: Number(item?.uid || 0),
+            reason: String(item?.reason || ''),
+            old_entry: item?.oldEntry ? compactEntryForModel(item.oldEntry, item?.uid) : null,
+            new_entry: item?.newEntry ? compactEntryForModel(item.newEntry, item.uid) : null,
+        })),
+        user_requirements: String(requirements || '').trim(),
+        analysis_summary: String(analysisSummary || '').trim(),
+    };
+}
+
+function buildLorebookSyncModelTools() {
+    return [
+        {
+            type: 'function',
+            function: {
+                name: 'lorebook_upsert_entry',
+                description: 'Upsert one lorebook entry in the target lorebook.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        entry_uid: { type: 'integer' },
+                        key_csv: { type: 'string' },
+                        secondary_key_csv: { type: 'string' },
+                        comment: { type: 'string' },
+                        content: { type: 'string' },
+                        selective_logic: { type: 'integer' },
+                        order: { type: 'integer' },
+                        position: { type: 'integer' },
+                        depth: { type: 'integer' },
+                        enabled: { type: 'boolean' },
+                        disable: { type: 'boolean' },
+                        constant: { type: 'boolean' },
+                    },
+                    required: ['entry_uid'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'lorebook_delete_entry',
+                description: 'Delete one lorebook entry in the target lorebook by uid.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        entry_uid: { type: 'integer' },
+                    },
+                    required: ['entry_uid'],
+                    additionalProperties: false,
+                },
+            },
+        },
+    ];
+}
+
+function extractToolCallsFromResponse(responseData) {
+    const toolCalls = responseData?.choices?.[0]?.message?.tool_calls;
+    if (!Array.isArray(toolCalls)) {
+        return [];
+    }
+    const output = [];
+    for (const call of toolCalls) {
+        const name = String(call?.function?.name || '').trim();
+        const argsText = String(call?.function?.arguments || '').trim();
+        if (!name || !argsText) {
+            continue;
+        }
+        try {
+            output.push({
+                name,
+                args: JSON.parse(argsText),
+            });
+        } catch {
+            continue;
+        }
+    }
+    return output;
+}
+
+function normalizeModelOperationArgs(kind, args, targetBook) {
+    const safeArgs = args && typeof args === 'object' ? args : {};
+    if (kind === 'lorebook_upsert_entry') {
+        const entryUid = asFiniteInteger(safeArgs.entry_uid, null);
+        if (!Number.isInteger(entryUid) || entryUid < 0) {
+            return null;
+        }
+        const normalized = {
+            book_name: targetBook,
+            entry_uid: entryUid,
+        };
+        if (Object.hasOwn(safeArgs, 'key_csv')) {
+            normalized.key_csv = String(safeArgs.key_csv ?? '');
+        }
+        if (Object.hasOwn(safeArgs, 'secondary_key_csv')) {
+            normalized.secondary_key_csv = String(safeArgs.secondary_key_csv ?? '');
+        }
+        if (Object.hasOwn(safeArgs, 'comment')) {
+            normalized.comment = String(safeArgs.comment ?? '');
+        }
+        if (Object.hasOwn(safeArgs, 'content')) {
+            normalized.content = String(safeArgs.content ?? '');
+        }
+        if (Object.hasOwn(safeArgs, 'selective_logic')) {
+            const value = asFiniteInteger(safeArgs.selective_logic, null);
+            if (value !== null) {
+                normalized.selective_logic = value;
+            }
+        }
+        if (Object.hasOwn(safeArgs, 'order')) {
+            const value = asFiniteInteger(safeArgs.order, null);
+            if (value !== null) {
+                normalized.order = value;
+            }
+        }
+        if (Object.hasOwn(safeArgs, 'position')) {
+            const value = asFiniteInteger(safeArgs.position, null);
+            if (value !== null) {
+                normalized.position = value;
+            }
+        }
+        if (Object.hasOwn(safeArgs, 'depth')) {
+            const value = asFiniteInteger(safeArgs.depth, null);
+            if (value !== null) {
+                normalized.depth = value;
+            }
+        }
+        if (Object.hasOwn(safeArgs, 'enabled')) {
+            normalized.enabled = Boolean(safeArgs.enabled);
+        }
+        if (Object.hasOwn(safeArgs, 'disable')) {
+            normalized.disable = Boolean(safeArgs.disable);
+        }
+        if (Object.hasOwn(safeArgs, 'constant')) {
+            normalized.constant = Boolean(safeArgs.constant);
+        }
+        return normalized;
+    }
+    if (kind === 'lorebook_delete_entry') {
+        const entryUid = asFiniteInteger(safeArgs.entry_uid, null);
+        if (!Number.isInteger(entryUid) || entryUid < 0) {
+            return null;
+        }
+        return {
+            book_name: targetBook,
+            entry_uid: entryUid,
+        };
+    }
+    return null;
+}
+
+async function requestModelLorebookDiffAnalysis(context, plan) {
+    const targetBook = String(plan?.targetBook || '').trim();
+    if (!targetBook) {
+        return {
+            assistantText: '',
+        };
+    }
+    const contextPayload = buildLorebookModelContextPayload(plan, '');
+    const systemPrompt = [
+        'You are analyzing differences between an old lorebook and a new lorebook.',
+        'Do not call tools in this step. Provide analysis only.',
+        'Focus on migration risk, conflicts, and what should likely be preserved from the old lorebook.',
+        `Target lorebook is "${targetBook}".`,
+    ].join('\n');
+    const userPrompt = [
+        'Analyze this lorebook diff payload and summarize key points for the user.',
+        'Keep it concise and practical.',
+        JSON.stringify(contextPayload),
+    ].join('\n\n');
+    const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
+    const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+
+    const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
+        requestScope: 'extension_internal',
+        llmPresetName: requestPresetOptions.llmPresetName,
+        apiPresetName: requestPresetOptions.apiPresetName,
+        apiSettingsOverride: requestPresetOptions.apiSettingsOverride,
+    });
+
+    return {
+        assistantText: String(responseData?.choices?.[0]?.message?.content || '').trim(),
+    };
+}
+
+async function requestModelLorebookConversationReply(context, plan, conversationMessages, { draftEntries = {} } = {}) {
+    const targetBook = String(plan?.targetBook || '').trim();
+    if (!targetBook) {
+        return { assistantText: '', operations: [] };
+    }
+
+    const contextPayload = buildLorebookModelContextPayload(plan, '', '');
+    const history = (Array.isArray(conversationMessages) ? conversationMessages : [])
+        .map(item => ({
+            role: String(item?.role || ''),
+            content: String(item?.content || '').trim(),
+        }))
+        .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content)
+        .slice(-20);
+
+    const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
+    const draftEntryUids = Array.from(collectLorebookEntryUids(safeDraftEntries).values()).sort((a, b) => a - b).slice(0, 80);
+    const draftEntrySample = draftEntryUids.map(uid => compactEntryForModel(getLorebookEntryByUid(safeDraftEntries, uid), uid));
+
+    const systemPrompt = [
+        'You are assisting the user in reviewing lorebook diffs.',
+        'Continue the conversation and answer the user message directly.',
+        'After your reply, you may provide tool calls to propose draft lorebook edits for this round.',
+        'Tool calls are draft-only proposals and will not be auto-applied immediately.',
+        'Use tool calls only when proposing concrete entry changes; otherwise return no tool calls.',
+        'Be concise, practical, and grounded in the provided diff context.',
+        `Target lorebook is "${targetBook}".`,
+    ].join('\n');
+    const userPrompt = [
+        'Conversation task for lorebook sync:',
+        JSON.stringify({
+            context: contextPayload,
+            conversation_history: history,
+            draft_entry_count: Number(draftEntryUids.length),
+            draft_entry_sample: draftEntrySample,
+        }),
+    ].join('\n\n');
+    const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
+    const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+
+    const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
+        tools: buildLorebookSyncModelTools(),
+        toolChoice: 'auto',
+        replaceTools: true,
+        requestScope: 'extension_internal',
+        llmPresetName: requestPresetOptions.llmPresetName,
+        apiPresetName: requestPresetOptions.apiPresetName,
+        apiSettingsOverride: requestPresetOptions.apiSettingsOverride,
+    });
+
+    const rawCalls = extractToolCallsFromResponse(responseData);
+    const operations = normalizeModelOperationsFromCalls(rawCalls, targetBook);
+    return {
+        assistantText: String(responseData?.choices?.[0]?.message?.content || '').trim(),
+        operations,
+    };
+}
+
+async function finalizeLorebookSyncReplacement(context, previousSnapshot, currentSnapshot, currentCharacter) {
+    const previousBook = String(previousSnapshot?.bookName || '').trim();
+    const embeddedImport = getEmbeddedLorebookImportPayload(currentCharacter);
+    const targetBook = String(embeddedImport?.bookName || currentSnapshot?.bookName || '').trim();
+    const avatar = String(currentSnapshot?.avatar || currentCharacter?.avatar || '').trim();
+
+    if (avatar && targetBook) {
+        await mergeCharacterAttributes(context, avatar, {
+            data: {
+                extensions: {
+                    world: targetBook,
+                },
+            },
+        });
+    }
+
+    if (previousBook && targetBook && previousBook !== targetBook) {
+        const existingPrevious = await context.loadWorldInfo(previousBook);
+        if (existingPrevious) {
+            const deleted = await deleteWorldInfo(previousBook);
+            if (!deleted) {
+                throw new Error(`Failed to delete old lorebook '${previousBook}'.`);
+            }
+        }
+    }
+    await syncWorldBindingUi(context, targetBook);
+
+    return {
+        previousBook,
+        targetBook,
+    };
+}
+
+async function submitGeneratedOperations(context, operationSpecs, source = 'character_update_lorebook_sync') {
+    const specs = Array.isArray(operationSpecs) ? operationSpecs : [];
+    let pending = 0;
+    let applied = 0;
+    let failed = 0;
+    const errors = [];
+    for (const spec of specs) {
+        try {
+            const state = await loadOperationState(context);
+            const operation = createOperationEnvelope(state, spec.kind, spec.args, source);
+            await persistOperationState(context, state);
+            const result = await submitOperation(context, operation);
+            if (String(result?.status || '') === 'pending') {
+                pending++;
+            } else {
+                applied++;
+            }
+        } catch (error) {
+            failed++;
+            errors.push(String(error?.message || error));
+        }
+    }
+    return { pending, applied, failed, errors };
+}
+
+async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, currentCharacter = null) {
+    const embeddedImport = getEmbeddedLorebookImportPayload(currentCharacter);
+    const effectiveCurrentSnapshot = embeddedImport
+        ? {
+            ...(currentSnapshot && typeof currentSnapshot === 'object' ? currentSnapshot : {}),
+            bookName: String(embeddedImport.bookName || ''),
+            entries: clone(embeddedImport.data?.entries || {}),
+        }
+        : currentSnapshot;
+    const plan = buildLorebookSyncPlan(previousSnapshot, effectiveCurrentSnapshot);
+    if (!plan.targetBook && !embeddedImport?.bookName && !plan.sourceBook) {
+        return;
+    }
+
+    // If no meaningful diff, just do raw replace to avoid unnecessary interaction.
+    if (!plan.targetBook || !Array.isArray(plan.diffItems) || plan.diffItems.length === 0) {
+        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        await refreshUiState(context);
+        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
+        return;
+    }
+
+    const selectedMode = await selectLorebookSyncMode(plan);
+    if (selectedMode === 'direct_replace') {
+        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        await refreshUiState(context);
+        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
+        return;
+    }
+    if (selectedMode === 'skip_replace') {
+        const restored = await restorePreviousLorebookBinding(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        await refreshUiState(context);
+        notifyWarning(i18nFormat('No replacement applied. Restored previous lorebook binding: ${0}', restored.previousBook || '(none)'));
+        return;
+    }
+
+    let analysisReady = false;
+    let isSending = false;
+    const conversationMessages = [];
+    const baselineTargetEntries = clone(effectiveCurrentSnapshot?.entries || {}) || {};
+    const draftTargetEntries = clone(baselineTargetEntries) || {};
+
+    const popup = new Popup(
+        buildLorebookSyncDialogHtml(plan),
+        POPUP_TYPE.TEXT,
+        '',
+        {
+            wide: true,
+            wider: true,
+            large: true,
+            allowVerticalScrolling: true,
+            okButton: i18n('Save and update'),
+            cancelButton: i18n('Cancel and keep raw update'),
+            onOpen: (instance) => {
+                const chat = instance?.content?.querySelector('[data-cea-sync-chat]');
+                const input = instance?.content?.querySelector('[data-cea-sync-input]');
+                const sendBtn = instance?.content?.querySelector('[data-cea-sync-send]');
+                if (!(chat instanceof HTMLElement) || !(input instanceof HTMLTextAreaElement) || !(sendBtn instanceof HTMLElement)) {
+                    return;
+                }
+                const renderConversation = (loading = false, loadingText = '') => {
+                    chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading, loadingText });
+                    chat.scrollTop = chat.scrollHeight;
+                };
+                const setComposerState = (disabled) => {
+                    input.disabled = Boolean(disabled);
+                    sendBtn.classList.toggle('disabled', Boolean(disabled));
+                };
+                const handleSend = async () => {
+                    if (isSending || input.disabled) {
+                        return;
+                    }
+                    const userText = String(input.value || '').trim();
+                    if (!userText) {
+                        notifyWarning(i18n('Message cannot be empty.'));
+                        return;
+                    }
+                    conversationMessages.push({ role: 'user', content: userText });
+                    input.value = '';
+                    isSending = true;
+                    setComposerState(true);
+                    renderConversation(true, i18n('Assistant is thinking...'));
+                    try {
+                        const reply = await requestModelLorebookConversationReply(context, plan, conversationMessages, {
+                            draftEntries: draftTargetEntries,
+                        });
+                        const proposedOperations = Array.isArray(reply?.operations) ? reply.operations : [];
+                        const draftRound = applyDraftOperationsAndBuildPreviews(
+                            plan.targetBook,
+                            draftTargetEntries,
+                            proposedOperations,
+                        );
+                        const assistantText = String(reply?.assistantText || '').trim();
+                        if (assistantText) {
+                            conversationMessages.push({
+                                role: 'assistant',
+                                content: assistantText,
+                                operations: draftRound.appliedOperations,
+                                diffPreviews: draftRound.diffPreviews,
+                            });
+                        } else {
+                            const fallbackText = draftRound.appliedOperations.length > 0
+                                ? i18nFormat('Proposed ${0} operations in this round.', draftRound.appliedOperations.length)
+                                : i18n('No draft operations proposed in this round.');
+                            conversationMessages.push({
+                                role: 'assistant',
+                                content: fallbackText,
+                                operations: draftRound.appliedOperations,
+                                diffPreviews: draftRound.diffPreviews,
+                            });
+                        }
+                    } catch (error) {
+                        const errorText = i18nFormat('Model reply failed: ${0}', String(error?.message || error || ''));
+                        conversationMessages.push({ role: 'assistant', content: errorText });
+                    } finally {
+                        isSending = false;
+                        setComposerState(false);
+                        renderConversation(false);
+                    }
+                };
+
+                sendBtn.addEventListener('click', () => void handleSend());
+                input.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter' || event.shiftKey) {
+                        return;
+                    }
+                    event.preventDefault();
+                    void handleSend();
+                });
+
+                setComposerState(true);
+                renderConversation(true, i18n('Analyzing lorebook differences with model...'));
+            },
+            onClosing: (instance) => {
+                if (!analysisReady && Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
+                    notifyWarning(i18n('Model analysis is still running. Please wait or cancel for raw update.'));
+                    return false;
+                }
+                if (isSending && Number(instance?.result) === Number(POPUP_RESULT.AFFIRMATIVE)) {
+                    notifyWarning(i18n('Assistant is thinking...'));
+                    return false;
+                }
+                return true;
+            },
+        },
+    );
+
+    const popupPromise = popup.show();
+    const analysisPromise = (async () => {
+        try {
+            const analysisResult = await requestModelLorebookDiffAnalysis(context, plan);
+            const analysisText = String(analysisResult?.assistantText || '').trim();
+            if (analysisText) {
+                conversationMessages.push({ role: 'assistant', content: analysisText });
+            } else {
+                conversationMessages.push({ role: 'assistant', content: i18n('No analysis output.') });
+            }
+        } catch (error) {
+            const analysisError = String(error?.message || error || '');
+            conversationMessages.push({ role: 'assistant', content: i18nFormat('Model analysis failed: ${0}', analysisError) });
+        } finally {
+            analysisReady = true;
+            if (popup?.dlg?.isConnected) {
+                const chat = popup.content.querySelector('[data-cea-sync-chat]');
+                const input = popup.content.querySelector('[data-cea-sync-input]');
+                const sendBtn = popup.content.querySelector('[data-cea-sync-send]');
+                if (chat instanceof HTMLElement) {
+                    chat.innerHTML = renderLorebookSyncChatMessages(conversationMessages, { loading: false });
+                    chat.scrollTop = chat.scrollHeight;
+                }
+                if (input instanceof HTMLTextAreaElement) {
+                    input.disabled = false;
+                }
+                if (sendBtn instanceof HTMLElement) {
+                    sendBtn.classList.remove('disabled');
+                }
+            }
+        }
+    })();
+
+    const popupResult = await popupPromise;
+
+    // Cancel means "raw update".
+    if (popupResult !== POPUP_RESULT.AFFIRMATIVE) {
+        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        await refreshUiState(context);
+        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
+        return;
+    }
+
+    await analysisPromise;
+
+    const operationSpecs = buildFinalLorebookOperationSpecsFromDraft(
+        plan.targetBook,
+        baselineTargetEntries,
+        draftTargetEntries,
+    );
+    if (operationSpecs.length === 0) {
+        notifyWarning(i18n('No valid model edits generated. Falling back to raw update.'));
+        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        await refreshUiState(context);
+        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
+        return;
+    }
+
+    const result = await submitGeneratedOperations(context, operationSpecs);
+    if (result.failed === 0 && result.pending === 0) {
+        const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        if (finalized.previousBook || finalized.targetBook) {
+            notifySuccess(i18nFormat('Finalize lorebook replacement: ${0} -> ${1}', finalized.previousBook || '(none)', finalized.targetBook || '(none)'));
+        }
+    } else {
+        notifyWarning(i18n('Lorebook finalization skipped due failed operations.'));
+        if (result.pending > 0) {
+            notifyWarning(i18n('There are pending approvals. Final replacement will run after approvals.'));
+        }
+    }
+    await refreshUiState(context);
+    notifySuccess(i18nFormat('Lorebook sync result: pending ${0}, applied ${1}, failed ${2}', result.pending, result.applied, result.failed));
+    if (result.failed > 0) {
+        notifyWarning(result.errors[0] || 'Some operations failed.');
+    }
+}
+
+async function primeActiveCharacterLorebookSnapshot(context) {
+    try {
+        const record = getActiveCharacterRecord(context);
+        const snapshot = await captureCharacterLorebookSnapshot(context, record.character);
+        if (snapshot.avatar) {
+            lorebookSnapshotCache.set(snapshot.avatar, clone(snapshot));
+        }
+    } catch {
+        // no active character, ignore
+    }
+}
+
+async function handleCharacterReplacedLorebookSync(context, event) {
+    const settings = getSettings();
+    if (!settings.replaceLorebookSyncEnabled) {
+        return;
+    }
+    const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+    const currentCharacter = detail.character && typeof detail.character === 'object' ? detail.character : null;
+    const previousCharacter = detail.previousCharacter && typeof detail.previousCharacter === 'object' ? detail.previousCharacter : null;
+    const avatar = String(currentCharacter?.avatar || '').trim();
+    if (!currentCharacter || !avatar) {
+        return;
+    }
+
+    const previousSnapshot = previousCharacter
+        ? await captureCharacterLorebookSnapshot(context, previousCharacter)
+        : (lorebookSnapshotCache.get(avatar) || null);
+    const currentSnapshot = await captureCharacterLorebookSnapshot(context, currentCharacter);
+    lorebookSnapshotCache.set(avatar, clone(currentSnapshot));
+
+    if (!previousSnapshot) {
+        return;
+    }
+    const hasEmbeddedLorebook = Boolean(getEmbeddedLorebookImportPayload(currentCharacter)?.bookName);
+    if (!hasEmbeddedLorebook && !String(previousSnapshot.bookName || '').trim() && !String(currentSnapshot.bookName || '').trim()) {
+        return;
+    }
+
+    const plan = buildLorebookSyncPlan(previousSnapshot, currentSnapshot);
+    if (!hasEmbeddedLorebook && plan.operations.length === 0) {
+        return;
+    }
+
+    if (lorebookSyncDialogLocks.has(avatar)) {
+        notifyWarning(i18n('A lorebook sync dialog is already open for this character.'));
+        return;
+    }
+    lorebookSyncDialogLocks.add(avatar);
+    try {
+        await runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, currentCharacter);
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Lorebook sync flow failed`, error);
+        notifyError(String(error?.message || error));
+    } finally {
+        lorebookSyncDialogLocks.delete(avatar);
+        const refreshedSnapshot = await captureCharacterLorebookSnapshot(context, currentCharacter);
+        if (refreshedSnapshot.avatar) {
+            lorebookSnapshotCache.set(refreshedSnapshot.avatar, clone(refreshedSnapshot));
+        }
+    }
 }
 
 function buildOperationSummary(operation) {
@@ -1006,8 +2658,55 @@ function ensureStyles() {
     align-items: center;
     justify-content: center;
 }
+.popup .cea_sync_popup { display:flex; flex-direction:column; gap:10px; text-align:start; }
+.popup .cea_sync_intro { opacity:0.9; }
+.popup .cea_sync_meta { display:flex; flex-wrap:wrap; gap:8px; }
+.popup .cea_sync_meta_item { padding:6px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
+.popup .cea_sync_chat { display:flex; flex-direction:column; gap:8px; }
+.popup .cea_sync_chat_msg { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:12px; padding:10px 12px; max-height:40vh; overflow:auto; text-align:start; }
+.popup .cea_sync_chat_msg_assistant { background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
+.popup .cea_sync_chat_msg_user { background:color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); margin-left:12%; }
+.popup .cea_sync_chat_msg_user pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; font-family:inherit; }
+.popup .cea_sync_chat_msg_loading { display:flex; align-items:center; gap:8px; opacity:0.9; }
+.popup .cea_sync_analysis_error { color:var(--crimson70); font-weight:600; }
+.popup .cea_sync_analysis_empty { opacity:0.8; }
+.popup .cea_sync_chat_text { margin-bottom:6px; }
+.popup .cea_sync_chat_msg :is(p, ul, ol, pre, table, h1, h2, h3, h4) { margin:0 0 8px; }
+.popup .cea_sync_chat_msg :is(pre, code) { white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
+.popup .cea_sync_chat_msg table { display:block; width:100%; overflow:auto; border-collapse:collapse; }
+.popup .cea_sync_chat_msg th, .popup .cea_sync_chat_msg td { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); padding:4px 6px; vertical-align:top; }
+.popup .cea_sync_popup .menu_button,
+.popup .cea_sync_popup .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+.popup .cea_sync_turn_diff { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
+.popup .cea_sync_turn_diff > summary { cursor:pointer; font-weight:600; opacity:0.9; }
+.popup .cea_sync_turn_diff_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+.popup .cea_sync_turn_diff_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; }
+.popup .cea_sync_turn_diff_title { font-weight:600; margin-bottom:6px; }
+.popup .cea_sync_turn_diff_meta { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+.popup .cea_sync_turn_diff_meta_item { padding:4px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
+.popup .cea_sync_turn_diff_fields { display:flex; flex-direction:column; gap:8px; }
+.popup .cea_sync_turn_diff_label { font-weight:600; margin-bottom:4px; }
+.popup .cea_sync_turn_diff_blocks { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.popup .cea_sync_turn_diff_block { border-radius:8px; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); padding:6px; min-height:72px; }
+.popup .cea_sync_turn_diff_block_title { font-size:0.9em; opacity:0.75; margin-bottom:4px; }
+.popup .cea_sync_turn_diff_block pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; max-height:220px; overflow:auto; }
+.popup .cea_sync_turn_diff_block.before { background: color-mix(in oklab, #d9534f 10%, transparent); }
+.popup .cea_sync_turn_diff_block.after { background: color-mix(in oklab, #4caf50 12%, transparent); }
+.popup .cea_sync_turn_diff_raw > summary { cursor:pointer; opacity:0.8; }
+.popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
+.popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
+.popup .cea_sync_composer { display:flex; flex-direction:column; gap:8px; }
+.popup .cea_sync_composer [data-cea-sync-send] { align-self:flex-end; }
+.popup .cea_sync_input_hint { opacity:0.8; font-size:0.9em; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
+    .popup .cea_sync_turn_diff_blocks { grid-template-columns:1fr; }
 }
 `;
     document.head.append(style);
@@ -1227,6 +2926,11 @@ function ensureUi() {
             <label class="checkbox_label"><input id="cea_enabled" type="checkbox"/> ${escapeHtml(i18n('Enabled'))}</label>
             <label class="checkbox_label"><input id="cea_require_approval" type="checkbox"/> ${escapeHtml(i18n('Require approval before applying tool edits'))}</label>
             <label class="checkbox_label"><input id="cea_auto_inject" type="checkbox"/> ${escapeHtml(i18n('Inject tool instruction into generation context'))}</label>
+            <label class="checkbox_label"><input id="cea_replace_sync" type="checkbox"/> ${escapeHtml(i18n('Enable lorebook sync popup after Replace/Update'))}</label>
+            <label for="cea_sync_llm_preset">${escapeHtml(i18n('Lorebook sync LLM preset name'))}</label>
+            <select id="cea_sync_llm_preset" class="text_pole"></select>
+            <label for="cea_sync_api_preset">${escapeHtml(i18n('Lorebook sync API preset name'))}</label>
+            <select id="cea_sync_api_preset" class="text_pole"></select>
             <label for="cea_prompt">${escapeHtml(i18n('Tool instruction prompt'))}</label>
             <textarea id="cea_prompt" class="text_pole textarea_compact" rows="6"></textarea>
 
@@ -1261,6 +2965,8 @@ async function refreshUiState(context = getContext()) {
     root.find('#cea_enabled').prop('checked', Boolean(settings.enabled));
     root.find('#cea_require_approval').prop('checked', Boolean(settings.requireApproval));
     root.find('#cea_auto_inject').prop('checked', Boolean(settings.autoInjectPrompt));
+    root.find('#cea_replace_sync').prop('checked', Boolean(settings.replaceLorebookSyncEnabled));
+    refreshPresetSelectors(root, context, settings);
     root.find('#cea_prompt').val(String(settings.toolInstructionPrompt || DEFAULT_TOOL_PROMPT));
 
     try {
@@ -1301,6 +3007,24 @@ function bindUi() {
         settings.autoInjectPrompt = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
         syncPromptInjection(context);
+    });
+
+    root.on('change.cea', '#cea_replace_sync', function () {
+        const settings = getSettings();
+        settings.replaceLorebookSyncEnabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.cea', '#cea_sync_llm_preset', function () {
+        const settings = getSettings();
+        settings.lorebookSyncLlmPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.on('change.cea', '#cea_sync_api_preset', function () {
+        const settings = getSettings();
+        settings.lorebookSyncApiPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
     });
 
     root.on('input.cea', '#cea_prompt', function () {
@@ -1410,13 +3134,29 @@ jQuery(async () => {
     ensureUi();
     setStatus(i18n('Character editor tools are ready.'));
     await refreshUiState(context);
+    await primeActiveCharacterLorebookSnapshot(context);
 
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, async () => {
         syncPromptInjection(context);
         await refreshUiState(context);
+        await primeActiveCharacterLorebookSnapshot(context);
     });
 
     context.eventSource.on(context.eventTypes.TOOL_CALLS_PERFORMED, async () => {
         await refreshUiState(context);
+        await primeActiveCharacterLorebookSnapshot(context);
+    });
+
+    context.eventSource.on(context.eventTypes.OAI_PRESET_CHANGED_AFTER, async () => {
+        await refreshUiState(context);
+    });
+
+    context.eventSource.on(context.eventTypes.SETTINGS_UPDATED, async () => {
+        await refreshUiState(context);
+    });
+
+    const characterReplacedEvent = context.eventTypes?.CHARACTER_REPLACED || 'character_replaced';
+    context.eventSource.on(characterReplacedEvent, async (event) => {
+        await handleCharacterReplacedLorebookSync(context, event);
     });
 });
