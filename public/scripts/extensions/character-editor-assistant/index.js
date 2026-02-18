@@ -40,6 +40,8 @@ const defaultSettings = {
     autoInjectPrompt: true,
     lorebookSyncLlmPresetName: '',
     lorebookSyncApiPresetName: '',
+    plainTextFunctionCallMode: false,
+    toolCallRetryMax: 2,
     toolInstructionPrompt: DEFAULT_TOOL_PROMPT,
     maxJournalEntries: 120,
 };
@@ -102,6 +104,11 @@ const stateCache = new Map();
 const lorebookSnapshotCache = new Map();
 const lorebookSyncDialogLocks = new Set();
 
+function isPlainTextFunctionCallModeEnabled(settings = null) {
+    const currentSettings = settings && typeof settings === 'object' ? settings : getSettings();
+    return Boolean(currentSettings?.plainTextFunctionCallMode);
+}
+
 function i18n(text) {
     return translate(String(text || ''));
 }
@@ -119,6 +126,8 @@ function registerLocaleData() {
         'Enable lorebook sync popup after Replace/Update': '替换/更新角色卡后启用世界书同步弹窗',
         'Lorebook sync LLM preset name': '世界书同步 LLM 预设名',
         'Lorebook sync API preset name': '世界书同步 API 预设名',
+        'Plain-text function-call mode': '纯文本函数调用模式',
+        'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Tool instruction prompt': '工具说明提示词',
         'Refresh': '刷新',
         'Pending operations': '待审批操作',
@@ -195,6 +204,8 @@ function registerLocaleData() {
         'Enable lorebook sync popup after Replace/Update': '替換/更新角色卡後啟用世界書同步彈窗',
         'Lorebook sync LLM preset name': '世界書同步 LLM 預設名',
         'Lorebook sync API preset name': '世界書同步 API 預設名',
+        'Plain-text function-call mode': '純文本函數調用模式',
+        'Tool-call retries on invalid/missing tool call (N)': '工具調用重試次數（無效/缺失時）',
         'Tool instruction prompt': '工具說明提示詞',
         'Refresh': '刷新',
         'Pending operations': '待審批操作',
@@ -329,6 +340,8 @@ function ensureSettings() {
     settings.autoInjectPrompt = settings.autoInjectPrompt !== false;
     settings.lorebookSyncLlmPresetName = String(settings.lorebookSyncLlmPresetName || '').trim();
     settings.lorebookSyncApiPresetName = String(settings.lorebookSyncApiPresetName || '').trim();
+    settings.plainTextFunctionCallMode = Boolean(settings.plainTextFunctionCallMode);
+    settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(settings.toolCallRetryMax || defaultSettings.toolCallRetryMax) || 0)));
     settings.toolInstructionPrompt = String(settings.toolInstructionPrompt || '').trim() || DEFAULT_TOOL_PROMPT;
     settings.maxJournalEntries = Math.max(20, Math.min(500, Number(settings.maxJournalEntries || defaultSettings.maxJournalEntries)));
 }
@@ -1541,6 +1554,256 @@ function extractToolCallsFromResponse(responseData) {
     return output;
 }
 
+function getResponseMessageContent(responseData) {
+    return String(responseData?.choices?.[0]?.message?.content || '').trim();
+}
+
+function collectJsonPayloadCandidates(text) {
+    const source = String(text || '').trim();
+    if (!source) {
+        return [];
+    }
+    const candidates = [source];
+    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+    let blockMatch;
+    while ((blockMatch = codeBlockRegex.exec(source)) !== null) {
+        const body = String(blockMatch?.[1] || '').trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    const arrayStart = source.indexOf('[');
+    const arrayEnd = source.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+        const body = source.slice(arrayStart, arrayEnd + 1).trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    const objectStart = source.indexOf('{');
+    const objectEnd = source.lastIndexOf('}');
+    if (objectStart >= 0 && objectEnd > objectStart) {
+        const body = source.slice(objectStart, objectEnd + 1).trim();
+        if (body) {
+            candidates.push(body);
+        }
+    }
+    return [...new Set(candidates)];
+}
+
+function normalizeTextToolCallsPayload(payload) {
+    if (Array.isArray(payload)) {
+        return payload;
+    }
+    if (payload && typeof payload === 'object') {
+        if (Array.isArray(payload.tool_calls)) {
+            return payload.tool_calls;
+        }
+        if (Array.isArray(payload.calls)) {
+            return payload.calls;
+        }
+        if (payload.name || payload.function?.name) {
+            return [payload];
+        }
+    }
+    return [];
+}
+
+function coerceToolCallArgumentsObject(rawArgs, functionName) {
+    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+        return rawArgs;
+    }
+    if (typeof rawArgs === 'string' && rawArgs.trim()) {
+        try {
+            const parsed = JSON.parse(rawArgs);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed;
+            }
+        } catch {
+            throw new Error(`Tool call '${functionName}' arguments are not valid JSON.`);
+        }
+    }
+    throw new Error(`Tool call '${functionName}' arguments are empty.`);
+}
+
+function extractToolCallsFromTextResponse(responseData, allowedNames = null) {
+    const content = getResponseMessageContent(responseData);
+    if (!content) {
+        return [];
+    }
+    const allowSet = allowedNames instanceof Set
+        ? allowedNames
+        : Array.isArray(allowedNames)
+            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
+            : null;
+    const candidates = collectJsonPayloadCandidates(content);
+    for (const candidate of candidates) {
+        try {
+            const parsed = JSON.parse(candidate);
+            const rawCalls = normalizeTextToolCallsPayload(parsed);
+            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
+                continue;
+            }
+            const calls = [];
+            for (const item of rawCalls) {
+                const name = String(item?.name || item?.function?.name || '').trim();
+                if (!name) {
+                    continue;
+                }
+                if (allowSet && !allowSet.has(name)) {
+                    continue;
+                }
+                const rawArgs = item?.arguments ?? item?.args ?? item?.function?.arguments;
+                calls.push({
+                    name,
+                    args: coerceToolCallArgumentsObject(rawArgs, name),
+                });
+            }
+            if (calls.length > 0) {
+                return calls;
+            }
+        } catch {
+            continue;
+        }
+    }
+    return [];
+}
+
+function extractDisplayTextFromPlainTextFunctionResponse(rawText) {
+    const source = String(rawText || '').trim();
+    if (!source) {
+        return '';
+    }
+    const candidates = collectJsonPayloadCandidates(source);
+    for (const candidate of candidates) {
+        if (!source.endsWith(candidate)) {
+            continue;
+        }
+        try {
+            const parsed = JSON.parse(candidate);
+            const rawCalls = normalizeTextToolCallsPayload(parsed);
+            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
+                continue;
+            }
+            return source.slice(0, source.length - candidate.length).trim();
+        } catch {
+            continue;
+        }
+    }
+    return source;
+}
+
+function buildPlainTextToolProtocolMessage(tools = []) {
+    const normalizedTools = Array.isArray(tools) ? tools : [];
+    const schemaGuide = normalizedTools.map((tool) => ({
+        name: String(tool?.function?.name || ''),
+        description: String(tool?.function?.description || ''),
+        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
+            ? tool.function.parameters
+            : { type: 'object', additionalProperties: true },
+    })).filter(item => item.name);
+    return [
+        'Plain-text function-call mode is enabled.',
+        'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
+        'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
+    ].join('\n');
+}
+
+function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagName = 'function_call_protocol') {
+    const messages = Array.isArray(promptMessages)
+        ? promptMessages.map(message => ({ ...message }))
+        : [];
+    const addendum = String(addendumText || '').trim();
+    if (!addendum) {
+        return messages;
+    }
+    const tag = String(tagName || '').trim() || 'function_call_protocol';
+    const wrapped = [`<${tag}>`, addendum, `</${tag}>`].join('\n');
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (String(message?.role || '').toLowerCase() !== 'user') {
+            continue;
+        }
+        const base = typeof message?.content === 'string'
+            ? message.content
+            : String(message?.content ?? '');
+        messages[index] = {
+            ...message,
+            content: base ? `${base}\n\n${wrapped}` : wrapped,
+        };
+        return messages;
+    }
+    messages.push({ role: 'user', content: wrapped });
+    return messages;
+}
+
+async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
+    tools = [],
+    allowedNames = null,
+    requestPresetOptions = null,
+} = {}) {
+    if (!Array.isArray(tools) || tools.length === 0) {
+        return {
+            calls: [],
+            assistantText: '',
+        };
+    }
+    const options = requestPresetOptions && typeof requestPresetOptions === 'object' ? requestPresetOptions : {};
+    const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax || 0) || 0)));
+    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
+    const requestMessages = usePlainTextCalls
+        ? mergeUserAddendumIntoPromptMessages(promptMessages, buildPlainTextToolProtocolMessage(tools))
+        : promptMessages;
+    const allowSet = allowedNames instanceof Set
+        ? allowedNames
+        : Array.isArray(allowedNames)
+            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
+            : null;
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
+                tools: usePlainTextCalls ? [] : tools,
+                toolChoice: 'auto',
+                replaceTools: true,
+                requestScope: 'extension_internal',
+                llmPresetName: options.llmPresetName,
+                apiPresetName: options.apiPresetName,
+                apiSettingsOverride: options.apiSettingsOverride,
+            });
+            const rawContent = getResponseMessageContent(responseData);
+            const assistantText = usePlainTextCalls
+                ? extractDisplayTextFromPlainTextFunctionResponse(rawContent)
+                : rawContent;
+
+            if (!usePlainTextCalls) {
+                const calls = extractToolCallsFromResponse(responseData)
+                    .filter(call => !allowSet || allowSet.has(String(call?.name || '').trim()));
+                return { calls, assistantText };
+            }
+
+            const calls = extractToolCallsFromTextResponse(responseData, allowSet);
+            return { calls, assistantText };
+        } catch (error) {
+            lastError = error;
+            if (attempt >= retries) {
+                throw error;
+            }
+            console.warn(`[${MODULE_NAME}] Lorebook tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
+        }
+    }
+
+    if (lastError) {
+        throw lastError;
+    }
+    return {
+        calls: [],
+        assistantText: '',
+    };
+}
+
 function normalizeModelOperationArgs(kind, args, targetBook) {
     const safeArgs = args && typeof args === 'object' ? args : {};
     if (kind === 'lorebook_upsert_entry') {
@@ -1685,21 +1948,21 @@ async function requestModelLorebookConversationReply(context, plan, conversation
     ].join('\n\n');
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
     const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+    const settings = getSettings();
+    const allowedToolNames = ['lorebook_upsert_entry', 'lorebook_delete_entry'];
 
-    const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
-        tools: buildLorebookSyncModelTools(),
-        toolChoice: 'auto',
-        replaceTools: true,
-        requestScope: 'extension_internal',
-        llmPresetName: requestPresetOptions.llmPresetName,
-        apiPresetName: requestPresetOptions.apiPresetName,
-        apiSettingsOverride: requestPresetOptions.apiSettingsOverride,
-    });
-
-    const rawCalls = extractToolCallsFromResponse(responseData);
+    const { calls: rawCalls, assistantText } = await requestLorebookToolCallsWithRetry(
+        settings,
+        requestMessages,
+        {
+            tools: buildLorebookSyncModelTools(),
+            allowedNames: allowedToolNames,
+            requestPresetOptions,
+        },
+    );
     const operations = normalizeModelOperationsFromCalls(rawCalls, targetBook);
     return {
-        assistantText: String(responseData?.choices?.[0]?.message?.content || '').trim(),
+        assistantText: String(assistantText || '').trim(),
         operations,
     };
 }
@@ -3001,6 +3264,9 @@ function ensureUi() {
             <select id="cea_sync_llm_preset" class="text_pole"></select>
             <label for="cea_sync_api_preset">${escapeHtml(i18n('Lorebook sync API preset name'))}</label>
             <select id="cea_sync_api_preset" class="text_pole"></select>
+            <label class="checkbox_label"><input id="cea_plain_text_calls" type="checkbox"/> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
+            <label for="cea_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
+            <input id="cea_tool_retries" class="text_pole" type="number" min="0" max="10" step="1"/>
             <label for="cea_prompt">${escapeHtml(i18n('Tool instruction prompt'))}</label>
             <textarea id="cea_prompt" class="text_pole textarea_compact" rows="6"></textarea>
 
@@ -3036,6 +3302,8 @@ async function refreshUiState(context = getContext()) {
     root.find('#cea_require_approval').prop('checked', Boolean(settings.requireApproval));
     root.find('#cea_auto_inject').prop('checked', Boolean(settings.autoInjectPrompt));
     root.find('#cea_replace_sync').prop('checked', Boolean(settings.replaceLorebookSyncEnabled));
+    root.find('#cea_plain_text_calls').prop('checked', Boolean(settings.plainTextFunctionCallMode));
+    root.find('#cea_tool_retries').val(String(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax));
     refreshPresetSelectors(root, context, settings);
     root.find('#cea_prompt').val(String(settings.toolInstructionPrompt || DEFAULT_TOOL_PROMPT));
 
@@ -3094,6 +3362,18 @@ function bindUi() {
     root.on('change.cea', '#cea_sync_api_preset', function () {
         const settings = getSettings();
         settings.lorebookSyncApiPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.on('change.cea', '#cea_plain_text_calls', function () {
+        const settings = getSettings();
+        settings.plainTextFunctionCallMode = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.cea', '#cea_tool_retries', function () {
+        const settings = getSettings();
+        settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(jQuery(this).val()) || 0)));
         saveSettingsDebounced();
     });
 
