@@ -14,6 +14,65 @@ import { PUBLIC_DIRECTORIES } from '../constants.js';
  */
 const OPTIONS = Object.freeze({ timeout: { block: 5 * 60 * 1000 } });
 
+function getInstallDirectoryNameFromUrl(url) {
+    const raw = String(url || '').trim();
+    try {
+        const parsed = new URL(raw);
+        const segments = parsed.pathname.split('/').filter(Boolean);
+        const lastSegment = segments.at(-1) || '';
+        return sanitize(lastSegment.replace(/\.git$/i, ''));
+    } catch {
+        return sanitize(path.basename(raw, '.git'));
+    }
+}
+
+function normalizeRepoUrl(url) {
+    const raw = String(url || '').trim();
+    const parsed = new URL(raw);
+    const normalized = new URL(parsed.toString());
+    normalized.search = '';
+    normalized.hash = '';
+
+    const segments = normalized.pathname.split('/').filter(Boolean);
+    const markerIndex = segments.findIndex(segment =>
+        ['-', 'tree', 'blob', 'commit', 'releases', 'tags', 'branches', 'compare', 'merge_requests'].includes(segment));
+    const keepSegments = markerIndex >= 0 ? segments.slice(0, markerIndex) : segments;
+    normalized.pathname = `/${keepSegments.join('/')}`.replace(/\/{2,}/g, '/');
+    normalized.pathname = normalized.pathname.replace(/\/+$/, '');
+
+    return normalized.toString();
+}
+
+function buildCloneUrlCandidates(url) {
+    const raw = String(url || '').trim();
+    const candidates = [];
+    const pushCandidate = (candidate) => {
+        if (candidate && !candidates.includes(candidate)) {
+            candidates.push(candidate);
+        }
+    };
+
+    pushCandidate(raw);
+
+    try {
+        const normalized = normalizeRepoUrl(raw);
+        pushCandidate(normalized);
+
+        const normalizedUrl = new URL(normalized);
+        if (!normalizedUrl.pathname.toLowerCase().endsWith('.git')) {
+            const withGit = new URL(normalizedUrl.toString());
+            withGit.pathname = `${normalizedUrl.pathname}.git`;
+            pushCandidate(withGit.toString());
+        }
+    } catch {
+        if (!raw.toLowerCase().endsWith('.git')) {
+            pushCandidate(`${raw.replace(/\/+$/, '')}.git`);
+        }
+    }
+
+    return candidates;
+}
+
 function getErrorCode(error) {
     if (!error) {
         return '';
@@ -28,6 +87,15 @@ function isGitUnavailableError(error) {
     }
     const message = String(error?.message || error || '').toLowerCase();
     return message.includes('spawn git eacces') || message.includes('spawn git enoent');
+}
+
+function isUnprocessableHttpError(error) {
+    const code = String(error?.code || error?.data?.statusCode || '');
+    if (code === '422') {
+        return true;
+    }
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('422') || message.includes('unprocessable entity');
 }
 
 function toRemoteRefName(branchName) {
@@ -50,21 +118,57 @@ async function getRemoteUrlWithIsomorphic(extensionPath) {
     }
 }
 
-async function cloneWithIsomorphic({ url, extensionPath, branch }) {
+async function cloneWithIsomorphic({ url, extensionPath, branch, singleBranch = true, depth = 1 }) {
     const cloneOptions = {
         fs,
         http,
         dir: extensionPath,
         url,
-        singleBranch: true,
-        depth: 1,
+        singleBranch,
     };
+
+    if (Number.isInteger(depth) && depth > 0) {
+        cloneOptions.depth = depth;
+    }
 
     if (branch) {
         cloneOptions.ref = branch;
     }
 
     await isomorphicGit.clone(cloneOptions);
+}
+
+async function cloneWithIsomorphicRetry({ url, extensionPath, branch }) {
+    const candidates = buildCloneUrlCandidates(url);
+    let lastError;
+
+    for (const candidate of candidates) {
+        const attempts = [
+            { singleBranch: true, depth: 1 },
+            { singleBranch: true },
+            { singleBranch: false },
+        ];
+
+        for (const attempt of attempts) {
+            try {
+                fs.rmSync(extensionPath, { recursive: true, force: true });
+                await cloneWithIsomorphic({
+                    url: candidate,
+                    extensionPath,
+                    branch,
+                    ...attempt,
+                });
+                return candidate;
+            } catch (error) {
+                lastError = error;
+                if (attempt.depth === 1 && !isUnprocessableHttpError(error)) {
+                    break;
+                }
+            }
+        }
+    }
+
+    throw lastError;
 }
 
 async function checkIfRepoIsUpToDateWithIsomorphic(extensionPath) {
@@ -326,7 +430,7 @@ router.post('/install', async (request, response) => {
         }
 
         const basePath = global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
-        const extensionPath = path.join(basePath, sanitize(path.basename(url, '.git')));
+        const extensionPath = path.join(basePath, getInstallDirectoryNameFromUrl(url));
 
         if (fs.existsSync(extensionPath)) {
             return response.status(409).send(`Directory already exists at ${extensionPath}`);
@@ -343,12 +447,12 @@ router.post('/install', async (request, response) => {
             if (!isGitUnavailableError(error)) {
                 throw error;
             }
-            await cloneWithIsomorphic({
+            const resolvedCloneUrl = await cloneWithIsomorphicRetry({
                 url,
                 extensionPath,
                 branch,
             });
-            console.info(`Extension has been cloned with isomorphic-git to ${extensionPath} from ${url} at ${branch || '(default)'} branch`);
+            console.info(`Extension has been cloned with isomorphic-git to ${extensionPath} from ${resolvedCloneUrl} at ${branch || '(default)'} branch`);
         }
 
         const { version, author, display_name } = await getManifest(extensionPath);
