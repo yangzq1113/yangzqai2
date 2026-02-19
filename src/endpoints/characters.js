@@ -371,6 +371,23 @@ const calculateDataSize = (data) => {
  * @returns {{shallow: true, [key: string]: any}} Shallow character
  */
 const toShallow = (character) => {
+    const dedicatedPersonas = _.get(character, 'data.extensions.luker.dedicated_personas', []);
+    const normalizedDedicatedPersonas = Array.isArray(dedicatedPersonas)
+        ? dedicatedPersonas
+            .filter(entry => entry && typeof entry === 'object')
+            .map(entry => ({
+                avatar: String(entry.avatar ?? '').trim(),
+                name: String(entry.name ?? '').trim(),
+                description: String(entry.description ?? ''),
+                position: Number.isFinite(Number(entry.position)) ? Number(entry.position) : undefined,
+                depth: Number.isFinite(Number(entry.depth)) ? Number(entry.depth) : undefined,
+                role: Number.isFinite(Number(entry.role)) ? Number(entry.role) : undefined,
+                lorebook: String(entry.lorebook ?? ''),
+                title: String(entry.title ?? ''),
+            }))
+            .filter(entry => entry.avatar && entry.name)
+        : [];
+
     return {
         shallow: true,
         name: character.name,
@@ -391,6 +408,9 @@ const toShallow = (character) => {
             tags: _.get(character, 'data.tags', []),
             extensions: {
                 fav: _.get(character, 'data.extensions.fav', false),
+                luker: {
+                    dedicated_personas: normalizedDedicatedPersonas,
+                },
             },
         },
     };

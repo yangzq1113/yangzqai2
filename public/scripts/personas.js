@@ -2929,6 +2929,16 @@ export async function initPersonas() {
             convertCharacterToPersona();
         }
     });
+    eventSource.on(event_types.CHARACTER_PAGE_LOADED, async () => {
+        if (pruneDedicatedPersonasFromGlobalState()) {
+            saveSettingsDebounced();
+        }
+        if (isPersonaPanelOpen()) {
+            await getUserAvatars(true, user_avatar);
+        } else {
+            updatePersonaUIStates();
+        }
+    });
     eventSource.on(event_types.CHAT_CHANGED, updatePersonaUIStates);
     eventSource.on(event_types.CHAT_CHANGED, loadPersonaForCurrentChat);
     switchPersonaGridView();
