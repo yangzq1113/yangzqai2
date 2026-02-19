@@ -2057,9 +2057,9 @@ router.post('/recent', async function (request, response) {
 
         await Promise.allSettled([getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
 
-        const max = parseInt(request.body.max ?? Number.MAX_SAFE_INTEGER);
-        const recentChats = allChatFiles.sort((a, b) => b.mtime - a.mtime).slice(0, max);
-        const jsonFilesPromise = recentChats.map((file) => {
+        const requestedMax = Number.parseInt(String(request.body.max ?? ''), 10);
+        const max = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : Number.MAX_SAFE_INTEGER;
+        const jsonFilesPromise = allChatFiles.map((file) => {
             const withMetadata = !!request.body.metadata;
             return file.groupId
                 ? getChatInfo(file.filePath, { group: file.groupId }, withMetadata)
@@ -2067,7 +2067,14 @@ router.post('/recent', async function (request, response) {
         });
 
         const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
-        const validFiles = chatData.filter(i => i.file_name);
+        const validFiles = chatData
+            .filter(i => i.file_name)
+            .sort((a, b) => {
+                const aTs = new Date(a.last_mes || 0).getTime() || 0;
+                const bTs = new Date(b.last_mes || 0).getTime() || 0;
+                return bTs - aTs;
+            })
+            .slice(0, max);
 
         return response.send(validFiles);
     } catch (error) {
