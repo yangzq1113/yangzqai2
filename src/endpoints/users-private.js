@@ -136,6 +136,16 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
 
                         try {
                             await pipeline(readStream, fs.createWriteStream(targetPath, { mode: 0o644 }));
+                            const zipLastModified = typeof entry.getLastModDate === 'function'
+                                ? entry.getLastModDate()
+                                : null;
+                            if (zipLastModified instanceof Date && !Number.isNaN(zipLastModified.getTime())) {
+                                try {
+                                    await fsPromises.utimes(targetPath, zipLastModified, zipLastModified);
+                                } catch {
+                                    // Non-fatal: keep restored content even if timestamp restore fails.
+                                }
+                            }
                             result.restoredCount += 1;
                             zipfile.readEntry();
                         } catch (error) {

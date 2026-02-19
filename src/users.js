@@ -1238,10 +1238,10 @@ export async function createBackupArchive(handle, response, selectionInput = und
         response.status(500).send({ error: err.message });
     });
 
-    // On stream closed we can end the request
+    // Log archive size when the source stream has been fully drained.
+    // Do not force-close the HTTP response here; the pipe lifecycle handles it.
     archive.on('end', function () {
         console.info('Archive wrote %d bytes', archive.pointer());
-        response.end(); // End the Express response
     });
 
     const timestamp = generateTimestamp();
