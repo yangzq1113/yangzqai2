@@ -11,4 +11,6 @@
     <string name="download_queued">文件下载已加入队列</string>
     <string name="download_started">开始下载文件</string>
     <string name="download_failed">下载失败，请重试</string>
+    <string name="download_saved">文件已保存：%1$s</string>
+    <string name="download_in_progress">已有下载保存操作进行中</string>
 </resources>

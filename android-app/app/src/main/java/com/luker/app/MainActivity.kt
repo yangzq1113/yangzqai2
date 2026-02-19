@@ -9,8 +9,11 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.webkit.JavascriptInterface
+import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.URLUtil
@@ -23,6 +26,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.io.IOException
 
 class MainActivity : AppCompatActivity() {
     private val tag = "LukerMainActivity"
@@ -32,6 +36,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingWebPermissionRequest: PermissionRequest? = null
     private var pendingWebPermissionResources: Array<String>? = null
+    private var pendingSaveBytes: ByteArray? = null
+    private var pendingSaveMimeType: String? = null
+    private var pendingSaveFileName: String? = null
 
     private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val callback = pendingFilePathCallback ?: return@registerForActivityResult
@@ -62,6 +69,36 @@ class MainActivity : AppCompatActivity() {
             request.grant(allowed.toTypedArray())
         }
     }
+    private val saveFileLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val bytes = pendingSaveBytes
+        val mimeType = pendingSaveMimeType
+        val fileName = pendingSaveFileName
+        pendingSaveBytes = null
+        pendingSaveMimeType = null
+        pendingSaveFileName = null
+
+        val targetUri = result.data?.data
+        if (result.resultCode != RESULT_OK || targetUri == null || bytes == null) {
+            return@registerForActivityResult
+        }
+
+        Thread {
+            try {
+                contentResolver.openOutputStream(targetUri, "w")?.use { output ->
+                    output.write(bytes)
+                    output.flush()
+                } ?: throw IOException("Unable to open output stream: $targetUri")
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.download_saved, fileName ?: "file"), Toast.LENGTH_SHORT).show()
+                }
+            } catch (t: Throwable) {
+                Log.e(tag, "Failed to save downloaded file (mime=$mimeType): $targetUri", t)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }.start()
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,6 +116,7 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
         }
+        webView.addJavascriptInterface(LukerAndroidBridge(), "LukerAndroid")
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
                 webView: WebView?,
@@ -163,6 +201,7 @@ class MainActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                installBlobDownloadBridge()
                 loadingOverlay.visibility = View.GONE
             }
         }
@@ -173,6 +212,75 @@ class MainActivity : AppCompatActivity() {
         bootstrapRuntime()
     }
 
+    private inner class LukerAndroidBridge {
+        @JavascriptInterface
+        fun saveFileFromDataUrl(dataUrl: String?, suggestedName: String?, mimeType: String?) {
+            if (dataUrl.isNullOrBlank()) {
+                return
+            }
+            val parsed = parseDataUrl(dataUrl) ?: run {
+                runOnUiThread { Toast.makeText(this@MainActivity, getString(R.string.download_failed), Toast.LENGTH_SHORT).show() }
+                return
+            }
+            val resolvedName = sanitizeFileName(suggestedName).ifBlank { "download" }
+            val resolvedMime = if (mimeType.isNullOrBlank()) parsed.first else mimeType
+            runOnUiThread { requestSaveFile(parsed.second, resolvedName, resolvedMime) }
+        }
+    }
+
+    private fun installBlobDownloadBridge() {
+        val script = """
+            (function () {
+              if (window.__lukerAndroidDownloadBridgeInstalled) return;
+              window.__lukerAndroidDownloadBridgeInstalled = true;
+              if (!window.LukerAndroid || typeof window.LukerAndroid.saveFileFromDataUrl !== 'function') return;
+
+              const toDataUrl = (blob) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+
+              const handoffDownload = async (anchor) => {
+                try {
+                  const href = String(anchor.href || '');
+                  if (!href.startsWith('blob:') && !href.startsWith('data:')) return false;
+                  const fileName = anchor.getAttribute('download') || 'download';
+                  let dataUrl = href;
+                  let mime = anchor.type || 'application/octet-stream';
+
+                  if (href.startsWith('blob:')) {
+                    const response = await fetch(href);
+                    const blob = await response.blob();
+                    mime = blob.type || mime;
+                    dataUrl = await toDataUrl(blob);
+                  }
+
+                  window.LukerAndroid.saveFileFromDataUrl(dataUrl, fileName, mime);
+                  return true;
+                } catch (error) {
+                  console.error('[LukerAndroid] blob download handoff failed', error);
+                  return false;
+                }
+              };
+
+              const originalClick = HTMLAnchorElement.prototype.click;
+              HTMLAnchorElement.prototype.click = function () {
+                if (this && this.hasAttribute('download')) {
+                  const href = String(this.href || '');
+                  if (href.startsWith('blob:') || href.startsWith('data:')) {
+                    handoffDownload(this);
+                    return;
+                  }
+                }
+                return originalClick.call(this);
+              };
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script, null)
+    }
+
     private fun enqueueDownload(
         url: String?,
         userAgent: String?,
@@ -180,6 +288,11 @@ class MainActivity : AppCompatActivity() {
         mimeType: String?,
     ) {
         if (url.isNullOrBlank()) {
+            return
+        }
+        val parsedUri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+        val scheme = parsedUri.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") {
             return
         }
         try {
@@ -192,6 +305,10 @@ class MainActivity : AppCompatActivity() {
                 if (!userAgent.isNullOrBlank()) {
                     addRequestHeader("User-Agent", userAgent)
                 }
+                val cookies = CookieManager.getInstance().getCookie(url)
+                if (!cookies.isNullOrBlank()) {
+                    addRequestHeader("Cookie", cookies)
+                }
                 setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
             }
             val manager = getSystemService(DownloadManager::class.java)
@@ -202,6 +319,63 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
             runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
         }
+    }
+
+    private fun requestSaveFile(bytes: ByteArray, fileName: String, mimeType: String) {
+        if (pendingSaveBytes != null) {
+            Toast.makeText(this, getString(R.string.download_in_progress), Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingSaveBytes = bytes
+        pendingSaveMimeType = mimeType
+        pendingSaveFileName = fileName
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mimeType.ifBlank { "application/octet-stream" }
+            putExtra(Intent.EXTRA_TITLE, fileName)
+        }
+        try {
+            saveFileLauncher.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            Log.e(tag, "No activity can handle file save intent", e)
+            pendingSaveBytes = null
+            pendingSaveMimeType = null
+            pendingSaveFileName = null
+            Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun parseDataUrl(dataUrl: String): Pair<String, ByteArray>? {
+        if (!dataUrl.startsWith("data:", ignoreCase = true)) {
+            return null
+        }
+        val separatorIndex = dataUrl.indexOf(',')
+        if (separatorIndex <= 5) {
+            return null
+        }
+        val metadata = dataUrl.substring(5, separatorIndex)
+        val payload = dataUrl.substring(separatorIndex + 1)
+        val mimeType = metadata.substringBefore(';').ifBlank { "application/octet-stream" }
+        val bytes = try {
+            if (metadata.contains(";base64", ignoreCase = true)) {
+                Base64.decode(payload, Base64.DEFAULT)
+            } else {
+                Uri.decode(payload).toByteArray(Charsets.UTF_8)
+            }
+        } catch (t: Throwable) {
+            Log.e(tag, "Failed to decode data URL payload", t)
+            return null
+        }
+        return mimeType to bytes
+    }
+
+    private fun sanitizeFileName(input: String?): String {
+        val fallback = "download"
+        if (input.isNullOrBlank()) {
+            return fallback
+        }
+        return input.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { fallback }
     }
 
     private fun bootstrapRuntime() {
@@ -277,6 +451,9 @@ class MainActivity : AppCompatActivity() {
         pendingWebPermissionRequest?.deny()
         pendingWebPermissionRequest = null
         pendingWebPermissionResources = null
+        pendingSaveBytes = null
+        pendingSaveMimeType = null
+        pendingSaveFileName = null
         super.onDestroy()
     }
 }
