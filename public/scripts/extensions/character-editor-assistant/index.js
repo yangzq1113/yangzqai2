@@ -134,6 +134,8 @@ function registerLocaleData() {
         'After': '修改后',
         'Line diff': '逐行差异',
         'Line diff (+${0} -${1})': '逐行差异（+${0} -${1}）',
+        'Expand diff': '放大查看',
+        'Close expanded diff': '关闭放大视图',
         '...(${0} more lines)': '...（还有 ${0} 行）',
         'No meaningful changes detected.': '未检测到可展示的变更。',
         'Target lorebook': '目标世界书',
@@ -224,6 +226,8 @@ function registerLocaleData() {
         'After': '修改後',
         'Line diff': '逐行差異',
         'Line diff (+${0} -${1})': '逐行差異（+${0} -${1}）',
+        'Expand diff': '放大查看',
+        'Close expanded diff': '關閉放大視圖',
         '...(${0} more lines)': '...（還有 ${0} 行）',
         'No meaningful changes detected.': '未檢測到可展示的變更。',
         'Target lorebook': '目標世界書',
@@ -1756,11 +1760,17 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
     const safeLabel = escapeHtml(String(fileLabel || 'field'));
     const renderedRows = buildLineDiffVisualRows(payload.operations);
+    const expandLabel = escapeHtml(i18n('Expand diff'));
     return `
 <details class="cea_line_diff"${payload.openByDefault ? ' open' : ''}>
     <summary>
-        <span>${escapeHtml(summary)}</span>
-        <span class="cea_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
+        <span class="cea_line_diff_summary_main">
+            <span>${escapeHtml(summary)}</span>
+            <span class="cea_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
+        </span>
+        <button type="button" class="menu_button menu_button_small cea_line_diff_expand_btn" data-cea-action="expand-line-diff" title="${expandLabel}" aria-label="${expandLabel}">
+            <i class="fa-solid fa-up-right-and-down-left-from-center" aria-hidden="true"></i>
+        </button>
     </summary>
     <div class="cea_line_diff_pre" data-cea-diff-label="${safeLabel}">
         <div class="cea_line_diff_dual" role="group">
@@ -1781,6 +1791,50 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
         </div>
     </div>
 </details>`;
+}
+
+function closeCeaExpandedDiff(target) {
+    const node = target instanceof Element ? target : null;
+    const popupRoot = node?.closest?.('.popup');
+    if (!(popupRoot instanceof HTMLElement)) {
+        return;
+    }
+    popupRoot.querySelectorAll('.cea_line_diff_zoom_overlay').forEach((overlay) => overlay.remove());
+}
+
+function openCeaExpandedDiff(trigger) {
+    const triggerElement = trigger instanceof Element ? trigger : null;
+    const popupRoot = triggerElement?.closest?.('.popup');
+    const diffRoot = triggerElement?.closest?.('.cea_line_diff');
+    const diffBody = diffRoot?.querySelector?.('.cea_line_diff_pre');
+    if (!(popupRoot instanceof HTMLElement) || !(diffBody instanceof HTMLElement)) {
+        return;
+    }
+
+    popupRoot.querySelectorAll('.cea_line_diff_zoom_overlay').forEach((overlay) => overlay.remove());
+
+    const diffLabel = String(diffBody.getAttribute('data-cea-diff-label') || i18n('Line diff'));
+    const closeLabel = escapeHtml(i18n('Close expanded diff'));
+    const overlay = document.createElement('div');
+    overlay.className = 'cea_line_diff_zoom_overlay';
+    overlay.innerHTML = `
+<div class="cea_line_diff_zoom_backdrop" data-cea-action="close-line-diff-zoom"></div>
+<div class="cea_line_diff_zoom_dialog" role="dialog" aria-modal="true">
+    <div class="cea_line_diff_zoom_header">
+        <div class="cea_line_diff_zoom_title">${escapeHtml(diffLabel)}</div>
+        <button type="button" class="menu_button menu_button_small cea_line_diff_zoom_close" data-cea-action="close-line-diff-zoom" title="${closeLabel}" aria-label="${closeLabel}">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+    </div>
+    <div class="cea_line_diff_zoom_body"></div>
+</div>`;
+
+    const zoomBody = overlay.querySelector('.cea_line_diff_zoom_body');
+    if (zoomBody instanceof HTMLElement) {
+        zoomBody.append(diffBody.cloneNode(true));
+    }
+
+    popupRoot.append(overlay);
 }
 
 function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1, approvalMap = null) {
@@ -4308,7 +4362,10 @@ function ensureStyles() {
 .popup .cea_sync_turn_diff_label { font-weight:600; margin-bottom:4px; }
 .popup .cea_line_diff { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent); }
 .popup .cea_line_diff > summary { cursor:pointer; padding:6px 8px; font-size:0.9em; display:flex; gap:8px; align-items:center; justify-content:space-between; }
+.popup .cea_line_diff_summary_main { display:inline-flex; align-items:center; gap:8px; min-width:0; }
 .popup .cea_line_diff_meta { opacity:0.75; font-size:0.88em; }
+.popup .cea_line_diff_expand_btn { display:inline-flex; align-items:center; justify-content:center; min-width:2.2em; width:2.2em; padding:0; line-height:1; }
+.popup .cea_line_diff_expand_btn i { pointer-events:none; }
 .popup .cea_sync_popup,
 .popup .cea_sync_chat,
 .popup .cea_sync_chat_msg,
@@ -4335,6 +4392,14 @@ function ensureStyles() {
 .popup .cea_line_diff_row_mod .cea_line_diff_text.old { background:color-mix(in oklab, #d9534f 10%, transparent); }
 .popup .cea_line_diff_row_mod .cea_line_diff_text.new { background:color-mix(in oklab, #4caf50 10%, transparent); }
 .popup .cea_line_diff_row_eq { background:transparent; }
+.popup .cea_line_diff_zoom_overlay { position:fixed; inset:0; z-index:10010; display:flex; align-items:center; justify-content:center; }
+.popup .cea_line_diff_zoom_backdrop { position:absolute; inset:0; background:color-mix(in oklab, #000 70%, transparent); }
+.popup .cea_line_diff_zoom_dialog { position:relative; z-index:1; width:min(1280px, 95vw); height:min(92vh, 920px); border:1px solid var(--SmartThemeBorderColor); border-radius:10px; background:var(--SmartThemeBlurTintColor); display:flex; flex-direction:column; overflow:hidden; box-shadow:0 12px 36px rgba(0,0,0,0.45); }
+.popup .cea_line_diff_zoom_header { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); }
+.popup .cea_line_diff_zoom_title { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.popup .cea_line_diff_zoom_close { display:inline-flex; align-items:center; justify-content:center; min-width:2.2em; width:2.2em; padding:0; line-height:1; }
+.popup .cea_line_diff_zoom_body { flex:1; min-height:0; overflow:auto; padding:10px; }
+.popup .cea_line_diff_zoom_body .cea_line_diff_pre { max-height:none; height:auto; }
 .popup .cea_sync_turn_diff_raw > summary { cursor:pointer; opacity:0.8; }
 .popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
 .popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
@@ -4593,6 +4658,33 @@ function bindUi() {
     }
 
     root.off('.cea');
+    jQuery(document).off('.ceaDiffZoom');
+
+    jQuery(document).on('click.ceaDiffZoom', '.popup [data-cea-action="expand-line-diff"]', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        openCeaExpandedDiff(this);
+    });
+
+    jQuery(document).on('click.ceaDiffZoom', '.popup [data-cea-action="close-line-diff-zoom"], .popup .cea_line_diff_zoom_backdrop', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeCeaExpandedDiff(this);
+    });
+
+    jQuery(document).on('keydown.ceaDiffZoom', function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+        const overlays = Array.from(document.querySelectorAll('.popup .cea_line_diff_zoom_overlay'));
+        const lastOverlay = overlays[overlays.length - 1];
+        if (!(lastOverlay instanceof HTMLElement)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        lastOverlay.remove();
+    });
 
     root.on('change.cea', '#cea_replace_sync', function () {
         const settings = getSettings();

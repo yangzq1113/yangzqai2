@@ -251,6 +251,8 @@ function registerLocaleData() {
         'After': '变更后',
         'Line diff': '逐行差异',
         'Line diff (+${0} -${1})': '逐行差异（+${0} -${1}）',
+        'Expand diff': '放大查看',
+        'Close expanded diff': '关闭放大视图',
         '...(${0} more lines)': '...（还有 ${0} 行）',
         'Not set': '未设置',
         'Raw arguments': '原始参数',
@@ -433,6 +435,8 @@ function registerLocaleData() {
         'After': '變更後',
         'Line diff': '逐行差異',
         'Line diff (+${0} -${1})': '逐行差異（+${0} -${1}）',
+        'Expand diff': '放大查看',
+        'Close expanded diff': '關閉放大視圖',
         '...(${0} more lines)': '...（還有 ${0} 行）',
         'Not set': '未設定',
         'Raw arguments': '原始參數',
@@ -3894,11 +3898,17 @@ function renderIterationLineDiffHtml(beforeValue, afterValue, fileLabel = 'field
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
     const safeLabel = escapeHtml(String(fileLabel || 'field'));
     const renderedRows = buildIterationLineDiffVisualRows(payload.operations);
+    const expandLabel = escapeHtml(i18n('Expand diff'));
     return `
 <details class="luker_orch_line_diff"${payload.openByDefault ? ' open' : ''}>
     <summary>
-        <span>${escapeHtml(summary)}</span>
-        <span class="luker_orch_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
+        <span class="luker_orch_line_diff_summary_main">
+            <span>${escapeHtml(summary)}</span>
+            <span class="luker_orch_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
+        </span>
+        <button type="button" class="menu_button menu_button_small luker_orch_line_diff_expand_btn" data-luker-orch-action="expand-line-diff" title="${expandLabel}" aria-label="${expandLabel}">
+            <i class="fa-solid fa-up-right-and-down-left-from-center" aria-hidden="true"></i>
+        </button>
     </summary>
     <div class="luker_orch_line_diff_pre" data-luker-orch-diff-label="${safeLabel}">
         <div class="luker_orch_line_diff_dual" role="group">
@@ -3919,6 +3929,49 @@ function renderIterationLineDiffHtml(beforeValue, afterValue, fileLabel = 'field
         </div>
     </div>
 </details>`;
+}
+
+function closeOrchExpandedDiff(rootElement) {
+    const root = rootElement instanceof Element ? rootElement : null;
+    if (!(root instanceof HTMLElement)) {
+        return;
+    }
+    root.querySelectorAll('.luker_orch_line_diff_zoom_overlay').forEach((overlay) => overlay.remove());
+}
+
+function openOrchExpandedDiff(rootElement, triggerElement) {
+    const root = rootElement instanceof Element ? rootElement : null;
+    const trigger = triggerElement instanceof Element ? triggerElement : null;
+    const diffRoot = trigger?.closest?.('.luker_orch_line_diff');
+    const diffBody = diffRoot?.querySelector?.('.luker_orch_line_diff_pre');
+    if (!(root instanceof HTMLElement) || !(diffBody instanceof HTMLElement)) {
+        return;
+    }
+
+    closeOrchExpandedDiff(root);
+
+    const diffLabel = String(diffBody.getAttribute('data-luker-orch-diff-label') || i18n('Line diff'));
+    const closeLabel = escapeHtml(i18n('Close expanded diff'));
+    const overlay = document.createElement('div');
+    overlay.className = 'luker_orch_line_diff_zoom_overlay';
+    overlay.innerHTML = `
+<div class="luker_orch_line_diff_zoom_backdrop" data-luker-orch-action="close-line-diff-zoom"></div>
+<div class="luker_orch_line_diff_zoom_dialog" role="dialog" aria-modal="true">
+    <div class="luker_orch_line_diff_zoom_header">
+        <div class="luker_orch_line_diff_zoom_title">${escapeHtml(diffLabel)}</div>
+        <button type="button" class="menu_button menu_button_small luker_orch_line_diff_zoom_close" data-luker-orch-action="close-line-diff-zoom" title="${closeLabel}" aria-label="${closeLabel}">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+    </div>
+    <div class="luker_orch_line_diff_zoom_body"></div>
+</div>`;
+
+    const zoomBody = overlay.querySelector('.luker_orch_line_diff_zoom_body');
+    if (zoomBody instanceof HTMLElement) {
+        zoomBody.append(diffBody.cloneNode(true));
+    }
+
+    root.append(overlay);
 }
 
 function buildAiIterationPendingDiffState(session, pending) {
@@ -5021,6 +5074,34 @@ async function openAiIterationStudio(context, settings, root) {
         rerender();
     });
 
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="expand-line-diff"]`, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rootElement = document.querySelector(selector);
+        openOrchExpandedDiff(rootElement, this);
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="close-line-diff-zoom"], ${selector} .luker_orch_line_diff_zoom_backdrop`, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rootElement = document.querySelector(selector);
+        closeOrchExpandedDiff(rootElement);
+    });
+
+    jQuery(document).on(`keydown${namespace}`, function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+        const rootElement = document.querySelector(selector);
+        const overlay = rootElement?.querySelector?.('.luker_orch_line_diff_zoom_overlay');
+        if (!(overlay instanceof HTMLElement)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        closeOrchExpandedDiff(rootElement);
+    });
+
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_approve`, async function () {
         const pending = session?.pendingApproval;
         if (!pending) {
@@ -5894,10 +5975,26 @@ function ensureStyles() {
     padding: 6px 8px;
     font-size: 0.9rem;
 }
+.luker_orch_line_diff_summary_main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
 .luker_orch_line_diff_meta {
     opacity: 0.78;
     font-size: 0.88rem;
 }
+.luker_orch_line_diff_expand_btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.2em;
+    width: 2.2em;
+    padding: 0;
+    line-height: 1;
+}
+.luker_orch_line_diff_expand_btn i { pointer-events: none; }
 .luker_orch_line_diff_pre {
     margin: 0;
     padding: 6px;
@@ -5973,6 +6070,62 @@ function ensureStyles() {
 .luker_orch_line_diff_row_del .luker_orch_line_diff_text.old { background: color-mix(in oklab, #d9534f 12%, transparent); }
 .luker_orch_line_diff_row_mod .luker_orch_line_diff_text.old { background: color-mix(in oklab, #d9534f 10%, transparent); }
 .luker_orch_line_diff_row_mod .luker_orch_line_diff_text.new { background: color-mix(in oklab, #4caf50 10%, transparent); }
+.luker_orch_line_diff_zoom_overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10010;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.luker_orch_line_diff_zoom_backdrop {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in oklab, #000 70%, transparent);
+}
+.luker_orch_line_diff_zoom_dialog {
+    position: relative;
+    z-index: 1;
+    width: min(1280px, 95vw);
+    height: min(92vh, 920px);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    background: var(--SmartThemeBlurTintColor);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.45);
+}
+.luker_orch_line_diff_zoom_header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.24));
+}
+.luker_orch_line_diff_zoom_title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.luker_orch_line_diff_zoom_close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.2em;
+    width: 2.2em;
+    padding: 0;
+    line-height: 1;
+}
+.luker_orch_line_diff_zoom_body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px;
+}
+.luker_orch_line_diff_zoom_body .luker_orch_line_diff_pre { max-height: none; height: auto; }
 .luker_orch_iter_diff_raw summary {
     cursor: pointer;
     font-size: 0.9rem;
