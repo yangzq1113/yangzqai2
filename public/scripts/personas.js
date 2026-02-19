@@ -72,9 +72,6 @@ export let user_avatar = '';
 /** @type {FilterHelper} Filter helper for the persona list */
 export const personasFilter = new FilterHelper(debounce(getUserAvatars, debounce_timeout.quick));
 
-/** @type {string} Fingerprint of last persona-loading context */
-let personaLastLoadedStateKey = null;
-
 /**
  * Tracks runtime-only fallback persona when temporarily switching into
  * character-scoped dedicated personas.
@@ -361,10 +358,6 @@ function getCurrentCharacterAvatarForDedicatedPersona() {
     return String(characters[Number(this_chid)]?.avatar || '').trim();
 }
 
-function invalidatePersonaLoadStateKey() {
-    personaLastLoadedStateKey = null;
-}
-
 function getEditableDedicatedPersonaContext(personaAvatarId) {
     const personaAvatar = String(personaAvatarId || '').trim();
     if (!personaAvatar) {
@@ -607,7 +600,6 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         if (globalChanged) {
             saveSettingsDebounced();
         }
-        invalidatePersonaLoadStateKey();
         return globalChanged || metadataChanged;
     }
 
@@ -698,7 +690,6 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         saveSettingsDebounced();
     }
 
-    invalidatePersonaLoadStateKey();
     return true;
 }
 
@@ -2239,17 +2230,6 @@ function getPersonaTemporaryLockInfo() {
 async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     const shouldRenderPersonaList = doRender || isPersonaPanelOpen();
     const currentConnection = getCurrentConnectionObj();
-    const currentChatId = String(getCurrentChatId() || '');
-    const connectionType = String(currentConnection?.type || '');
-    const connectionId = String(currentConnection?.id || '');
-    const activeDedicatedKey = connectionType === 'character' && connectionId
-        ? getCharacterDedicatedPersonaAvatarIds(connectionId).slice().sort().join('|')
-        : '';
-    const currentStateKey = `${currentChatId}::${connectionType}::${connectionId}::${activeDedicatedKey}`;
-    if (!shouldRenderPersonaList && currentStateKey === personaLastLoadedStateKey) {
-        return;
-    }
-    personaLastLoadedStateKey = currentStateKey;
 
     if (!selected_group && Number(this_chid) >= 0 && characters[Number(this_chid)]) {
         const currentCharacter = characters[Number(this_chid)];
@@ -2323,11 +2303,17 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
 
     // If the current character has dedicated personas, prioritize auto-switching to them.
     if (!chatPersona && activeCharacterAvatar) {
-        const dedicatedPersonas = getCharacterDedicatedPersonaAvatarIds(activeCharacterAvatar)
-            .filter(avatarId => userAvatars.includes(avatarId))
-            .filter(avatarId => isPersonaVisibleForCurrentConnection(avatarId));
+        const dedicatedEntries = getCharacterDedicatedPersonaEntries(activeCharacterAvatar)
+            .filter(entry => entry && typeof entry === 'object')
+            .map(entry => ({
+                avatar: String(entry.avatar ?? '').trim(),
+                name: String(entry.name ?? '').trim(),
+            }))
+            .filter(entry => entry.avatar)
+            .filter(entry => userAvatars.includes(entry.avatar))
+            .filter(entry => isPersonaVisibleForCurrentConnection(entry.avatar));
 
-        if (dedicatedPersonas.length > 0) {
+        if (dedicatedEntries.length > 0) {
             if (!isPersonaDedicatedToCharacter(user_avatar, activeCharacterAvatar) && !isPersonaDedicatedToAnyCharacter(user_avatar)) {
                 accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, user_avatar);
                 runtimeCharacterPersonaFallback = {
@@ -2335,7 +2321,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
                     previousAvatar: user_avatar,
                 };
             }
-            chatPersona = dedicatedPersonas[0];
+            chatPersona = dedicatedEntries[0].avatar;
             connectType = 'character';
         }
     }
@@ -2409,7 +2395,9 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
 
         if (power_user.persona_show_notifications) {
             const preferredCharacterAvatar = getCurrentCharacterAvatarForDedicatedPersona();
-            const selectedPersonaName = getPersonaNameByAvatar(chatPersona, { preferredCharacterAvatar }) || chatPersona;
+            const selectedPersonaName = getPersonaNameByAvatar(chatPersona, { preferredCharacterAvatar })
+                || getDedicatedPersonaEntryFromCharacterByAvatar(preferredCharacterAvatar, chatPersona)?.name
+                || chatPersona;
             let message = t`Auto-selected persona based on ${connectType} connection.<br />Your messages will now be sent as ${selectedPersonaName}.`;
             if (willAutoLock) {
                 message += '<br /><br />' + t`Auto-locked this persona to current chat.`;
@@ -2972,8 +2960,10 @@ export async function initPersonas() {
         if (pruneDedicatedPersonasFromGlobalState()) {
             saveSettingsDebounced();
         }
-        if (isPersonaPanelOpen()) {
-            await getUserAvatars(true, user_avatar);
+        const panelOpen = isPersonaPanelOpen();
+        await loadPersonaForCurrentChat({ doRender: panelOpen });
+        if (panelOpen) {
+            updatePersonaUIStates({ navigateToCurrent: true });
         } else {
             updatePersonaUIStates();
         }
