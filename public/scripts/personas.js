@@ -591,6 +591,89 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         return false;
     }
 
+    const currentByAvatar = new Map(
+        currentEntries
+            .map(entry => [String(entry?.avatar ?? '').trim(), entry])
+            .filter(([avatar]) => !!avatar),
+    );
+    const nextByAvatar = new Map(
+        nextDedicatedPersonas
+            .map(entry => [String(entry?.avatar ?? '').trim(), entry])
+            .filter(([avatar]) => !!avatar),
+    );
+
+    let globalChanged = false;
+    let metadataChanged = false;
+
+    // Dedicated personas must not exist in global persona settings.
+    for (const avatarId of nextByAvatar.keys()) {
+        if (Object.prototype.hasOwnProperty.call(power_user.personas, avatarId)) {
+            delete power_user.personas[avatarId];
+            globalChanged = true;
+        }
+        if (Object.prototype.hasOwnProperty.call(power_user.persona_descriptions, avatarId)) {
+            delete power_user.persona_descriptions[avatarId];
+            globalChanged = true;
+        }
+        if (power_user.default_persona === avatarId) {
+            power_user.default_persona = null;
+            globalChanged = true;
+        }
+        if (chat_metadata?.persona === avatarId) {
+            delete chat_metadata.persona;
+            metadataChanged = true;
+        }
+    }
+
+    // Removed dedicated personas return to global persona list.
+    for (const [avatarId, removedEntry] of currentByAvatar.entries()) {
+        if (nextByAvatar.has(avatarId)) {
+            continue;
+        }
+        if (isPersonaDedicatedToAnyCharacter(avatarId)) {
+            continue;
+        }
+
+        const fallbackName = String(removedEntry?.name ?? '').trim();
+        const personaName = fallbackName || String(power_user.personas?.[avatarId] ?? '').trim() || '[Unnamed Persona]';
+        if (!power_user.personas[avatarId]) {
+            power_user.personas[avatarId] = personaName;
+            globalChanged = true;
+        }
+
+        const existingDescriptor = power_user.persona_descriptions[avatarId] && typeof power_user.persona_descriptions[avatarId] === 'object'
+            ? power_user.persona_descriptions[avatarId]
+            : null;
+        const connections = Array.isArray(existingDescriptor?.connections) ? existingDescriptor.connections : [];
+        const nextDescriptor = {
+            description: String(removedEntry?.description ?? existingDescriptor?.description ?? ''),
+            position: Number.isInteger(Number(removedEntry?.position))
+                ? Number(removedEntry.position)
+                : (Number.isInteger(Number(existingDescriptor?.position)) ? Number(existingDescriptor.position) : persona_description_positions.IN_PROMPT),
+            depth: Number.isInteger(Number(removedEntry?.depth))
+                ? Number(removedEntry.depth)
+                : (Number.isInteger(Number(existingDescriptor?.depth)) ? Number(existingDescriptor.depth) : DEFAULT_DEPTH),
+            role: Number.isInteger(Number(removedEntry?.role))
+                ? Number(removedEntry.role)
+                : (Number.isInteger(Number(existingDescriptor?.role)) ? Number(existingDescriptor.role) : DEFAULT_ROLE),
+            lorebook: String(removedEntry?.lorebook ?? existingDescriptor?.lorebook ?? ''),
+            title: String(removedEntry?.title ?? existingDescriptor?.title ?? ''),
+            connections,
+        };
+
+        if (JSON.stringify(existingDescriptor ?? {}) !== JSON.stringify(nextDescriptor)) {
+            power_user.persona_descriptions[avatarId] = nextDescriptor;
+            globalChanged = true;
+        }
+    }
+
+    if (metadataChanged) {
+        saveMetadataDebounced();
+    }
+    if (globalChanged) {
+        saveSettingsDebounced();
+    }
+
     return true;
 }
 
