@@ -62,6 +62,7 @@ const USER_AVATAR_PATH = 'User Avatars/';
 
 let savePersonasPage = 0;
 const GRID_STORAGE_KEY = 'Personas_GridView';
+const LAST_GLOBAL_PERSONA_STORAGE_KEY = 'Personas_LastGlobalAvatar';
 const DEFAULT_DEPTH = 2;
 const DEFAULT_ROLE = 0;
 
@@ -111,6 +112,9 @@ export function getUserAvatar(avatarImg) {
 
 export function initUserAvatar(avatar) {
     user_avatar = avatar;
+    if (avatar && !isPersonaDedicatedToAnyCharacter(avatar)) {
+        accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, avatar);
+    }
     reloadUserAvatar();
     updatePersonaUIStates();
 }
@@ -476,6 +480,7 @@ function maybeUpdateRuntimeCharacterPersonaFallback(nextAvatarId, currentAvatarI
 
     if (!activeCharacterAvatar) {
         if (!isPersonaDedicatedToAnyCharacter(nextAvatar)) {
+            accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, nextAvatar);
             runtimeCharacterPersonaFallback = {
                 sourceCharacterAvatar: '',
                 previousAvatar: nextAvatar,
@@ -496,11 +501,17 @@ function maybeUpdateRuntimeCharacterPersonaFallback(nextAvatarId, currentAvatarI
     }
 
     if (!nextIsDedicated) {
+        accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, nextAvatar);
         runtimeCharacterPersonaFallback = {
             sourceCharacterAvatar: '',
             previousAvatar: nextAvatar,
         };
     }
+}
+
+function getPersistedLastGlobalPersonaAvatar() {
+    const avatar = String(accountStorage.getItem(LAST_GLOBAL_PERSONA_STORAGE_KEY) || '').trim();
+    return avatar;
 }
 
 function normalizeDedicatedPersonaEntries(entries) {
@@ -1728,6 +1739,22 @@ async function lockPersona(type = 'chat') {
             const newConnection = currentConnection;
             if (newConnection?.type === 'character' && newConnection.id) {
                 console.log(`Locking persona ${user_avatar} to this character ${name2}`);
+
+                if (!isPersonaDedicatedToAnyCharacter(user_avatar)) {
+                    const persisted = getPersistedLastGlobalPersonaAvatar();
+                    let fallbackAvatar = String(persisted || '').trim();
+                    if (!fallbackAvatar || fallbackAvatar === user_avatar || isPersonaDedicatedToAnyCharacter(fallbackAvatar)) {
+                        const defaultAvatar = String(power_user.default_persona || '').trim();
+                        if (defaultAvatar && defaultAvatar !== user_avatar && !isPersonaDedicatedToAnyCharacter(defaultAvatar)) {
+                            fallbackAvatar = defaultAvatar;
+                        }
+                    }
+                    runtimeCharacterPersonaFallback = {
+                        sourceCharacterAvatar: newConnection.id,
+                        previousAvatar: fallbackAvatar,
+                    };
+                }
+
                 const currentEntries = getCharacterDedicatedPersonaEntries(newConnection.id);
                 const entry = buildDedicatedPersonaCardEntry(user_avatar);
                 if (!entry) {
@@ -2254,8 +2281,24 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     }
     */
 
-    // Dedicated personas are surfaced in the list for this character only.
-    // We intentionally do not auto-switch to keep user control explicit.
+    // If the current character has dedicated personas, prioritize auto-switching to them.
+    if (!chatPersona && activeCharacterAvatar) {
+        const dedicatedPersonas = getCharacterDedicatedPersonaAvatarIds(activeCharacterAvatar)
+            .filter(avatarId => userAvatars.includes(avatarId))
+            .filter(avatarId => isPersonaVisibleForCurrentConnection(avatarId));
+
+        if (dedicatedPersonas.length > 0) {
+            if (!isPersonaDedicatedToCharacter(user_avatar, activeCharacterAvatar) && !isPersonaDedicatedToAnyCharacter(user_avatar)) {
+                accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, user_avatar);
+                runtimeCharacterPersonaFallback = {
+                    sourceCharacterAvatar: activeCharacterAvatar,
+                    previousAvatar: user_avatar,
+                };
+            }
+            chatPersona = dedicatedPersonas[0];
+            connectType = 'character';
+        }
+    }
 
     // Last check if default persona is set, select it
     if (!chatPersona && power_user.default_persona) {
@@ -2267,7 +2310,8 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
 
     if (!chatPersona) {
         const fallback = runtimeCharacterPersonaFallback;
-        const fallbackAvatar = String(fallback?.previousAvatar || '').trim();
+        const persistedFallback = getPersistedLastGlobalPersonaAvatar();
+        const fallbackAvatar = String(fallback?.previousAvatar || persistedFallback || '').trim();
         const fallbackSourceAvatar = String(fallback?.sourceCharacterAvatar || '').trim();
         const movedAwayFromSource = Boolean(fallbackSourceAvatar) && fallbackSourceAvatar !== activeCharacterAvatar;
 
