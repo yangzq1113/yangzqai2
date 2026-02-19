@@ -2206,6 +2206,7 @@ function getPersonaTemporaryLockInfo() {
  * @returns {Promise<boolean>} - A promise that resolves to a boolean indicating whether a persona was selected
  */
 async function loadPersonaForCurrentChat({ doRender = false } = {}) {
+    const shouldRenderPersonaList = doRender || isPersonaPanelOpen();
     const currentChatId = getCurrentChatId();
     if (currentChatId === personaLastLoadedChatId) return;
     personaLastLoadedChatId = currentChatId;
@@ -2220,7 +2221,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     }
 
     // Cache persona list to check if they exist
-    const userAvatars = await getUserAvatars(doRender);
+    const userAvatars = await getUserAvatars(shouldRenderPersonaList, shouldRenderPersonaList ? user_avatar : '');
 
     // Check if the user avatar is set and exists in the list of user avatars
     if (userAvatars.length && !userAvatars.includes(user_avatar)) {
