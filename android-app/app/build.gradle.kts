@@ -12,6 +12,23 @@ val availableNodeAbis = jniLibsDir
     ?.map { it.name }
     ?.toSet()
     ?: emptySet()
+val packageJsonFile = File(projectRootDir, "package.json")
+
+fun parseAppVersionName(packageJson: File): String {
+    val versionMatch = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(packageJson.readText())
+        ?: error("Unable to read version from ${packageJson.path}")
+    return versionMatch.groupValues[1]
+}
+
+fun parseAppVersionCode(versionName: String): Int {
+    val semverMatch = Regex("^(\\d+)\\.(\\d+)\\.(\\d+)").find(versionName)
+        ?: error("Version '$versionName' is not in semver format (major.minor.patch)")
+    val (major, minor, patch) = semverMatch.destructured
+    return major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
+}
+
+val appVersionName = parseAppVersionName(packageJsonFile)
+val appVersionCode = parseAppVersionCode(appVersionName)
 
 val prepareNodeProject by tasks.registering(Sync::class) {
     from(projectRootDir) {
@@ -52,8 +69,8 @@ android {
         applicationId = "com.luker.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         externalNativeBuild {
             cmake {
