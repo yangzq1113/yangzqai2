@@ -8,7 +8,6 @@ import {
     default_user_avatar,
     eventSource,
     event_types,
-    getCurrentChatId,
     getRequestHeaders,
     getThumbnailUrl,
     groupToEntity,
@@ -81,6 +80,7 @@ let runtimeCharacterPersonaFallback = {
     sourceCharacterAvatar: '',
     previousAvatar: '',
 };
+const runtimePersonaNameHints = new Map();
 
 /** @type {function(string): void} */
 let navigateToAvatar = () => { };
@@ -109,7 +109,7 @@ export function getUserAvatar(avatarImg) {
 
 export function initUserAvatar(avatar) {
     user_avatar = avatar;
-    if (avatar && !isPersonaDedicatedToAnyCharacter(avatar)) {
+    if (isGlobalPersonaAvatar(avatar)) {
         accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, avatar);
     }
     reloadUserAvatar();
@@ -273,7 +273,13 @@ function getPersonaNameByAvatar(personaAvatar, { preferredCharacterAvatar = '' }
     }
 
     const dedicatedEntry = getDedicatedPersonaEntryByAvatar(targetPersonaAvatar, preferredCharacterAvatar);
-    return String(dedicatedEntry?.name || '').trim();
+    const dedicatedName = String(dedicatedEntry?.name || '').trim();
+    if (dedicatedName) {
+        runtimePersonaNameHints.set(targetPersonaAvatar, dedicatedName);
+        return dedicatedName;
+    }
+
+    return String(runtimePersonaNameHints.get(targetPersonaAvatar) || '').trim();
 }
 
 function getPersonaDescriptorByAvatar(personaAvatar, { preferredCharacterAvatar = '' } = {}) {
@@ -476,7 +482,7 @@ function maybeUpdateRuntimeCharacterPersonaFallback(nextAvatarId, currentAvatarI
         : '';
 
     if (!activeCharacterAvatar) {
-        if (!isPersonaDedicatedToAnyCharacter(nextAvatar)) {
+        if (isGlobalPersonaAvatar(nextAvatar)) {
             accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, nextAvatar);
             runtimeCharacterPersonaFallback = {
                 sourceCharacterAvatar: '',
@@ -489,7 +495,7 @@ function maybeUpdateRuntimeCharacterPersonaFallback(nextAvatarId, currentAvatarI
     const nextIsDedicated = isPersonaDedicatedToCharacter(nextAvatar, activeCharacterAvatar);
     const currentIsDedicated = isPersonaDedicatedToCharacter(currentAvatar, activeCharacterAvatar);
 
-    if (nextIsDedicated && !currentIsDedicated && currentAvatar) {
+    if (nextIsDedicated && !currentIsDedicated && isGlobalPersonaAvatar(currentAvatar)) {
         runtimeCharacterPersonaFallback = {
             sourceCharacterAvatar: activeCharacterAvatar,
             previousAvatar: currentAvatar,
@@ -497,7 +503,7 @@ function maybeUpdateRuntimeCharacterPersonaFallback(nextAvatarId, currentAvatarI
         return;
     }
 
-    if (!nextIsDedicated) {
+    if (!nextIsDedicated && isGlobalPersonaAvatar(nextAvatar)) {
         accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, nextAvatar);
         runtimeCharacterPersonaFallback = {
             sourceCharacterAvatar: '',
@@ -508,7 +514,21 @@ function maybeUpdateRuntimeCharacterPersonaFallback(nextAvatarId, currentAvatarI
 
 function getPersistedLastGlobalPersonaAvatar() {
     const avatar = String(accountStorage.getItem(LAST_GLOBAL_PERSONA_STORAGE_KEY) || '').trim();
-    return avatar;
+    return isGlobalPersonaAvatar(avatar) ? avatar : '';
+}
+
+function isGlobalPersonaAvatar(avatarId) {
+    const avatar = String(avatarId || '').trim();
+    if (!avatar) {
+        return false;
+    }
+    if (!Object.prototype.hasOwnProperty.call(power_user.personas ?? {}, avatar)) {
+        return false;
+    }
+    if (isPersonaDedicatedToAnyCharacter(avatar)) {
+        return false;
+    }
+    return true;
 }
 
 function normalizeDedicatedPersonaEntries(entries) {
@@ -872,21 +892,23 @@ function getUserAvatarBlock(avatarId) {
  * @param {string[]} avatarsList List of avatar file names
  */
 function addMissingPersonas(avatarsList) {
-    const hasCharacterIndex = Array.isArray(characters) && characters.length > 0;
-    for (const persona of avatarsList) {
-        if (power_user.personas[persona]) {
-            continue;
-        }
-        if (!hasCharacterIndex) {
-            // Avoid creating global unnamed personas before we can reliably detect
-            // whether an avatar is character-dedicated.
-            continue;
-        }
-        if (isPersonaDedicatedToAnyCharacter(persona)) {
-            continue;
-        }
-        initPersona(persona, '[Unnamed Persona]', '', '');
+    // Intentionally disabled:
+    // missing avatar files must NOT be auto-promoted to global personas.
+    // Global personas should only be created by explicit user actions.
+    void avatarsList;
+}
+
+function hasPersonaIdentityForAvatar(avatarId, preferredCharacterAvatar = '') {
+    const targetAvatarId = String(avatarId || '').trim();
+    if (!targetAvatarId) {
+        return false;
     }
+
+    if (power_user.personas?.[targetAvatarId]) {
+        return true;
+    }
+
+    return !!getDedicatedPersonaEntryByAvatar(targetAvatarId, preferredCharacterAvatar);
 }
 
 /**
@@ -902,13 +924,37 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
     });
     if (response.ok) {
         const allEntities = await response.json();
+        const currentConnection = getCurrentConnectionObj();
 
         if (!Array.isArray(allEntities)) {
             return [];
         }
 
+        if (doRender) {
+            if (currentConnection?.type === 'character' && currentConnection?.id) {
+                const dedicatedAvatarIds = getCharacterDedicatedPersonaAvatarIds(currentConnection.id);
+                for (const avatarId of dedicatedAvatarIds) {
+                    if (!avatarId || allEntities.includes(avatarId)) {
+                        continue;
+                    }
+                    allEntities.push(avatarId);
+                    try {
+                        await uploadUserAvatar(default_user_avatar, avatarId, { render: false });
+                    } catch (error) {
+                        console.warn('Failed to materialize dedicated persona avatar, keep virtual entry only:', avatarId, error);
+                    }
+                }
+            }
+        }
+
         if (!doRender) {
             return allEntities;
+        }
+
+        // Keep global and character-scoped persona stores mutually exclusive.
+        // This is a single consistency pass (no polling/retry loop).
+        if (Array.isArray(characters) && characters.length > 0 && pruneDedicatedPersonasFromGlobalState()) {
+            saveSettingsDebounced();
         }
 
         // If any persona is missing from the power user settings, we add it
@@ -916,7 +962,12 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
         // Before printing the personas, we check if we should enable/disable search sorting
         verifyPersonaSearchSortRule();
 
-        const visibleEntities = allEntities.filter(avatarId => isPersonaVisibleForCurrentConnection(avatarId));
+        const preferredCharacterAvatar = currentConnection?.type === 'character'
+            ? String(currentConnection.id || '').trim()
+            : '';
+        const visibleEntities = allEntities
+            .filter(avatarId => isPersonaVisibleForCurrentConnection(avatarId))
+            .filter(avatarId => hasPersonaIdentityForAvatar(avatarId, preferredCharacterAvatar));
         let entities = personasFilter.applyFilters(visibleEntities);
         entities = sortPersonas(entities);
 
@@ -1133,6 +1184,11 @@ async function createDummyPersona() {
  * @returns {void}
  */
 export function initPersona(avatarId, personaName, personaDescription, personaTitle) {
+    if (isPersonaDedicatedToAnyCharacter(avatarId)) {
+        console.warn('Refusing to initialize a dedicated persona in global persona store:', avatarId);
+        return;
+    }
+
     power_user.personas[avatarId] = personaName;
     power_user.persona_descriptions[avatarId] = {
         description: personaDescription || '',
@@ -2254,6 +2310,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
 
     /** @type {'chat' | 'character' | 'default' | null} */
     let connectType = null;
+    let selectedPersonaNameHint = '';
 
     const activeCharacterAvatar = currentConnection?.type === 'character'
         ? String(currentConnection.id || '').trim()
@@ -2314,7 +2371,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
             .filter(entry => isPersonaVisibleForCurrentConnection(entry.avatar));
 
         if (dedicatedEntries.length > 0) {
-            if (!isPersonaDedicatedToCharacter(user_avatar, activeCharacterAvatar) && !isPersonaDedicatedToAnyCharacter(user_avatar)) {
+            if (!isPersonaDedicatedToCharacter(user_avatar, activeCharacterAvatar) && isGlobalPersonaAvatar(user_avatar)) {
                 accountStorage.setItem(LAST_GLOBAL_PERSONA_STORAGE_KEY, user_avatar);
                 runtimeCharacterPersonaFallback = {
                     sourceCharacterAvatar: activeCharacterAvatar,
@@ -2322,6 +2379,10 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
                 };
             }
             chatPersona = dedicatedEntries[0].avatar;
+            selectedPersonaNameHint = String(dedicatedEntries[0].name || '').trim();
+            if (selectedPersonaNameHint) {
+                runtimePersonaNameHints.set(chatPersona, selectedPersonaNameHint);
+            }
             connectType = 'character';
         }
     }
@@ -2337,7 +2398,10 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     if (!chatPersona) {
         const fallback = runtimeCharacterPersonaFallback;
         const persistedFallback = getPersistedLastGlobalPersonaAvatar();
-        const fallbackAvatar = String(fallback?.previousAvatar || persistedFallback || '').trim();
+        const runtimeFallbackAvatar = String(fallback?.previousAvatar || '').trim();
+        const fallbackAvatar = isGlobalPersonaAvatar(runtimeFallbackAvatar)
+            ? runtimeFallbackAvatar
+            : String(persistedFallback || '').trim();
         const fallbackSourceAvatar = String(fallback?.sourceCharacterAvatar || '').trim();
         const movedAwayFromSource = Boolean(fallbackSourceAvatar) && fallbackSourceAvatar !== activeCharacterAvatar;
 
@@ -2395,7 +2459,8 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
 
         if (power_user.persona_show_notifications) {
             const preferredCharacterAvatar = getCurrentCharacterAvatarForDedicatedPersona();
-            const selectedPersonaName = getPersonaNameByAvatar(chatPersona, { preferredCharacterAvatar })
+            const selectedPersonaName = selectedPersonaNameHint
+                || getPersonaNameByAvatar(chatPersona, { preferredCharacterAvatar })
                 || getDedicatedPersonaEntryFromCharacterByAvatar(preferredCharacterAvatar, chatPersona)?.name
                 || chatPersona;
             let message = t`Auto-selected persona based on ${connectType} connection.<br />Your messages will now be sent as ${selectedPersonaName}.`;
@@ -2960,15 +3025,31 @@ export async function initPersonas() {
         if (pruneDedicatedPersonasFromGlobalState()) {
             saveSettingsDebounced();
         }
+        await loadPersonaForCurrentChat({ doRender: true });
         const panelOpen = isPersonaPanelOpen();
-        await loadPersonaForCurrentChat({ doRender: panelOpen });
         if (panelOpen) {
             updatePersonaUIStates({ navigateToCurrent: true });
         } else {
             updatePersonaUIStates();
         }
     });
-    eventSource.on(event_types.CHAT_CHANGED, updatePersonaUIStates);
-    eventSource.on(event_types.CHAT_CHANGED, loadPersonaForCurrentChat);
+    eventSource.on(event_types.CHAT_CHANGED, async () => {
+        await loadPersonaForCurrentChat({ doRender: true });
+        const panelOpen = isPersonaPanelOpen();
+        if (panelOpen) {
+            updatePersonaUIStates({ navigateToCurrent: true });
+        } else {
+            updatePersonaUIStates();
+        }
+    });
+    eventSource.on(event_types.APP_READY, async () => {
+        await loadPersonaForCurrentChat({ doRender: true });
+        const panelOpen = isPersonaPanelOpen();
+        if (panelOpen) {
+            updatePersonaUIStates({ navigateToCurrent: true });
+        } else {
+            updatePersonaUIStates();
+        }
+    });
     switchPersonaGridView();
 }
