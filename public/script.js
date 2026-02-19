@@ -7420,12 +7420,17 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         delete swipeInfoExtra.token_count;
         delete swipeInfoExtra.reasoning;
         delete swipeInfoExtra.reasoning_duration;
+        /** @type {SwipeInfo} */
         const swipeInfo = {
             send_date: item.send_date,
-            gen_started: item.gen_started,
-            gen_finished: item.gen_finished,
             extra: swipeInfoExtra,
         };
+        if (item.gen_started !== undefined) {
+            swipeInfo.gen_started = item.gen_started;
+        }
+        if (item.gen_finished !== undefined) {
+            swipeInfo.gen_finished = item.gen_finished;
+        }
         const swipeInfoArray = Array(swipes.length).fill().map(() => structuredClone(swipeInfo));
         parseReasoningInSwipes(swipes, swipeInfoArray, item.extra?.reasoning_duration);
         item.swipes.push(...swipes);
@@ -7465,12 +7470,20 @@ export function ensureSwipes(message) {
     }
 
     /** @type {() => SwipeInfo} */
-    const createSwipeInfo = () => ({
-        send_date: message.send_date,
-        gen_started: message.gen_started,
-        gen_finished: message.gen_finished,
-        extra: {},
-    });
+    const createSwipeInfo = () => {
+        /** @type {SwipeInfo} */
+        const swipeInfo = {
+            send_date: message.send_date,
+            extra: {},
+        };
+        if (message.gen_started !== undefined) {
+            swipeInfo.gen_started = message.gen_started;
+        }
+        if (message.gen_finished !== undefined) {
+            swipeInfo.gen_finished = message.gen_finished;
+        }
+        return swipeInfo;
+    };
 
     if (!Array.isArray(message.swipe_info)) {
         message.swipe_info = message.swipes.map(_ => createSwipeInfo());
@@ -7538,8 +7551,16 @@ export function syncMesToSwipe(messageId = null) {
     targetMessage.swipes[targetMessage.swipe_id] = targetMessage.mes;
 
     targetSwipeInfo.send_date = targetMessage.send_date;
-    targetSwipeInfo.gen_started = targetMessage.gen_started;
-    targetSwipeInfo.gen_finished = targetMessage.gen_finished;
+    if (targetMessage.gen_started !== undefined) {
+        targetSwipeInfo.gen_started = targetMessage.gen_started;
+    } else {
+        delete targetSwipeInfo.gen_started;
+    }
+    if (targetMessage.gen_finished !== undefined) {
+        targetSwipeInfo.gen_finished = targetMessage.gen_finished;
+    } else {
+        delete targetSwipeInfo.gen_finished;
+    }
     targetSwipeInfo.extra = structuredClone(targetMessage.extra);
 
     return true;
@@ -7591,8 +7612,6 @@ export function syncSwipeToMes(messageId = null, swipeId = null) {
     if (!Array.isArray(targetMessage.swipe_info)) {
         targetMessage.swipe_info = targetMessage.swipes.map(_ => ({
             send_date: targetMessage.send_date,
-            gen_started: void 0,
-            gen_finished: void 0,
             extra: {},
         }));
     }
@@ -9194,8 +9213,6 @@ function getFirstMessage() {
         message['swipes'] = swipes;
         message['swipe_info'] = swipes.map(_ => ({
             send_date: message.send_date,
-            gen_started: void 0,
-            gen_finished: void 0,
             extra: {},
         }));
     }

@@ -723,6 +723,22 @@ function isChatStatePatchConflictError(error) {
 }
 
 /**
+ * Returns true when a JSON patch failure is a malformed client payload.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isJsonPatchValidationError(error) {
+    const message = String(error?.message || error || '');
+    return message.includes('JSON Patch operation is missing op.')
+        || message.includes('JSON Patch operation must be an object.')
+        || message.includes('JSON Patch document must be an array.')
+        || message.includes('JSON Patch add operation requires value.')
+        || message.includes('JSON Patch replace operation requires value.')
+        || message.includes('Invalid JSON Patch path.')
+        || message.includes('Unsupported JSON Patch operation:');
+}
+
+/**
  * Reads the last non-header message from a JSONL chat file.
  * @param {string} filePath Chat file path.
  * @returns {object|null} Last chat message or null if unavailable.
@@ -1132,13 +1148,24 @@ router.post('/patch', validateAvatarUrlMiddleware, async function (request, resp
             return response.status(400).send({ error: 'No patch operations found. Expected body.operations or body.operation.' });
         }
 
-        const result = await patchChatMessagesInFile({
-            filePath: chatFilePath,
-            operations,
-            chatMetadata,
-            integritySlug,
-            force,
-        });
+        let result;
+        try {
+            result = await patchChatMessagesInFile({
+                filePath: chatFilePath,
+                operations,
+                chatMetadata,
+                integritySlug,
+                force,
+            });
+        } catch (error) {
+            if (isChatStatePatchConflictError(error)) {
+                return response.status(409).send({ error: 'Chat patch conflict.' });
+            }
+            if (isJsonPatchValidationError(error)) {
+                return response.status(400).send({ error: 'Invalid chat patch payload.' });
+            }
+            throw error;
+        }
 
         return response.send({ ok: true, ...result });
     } catch (error) {
@@ -1786,13 +1813,24 @@ router.post('/group/patch', async function (request, response) {
             return response.status(400).send({ error: 'No patch operations found. Expected body.operations or body.operation.' });
         }
 
-        const result = await patchChatMessagesInFile({
-            filePath: chatFilePath,
-            operations,
-            chatMetadata,
-            integritySlug,
-            force,
-        });
+        let result;
+        try {
+            result = await patchChatMessagesInFile({
+                filePath: chatFilePath,
+                operations,
+                chatMetadata,
+                integritySlug,
+                force,
+            });
+        } catch (error) {
+            if (isChatStatePatchConflictError(error)) {
+                return response.status(409).send({ error: 'Chat patch conflict.' });
+            }
+            if (isJsonPatchValidationError(error)) {
+                return response.status(400).send({ error: 'Invalid chat patch payload.' });
+            }
+            throw error;
+        }
 
         return response.send({ ok: true, ...result });
     } catch (error) {

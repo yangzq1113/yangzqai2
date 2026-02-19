@@ -31,6 +31,27 @@ function cloneJsonValue(value) {
     return serialized === undefined ? undefined : JSON.parse(serialized);
 }
 
+function cloneComparableJsonValue(value) {
+    const seen = new WeakSet();
+    const serialized = JSON.stringify(value, (_, nextValue) => {
+        if (typeof nextValue === 'function' || typeof nextValue === 'symbol') {
+            return undefined;
+        }
+        if (typeof nextValue === 'bigint') {
+            return String(nextValue);
+        }
+        if (nextValue && typeof nextValue === 'object') {
+            if (seen.has(nextValue)) {
+                return undefined;
+            }
+            seen.add(nextValue);
+        }
+        return nextValue;
+    });
+
+    return serialized === undefined ? undefined : JSON.parse(serialized);
+}
+
 function isSameJsonValue(left, right) {
     if (left === right) {
         return true;
@@ -186,6 +207,10 @@ function applyRemove(document, segments) {
  */
 export function compare(documentA, documentB) {
     const operations = [];
+    // Compare against strict JSON clones so `undefined` object fields are ignored
+    // exactly like JSON transport, preventing invalid ops without `value`.
+    const leftRoot = cloneComparableJsonValue(documentA);
+    const rightRoot = cloneComparableJsonValue(documentB);
 
     const walk = (left, right, path = '') => {
         if (isSameJsonValue(left, right)) {
@@ -201,7 +226,7 @@ export function compare(documentA, documentB) {
                 operations.push({ op: 'remove', path: joinPath(path, i) });
             }
             for (let i = shared; i < right.length; i++) {
-                operations.push({ op: 'add', path: joinPath(path, i), value: cloneJsonValue(right[i]) });
+                operations.push({ op: 'add', path: joinPath(path, i), value: cloneComparableJsonValue(right[i]) });
             }
             return;
         }
@@ -217,7 +242,7 @@ export function compare(documentA, documentB) {
             }
             for (const key of Object.keys(right)) {
                 if (!Object.hasOwn(left, key)) {
-                    operations.push({ op: 'add', path: joinPath(path, key), value: cloneJsonValue(right[key]) });
+                    operations.push({ op: 'add', path: joinPath(path, key), value: cloneComparableJsonValue(right[key]) });
                 }
             }
             for (const key of Object.keys(right)) {
@@ -228,10 +253,10 @@ export function compare(documentA, documentB) {
             return;
         }
 
-        operations.push({ op: 'replace', path, value: cloneJsonValue(right) });
+        operations.push({ op: 'replace', path, value: cloneComparableJsonValue(right) });
     };
 
-    walk(documentA, documentB, '');
+    walk(leftRoot, rightRoot, '');
     return operations;
 }
 
