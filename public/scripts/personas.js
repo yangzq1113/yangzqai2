@@ -566,8 +566,44 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
 
     const nextDedicatedPersonas = normalizeDedicatedPersonaEntries(entries);
     const currentEntries = getDedicatedPersonaEntriesFromCharacter(character);
+    const nextByAvatar = new Map(
+        nextDedicatedPersonas
+            .map(entry => [String(entry?.avatar ?? '').trim(), entry])
+            .filter(([avatar]) => !!avatar),
+    );
+
+    let globalChanged = false;
+    let metadataChanged = false;
+
+    // Dedicated personas must never remain in global persona settings,
+    // even when the dedicated entry set itself is unchanged.
+    for (const avatarId of nextByAvatar.keys()) {
+        if (Object.prototype.hasOwnProperty.call(power_user.personas, avatarId)) {
+            delete power_user.personas[avatarId];
+            globalChanged = true;
+        }
+        if (Object.prototype.hasOwnProperty.call(power_user.persona_descriptions, avatarId)) {
+            delete power_user.persona_descriptions[avatarId];
+            globalChanged = true;
+        }
+        if (power_user.default_persona === avatarId) {
+            power_user.default_persona = null;
+            globalChanged = true;
+        }
+        if (chat_metadata?.persona === avatarId) {
+            delete chat_metadata.persona;
+            metadataChanged = true;
+        }
+    }
+
     if (JSON.stringify(currentEntries) === JSON.stringify(nextDedicatedPersonas)) {
-        return false;
+        if (metadataChanged) {
+            saveMetadataDebounced();
+        }
+        if (globalChanged) {
+            saveSettingsDebounced();
+        }
+        return globalChanged || metadataChanged;
     }
 
     const nextExtensions = structuredClone(character?.data?.extensions ?? {});
@@ -607,34 +643,6 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
             .map(entry => [String(entry?.avatar ?? '').trim(), entry])
             .filter(([avatar]) => !!avatar),
     );
-    const nextByAvatar = new Map(
-        nextDedicatedPersonas
-            .map(entry => [String(entry?.avatar ?? '').trim(), entry])
-            .filter(([avatar]) => !!avatar),
-    );
-
-    let globalChanged = false;
-    let metadataChanged = false;
-
-    // Dedicated personas must not exist in global persona settings.
-    for (const avatarId of nextByAvatar.keys()) {
-        if (Object.prototype.hasOwnProperty.call(power_user.personas, avatarId)) {
-            delete power_user.personas[avatarId];
-            globalChanged = true;
-        }
-        if (Object.prototype.hasOwnProperty.call(power_user.persona_descriptions, avatarId)) {
-            delete power_user.persona_descriptions[avatarId];
-            globalChanged = true;
-        }
-        if (power_user.default_persona === avatarId) {
-            power_user.default_persona = null;
-            globalChanged = true;
-        }
-        if (chat_metadata?.persona === avatarId) {
-            delete chat_metadata.persona;
-            metadataChanged = true;
-        }
-    }
 
     // Removed dedicated personas return to global persona list.
     for (const [avatarId, removedEntry] of currentByAvatar.entries()) {
