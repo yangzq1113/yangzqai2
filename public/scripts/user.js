@@ -369,8 +369,13 @@ async function createUser(form, callback) {
  * @returns {Promise<void>}
  */
 async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELECTION) {
+    let progressToast;
     try {
-        toastr.info(t`Please wait for the download to start.`, t`Backup Requested`);
+        progressToast = toastr.info(
+            t`Please wait for the download to start.`,
+            t`Backup Requested`,
+            { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
+        );
         const response = await fetch('/api/users/backup', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -396,6 +401,10 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
         callback?.();
     } catch (error) {
         console.error('Error backing up user data:', error);
+    } finally {
+        if (progressToast) {
+            toastr.clear(progressToast);
+        }
     }
 }
 
@@ -495,7 +504,13 @@ async function openBackupManager(handle, callback) {
             return;
         }
 
+        let progressToast;
         try {
+            progressToast = toastr.info(
+                t`Please wait...`,
+                t`Backup and Restore`,
+                { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
+            );
             restoreButton.addClass('disabled');
             restoreSelectButton.addClass('disabled');
             downloadButton.addClass('disabled');
@@ -509,6 +524,9 @@ async function openBackupManager(handle, callback) {
             console.error('Error restoring user data:', error);
             toastr.error(String(error.message || error), t`Failed to restore backup`);
         } finally {
+            if (progressToast) {
+                toastr.clear(progressToast);
+            }
             restoreButton.removeClass('disabled');
             restoreSelectButton.removeClass('disabled');
             downloadButton.removeClass('disabled');
