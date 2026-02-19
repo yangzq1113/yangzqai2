@@ -6736,7 +6736,81 @@
     "Select": "选择",
 
 
-    "Settings Snapshots": "设置快照",
+    "Settings Snapshots": "设置快照（仅设置）",
+
+    "Backup and Restore": "备份与恢复",
+
+    "Pick the data categories you want. The same selection is used for both download and restore.": "选择要包含的数据类别。下载和恢复将使用同一组选择。",
+
+    "Use Defaults": "使用默认选择",
+
+    "Use recommended defaults": "使用推荐默认值",
+
+    "Clear": "清空",
+
+    "Select all categories": "全选所有类别",
+
+    "Clear all categories": "清空所有类别",
+
+    "Characters / Avatars": "角色 / 头像",
+
+    "Chats / Groups": "聊天 / 群组",
+
+    "API Keys / Secrets": "API 密钥 / 机密",
+
+    "Lorebooks": "世界书",
+
+    "Presets / UI Layout": "预设 / 界面布局",
+
+    "Assets / Files": "资产 / 文件",
+
+    "User Extensions": "用户扩展",
+
+    "Vector Indexes": "向量索引",
+
+    "Download Backup ZIP": "下载备份 ZIP",
+
+    "Restore from ZIP": "从 ZIP 恢复",
+
+    "Restore mode:": "恢复模式：",
+
+    "Incremental Update": "增量更新",
+
+    "Overwrite Update": "覆盖更新",
+
+    "Select ZIP": "选择 ZIP",
+
+    "Restore Backup": "恢复备份",
+
+    "No ZIP selected.": "未选择 ZIP 文件。",
+
+    "Incremental Update writes files from backup and keeps other files.": "增量更新会写入备份中的文件，并保留其他现有文件。",
+
+    "Overwrite Update clears selected categories first, then restores backup files.": "覆盖更新会先清空所选类别，再恢复备份文件。",
+
+    "Selected ${0} of ${1} categories": "已选择 ${0} / ${1} 个类别",
+
+    "Backup Requested": "已请求备份",
+
+    "Failed to backup user data": "用户数据备份失败",
+
+    "Failed to restore backup": "恢复备份失败",
+
+    "Select at least one data category.": "请至少选择一个数据类别。",
+
+    "Nothing selected": "未选择任何内容",
+
+    "Overwrite mode will clear existing selected data before restore. Continue?": "覆盖模式会在恢复前清空当前已选数据，是否继续？",
+
+    "Restore in merge mode and overwrite files on path conflicts?": "以合并模式恢复，并在路径冲突时覆盖文件？",
+
+    "Start Restore": "开始恢复",
+
+    "Restored ${0} files. Skipped ${1}, rejected ${2}.": "已恢复 ${0} 个文件，跳过 ${1} 个，拒绝 ${2} 个。",
+
+    "Open backup and restore manager.": "打开备份与恢复管理器。",
+
+    "Backup & Restore": "备份与恢复",
 
 
     "Record a snapshot of your current settings.": "记录当前设置的快照。",
