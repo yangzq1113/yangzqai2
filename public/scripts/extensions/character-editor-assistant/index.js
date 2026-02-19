@@ -1670,7 +1670,10 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
     const preferLineByLine = (() => {
         try {
-            return Boolean(window?.matchMedia?.('(max-width: 900px)')?.matches);
+            const viewportWidth = Number(window?.visualViewport?.width || window?.innerWidth || 0);
+            const coarsePointer = Boolean(window?.matchMedia?.('(pointer: coarse)')?.matches);
+            const narrowViewport = Boolean(window?.matchMedia?.('(max-width: 1100px)')?.matches);
+            return coarsePointer || narrowViewport || (viewportWidth > 0 && viewportWidth <= 1100);
         } catch {
             return false;
         }
@@ -4170,7 +4173,7 @@ function ensureStyles() {
 .popup .cea_sync_meta { display:flex; flex-wrap:wrap; gap:8px; }
 .popup .cea_sync_meta_item { padding:6px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
 .popup .cea_sync_chat { display:flex; flex-direction:column; gap:8px; }
-.popup .cea_sync_chat_msg { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:12px; padding:10px 12px; max-height:40vh; overflow:auto; text-align:start; }
+.popup .cea_sync_chat_msg { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:12px; padding:10px 12px; max-height:40vh; overflow-y:auto; overflow-x:hidden; text-align:start; }
 .popup .cea_sync_chat_msg_assistant { background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
 .popup .cea_sync_chat_msg_user { background:color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); margin-left:12%; }
 .popup .cea_sync_chat_msg_user pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; font-family:inherit; }
@@ -4236,7 +4239,7 @@ function ensureStyles() {
 .popup .cea_line_diff .d2h-diff-table { font-size:0.82rem; width:max-content; min-width:100%; }
 .popup .cea_line_diff .d2h-diff-table td { position:relative; }
 .popup .cea_line_diff .d2h-code-linenumber,
-.popup .cea_line_diff .d2h-code-side-linenumber { top:0; left:0; }
+.popup .cea_line_diff .d2h-code-side-linenumber { position:static !important; top:auto !important; left:auto !important; }
 .popup .cea_line_diff .d2h-code-side-line,
 .popup .cea_line_diff .d2h-code-line,
 .popup .cea_line_diff .d2h-code-line-ctn { user-select:text; }
