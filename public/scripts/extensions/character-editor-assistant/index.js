@@ -7,7 +7,7 @@ import {
     saveSettingsDebounced,
     select_selected_character,
 } from '../../../script.js';
-import { DOMPurify, diff2htmlHtml } from '../../../lib.js';
+import { DOMPurify } from '../../../lib.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
@@ -17,7 +17,6 @@ import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, reloa
 const MODULE_NAME = 'character_editor_assistant';
 const UI_BLOCK_ID = 'character_editor_assistant_settings';
 const STYLE_ID = 'character_editor_assistant_style';
-const DIFF2HTML_STYLE_LINK_ID = 'luker_diff2html_style_link';
 
 const TOOL_NAMES = Object.freeze({
     UPDATE_FIELDS: 'luker_card_update_fields',
@@ -1624,68 +1623,160 @@ function buildLineDiffRows(beforeValue, afterValue) {
     };
 }
 
-function buildUnifiedDiffPatch(operations, { beforeCount = 0, afterCount = 0, fileLabel = 'field' } = {}) {
-    const safeLabel = String(fileLabel || 'field').replace(/[^a-zA-Z0-9_.-]+/g, '_') || 'field';
-    const beforeStart = Number(beforeCount) > 0 ? 1 : 0;
-    const afterStart = Number(afterCount) > 0 ? 1 : 0;
-    const lines = [];
-    for (const operation of Array.isArray(operations) ? operations : []) {
-        const type = String(operation?.type || 'equal');
-        const opLines = Array.isArray(operation?.lines) ? operation.lines : [];
-        const prefix = type === 'insert'
-            ? '+'
-            : (type === 'delete' ? '-' : ' ');
-        for (const line of opLines) {
-            lines.push(`${prefix}${String(line ?? '')}`);
-        }
-    }
-    return [
-        `diff --git a/${safeLabel}.txt b/${safeLabel}.txt`,
-        'index 0000000..1111111 100644',
-        `--- a/${safeLabel}.txt`,
-        `+++ b/${safeLabel}.txt`,
-        `@@ -${beforeStart},${Number(beforeCount) || 0} +${afterStart},${Number(afterCount) || 0} @@`,
-        ...lines,
-        '',
-    ].join('\n');
+function splitInlineDiffTokens(text) {
+    const source = String(text ?? '');
+    return source.length > 0 ? (source.match(/\s+|[^\s]+/g) || []) : [];
 }
 
-function sanitizeRenderedLineDiffHtml(rawHtml) {
-    const source = String(rawHtml || '');
-    if (!source) {
-        return '';
+function renderInlineDiffHtml(beforeText, afterText, mode = 'old') {
+    const beforeTokens = splitInlineDiffTokens(beforeText);
+    const afterTokens = splitInlineDiffTokens(afterText);
+    if (beforeTokens.length === 0 && afterTokens.length === 0) {
+        return '&nbsp;';
     }
-    const holder = document.createElement('div');
-    holder.innerHTML = source;
-    holder.querySelectorAll('.d2h-emptyplaceholder, .d2h-code-side-emptyplaceholder').forEach((node) => {
-        node.textContent = '';
-    });
-    return holder.innerHTML;
+    if ((beforeTokens.length * afterTokens.length) > LINE_DIFF_LCS_MAX_CELLS) {
+        const fallback = escapeHtml(mode === 'new' ? String(afterText ?? '') : String(beforeText ?? ''));
+        return fallback.length > 0 ? fallback : '&nbsp;';
+    }
+    const operations = buildLineDiffOperations(beforeTokens, afterTokens);
+    const chunks = [];
+    for (const operation of operations) {
+        const type = String(operation?.type || 'equal');
+        const tokenText = escapeHtml(String((Array.isArray(operation?.lines) ? operation.lines : []).join('')));
+        if (!tokenText) {
+            continue;
+        }
+        if (type === 'equal') {
+            chunks.push(tokenText);
+            continue;
+        }
+        if (type === 'delete') {
+            if (mode === 'old') {
+                chunks.push(`<span class="cea_line_diff_word_del">${tokenText}</span>`);
+            }
+            continue;
+        }
+        if (type === 'insert') {
+            if (mode === 'new') {
+                chunks.push(`<span class="cea_line_diff_word_add">${tokenText}</span>`);
+            }
+        }
+    }
+    return chunks.length > 0 ? chunks.join('') : '&nbsp;';
+}
+
+function buildLineDiffVisualRows(operations) {
+    const rows = [];
+    let beforeLineNo = 1;
+    let afterLineNo = 1;
+    const appendRow = (rowType, oldLine, oldHtml, newLine, newHtml) => {
+        rows.push({
+            rowType: String(rowType || ''),
+            oldLine: String(oldLine || ''),
+            oldHtml: String(oldHtml || '&nbsp;'),
+            newLine: String(newLine || ''),
+            newHtml: String(newHtml || '&nbsp;'),
+        });
+    };
+
+    const safeOperations = Array.isArray(operations) ? operations : [];
+    for (let index = 0; index < safeOperations.length; index++) {
+        const operation = safeOperations[index];
+        const type = String(operation?.type || 'equal');
+        const lines = Array.isArray(operation?.lines) ? operation.lines : [];
+        const nextOperation = safeOperations[index + 1];
+        if (type === 'delete' && String(nextOperation?.type || '') === 'insert') {
+            const insertLines = Array.isArray(nextOperation?.lines) ? nextOperation.lines : [];
+            const pairCount = Math.min(lines.length, insertLines.length);
+            for (let i = 0; i < pairCount; i++) {
+                const beforeLine = String(lines[i] ?? '');
+                const afterLine = String(insertLines[i] ?? '');
+                appendRow(
+                    'cea_line_diff_row_mod',
+                    String(beforeLineNo),
+                    renderInlineDiffHtml(beforeLine, afterLine, 'old'),
+                    String(afterLineNo),
+                    renderInlineDiffHtml(beforeLine, afterLine, 'new'),
+                );
+                beforeLineNo += 1;
+                afterLineNo += 1;
+            }
+            for (let i = pairCount; i < lines.length; i++) {
+                const text = escapeHtml(String(lines[i] ?? '')) || '&nbsp;';
+                appendRow('cea_line_diff_row_del', String(beforeLineNo), text, '', '&nbsp;');
+                beforeLineNo += 1;
+            }
+            for (let i = pairCount; i < insertLines.length; i++) {
+                const text = escapeHtml(String(insertLines[i] ?? '')) || '&nbsp;';
+                appendRow('cea_line_diff_row_add', '', '&nbsp;', String(afterLineNo), text);
+                afterLineNo += 1;
+            }
+            index += 1;
+            continue;
+        }
+        for (const rawLine of lines) {
+            const text = String(rawLine ?? '');
+            const escapedText = text.length > 0 ? escapeHtml(text) : '&nbsp;';
+            if (type === 'insert') {
+                appendRow('cea_line_diff_row_add', '', '&nbsp;', String(afterLineNo), escapedText);
+                afterLineNo += 1;
+                continue;
+            }
+            if (type === 'delete') {
+                appendRow('cea_line_diff_row_del', String(beforeLineNo), escapedText, '', '&nbsp;');
+                beforeLineNo += 1;
+                continue;
+            }
+            appendRow('cea_line_diff_row_eq', String(beforeLineNo), escapedText, String(afterLineNo), escapedText);
+            beforeLineNo += 1;
+            afterLineNo += 1;
+        }
+    }
+    if (rows.length === 0) {
+        appendRow('cea_line_diff_row_eq', '', '&nbsp;', '', '&nbsp;');
+    }
+    return rows;
+}
+
+function renderLineDiffSideRowsHtml(rows, side = 'old') {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const isOldSide = side !== 'new';
+    return safeRows.map((row) => `
+<tr class="cea_line_diff_row ${escapeHtml(String(row?.rowType || ''))}">
+    <td class="cea_line_diff_ln ${isOldSide ? 'old' : 'new'}">${isOldSide ? escapeHtml(String(row?.oldLine || '')) : escapeHtml(String(row?.newLine || ''))}</td>
+    <td class="cea_line_diff_text ${isOldSide ? 'old' : 'new'}"><div class="cea_line_diff_text_inner">${isOldSide ? String(row?.oldHtml || '&nbsp;') : String(row?.newHtml || '&nbsp;')}</div></td>
+</tr>`).join('');
 }
 
 function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
-    const beforeText = String(beforeValue ?? '');
-    const afterText = String(afterValue ?? '');
     const payload = buildLineDiffRows(beforeValue, afterValue);
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
-    const patch = buildUnifiedDiffPatch(payload.operations, {
-        beforeCount: splitLineDiffText(beforeText).length,
-        afterCount: splitLineDiffText(afterText).length,
-        fileLabel,
-    });
-    const rendered = sanitizeRenderedLineDiffHtml(diff2htmlHtml(patch, {
-        drawFileList: false,
-        outputFormat: 'line-by-line',
-        matching: 'lines',
-        diffStyle: 'word',
-    }).replace('d2h-light-color-scheme', 'd2h-dark-color-scheme'));
+    const safeLabel = escapeHtml(String(fileLabel || 'field'));
+    const renderedRows = buildLineDiffVisualRows(payload.operations);
     return `
 <details class="cea_line_diff"${payload.openByDefault ? ' open' : ''}>
     <summary>
         <span>${escapeHtml(summary)}</span>
         <span class="cea_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
     </summary>
-    <div class="cea_line_diff_pre">${rendered}</div>
+    <div class="cea_line_diff_pre" data-cea-diff-label="${safeLabel}">
+        <div class="cea_line_diff_dual" role="group">
+            <div class="cea_line_diff_side old">
+                <div class="cea_line_diff_side_scroll">
+                    <table class="cea_line_diff_table old" role="grid">
+                        <tbody>${renderLineDiffSideRowsHtml(renderedRows, 'old')}</tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="cea_line_diff_side new">
+                <div class="cea_line_diff_side_scroll">
+                    <table class="cea_line_diff_table new" role="grid">
+                        <tbody>${renderLineDiffSideRowsHtml(renderedRows, 'new')}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
 </details>`;
 }
 
@@ -3812,19 +3903,36 @@ function applyLorebookEntryArgs(baseEntry, args, entryUid) {
     return entry;
 }
 
+function sanitizeDiffPlaceholderValue(value) {
+    const text = String(value ?? '');
+    const normalized = text.trim();
+    if (!normalized) {
+        return '';
+    }
+    const notSetTokens = new Set([
+        'Not set',
+        '未设置',
+        '未設定',
+    ]);
+    return notSetTokens.has(normalized) ? '' : text;
+}
+
 function normalizeDiffValue(value, emptyLabel = '') {
     const emptyText = emptyLabel ? i18n(emptyLabel) : '';
     if (value === null || value === undefined) {
         return emptyText;
     }
     if (Array.isArray(value)) {
-        const text = value.map(item => String(item ?? '').trim()).filter(Boolean).join(', ');
+        const text = value
+            .map(item => sanitizeDiffPlaceholderValue(item).trim())
+            .filter(Boolean)
+            .join(', ');
         return text || emptyText;
     }
     if (typeof value === 'boolean') {
         return value ? 'true' : 'false';
     }
-    const text = String(value);
+    const text = sanitizeDiffPlaceholderValue(value);
     if (!text.trim()) {
         return emptyText;
     }
@@ -4113,14 +4221,6 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
 }
 
 function ensureStyles() {
-    if (!document.getElementById(DIFF2HTML_STYLE_LINK_ID)) {
-        const link = document.createElement('link');
-        link.id = DIFF2HTML_STYLE_LINK_ID;
-        link.rel = 'stylesheet';
-        link.type = 'text/css';
-        link.href = 'css/diff2html.min.css';
-        document.head.append(link);
-    }
     if (document.getElementById(STYLE_ID)) {
         return;
     }
@@ -4162,7 +4262,7 @@ function ensureStyles() {
 .popup .cea_sync_meta { display:flex; flex-wrap:wrap; gap:8px; }
 .popup .cea_sync_meta_item { padding:6px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
 .popup .cea_sync_chat { display:flex; flex-direction:column; gap:8px; }
-.popup .cea_sync_chat_msg { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:12px; padding:10px 12px; max-height:40vh; overflow-y:auto; overflow-x:hidden; text-align:start; }
+.popup .cea_sync_chat_msg { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:12px; padding:10px 12px; max-height:40vh; overflow-y:auto; overflow-x:hidden; text-align:start; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
 .popup .cea_sync_chat_msg_assistant { background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
 .popup .cea_sync_chat_msg_user { background:color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); margin-left:12%; }
 .popup .cea_sync_chat_msg_user pre { margin:0; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; font-family:inherit; }
@@ -4215,22 +4315,23 @@ function ensureStyles() {
 .popup .cea_sync_turn_diff_field,
 .popup .cea_line_diff,
 .popup .cea_line_diff_pre { min-width:0; max-width:100%; box-sizing:border-box; }
-.popup .cea_line_diff_pre { margin:0; padding:6px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); max-height:320px; overflow-x:auto; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
-.popup .cea_line_diff .d2h-file-header { display:none; }
-.popup .cea_line_diff .d2h-file-wrapper { margin-bottom:0; border:none; border-radius:0; }
-.popup .cea_line_diff .d2h-files-diff { border-top:none; }
-.popup .cea_line_diff .d2h-file-side-diff { overflow-x:auto; overflow-y:hidden; }
-.popup .cea_line_diff .d2h-wrapper,
-.popup .cea_line_diff .d2h-file-wrapper,
-.popup .cea_line_diff .d2h-files-diff,
-.popup .cea_line_diff .d2h-file-diff,
-.popup .cea_line_diff .d2h-file-side-diff { min-width:0; max-width:100%; }
-.popup .cea_line_diff .d2h-file-diff { overflow-x:auto; overflow-y:hidden; }
-.popup .cea_line_diff .d2h-diff-table { font-size:0.82rem; width:100%; }
-.popup .cea_line_diff .d2h-diff-table td { position:relative; }
-.popup .cea_line_diff .d2h-code-side-line,
-.popup .cea_line_diff .d2h-code-line,
-.popup .cea_line_diff .d2h-code-line-ctn { user-select:text; }
+.popup .cea_line_diff_pre { margin:0; padding:6px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); max-height:320px; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
+.popup .cea_line_diff_dual { display:grid; grid-template-columns:1fr 1fr; gap:8px; width:100%; min-width:0; }
+.popup .cea_line_diff_side { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); border-radius:6px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 4%, transparent); min-width:0; overflow:hidden; }
+.popup .cea_line_diff_side_scroll { overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; touch-action:auto; }
+.popup .cea_line_diff_table { width:max-content; min-width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.82rem; }
+.popup .cea_line_diff_row td { border-bottom:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent); padding:2px 6px; vertical-align:top; }
+.popup .cea_line_diff_row:last-child td { border-bottom:none; }
+.popup .cea_line_diff_ln { width:3.8em; text-align:right; color:color-mix(in oklab, var(--SmartThemeBodyColor) 72%, transparent); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; position:sticky; left:0; z-index:3; background-color:var(--SmartThemeBlurTintColor); box-shadow:1px 0 0 var(--SmartThemeBorderColor); background-image:none; opacity:1; }
+.popup .cea_line_diff_text { width:auto; min-width:0; }
+.popup .cea_line_diff_text_inner { white-space:pre; word-break:normal; overflow-wrap:normal; user-select:text; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-width:max-content; }
+.popup .cea_line_diff_word_add { background:color-mix(in oklab, #4caf50 30%, transparent); border-radius:3px; padding:0 1px; }
+.popup .cea_line_diff_word_del { background:color-mix(in oklab, #d9534f 30%, transparent); border-radius:3px; padding:0 1px; }
+.popup .cea_line_diff_row_add .cea_line_diff_text.new { background:color-mix(in oklab, #4caf50 12%, transparent); }
+.popup .cea_line_diff_row_del .cea_line_diff_text.old { background:color-mix(in oklab, #d9534f 12%, transparent); }
+.popup .cea_line_diff_row_mod .cea_line_diff_text.old { background:color-mix(in oklab, #d9534f 10%, transparent); }
+.popup .cea_line_diff_row_mod .cea_line_diff_text.new { background:color-mix(in oklab, #4caf50 10%, transparent); }
+.popup .cea_line_diff_row_eq { background:transparent; }
 .popup .cea_sync_turn_diff_raw > summary { cursor:pointer; opacity:0.8; }
 .popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
 .popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
@@ -4255,8 +4356,7 @@ function ensureStyles() {
 .popup .cea_sync_history_empty { opacity:0.8; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
-    .popup .cea_line_diff .d2h-files-diff { display:block; }
-    .popup .cea_line_diff .d2h-file-side-diff { display:block; width:100%; }
+    .popup .cea_line_diff_ln { width:3.2em; }
 }
 `;
     document.head.append(style);

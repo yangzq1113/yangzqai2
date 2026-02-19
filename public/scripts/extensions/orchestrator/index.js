@@ -5,13 +5,11 @@ import { CONNECT_API_MAP, extension_prompt_roles, extension_prompt_types, saveSe
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
-import { diff2htmlHtml } from '../../../lib.js';
 
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const LAST_CAPSULE_METADATA_KEY = 'luker_orchestrator_last_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
-const DIFF2HTML_STYLE_LINK_ID = 'luker_diff2html_style_link';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
@@ -3635,9 +3633,22 @@ function stripIterationThoughtForDisplay(value) {
     return withoutTags.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function sanitizeDiffPlaceholderValue(value) {
+    const text = String(value ?? '');
+    const normalized = text.trim();
+    if (!normalized) {
+        return '';
+    }
+    const notSetTokens = new Set([
+        'Not set',
+        '未设置',
+        '未設定',
+    ]);
+    return notSetTokens.has(normalized) ? '' : text;
+}
+
 function formatDiffValue(value) {
-    const text = String(value ?? '').trim();
-    return text ? text : i18n('Not set');
+    return sanitizeDiffPlaceholderValue(value);
 }
 
 const LINE_DIFF_LONG_CHAR_THRESHOLD = 900;
@@ -3750,55 +3761,163 @@ function buildLineDiffRows(beforeValue, afterValue) {
     };
 }
 
-function buildUnifiedDiffPatch(operations, { beforeCount = 0, afterCount = 0, fileLabel = 'field' } = {}) {
-    const safeLabel = String(fileLabel || 'field').replace(/[^a-zA-Z0-9_.-]+/g, '_') || 'field';
-    const beforeStart = Number(beforeCount) > 0 ? 1 : 0;
-    const afterStart = Number(afterCount) > 0 ? 1 : 0;
-    const lines = [];
-    for (const operation of Array.isArray(operations) ? operations : []) {
+function splitInlineDiffTokens(text) {
+    const source = String(text ?? '');
+    return source.length > 0 ? (source.match(/\s+|[^\s]+/g) || []) : [];
+}
+
+function renderInlineDiffHtml(beforeText, afterText, mode = 'old') {
+    const beforeTokens = splitInlineDiffTokens(beforeText);
+    const afterTokens = splitInlineDiffTokens(afterText);
+    if (beforeTokens.length === 0 && afterTokens.length === 0) {
+        return '&nbsp;';
+    }
+    if ((beforeTokens.length * afterTokens.length) > LINE_DIFF_LCS_MAX_CELLS) {
+        const fallback = escapeHtml(mode === 'new' ? String(afterText ?? '') : String(beforeText ?? ''));
+        return fallback.length > 0 ? fallback : '&nbsp;';
+    }
+    const operations = buildLineDiffOperations(beforeTokens, afterTokens);
+    const chunks = [];
+    for (const operation of operations) {
         const type = String(operation?.type || 'equal');
-        const opLines = Array.isArray(operation?.lines) ? operation.lines : [];
-        const prefix = type === 'insert'
-            ? '+'
-            : (type === 'delete' ? '-' : ' ');
-        for (const line of opLines) {
-            lines.push(`${prefix}${String(line ?? '')}`);
+        const tokenText = escapeHtml(String((Array.isArray(operation?.lines) ? operation.lines : []).join('')));
+        if (!tokenText) {
+            continue;
+        }
+        if (type === 'equal') {
+            chunks.push(tokenText);
+            continue;
+        }
+        if (type === 'delete') {
+            if (mode === 'old') {
+                chunks.push(`<span class="luker_orch_line_diff_word_del">${tokenText}</span>`);
+            }
+            continue;
+        }
+        if (type === 'insert') {
+            if (mode === 'new') {
+                chunks.push(`<span class="luker_orch_line_diff_word_add">${tokenText}</span>`);
+            }
         }
     }
-    return [
-        `diff --git a/${safeLabel}.txt b/${safeLabel}.txt`,
-        'index 0000000..1111111 100644',
-        `--- a/${safeLabel}.txt`,
-        `+++ b/${safeLabel}.txt`,
-        `@@ -${beforeStart},${Number(beforeCount) || 0} +${afterStart},${Number(afterCount) || 0} @@`,
-        ...lines,
-        '',
-    ].join('\n');
+    return chunks.length > 0 ? chunks.join('') : '&nbsp;';
+}
+
+function buildIterationLineDiffVisualRows(operations) {
+    const rows = [];
+    let beforeLineNo = 1;
+    let afterLineNo = 1;
+    const appendRow = (rowType, oldLine, oldHtml, newLine, newHtml) => {
+        rows.push({
+            rowType: String(rowType || ''),
+            oldLine: String(oldLine || ''),
+            oldHtml: String(oldHtml || '&nbsp;'),
+            newLine: String(newLine || ''),
+            newHtml: String(newHtml || '&nbsp;'),
+        });
+    };
+
+    const safeOperations = Array.isArray(operations) ? operations : [];
+    for (let index = 0; index < safeOperations.length; index++) {
+        const operation = safeOperations[index];
+        const type = String(operation?.type || 'equal');
+        const lines = Array.isArray(operation?.lines) ? operation.lines : [];
+        const nextOperation = safeOperations[index + 1];
+        if (type === 'delete' && String(nextOperation?.type || '') === 'insert') {
+            const insertLines = Array.isArray(nextOperation?.lines) ? nextOperation.lines : [];
+            const pairCount = Math.min(lines.length, insertLines.length);
+            for (let i = 0; i < pairCount; i++) {
+                const beforeLine = String(lines[i] ?? '');
+                const afterLine = String(insertLines[i] ?? '');
+                appendRow(
+                    'luker_orch_line_diff_row_mod',
+                    String(beforeLineNo),
+                    renderInlineDiffHtml(beforeLine, afterLine, 'old'),
+                    String(afterLineNo),
+                    renderInlineDiffHtml(beforeLine, afterLine, 'new'),
+                );
+                beforeLineNo += 1;
+                afterLineNo += 1;
+            }
+            for (let i = pairCount; i < lines.length; i++) {
+                const text = escapeHtml(String(lines[i] ?? '')) || '&nbsp;';
+                appendRow('luker_orch_line_diff_row_del', String(beforeLineNo), text, '', '&nbsp;');
+                beforeLineNo += 1;
+            }
+            for (let i = pairCount; i < insertLines.length; i++) {
+                const text = escapeHtml(String(insertLines[i] ?? '')) || '&nbsp;';
+                appendRow('luker_orch_line_diff_row_add', '', '&nbsp;', String(afterLineNo), text);
+                afterLineNo += 1;
+            }
+            index += 1;
+            continue;
+        }
+        for (const rawLine of lines) {
+            const text = String(rawLine ?? '');
+            const escapedText = text.length > 0 ? escapeHtml(text) : '&nbsp;';
+            if (type === 'insert') {
+                appendRow('luker_orch_line_diff_row_add', '', '&nbsp;', String(afterLineNo), escapedText);
+                afterLineNo += 1;
+                continue;
+            }
+            if (type === 'delete') {
+                appendRow('luker_orch_line_diff_row_del', String(beforeLineNo), escapedText, '', '&nbsp;');
+                beforeLineNo += 1;
+                continue;
+            }
+            appendRow('luker_orch_line_diff_row_eq', String(beforeLineNo), escapedText, String(afterLineNo), escapedText);
+            beforeLineNo += 1;
+            afterLineNo += 1;
+        }
+    }
+    if (rows.length === 0) {
+        appendRow('luker_orch_line_diff_row_eq', '', '&nbsp;', '', '&nbsp;');
+    }
+    return rows;
+}
+
+function renderIterationLineDiffSideRowsHtml(rows, side = 'old') {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const isOldSide = side !== 'new';
+    return safeRows.map((row) => `
+<tr class="luker_orch_line_diff_row ${escapeHtml(String(row?.rowType || ''))}">
+    <td class="luker_orch_line_diff_ln ${isOldSide ? 'old' : 'new'}">${isOldSide ? escapeHtml(String(row?.oldLine || '')) : escapeHtml(String(row?.newLine || ''))}</td>
+    <td class="luker_orch_line_diff_text ${isOldSide ? 'old' : 'new'}"><div class="luker_orch_line_diff_text_inner">${isOldSide ? String(row?.oldHtml || '&nbsp;') : String(row?.newHtml || '&nbsp;')}</div></td>
+</tr>`).join('');
 }
 
 function renderIterationLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
-    const beforeText = String(beforeValue ?? '');
-    const afterText = String(afterValue ?? '');
-    const payload = buildLineDiffRows(beforeValue, afterValue);
+    const payload = buildLineDiffRows(
+        sanitizeDiffPlaceholderValue(beforeValue),
+        sanitizeDiffPlaceholderValue(afterValue),
+    );
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
-    const patch = buildUnifiedDiffPatch(payload.operations, {
-        beforeCount: splitLineDiffText(beforeText).length,
-        afterCount: splitLineDiffText(afterText).length,
-        fileLabel,
-    });
-    const rendered = diff2htmlHtml(patch, {
-        drawFileList: false,
-        outputFormat: 'side-by-side',
-        matching: 'lines',
-        diffStyle: 'word',
-    }).replace('d2h-light-color-scheme', 'd2h-dark-color-scheme');
+    const safeLabel = escapeHtml(String(fileLabel || 'field'));
+    const renderedRows = buildIterationLineDiffVisualRows(payload.operations);
     return `
 <details class="luker_orch_line_diff"${payload.openByDefault ? ' open' : ''}>
     <summary>
         <span>${escapeHtml(summary)}</span>
         <span class="luker_orch_line_diff_meta">=${escapeHtml(String(payload.unchanged))}</span>
     </summary>
-    <div class="luker_orch_line_diff_pre">${rendered}</div>
+    <div class="luker_orch_line_diff_pre" data-luker-orch-diff-label="${safeLabel}">
+        <div class="luker_orch_line_diff_dual" role="group">
+            <div class="luker_orch_line_diff_side old">
+                <div class="luker_orch_line_diff_side_scroll">
+                    <table class="luker_orch_line_diff_table old" role="grid">
+                        <tbody>${renderIterationLineDiffSideRowsHtml(renderedRows, 'old')}</tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="luker_orch_line_diff_side new">
+                <div class="luker_orch_line_diff_side_scroll">
+                    <table class="luker_orch_line_diff_table new" role="grid">
+                        <tbody>${renderIterationLineDiffSideRowsHtml(renderedRows, 'new')}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
 </details>`;
 }
 
@@ -3871,8 +3990,8 @@ function buildAiIterationPendingDiffState(session, pending) {
                 : 'Stage remove requested';
             item.fields.push({
                 label: 'result',
-                before: removed ? 'exists' : i18n('Not set'),
-                after: removed ? i18n('Not set') : 'unchanged',
+                before: removed ? 'exists' : '',
+                after: removed ? '' : 'unchanged',
             });
             entries.push(item);
             continue;
@@ -3946,8 +4065,8 @@ function buildAiIterationPendingDiffState(session, pending) {
             item.summary = `Node "${nodeId}" in stage "${stageId}" ${removed ? 'removed' : 'remove skipped'}`;
             item.fields.push({
                 label: 'result',
-                before: removed ? 'exists' : i18n('Not set'),
-                after: removed ? i18n('Not set') : 'unchanged',
+                before: removed ? 'exists' : '',
+                after: removed ? '' : 'unchanged',
             });
             entries.push(item);
             continue;
@@ -3999,8 +4118,8 @@ function buildAiIterationPendingDiffState(session, pending) {
             item.summary = `Preset "${presetId}" ${beforePreset ? 'removed' : 'remove skipped'}`;
             item.fields.push({
                 label: 'result',
-                before: beforePreset ? 'exists' : i18n('Not set'),
-                after: beforePreset ? i18n('Not set') : 'unchanged',
+                before: beforePreset ? 'exists' : '',
+                after: beforePreset ? '' : 'unchanged',
             });
             entries.push(item);
             continue;
@@ -4010,7 +4129,7 @@ function buildAiIterationPendingDiffState(session, pending) {
             item.summary = 'Run simulation';
             item.fields.push({
                 label: 'input',
-                before: i18n('Not set'),
+                before: '',
                 after: formatDiffValue(args.input || ''),
             });
             entries.push(item);
@@ -4021,7 +4140,7 @@ function buildAiIterationPendingDiffState(session, pending) {
             item.summary = 'Finalize iteration';
             item.fields.push({
                 label: 'summary',
-                before: i18n('Not set'),
+                before: '',
                 after: formatDiffValue(args.summary || ''),
             });
             entries.push(item);
@@ -4032,7 +4151,7 @@ function buildAiIterationPendingDiffState(session, pending) {
             item.summary = 'Continue iteration';
             item.fields.push({
                 label: 'note',
-                before: i18n('Not set'),
+                before: '',
                 after: formatDiffValue(args.note || ''),
             });
             entries.push(item);
@@ -5528,14 +5647,6 @@ function bindUi() {
 }
 
 function ensureStyles() {
-    if (!document.getElementById(DIFF2HTML_STYLE_LINK_ID)) {
-        const link = document.createElement('link');
-        link.id = DIFF2HTML_STYLE_LINK_ID;
-        link.rel = 'stylesheet';
-        link.type = 'text/css';
-        link.href = 'css/diff2html.min.css';
-        document.head.append(link);
-    }
     if (jQuery(`#${ORCH_STYLE_ID}`).length) {
         return;
     }
@@ -5742,6 +5853,8 @@ function ensureStyles() {
     max-height: 72vh;
     overflow: auto;
     padding-right: 2px;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
 }
 .luker_orch_iter_diff_item {
     border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
@@ -5790,16 +5903,76 @@ function ensureStyles() {
     padding: 6px;
     border-top: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
     max-height: 320px;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
 }
-.luker_orch_line_diff .d2h-file-header { display: none; }
-.luker_orch_line_diff .d2h-file-wrapper { margin-bottom: 0; border: none; border-radius: 0; }
-.luker_orch_line_diff .d2h-files-diff { border-top: none; }
-.luker_orch_line_diff .d2h-file-side-diff { overflow-x: auto; overflow-y: hidden; }
-.luker_orch_line_diff .d2h-diff-table { font-size: 0.82rem; }
-.luker_orch_line_diff .d2h-code-side-line,
-.luker_orch_line_diff .d2h-code-line,
-.luker_orch_line_diff .d2h-code-line-ctn { user-select: text; }
+.luker_orch_iter_grid,
+.luker_orch_iter_col,
+.luker_orch_iter_diff_popup,
+.luker_orch_iter_diff_item,
+.luker_orch_iter_diff_fields,
+.luker_orch_iter_diff_field,
+.luker_orch_line_diff,
+.luker_orch_line_diff_pre { min-width: 0; max-width: 100%; box-sizing: border-box; }
+.luker_orch_iter_conversation,
+.luker_orch_iter_profile { -webkit-overflow-scrolling: touch; touch-action: pan-y; }
+.luker_orch_line_diff_dual { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; min-width: 0; }
+.luker_orch_line_diff_side { border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.32)); border-radius: 6px; background: rgba(0,0,0,0.12); min-width: 0; overflow: hidden; }
+.luker_orch_line_diff_side_scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; touch-action: auto; }
+.luker_orch_line_diff_table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.82rem;
+}
+.luker_orch_line_diff_row td {
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.24));
+    padding: 2px 6px;
+    vertical-align: top;
+}
+.luker_orch_line_diff_row:last-child td { border-bottom: none; }
+.luker_orch_line_diff_ln {
+    width: 3.8em;
+    text-align: right;
+    color: color-mix(in oklab, var(--SmartThemeBodyColor) 72%, transparent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background-color: var(--SmartThemeBlurTintColor);
+    box-shadow: 1px 0 0 var(--SmartThemeBorderColor);
+    background-image: none;
+    opacity: 1;
+}
+.luker_orch_line_diff_text {
+    width: auto;
+    min-width: 0;
+}
+.luker_orch_line_diff_text_inner {
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+    user-select: text;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    min-width: max-content;
+}
+.luker_orch_line_diff_word_add {
+    background: color-mix(in oklab, #4caf50 30%, transparent);
+    border-radius: 3px;
+    padding: 0 1px;
+}
+.luker_orch_line_diff_word_del {
+    background: color-mix(in oklab, #d9534f 30%, transparent);
+    border-radius: 3px;
+    padding: 0 1px;
+}
+.luker_orch_line_diff_row_add .luker_orch_line_diff_text.new { background: color-mix(in oklab, #4caf50 12%, transparent); }
+.luker_orch_line_diff_row_del .luker_orch_line_diff_text.old { background: color-mix(in oklab, #d9534f 12%, transparent); }
+.luker_orch_line_diff_row_mod .luker_orch_line_diff_text.old { background: color-mix(in oklab, #d9534f 10%, transparent); }
+.luker_orch_line_diff_row_mod .luker_orch_line_diff_text.new { background: color-mix(in oklab, #4caf50 10%, transparent); }
 .luker_orch_iter_diff_raw summary {
     cursor: pointer;
     font-size: 0.9rem;
@@ -5935,6 +6108,9 @@ function ensureStyles() {
     }
     .luker_orch_iter_col {
         min-height: 320px;
+    }
+    .luker_orch_line_diff_ln {
+        width: 3.2em;
     }
 }
 </style>`);
