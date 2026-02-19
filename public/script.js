@@ -1474,7 +1474,7 @@ export async function getOneCharacter(avatarUrl) {
         if (indexOf !== -1) {
             characters[indexOf] = getData;
         } else {
-            toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
+            console.warn(`Character ${avatarUrl} not found in the list; skip in-place refresh.`);
         }
     }
 }

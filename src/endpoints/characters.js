@@ -219,8 +219,13 @@ async function readCharacterData(inputFile, inputFormat = 'png') {
  * @param {Crop|undefined} crop - Crop parameters
  * @returns {Promise<boolean>} - True if the operation was successful
  */
-async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined) {
+async function writeCharacterData(inputFile, data, outputFile, request, crop = undefined, options = {}) {
     try {
+        const {
+            allowMissingInputFallback = true,
+            requireExistingOutput = false,
+        } = options && typeof options === 'object' ? options : {};
+
         // Reset the cache
         for (const key of memoryCache.keys()) {
             if (Buffer.isBuffer(inputFile)) {
@@ -246,6 +251,10 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
                 return await tryReadImage(inputFile, crop);
             } catch (error) {
+                const inputPathMissing = !Buffer.isBuffer(inputFile) && !fs.existsSync(inputFile);
+                if (inputPathMissing && !allowMissingInputFallback) {
+                    throw new Error(`Source character image is missing: ${inputFile}`);
+                }
                 const message = Buffer.isBuffer(inputFile) ? 'Failed to read image buffer.' : `Failed to read image: ${inputFile}.`;
                 console.warn(message, 'Using a fallback image.', error);
                 return await fs.promises.readFile(DEFAULT_AVATAR_PATH);
@@ -257,6 +266,9 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         // Get the chunks
         const outputImage = write(inputImage, data);
         const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
+        if (requireExistingOutput && !fs.existsSync(outputImagePath)) {
+            throw new Error(`Target character image is missing: ${outputImagePath}`);
+        }
 
         writeFileAtomicSync(outputImagePath, outputImage);
         return true;
@@ -1282,7 +1294,18 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         char.data[request.body.field] = request.body.value;
         let newCharJSON = JSON.stringify(char);
         const targetFile = (request.body.avatar_url).replace('.png', '');
-        await writeCharacterData(avatarPath, newCharJSON, targetFile, request);
+        const writeOk = await writeCharacterData(
+            avatarPath,
+            newCharJSON,
+            targetFile,
+            request,
+            undefined,
+            { allowMissingInputFallback: false, requireExistingOutput: true },
+        );
+        if (!writeOk) {
+            console.error('Failed to persist character after edit-attribute.');
+            return response.status(500).send('Error: failed to persist character data');
+        }
         return response.sendStatus(200);
     } catch (err) {
         console.error('An error occurred, character edit invalidated.', err);
@@ -1326,7 +1349,18 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
 
         //Accept either V1 or V2.
         if (validator.validate()) {
-            await writeCharacterData(avatarPath, JSON.stringify(character), targetImg, request);
+            const writeOk = await writeCharacterData(
+                avatarPath,
+                JSON.stringify(character),
+                targetImg,
+                request,
+                undefined,
+                { allowMissingInputFallback: false, requireExistingOutput: true },
+            );
+            if (!writeOk) {
+                console.error('Failed to persist character after merge-attributes.');
+                return response.status(500).send({ message: 'Failed to persist character card.' });
+            }
             response.sendStatus(200);
         } else {
             console.warn(validator.lastValidationError);
