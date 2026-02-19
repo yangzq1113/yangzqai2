@@ -1668,17 +1668,6 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
     const afterText = String(afterValue ?? '');
     const payload = buildLineDiffRows(beforeValue, afterValue);
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
-    const preferLineByLine = (() => {
-        try {
-            const viewportWidth = Number(window?.visualViewport?.width || window?.innerWidth || 0);
-            const coarsePointer = Boolean(window?.matchMedia?.('(pointer: coarse)')?.matches);
-            const narrowViewport = Boolean(window?.matchMedia?.('(max-width: 1100px)')?.matches);
-            return coarsePointer || narrowViewport || (viewportWidth > 0 && viewportWidth <= 1100);
-        } catch {
-            return false;
-        }
-    })();
-    const outputFormat = preferLineByLine ? 'line-by-line' : 'side-by-side';
     const patch = buildUnifiedDiffPatch(payload.operations, {
         beforeCount: splitLineDiffText(beforeText).length,
         afterCount: splitLineDiffText(afterText).length,
@@ -1686,7 +1675,7 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
     });
     const rendered = sanitizeRenderedLineDiffHtml(diff2htmlHtml(patch, {
         drawFileList: false,
-        outputFormat,
+        outputFormat: 'line-by-line',
         matching: 'lines',
         diffStyle: 'word',
     }).replace('d2h-light-color-scheme', 'd2h-dark-color-scheme'));
@@ -4236,10 +4225,9 @@ function ensureStyles() {
 .popup .cea_line_diff .d2h-files-diff,
 .popup .cea_line_diff .d2h-file-diff,
 .popup .cea_line_diff .d2h-file-side-diff { min-width:0; max-width:100%; }
-.popup .cea_line_diff .d2h-diff-table { font-size:0.82rem; width:max-content; min-width:100%; }
+.popup .cea_line_diff .d2h-file-diff { overflow-x:auto; overflow-y:hidden; }
+.popup .cea_line_diff .d2h-diff-table { font-size:0.82rem; width:100%; }
 .popup .cea_line_diff .d2h-diff-table td { position:relative; }
-.popup .cea_line_diff .d2h-code-linenumber,
-.popup .cea_line_diff .d2h-code-side-linenumber { position:static !important; top:auto !important; left:auto !important; }
 .popup .cea_line_diff .d2h-code-side-line,
 .popup .cea_line_diff .d2h-code-line,
 .popup .cea_line_diff .d2h-code-line-ctn { user-select:text; }
@@ -4267,7 +4255,8 @@ function ensureStyles() {
 .popup .cea_sync_history_empty { opacity:0.8; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
-    .popup .cea_line_diff .d2h-diff-table { width:100%; }
+    .popup .cea_line_diff .d2h-files-diff { display:block; }
+    .popup .cea_line_diff .d2h-file-side-diff { display:block; width:100%; }
 }
 `;
     document.head.append(style);
