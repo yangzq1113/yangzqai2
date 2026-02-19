@@ -1,4 +1,5 @@
 import { getRequestHeaders } from '../script.js';
+import { t } from './i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, callGenericPopup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
 import { ensureImageFormatSupported, getBase64Async, humanFileSize } from './utils.js';
@@ -369,7 +370,7 @@ async function createUser(form, callback) {
  */
 async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELECTION) {
     try {
-        toastr.info('Please wait for the download to start.', 'Backup Requested');
+        toastr.info(t`Please wait for the download to start.`, t`Backup Requested`);
         const response = await fetch('/api/users/backup', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -378,7 +379,7 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
 
         if (!response.ok) {
             const data = await response.json().catch(() => ({}));
-            toastr.error(data.error || 'Unknown error', 'Failed to backup user data');
+            toastr.error(data.error || t`Unknown error`, t`Failed to backup user data`);
             throw new Error('Failed to backup user data');
         }
 
@@ -451,7 +452,7 @@ async function openBackupManager(handle, callback) {
 
     const updateSelectionSummary = () => {
         const selectedCount = checkboxes.filter(':checked').length;
-        summaryText.text(`Selected ${selectedCount} of ${BACKUP_CATEGORY_KEYS.length} categories`);
+        summaryText.text(t`Selected ${selectedCount} of ${BACKUP_CATEGORY_KEYS.length} categories`);
     };
 
     const setSelection = (selection) => {
@@ -474,18 +475,18 @@ async function openBackupManager(handle, callback) {
 
         const selection = collectBackupSelection(template);
         if (!Object.values(selection).some(Boolean)) {
-            toastr.warning('Select at least one data category.', 'Nothing selected');
+            toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
             return;
         }
 
         const mode = getSelectedRestoreMode(template);
         const confirmationMessage = mode === 'overwrite'
-            ? 'Overwrite mode will clear existing selected data before restore. Continue?'
-            : 'Restore in merge mode and overwrite files on path conflicts?';
+            ? t`Overwrite mode will clear existing selected data before restore. Continue?`
+            : t`Restore in merge mode and overwrite files on path conflicts?`;
 
         const confirm = await callGenericPopup(confirmationMessage, POPUP_TYPE.CONFIRM, '', {
-            okButton: 'Start Restore',
-            cancelButton: 'Cancel',
+            okButton: t`Start Restore`,
+            cancelButton: t`Cancel`,
             wide: false,
             large: false,
         });
@@ -500,19 +501,19 @@ async function openBackupManager(handle, callback) {
             downloadButton.addClass('disabled');
             const result = await restoreUserData(handle, file, selection, mode);
             toastr.success(
-                `Restored ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
-                'Backup Restored',
+                t`Restored ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
+                t`Backup Restored`,
             );
             callback?.(result);
         } catch (error) {
             console.error('Error restoring user data:', error);
-            toastr.error(String(error.message || error), 'Failed to restore backup');
+            toastr.error(String(error.message || error), t`Failed to restore backup`);
         } finally {
             restoreButton.removeClass('disabled');
             restoreSelectButton.removeClass('disabled');
             downloadButton.removeClass('disabled');
             fileInput.val('');
-            selectedFileText.text('No ZIP selected.');
+            selectedFileText.text(t`No ZIP selected.`);
             updateRestoreState();
         }
     };
@@ -539,7 +540,7 @@ async function openBackupManager(handle, callback) {
 
         const selection = collectBackupSelection(template);
         if (!Object.values(selection).some(Boolean)) {
-            toastr.warning('Select at least one data category.', 'Nothing selected');
+            toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
             return;
         }
 
@@ -573,7 +574,7 @@ async function openBackupManager(handle, callback) {
 
     fileInput.on('change', function () {
         const file = this instanceof HTMLInputElement ? this.files?.[0] : null;
-        selectedFileText.text(file ? `${file.name} (${humanFileSize(file.size)})` : 'No ZIP selected.');
+        selectedFileText.text(file ? t`${file.name} (${humanFileSize(file.size)})` : t`No ZIP selected.`);
         updateRestoreState();
     });
 

@@ -1,21 +1,21 @@
 <div class="userBackupManager flex-container flexFlowColumn flexNoGap">
-    <h3 class="marginBot5">Backup and Restore</h3>
-    <div class="marginBot10">
+    <h3 class="marginBot5" data-i18n="Backup and Restore">Backup and Restore</h3>
+    <div class="marginBot10" data-i18n="Pick the data categories you want. The same selection is used for both download and restore.">
         Pick the data categories you want. The same selection is used for both download and restore.
     </div>
 
     <div class="backupSelectionToolbar flex-container flexGap10 marginBot10">
-        <div class="backupSelectAllButton menu_button menu_button_icon" title="Select all categories">
+        <div class="backupSelectAllButton menu_button menu_button_icon" data-i18n="[title]Select all categories" title="Select all categories">
             <i class="fa-fw fa-solid fa-check-double"></i>
-            <span>Select All</span>
+            <span data-i18n="Select All">Select All</span>
         </div>
-        <div class="backupSelectRecommendedButton menu_button menu_button_icon" title="Use recommended defaults">
+        <div class="backupSelectRecommendedButton menu_button menu_button_icon" data-i18n="[title]Use recommended defaults" title="Use recommended defaults">
             <i class="fa-fw fa-solid fa-sliders"></i>
-            <span>Use Defaults</span>
+            <span data-i18n="Use Defaults">Use Defaults</span>
         </div>
-        <div class="backupSelectNoneButton menu_button menu_button_icon" title="Clear all categories">
+        <div class="backupSelectNoneButton menu_button menu_button_icon" data-i18n="[title]Clear all categories" title="Clear all categories">
             <i class="fa-fw fa-solid fa-eraser"></i>
-            <span>Clear</span>
+            <span data-i18n="Clear">Clear</span>
         </div>
     </div>
 
@@ -24,78 +24,78 @@
     <div class="backupCategoryGrid flex-container flexGap10 flexWrap marginBot10">
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="settings" checked>
-            <span>Settings Snapshots</span>
+            <span data-i18n="Settings Snapshots">Settings Snapshots</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="secrets" checked>
-            <span>API Keys / Secrets</span>
+            <span data-i18n="API Keys / Secrets">API Keys / Secrets</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="characters" checked>
-            <span>Characters / Avatars</span>
+            <span data-i18n="Characters / Avatars">Characters / Avatars</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="chats" checked>
-            <span>Chats / Groups</span>
+            <span data-i18n="Chats / Groups">Chats / Groups</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="lorebooks" checked>
-            <span>Lorebooks</span>
+            <span data-i18n="Lorebooks">Lorebooks</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="presets" checked>
-            <span>Presets / UI Layout</span>
+            <span data-i18n="Presets / UI Layout">Presets / UI Layout</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="assets" checked>
-            <span>Assets / Files</span>
+            <span data-i18n="Assets / Files">Assets / Files</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="extensions" checked>
-            <span>User Extensions</span>
+            <span data-i18n="User Extensions">User Extensions</span>
         </label>
         <label class="checkbox_label backupCategoryItem">
             <input type="checkbox" name="backupCategory" value="vectors">
-            <span>Vector Indexes</span>
+            <span data-i18n="Vector Indexes">Vector Indexes</span>
         </label>
     </div>
 
     <div class="backupActionRow flex-container flexGap10 marginBot10">
         <div class="backupDownloadButton menu_button menu_button_icon">
             <i class="fa-fw fa-solid fa-download"></i>
-            <span>Download Backup ZIP</span>
+            <span data-i18n="Download Backup ZIP">Download Backup ZIP</span>
         </div>
     </div>
 
     <hr class="sysHR marginBot10">
 
-    <h4 class="marginBot5">Restore from ZIP</h4>
+    <h4 class="marginBot5" data-i18n="Restore from ZIP">Restore from ZIP</h4>
     <div class="marginBot10">
-        Restore mode:
+        <span data-i18n="Restore mode:">Restore mode:</span>
         <label class="checkbox_label backupRestoreModeLabel">
             <input type="radio" name="backupRestoreMode" value="merge" checked>
-            <span>Incremental Update</span>
+            <span data-i18n="Incremental Update">Incremental Update</span>
         </label>
         <label class="checkbox_label backupRestoreModeLabel">
             <input type="radio" name="backupRestoreMode" value="overwrite">
-            <span>Overwrite Update</span>
+            <span data-i18n="Overwrite Update">Overwrite Update</span>
         </label>
     </div>
 
     <div class="backupActionRow flex-container flexGap10 marginBot5">
         <div class="backupRestoreSelectButton menu_button menu_button_icon">
             <i class="fa-fw fa-solid fa-folder-open"></i>
-            <span>Select ZIP</span>
+            <span data-i18n="Select ZIP">Select ZIP</span>
         </div>
         <div class="backupRestoreButton menu_button menu_button_icon">
             <i class="fa-fw fa-solid fa-upload"></i>
-            <span>Restore Backup</span>
+            <span data-i18n="Restore Backup">Restore Backup</span>
         </div>
     </div>
-    <div class="backupSelectedFileName marginBot5">No ZIP selected.</div>
+    <div class="backupSelectedFileName marginBot5" data-i18n="No ZIP selected.">No ZIP selected.</div>
     <div class="menu_button_note">
-        Incremental Update writes files from backup and keeps other files.<br>
-        Overwrite Update clears selected categories first, then restores backup files.
+        <span data-i18n="Incremental Update writes files from backup and keeps other files.">Incremental Update writes files from backup and keeps other files.</span><br>
+        <span data-i18n="Overwrite Update clears selected categories first, then restores backup files.">Overwrite Update clears selected categories first, then restores backup files.</span>
     </div>
 
     <form hidden>
