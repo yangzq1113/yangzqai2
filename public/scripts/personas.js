@@ -72,8 +72,8 @@ export let user_avatar = '';
 /** @type {FilterHelper} Filter helper for the persona list */
 export const personasFilter = new FilterHelper(debounce(getUserAvatars, debounce_timeout.quick));
 
-/** @type {string} The last loaded chat id to remember for persona loading */
-let personaLastLoadedChatId = null;
+/** @type {string} Fingerprint of last persona-loading context */
+let personaLastLoadedStateKey = null;
 
 /**
  * Tracks runtime-only fallback persona when temporarily switching into
@@ -361,6 +361,10 @@ function getCurrentCharacterAvatarForDedicatedPersona() {
     return String(characters[Number(this_chid)]?.avatar || '').trim();
 }
 
+function invalidatePersonaLoadStateKey() {
+    personaLastLoadedStateKey = null;
+}
+
 function getEditableDedicatedPersonaContext(personaAvatarId) {
     const personaAvatar = String(personaAvatarId || '').trim();
     if (!personaAvatar) {
@@ -603,6 +607,7 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         if (globalChanged) {
             saveSettingsDebounced();
         }
+        invalidatePersonaLoadStateKey();
         return globalChanged || metadataChanged;
     }
 
@@ -693,6 +698,7 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         saveSettingsDebounced();
     }
 
+    invalidatePersonaLoadStateKey();
     return true;
 }
 
@@ -731,30 +737,39 @@ function buildDedicatedPersonaAvatarId(characterAvatar, personaName = '') {
     return `${characterPart}__${personaPart}.png`;
 }
 
-function resolveDedicatedPersonaAvatarId(characterAvatar, entry, usedAvatars) {
+function resolveDedicatedPersonaAvatarId(characterAvatar, entry, existingAvatars, allocatedAvatars) {
     const preferred = String(entry?.avatar ?? '').trim();
+    const hasPreferred = Boolean(preferred);
     let avatarId = preferred || buildDedicatedPersonaAvatarId(characterAvatar, entry?.name);
     if (!avatarId.endsWith('.png')) {
         avatarId = `${avatarId}.png`;
     }
 
-    if (!usedAvatars.has(avatarId) && !power_user.personas?.[avatarId]) {
-        usedAvatars.add(avatarId);
+    // If the character card already points to a specific avatar, keep using it
+    // unless we already allocated that exact id in this pass.
+    if (hasPreferred && !allocatedAvatars.has(avatarId)) {
+        allocatedAvatars.add(avatarId);
         return avatarId;
     }
 
-    if (!usedAvatars.has(avatarId) && power_user.personas?.[avatarId]) {
-        usedAvatars.add(avatarId);
+    // For generated ids (no preferred id), choose a free one.
+    if (!hasPreferred
+        && !existingAvatars.has(avatarId)
+        && !allocatedAvatars.has(avatarId)
+        && !power_user.personas?.[avatarId]) {
+        allocatedAvatars.add(avatarId);
         return avatarId;
     }
 
     let suffix = 1;
     const base = avatarId.replace(/\.png$/i, '');
-    while (usedAvatars.has(`${base}_${suffix}.png`) || power_user.personas?.[`${base}_${suffix}.png`]) {
+    while (existingAvatars.has(`${base}_${suffix}.png`)
+        || allocatedAvatars.has(`${base}_${suffix}.png`)
+        || power_user.personas?.[`${base}_${suffix}.png`]) {
         suffix++;
     }
     avatarId = `${base}_${suffix}.png`;
-    usedAvatars.add(avatarId);
+    allocatedAvatars.add(avatarId);
     return avatarId;
 }
 
@@ -771,6 +786,7 @@ async function ensureDedicatedPersonasFromCharacter(character) {
     let entriesChanged = false;
     const nextEntries = dedicatedEntries.map(entry => ({ ...entry }));
     const existingAvatars = new Set(await getUserAvatars(false));
+    const allocatedAvatars = new Set();
 
     for (let i = 0; i < dedicatedEntries.length; i++) {
         const rawEntry = dedicatedEntries[i];
@@ -780,7 +796,7 @@ async function ensureDedicatedPersonasFromCharacter(character) {
             continue;
         }
 
-        const avatarId = resolveDedicatedPersonaAvatarId(character.avatar, entry, existingAvatars);
+        const avatarId = resolveDedicatedPersonaAvatarId(character.avatar, entry, existingAvatars, allocatedAvatars);
         if (!power_user.personas?.[avatarId]) {
             if (!existingAvatars.has(avatarId)) {
                 try {
@@ -865,13 +881,20 @@ function getUserAvatarBlock(avatarId) {
  * @param {string[]} avatarsList List of avatar file names
  */
 function addMissingPersonas(avatarsList) {
+    const hasCharacterIndex = Array.isArray(characters) && characters.length > 0;
     for (const persona of avatarsList) {
+        if (power_user.personas[persona]) {
+            continue;
+        }
+        if (!hasCharacterIndex) {
+            // Avoid creating global unnamed personas before we can reliably detect
+            // whether an avatar is character-dedicated.
+            continue;
+        }
         if (isPersonaDedicatedToAnyCharacter(persona)) {
             continue;
         }
-        if (!power_user.personas[persona]) {
-            initPersona(persona, '[Unnamed Persona]', '', '');
-        }
+        initPersona(persona, '[Unnamed Persona]', '', '');
     }
 }
 
@@ -2215,9 +2238,18 @@ function getPersonaTemporaryLockInfo() {
  */
 async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     const shouldRenderPersonaList = doRender || isPersonaPanelOpen();
-    const currentChatId = getCurrentChatId();
-    if (currentChatId === personaLastLoadedChatId) return;
-    personaLastLoadedChatId = currentChatId;
+    const currentConnection = getCurrentConnectionObj();
+    const currentChatId = String(getCurrentChatId() || '');
+    const connectionType = String(currentConnection?.type || '');
+    const connectionId = String(currentConnection?.id || '');
+    const activeDedicatedKey = connectionType === 'character' && connectionId
+        ? getCharacterDedicatedPersonaAvatarIds(connectionId).slice().sort().join('|')
+        : '';
+    const currentStateKey = `${currentChatId}::${connectionType}::${connectionId}::${activeDedicatedKey}`;
+    if (!shouldRenderPersonaList && currentStateKey === personaLastLoadedStateKey) {
+        return;
+    }
+    personaLastLoadedStateKey = currentStateKey;
 
     if (!selected_group && Number(this_chid) >= 0 && characters[Number(this_chid)]) {
         const currentCharacter = characters[Number(this_chid)];
@@ -2243,7 +2275,6 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     /** @type {'chat' | 'character' | 'default' | null} */
     let connectType = null;
 
-    const currentConnection = getCurrentConnectionObj();
     const activeCharacterAvatar = currentConnection?.type === 'character'
         ? String(currentConnection.id || '').trim()
         : '';

@@ -1182,21 +1182,44 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         return;
     }
 
+    const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
     let char = charaFormatData(request.body, request.user.directories);
-    char.chat = request.body.chat;
-    char.create_date = request.body.create_date;
-    char = JSON.stringify(char);
     let targetFile = (request.body.avatar_url).replace('.png', '');
 
     try {
+        // Preserve unknown/extended fields (e.g. data.extensions.luker.dedicated_personas)
+        // when editing a character through the legacy form endpoint.
+        const existingRaw = await readCharacterData(avatarPath);
+        if (typeof existingRaw === 'string' && existingRaw.length > 0) {
+            try {
+                const existingChar = getCharaCardV2(JSON.parse(existingRaw), request.user.directories, false);
+                char = deepMerge(existingChar, char);
+            } catch (error) {
+                console.warn('Failed to parse existing character while preserving extension fields in /edit', error);
+            }
+        }
+
+        char.chat = request.body.chat;
+        char.create_date = request.body.create_date;
+        const serialized = JSON.stringify(char);
+
         if (!request.file) {
-            const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-            await writeCharacterData(avatarPath, char, targetFile, request);
+            const writeOk = await writeCharacterData(
+                avatarPath,
+                serialized,
+                targetFile,
+                request,
+                undefined,
+                { allowMissingInputFallback: false, requireExistingOutput: true },
+            );
+            if (!writeOk) {
+                return response.status(500).send('Error: failed to persist character data');
+            }
         } else {
             const crop = tryParse(request.query.crop);
             const newAvatarPath = path.join(request.file.destination, request.file.filename);
             invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
-            await writeCharacterData(newAvatarPath, char, targetFile, request, crop);
+            await writeCharacterData(newAvatarPath, serialized, targetFile, request, crop);
             fs.unlinkSync(newAvatarPath);
 
             // Bust cache to reload the new avatar
