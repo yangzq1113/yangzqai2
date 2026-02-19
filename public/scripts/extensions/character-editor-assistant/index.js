@@ -1749,7 +1749,10 @@ function renderLineDiffSideRowsHtml(rows, side = 'old') {
 }
 
 function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
-    const payload = buildLineDiffRows(beforeValue, afterValue);
+    const payload = buildLineDiffRows(
+        sanitizeDiffPlaceholderValue(beforeValue),
+        sanitizeDiffPlaceholderValue(afterValue),
+    );
     const summary = i18nFormat('Line diff (+${0} -${1})', payload.added, payload.removed);
     const safeLabel = escapeHtml(String(fileLabel || 'field'));
     const renderedRows = buildLineDiffVisualRows(payload.operations);
