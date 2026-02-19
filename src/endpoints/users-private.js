@@ -1,16 +1,158 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import crypto from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
 
 import storage from 'node-persist';
 import express from 'express';
+import yauzl from 'yauzl';
 
-import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey } from '../users.js';
+import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey, getUserDirectories, getUserBackupTargets, normalizeUserBackupSelection } from '../users.js';
 import { SETTINGS_FILE } from '../constants.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
-import { color, Cache } from '../util.js';
+import { color, Cache, ensureDirectory, normalizeZipEntryPath } from '../util.js';
 
 const RESET_CACHE = new Cache(5 * 60 * 1000);
+
+function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, allowedDirectories) {
+    const candidates = [normalizedEntryPath];
+
+    if (normalizedEntryPath.includes('/')) {
+        const stripped = normalizedEntryPath.split('/').slice(1).join('/');
+        if (stripped && stripped !== normalizedEntryPath) {
+            candidates.push(stripped);
+        }
+    }
+
+    for (const candidate of candidates) {
+        if (!candidate || candidate === 'manifest.json') {
+            continue;
+        }
+
+        const resolved = path.resolve(path.join(rootPath, candidate));
+        if (!(resolved === rootPath || resolved.startsWith(rootPath + path.sep))) {
+            continue;
+        }
+
+        if (allowedFiles.has(resolved)) {
+            return resolved;
+        }
+
+        for (const directory of allowedDirectories) {
+            if (resolved.startsWith(directory + path.sep)) {
+                return resolved;
+            }
+        }
+    }
+
+    return '';
+}
+
+async function restoreUserBackupArchive(uploadPath, directories, selection, mode) {
+    const backupTargets = getUserBackupTargets(directories, selection);
+    const targetRoot = path.resolve(directories.root);
+    const targetDirectories = backupTargets.directories.map(dir => path.resolve(dir));
+    const targetFiles = new Set(backupTargets.files.map(file => path.resolve(file)));
+
+    if (targetDirectories.length === 0 && targetFiles.size === 0) {
+        throw new Error('At least one restore category must be selected.');
+    }
+
+    if (mode === 'overwrite') {
+        for (const filePath of targetFiles) {
+            await fsPromises.rm(filePath, { force: true });
+        }
+
+        for (const directoryPath of targetDirectories) {
+            await fsPromises.rm(directoryPath, { recursive: true, force: true });
+            ensureDirectory(directoryPath);
+        }
+    }
+
+    const result = {
+        restoredCount: 0,
+        skippedCount: 0,
+        rejectedCount: 0,
+    };
+
+    await new Promise((resolve, reject) => {
+        yauzl.open(uploadPath, { lazyEntries: true, decodeStrings: true }, (openError, zipfile) => {
+            if (openError) {
+                reject(openError);
+                return;
+            }
+
+            let finished = false;
+            const finish = (error) => {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                if (error) {
+                    reject(error);
+                } else {
+                    resolve();
+                }
+            };
+
+            zipfile.readEntry();
+
+            zipfile.on('entry', (entry) => {
+                (async () => {
+                    const normalized = normalizeZipEntryPath(entry.fileName);
+                    if (!normalized) {
+                        result.rejectedCount += 1;
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    if (entry.fileName.endsWith('/')) {
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    const unixFileType = (entry.externalFileAttributes >> 16) & 0o170000;
+                    if (unixFileType === 0o120000) {
+                        result.rejectedCount += 1;
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    const targetPath = resolveAllowedRestorePath(normalized, targetRoot, targetFiles, targetDirectories);
+                    if (!targetPath) {
+                        result.skippedCount += 1;
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    ensureDirectory(path.dirname(targetPath));
+
+                    zipfile.openReadStream(entry, async (streamError, readStream) => {
+                        if (streamError) {
+                            finish(streamError);
+                            return;
+                        }
+
+                        try {
+                            await pipeline(readStream, fs.createWriteStream(targetPath, { mode: 0o644 }));
+                            result.restoredCount += 1;
+                            zipfile.readEntry();
+                        } catch (error) {
+                            finish(error);
+                        }
+                    });
+                })().catch(finish);
+            });
+
+            zipfile.on('end', () => finish());
+            zipfile.on('close', () => finish());
+            zipfile.on('error', finish);
+        });
+    });
+
+    return result;
+}
 
 export const router = express.Router();
 
@@ -150,10 +292,73 @@ router.post('/backup', async (request, response) => {
             return response.status(403).json({ error: 'Unauthorized' });
         }
 
-        await createBackupArchive(handle, response);
+        const selection = normalizeUserBackupSelection(request.body.selection);
+        if (!Object.values(selection).some(Boolean)) {
+            return response.status(400).json({ error: 'At least one backup category must be selected.' });
+        }
+
+        await createBackupArchive(handle, response, selection);
     } catch (error) {
         console.error('Backup failed', error);
         return response.sendStatus(500);
+    }
+});
+
+router.post('/restore-backup', async (request, response) => {
+    let uploadPath = '';
+
+    try {
+        const handle = request.body.handle;
+        if (!handle) {
+            console.warn('Restore failed: Missing required fields');
+            return response.status(400).json({ error: 'Missing required fields' });
+        }
+
+        if (handle !== request.user.profile.handle && !request.user.profile.admin) {
+            console.error('Restore failed: Unauthorized');
+            return response.status(403).json({ error: 'Unauthorized' });
+        }
+
+        if (!request.file) {
+            return response.status(400).json({ error: 'No backup file uploaded' });
+        }
+
+        const originalName = String(request.file.originalname || '');
+        if (!originalName.toLowerCase().endsWith('.zip')) {
+            return response.status(400).json({ error: 'Backup file must be a .zip archive' });
+        }
+
+        uploadPath = request.file.path;
+        const mode = String(request.body.mode || 'merge').toLowerCase() === 'overwrite' ? 'overwrite' : 'merge';
+
+        let parsedSelection = request.body.selection;
+        if (typeof parsedSelection === 'string' && parsedSelection.trim()) {
+            try {
+                parsedSelection = JSON.parse(parsedSelection);
+            } catch {
+                parsedSelection = {};
+            }
+        }
+
+        const selection = normalizeUserBackupSelection(parsedSelection);
+        if (!Object.values(selection).some(Boolean)) {
+            return response.status(400).json({ error: 'At least one restore category must be selected.' });
+        }
+
+        const directories = handle === request.user.profile.handle ? request.user.directories : getUserDirectories(handle);
+        const restoreResult = await restoreUserBackupArchive(uploadPath, directories, selection, mode);
+
+        return response.json({
+            mode,
+            ...restoreResult,
+        });
+    } catch (error) {
+        console.error('Restore failed', error);
+        return response.status(500).json({ error: error?.message || 'Restore failed' });
+    } finally {
+        if (uploadPath) {
+            await fsPromises.rm(uploadPath, { force: true });
+        }
     }
 });
 

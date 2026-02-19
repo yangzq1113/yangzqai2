@@ -11,6 +11,28 @@ export let accountsEnabled = false;
 
 // Extend the session every 10 minutes
 const SESSION_EXTEND_INTERVAL = 10 * 60 * 1000;
+const BACKUP_CATEGORY_KEYS = Object.freeze([
+    'settings',
+    'secrets',
+    'characters',
+    'chats',
+    'lorebooks',
+    'presets',
+    'assets',
+    'extensions',
+    'vectors',
+]);
+const BACKUP_DEFAULT_SELECTION = Object.freeze({
+    settings: true,
+    secrets: true,
+    characters: true,
+    chats: true,
+    lorebooks: true,
+    presets: true,
+    assets: true,
+    extensions: true,
+    vectors: false,
+});
 
 /**
  * Enable or disable user account controls in the UI.
@@ -342,37 +364,228 @@ async function createUser(form, callback) {
  * Backup a user's data.
  * @param {string} handle Handle of the user to backup
  * @param {function} callback Success callback
+ * @param {Record<string, boolean>} [selection] Backup category selection
  * @returns {Promise<void>}
  */
-async function backupUserData(handle, callback) {
+async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELECTION) {
     try {
         toastr.info('Please wait for the download to start.', 'Backup Requested');
         const response = await fetch('/api/users/backup', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ handle }),
+            body: JSON.stringify({ handle, selection }),
         });
 
         if (!response.ok) {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({}));
             toastr.error(data.error || 'Unknown error', 'Failed to backup user data');
             throw new Error('Failed to backup user data');
         }
 
         const blob = await response.blob();
-        const header = response.headers.get('Content-Disposition');
-        const parts = header.split(';');
-        const filename = parts[1].split('=')[1].replaceAll('"', '');
+        const header = response.headers.get('Content-Disposition') || '';
+        const fileNameMatch = /filename="?([^"]+)"?/i.exec(header);
+        const filename = fileNameMatch?.[1] || `${handle}-backup.zip`;
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
-        callback();
+        callback?.();
     } catch (error) {
         console.error('Error backing up user data:', error);
     }
+}
+
+function collectBackupSelection(rootElement) {
+    const selection = { ...BACKUP_DEFAULT_SELECTION };
+
+    BACKUP_CATEGORY_KEYS.forEach((key) => {
+        const checkbox = rootElement.find(`input[name="backupCategory"][value="${key}"]`);
+        if (checkbox.length > 0) {
+            selection[key] = checkbox.is(':checked');
+        }
+    });
+
+    return selection;
+}
+
+function getSelectedRestoreMode(rootElement) {
+    const selected = rootElement.find('input[name="backupRestoreMode"]:checked').val();
+    return String(selected || 'merge') === 'overwrite' ? 'overwrite' : 'merge';
+}
+
+async function restoreUserData(handle, file, selection, mode, callback) {
+    const formData = new FormData();
+    formData.append('avatar', file);
+    formData.append('handle', handle);
+    formData.append('mode', mode);
+    formData.append('selection', JSON.stringify(selection));
+
+    const response = await fetch('/api/users/restore-backup', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+        body: formData,
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to restore backup');
+    }
+
+    const data = await response.json();
+    callback?.(data);
+    return data;
+}
+
+async function openBackupManager(handle, callback) {
+    const template = $(await renderTemplateAsync('userBackupManager'));
+    const fileInput = template.find('.backupRestoreFileInput');
+    const selectedFileText = template.find('.backupSelectedFileName');
+    const restoreButton = template.find('.backupRestoreButton');
+    const restoreSelectButton = template.find('.backupRestoreSelectButton');
+    const downloadButton = template.find('.backupDownloadButton');
+    const checkboxes = template.find('input[name="backupCategory"]');
+    const summaryText = template.find('.backupCategorySummary');
+
+    const updateSelectionSummary = () => {
+        const selectedCount = checkboxes.filter(':checked').length;
+        summaryText.text(`Selected ${selectedCount} of ${BACKUP_CATEGORY_KEYS.length} categories`);
+    };
+
+    const setSelection = (selection) => {
+        BACKUP_CATEGORY_KEYS.forEach((key) => {
+            const checkbox = template.find(`input[name="backupCategory"][value="${key}"]`);
+            checkbox.prop('checked', Boolean(selection[key]));
+        });
+        updateSelectionSummary();
+    };
+
+    const updateRestoreState = () => {
+        const hasFile = Boolean(fileInput[0]?.files?.[0]);
+        restoreButton.toggleClass('disabled', !hasFile);
+    };
+
+    const runRestore = async (file) => {
+        if (!file) {
+            return;
+        }
+
+        const selection = collectBackupSelection(template);
+        if (!Object.values(selection).some(Boolean)) {
+            toastr.warning('Select at least one data category.', 'Nothing selected');
+            return;
+        }
+
+        const mode = getSelectedRestoreMode(template);
+        const confirmationMessage = mode === 'overwrite'
+            ? 'Overwrite mode will clear existing selected data before restore. Continue?'
+            : 'Restore in merge mode and overwrite files on path conflicts?';
+
+        const confirm = await callGenericPopup(confirmationMessage, POPUP_TYPE.CONFIRM, '', {
+            okButton: 'Start Restore',
+            cancelButton: 'Cancel',
+            wide: false,
+            large: false,
+        });
+
+        if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        try {
+            restoreButton.addClass('disabled');
+            restoreSelectButton.addClass('disabled');
+            downloadButton.addClass('disabled');
+            const result = await restoreUserData(handle, file, selection, mode);
+            toastr.success(
+                `Restored ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
+                'Backup Restored',
+            );
+            callback?.(result);
+        } catch (error) {
+            console.error('Error restoring user data:', error);
+            toastr.error(String(error.message || error), 'Failed to restore backup');
+        } finally {
+            restoreButton.removeClass('disabled');
+            restoreSelectButton.removeClass('disabled');
+            downloadButton.removeClass('disabled');
+            fileInput.val('');
+            selectedFileText.text('No ZIP selected.');
+            updateRestoreState();
+        }
+    };
+
+    template.find('.backupSelectAllButton').on('click', function () {
+        setSelection(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])));
+    });
+
+    template.find('.backupSelectRecommendedButton').on('click', function () {
+        setSelection(BACKUP_DEFAULT_SELECTION);
+    });
+
+    template.find('.backupSelectNoneButton').on('click', function () {
+        setSelection(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, false])));
+    });
+
+    checkboxes.on('change', updateSelectionSummary);
+    updateSelectionSummary();
+
+    downloadButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const selection = collectBackupSelection(template);
+        if (!Object.values(selection).some(Boolean)) {
+            toastr.warning('Select at least one data category.', 'Nothing selected');
+            return;
+        }
+
+        $(this).addClass('disabled');
+        restoreSelectButton.addClass('disabled');
+        restoreButton.addClass('disabled');
+
+        try {
+            await backupUserData(handle, () => { }, selection);
+        } finally {
+            $(this).removeClass('disabled');
+            restoreSelectButton.removeClass('disabled');
+            updateRestoreState();
+        }
+    });
+
+    restoreSelectButton.on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+        fileInput.trigger('click');
+    });
+
+    restoreButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+        const file = fileInput[0]?.files?.[0];
+        await runRestore(file);
+    });
+
+    fileInput.on('change', function () {
+        const file = this instanceof HTMLInputElement ? this.files?.[0] : null;
+        selectedFileText.text(file ? `${file.name} (${humanFileSize(file.size)})` : 'No ZIP selected.');
+        updateRestoreState();
+    });
+
+    updateRestoreState();
+
+    await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
+        okButton: 'Close',
+        wide: true,
+        large: false,
+        allowVerticalScrolling: true,
+        allowHorizontalScrolling: false,
+    });
 }
 
 /**
@@ -783,11 +996,14 @@ async function openUserProfile() {
         template.find('.hasPassword').toggle(currentUser.password);
         template.find('.noPassword').toggle(!currentUser.password);
     }));
-    template.find('.userBackupButton').on('click', function () {
+    template.find('.userBackupButton').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
         $(this).addClass('disabled');
-        backupUserData(currentUser.handle, () => {
-            $(this).removeClass('disabled');
-        });
+        await openBackupManager(currentUser.handle, () => location.reload());
+        $(this).removeClass('disabled');
     });
     template.find('.userResetSettingsButton').on('click', () => resetSettings(currentUser.handle, () => location.reload()));
     template.find('.userResetAllButton').on('click', () => resetEverything(() => location.reload()));
@@ -1052,9 +1268,14 @@ async function openAdminPanel() {
             userBlock.find('.userDelete').on('click', () => deleteUser(user.handle, renderUsers));
             userBlock.find('.userChangeNameButton').on('click', async () => changeName(user.handle, user.name, renderUsers));
             userBlock.find('.userQuotaButton').on('click', async () => promptAndSetQuota(user));
-            userBlock.find('.userBackupButton').on('click', function () {
-                $(this).addClass('disabled').off('click');
-                backupUserData(user.handle, renderUsers);
+            userBlock.find('.userBackupButton').on('click', async function () {
+                if ($(this).hasClass('disabled')) {
+                    return;
+                }
+
+                $(this).addClass('disabled');
+                await openBackupManager(user.handle, renderUsers);
+                $(this).removeClass('disabled');
             });
             userBlock.find('.userAvatarChange').on('click', () => userBlock.find('.avatarUpload').trigger('click'));
             userBlock.find('.avatarUpload').on('change', async function () {

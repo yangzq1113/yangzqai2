@@ -3,3 +3,44 @@
     padding: 5px 10px;
     border-radius: 5px;
 }
+
+.userBackupManager .backupSelectionToolbar,
+.userBackupManager .backupActionRow {
+    flex-wrap: wrap;
+}
+
+.userBackupManager .backupCategoryGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    width: 100%;
+}
+
+.userBackupManager .backupCategoryItem {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(127, 127, 127, 0.4));
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: var(--SmartThemeBodyColor, rgba(0, 0, 0, 0.08));
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.userBackupManager .backupCategorySummary {
+    font-size: 0.9rem;
+    opacity: 0.9;
+}
+
+.userBackupManager .backupSelectedFileName {
+    min-height: 20px;
+    word-break: break-word;
+}
+
+.userBackupManager .backupRestoreModeLabel {
+    margin-left: 10px;
+}
+
+.userBackupManager .menu_button {
+    min-width: 180px;
+    justify-content: center;
+}

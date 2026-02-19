@@ -23,6 +23,7 @@ import { serverDirectory } from './server-directory.js';
 import { getAdminSettings, getEffectiveUserQuotaBytes, getDirectorySizeBytes } from './admin-settings.js';
 
 export const KEY_PREFIX = 'user:';
+const SECRETS_FILE = 'secrets.json';
 const AVATAR_PREFIX = 'avatar:';
 const ENABLE_ACCOUNTS = getConfigValue('enableUserAccounts', false, 'boolean');
 const AUTHELIA_AUTH = getConfigValue('sso.autheliaAuth', false, 'boolean');
@@ -72,6 +73,18 @@ const STORAGE_KEYS = {
      */
     cookieSecret: 'cookieSecret',
 };
+
+export const USER_BACKUP_SELECTION_DEFAULTS = Object.freeze({
+    settings: true,
+    secrets: true,
+    characters: true,
+    chats: true,
+    lorebooks: true,
+    presets: true,
+    assets: true,
+    extensions: true,
+    vectors: false,
+});
 
 /**
  * @typedef {Object} User
@@ -1092,15 +1105,133 @@ export function requireAdminMiddleware(request, response, next) {
 }
 
 /**
- * Creates an archive of the user's data root directory.
+ * Normalizes a backup category selection object.
+ * @param {Record<string, boolean|string|number>|null|undefined} selectionInput Selection payload from the client
+ * @returns {Record<string, boolean>} Normalized selection
+ */
+export function normalizeUserBackupSelection(selectionInput) {
+    const normalized = { ...USER_BACKUP_SELECTION_DEFAULTS };
+
+    if (!selectionInput || typeof selectionInput !== 'object') {
+        return normalized;
+    }
+
+    for (const key of Object.keys(normalized)) {
+        if (!(key in selectionInput)) {
+            continue;
+        }
+
+        const value = selectionInput[key];
+        if (typeof value === 'boolean') {
+            normalized[key] = value;
+            continue;
+        }
+
+        if (typeof value === 'number') {
+            normalized[key] = value !== 0;
+            continue;
+        }
+
+        if (typeof value === 'string') {
+            const lowered = value.trim().toLowerCase();
+            if (['true', '1', 'yes', 'on'].includes(lowered)) {
+                normalized[key] = true;
+            } else if (['false', '0', 'no', 'off'].includes(lowered)) {
+                normalized[key] = false;
+            }
+        }
+    }
+
+    return normalized;
+}
+
+/**
+ * Gets selected backup target files and directories for a user.
+ * @param {UserDirectoryList} directories User directories
+ * @param {Record<string, boolean>} selection Selection object
+ * @returns {{ files: string[], directories: string[] }} Backup targets
+ */
+export function getUserBackupTargets(directories, selection) {
+    const selectedFiles = new Set();
+    const selectedDirectories = new Set();
+
+    if (selection.settings) {
+        selectedFiles.add(path.join(directories.root, SETTINGS_FILE));
+        selectedDirectories.add(directories.backups);
+    }
+
+    if (selection.secrets) {
+        selectedFiles.add(path.join(directories.root, SECRETS_FILE));
+    }
+
+    if (selection.characters) {
+        selectedDirectories.add(directories.characters);
+        selectedDirectories.add(directories.avatars);
+        selectedDirectories.add(directories.backgrounds);
+    }
+
+    if (selection.chats) {
+        selectedDirectories.add(directories.chats);
+        selectedDirectories.add(directories.groups);
+        selectedDirectories.add(directories.groupChats);
+    }
+
+    if (selection.lorebooks) {
+        selectedDirectories.add(directories.worlds);
+    }
+
+    if (selection.presets) {
+        selectedDirectories.add(directories.novelAI_Settings);
+        selectedDirectories.add(directories.koboldAI_Settings);
+        selectedDirectories.add(directories.openAI_Settings);
+        selectedDirectories.add(directories.textGen_Settings);
+        selectedDirectories.add(directories.instruct);
+        selectedDirectories.add(directories.context);
+        selectedDirectories.add(directories.quickreplies);
+        selectedDirectories.add(directories.themes);
+        selectedDirectories.add(directories.movingUI);
+        selectedDirectories.add(directories.sysprompt);
+        selectedDirectories.add(directories.reasoning);
+    }
+
+    if (selection.assets) {
+        selectedDirectories.add(directories.assets);
+        selectedDirectories.add(directories.files);
+        selectedDirectories.add(directories.userImages);
+        selectedDirectories.add(directories.comfyWorkflows);
+    }
+
+    if (selection.extensions) {
+        selectedDirectories.add(directories.extensions);
+    }
+
+    if (selection.vectors) {
+        selectedDirectories.add(directories.vectors);
+    }
+
+    return {
+        files: [...selectedFiles],
+        directories: [...selectedDirectories],
+    };
+}
+
+/**
+ * Creates an archive of selected user data.
  * @param {string} handle User handle
  * @param {import('express').Response} response Express response object to write to
+ * @param {Record<string, boolean|string|number>} [selectionInput] Backup selection payload
  * @returns {Promise<void>} Promise that resolves when the archive is created
  */
-export async function createBackupArchive(handle, response) {
+export async function createBackupArchive(handle, response, selectionInput = undefined) {
     const directories = getUserDirectories(handle);
+    const selection = normalizeUserBackupSelection(selectionInput);
+    const targets = getUserBackupTargets(directories, selection);
 
-    console.info('Backup requested for', handle);
+    if (targets.files.length === 0 && targets.directories.length === 0) {
+        throw new Error('At least one backup category must be selected.');
+    }
+
+    console.info('Backup requested for', handle, selection);
     const archive = archiver('zip');
 
     archive.on('error', function (err) {
@@ -1122,8 +1253,31 @@ export async function createBackupArchive(handle, response) {
     // @ts-ignore
     archive.pipe(response);
 
-    // Append files from a sub-directory, putting its contents at the root of archive
-    archive.directory(directories.root, false);
+    const manifest = {
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        handle,
+        selection,
+    };
+
+    archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
+
+    for (const filePath of targets.files) {
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+            continue;
+        }
+
+        archive.file(filePath, { name: path.relative(directories.root, filePath) });
+    }
+
+    for (const directoryPath of targets.directories) {
+        if (!fs.existsSync(directoryPath) || !fs.statSync(directoryPath).isDirectory()) {
+            continue;
+        }
+
+        archive.directory(directoryPath, path.relative(directories.root, directoryPath));
+    }
+
     archive.finalize();
 }
 
