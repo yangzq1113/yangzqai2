@@ -26,8 +26,11 @@ if [[ "${FETCH_NODEJS_MOBILE:-1}" == "1" ]]; then
   node android-app/scripts/fetch-nodejs-mobile.mjs
 fi
 
+# Avoid relying on executable mode from git checkout (common on mixed Windows/Linux repos).
+GRADLEW_CMD=(bash android-app/gradlew -p android-app)
+
 if [[ "${ANDROID_CLEAN_BUILD:-0}" == "1" ]]; then
-  android-app/gradlew -p android-app clean
+  "${GRADLEW_CMD[@]}" clean
 fi
 
-android-app/gradlew -p android-app "${GRADLE_TASK}"
+"${GRADLEW_CMD[@]}" "${GRADLE_TASK}"
