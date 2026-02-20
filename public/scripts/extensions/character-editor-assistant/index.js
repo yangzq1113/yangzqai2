@@ -1761,6 +1761,7 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
     const safeLabel = escapeHtml(String(fileLabel || 'field'));
     const renderedRows = buildLineDiffVisualRows(payload.operations);
     const expandLabel = escapeHtml(i18n('Expand diff'));
+    const resizeLabel = escapeHtml(i18n('Resize diff columns'));
     return `
 <details class="cea_line_diff"${payload.openByDefault ? ' open' : ''}>
     <summary>
@@ -1781,6 +1782,7 @@ function renderLineDiffHtml(beforeValue, afterValue, fileLabel = 'field') {
                     </table>
                 </div>
             </div>
+            <div class="cea_line_diff_splitter" role="separator" aria-orientation="vertical" aria-label="${resizeLabel}" title="${resizeLabel}"></div>
             <div class="cea_line_diff_side new">
                 <div class="cea_line_diff_side_scroll">
                     <table class="cea_line_diff_table new" role="grid">
@@ -1835,6 +1837,72 @@ function openCeaExpandedDiff(trigger) {
     }
 
     popupRoot.append(overlay);
+}
+
+function beginCeaLineDiffResize(splitterElement, pointerEvent) {
+    const splitter = splitterElement instanceof HTMLElement ? splitterElement : null;
+    const pointer = pointerEvent instanceof PointerEvent ? pointerEvent : null;
+    const dual = splitter?.closest?.('.cea_line_diff_dual');
+    if (!(splitter instanceof HTMLElement) || !(pointer instanceof PointerEvent) || !(dual instanceof HTMLElement)) {
+        return;
+    }
+
+    pointer.preventDefault();
+    pointer.stopPropagation();
+
+    const bounds = dual.getBoundingClientRect();
+    if (!Number.isFinite(bounds.width) || bounds.width <= 0) {
+        return;
+    }
+
+    const minPercent = 15;
+    const maxPercent = 85;
+    const pointerId = pointer.pointerId;
+
+    const applySplitAt = (clientX) => {
+        const nextPercent = ((clientX - bounds.left) / bounds.width) * 100;
+        const clampedPercent = Math.max(minPercent, Math.min(maxPercent, nextPercent));
+        dual.style.setProperty('--cea-split-left', `${clampedPercent}%`);
+    };
+
+    const cleanup = () => {
+        splitter.classList.remove('active');
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', handlePointerUp);
+        window.removeEventListener('pointercancel', handlePointerUp);
+        try {
+            splitter.releasePointerCapture(pointerId);
+        } catch {
+            // Ignore release errors when capture was not acquired.
+        }
+    };
+
+    const handlePointerMove = (moveEvent) => {
+        if (!(moveEvent instanceof PointerEvent) || moveEvent.pointerId !== pointerId) {
+            return;
+        }
+        moveEvent.preventDefault();
+        applySplitAt(moveEvent.clientX);
+    };
+
+    const handlePointerUp = (upEvent) => {
+        if (!(upEvent instanceof PointerEvent) || upEvent.pointerId !== pointerId) {
+            return;
+        }
+        upEvent.preventDefault();
+        cleanup();
+    };
+
+    splitter.classList.add('active');
+    applySplitAt(pointer.clientX);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    try {
+        splitter.setPointerCapture(pointerId);
+    } catch {
+        // Pointer capture may fail in some browsers and is optional here.
+    }
 }
 
 function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1, approvalMap = null) {
@@ -4376,7 +4444,11 @@ function ensureStyles() {
 .popup .cea_line_diff,
 .popup .cea_line_diff_pre { min-width:0; max-width:100%; box-sizing:border-box; }
 .popup .cea_line_diff_pre { margin:0; padding:6px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); max-height:320px; overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
-.popup .cea_line_diff_dual { display:grid; grid-template-columns:1fr 1fr; gap:8px; width:100%; min-width:0; }
+.popup .cea_line_diff_dual { --cea-split-left:50%; --cea-splitter-width:12px; display:grid; grid-template-columns:minmax(0, var(--cea-split-left)) var(--cea-splitter-width) minmax(0, calc(100% - var(--cea-split-left) - var(--cea-splitter-width))); gap:0; width:100%; min-width:0; align-items:stretch; }
+.popup .cea_line_diff_splitter { position:relative; cursor:col-resize; touch-action:none; user-select:none; background:transparent; }
+.popup .cea_line_diff_splitter::before { content:''; position:absolute; left:50%; top:0; bottom:0; width:2px; transform:translateX(-50%); border-radius:999px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 20%, transparent); transition:background-color .12s ease; }
+.popup .cea_line_diff_splitter:hover::before,
+.popup .cea_line_diff_splitter.active::before { background:color-mix(in oklab, var(--SmartThemeBodyColor) 38%, transparent); }
 .popup .cea_line_diff_side { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent); border-radius:6px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 4%, transparent); min-width:0; overflow:hidden; }
 .popup .cea_line_diff_side_scroll { overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; touch-action:auto; }
 .popup .cea_line_diff_table { width:max-content; min-width:100%; border-collapse:collapse; table-layout:fixed; font-size:0.82rem; }
@@ -4684,6 +4756,10 @@ function bindUi() {
         event.preventDefault();
         event.stopPropagation();
         lastOverlay.remove();
+    });
+
+    jQuery(document).on('pointerdown.ceaDiffZoom', '.popup .cea_line_diff_splitter', function (event) {
+        beginCeaLineDiffResize(this, event.originalEvent || event);
     });
 
     root.on('change.cea', '#cea_replace_sync', function () {
