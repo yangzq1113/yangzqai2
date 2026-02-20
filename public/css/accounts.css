@@ -35,6 +35,25 @@
     margin-left: 10px;
 }
 
+.userBackupManager .logSourceLabel {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
+.userBackupManager .logSourceLabel > span {
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
+.userBackupManager .logSourceLabel .serverLogsSource {
+    min-width: 8em;
+}
+
 .userBackupManager .backupSelectionToolbar .menu_button,
 .userBackupManager .backupActionRow .menu_button {
     width: auto;

@@ -145,6 +145,24 @@
         flex-direction: column;
     }
 
+    #user-settings-block [name="UserSettingsRowTwo"] {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    #account_controls {
+        width: 100%;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+
+    #settingsSearch {
+        width: 100%;
+        min-width: 0;
+        flex: 1 1 100%;
+    }
+
     #WIMultiSelector {
         align-self: normal;
     }

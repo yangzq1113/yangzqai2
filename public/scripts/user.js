@@ -35,6 +35,118 @@ const BACKUP_DEFAULT_SELECTION = Object.freeze({
     vectors: false,
 });
 const BACKUP_FULL_SELECTION = Object.freeze(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])));
+const FRONTEND_LOG_LIMIT = 3000;
+const frontendLogBuffer = [];
+let frontendLogNextId = 1;
+let frontendLogCaptureInstalled = false;
+
+function serializeFrontendLogValue(value) {
+    if (value instanceof Error) {
+        return value.stack || `${value.name}: ${value.message}`;
+    }
+
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    if (value === undefined) {
+        return 'undefined';
+    }
+
+    if (value === null) {
+        return 'null';
+    }
+
+    if (typeof value === 'function') {
+        return `[Function ${value.name || 'anonymous'}]`;
+    }
+
+    try {
+        return JSON.stringify(value, (_, nestedValue) => {
+            if (nestedValue instanceof Error) {
+                return nestedValue.stack || `${nestedValue.name}: ${nestedValue.message}`;
+            }
+            if (typeof nestedValue === 'bigint') {
+                return `${nestedValue}n`;
+            }
+            return nestedValue;
+        });
+    } catch {
+        return String(value);
+    }
+}
+
+function pushFrontendLog(level, values, source = 'console') {
+    const message = Array.isArray(values)
+        ? values.map(serializeFrontendLogValue).join(' ')
+        : serializeFrontendLogValue(values);
+
+    frontendLogBuffer.push({
+        id: frontendLogNextId++,
+        timestamp: Date.now(),
+        level: String(level || 'log').toLowerCase(),
+        source: String(source || 'console'),
+        message: String(message || ''),
+    });
+
+    if (frontendLogBuffer.length > FRONTEND_LOG_LIMIT) {
+        frontendLogBuffer.splice(0, frontendLogBuffer.length - FRONTEND_LOG_LIMIT);
+    }
+}
+
+function installFrontendLogCapture() {
+    if (frontendLogCaptureInstalled || typeof window === 'undefined') {
+        return;
+    }
+
+    frontendLogCaptureInstalled = true;
+    const methods = ['debug', 'log', 'info', 'warn', 'error'];
+    for (const method of methods) {
+        const original = console[method]?.bind(console);
+        if (typeof original !== 'function') {
+            continue;
+        }
+
+        console[method] = (...args) => {
+            pushFrontendLog(method, args, 'console');
+            return original(...args);
+        };
+    }
+
+    window.addEventListener('error', (event) => {
+        const details = [];
+        if (event.message) {
+            details.push(event.message);
+        }
+        if (event.filename) {
+            details.push(`${event.filename}:${event.lineno || 0}:${event.colno || 0}`);
+        }
+        if (event.error) {
+            details.push(event.error);
+        }
+        pushFrontendLog('error', details, 'window.onerror');
+    });
+
+    window.addEventListener('unhandledrejection', (event) => {
+        pushFrontendLog('error', ['Unhandled promise rejection', event.reason], 'unhandledrejection');
+    });
+
+    pushFrontendLog('info', ['Frontend log capture enabled.'], 'system');
+}
+
+function getFrontendLogsSnapshot(limit = 1000, sinceId = 0) {
+    const normalizedLimit = Math.max(1, Number(limit) || 1000);
+    const normalizedSinceId = Math.max(0, Number(sinceId) || 0);
+    const entries = frontendLogBuffer
+        .filter((entry) => Number(entry.id) > normalizedSinceId)
+        .slice(-normalizedLimit);
+    const latestId = frontendLogBuffer.length ? Number(frontendLogBuffer[frontendLogBuffer.length - 1].id) : 0;
+    return { entries, latestId };
+}
+
+function clearFrontendLogs() {
+    frontendLogBuffer.length = 0;
+}
 
 /**
  * Enable or disable user account controls in the UI.
@@ -43,6 +155,7 @@ const BACKUP_FULL_SELECTION = Object.freeze(Object.fromEntries(BACKUP_CATEGORY_K
  */
 export async function setUserControls(isEnabled) {
     accountsEnabled = isEnabled;
+    installFrontendLogCapture();
 
     if (!isEnabled) {
         $('#logout_button').hide();
@@ -95,7 +208,7 @@ async function getCurrentUser() {
 
         currentUser = await response.json();
         $('#admin_button').toggle(accountsEnabled && isAdmin());
-        $('#server_logs_button').toggle(!accountsEnabled || isAdmin());
+        $('#server_logs_button').show();
     } catch (error) {
         console.error('Error getting current user:', error);
     }
@@ -659,16 +772,28 @@ function formatServerLogEntry(entry) {
     return `[${date.toLocaleString()}] [${level}] ${message}`;
 }
 
-async function openServerLogsViewer() {
-    if (accountsEnabled && !isAdmin()) {
-        toastr.error(t`Only admins can view server logs.`, t`Permission denied`);
-        return;
-    }
+function formatFrontendLogEntry(entry) {
+    const date = new Date(Number(entry?.timestamp) || Date.now());
+    const level = String(entry?.level || 'log').toUpperCase();
+    const source = String(entry?.source || 'console');
+    const message = String(entry?.message || '');
+    return `[${date.toLocaleString()}] [${level}] [${source}] ${message}`;
+}
 
+async function openLogsViewer() {
+    installFrontendLogCapture();
+    const canViewServerLogs = !accountsEnabled || isAdmin();
     const template = $(`
         <div class="userBackupManager flex-container flexFlowColumn flexNoGap">
-            <h3 class="marginBot5">${t`Server Logs`}</h3>
+            <h3 class="marginBot5">${t`Logs`}</h3>
             <div class="backupActionRow flex-container flexGap10 marginBot10">
+                <label class="checkbox_label backupRestoreModeLabel logSourceLabel">
+                    <span>${t`Log source`}</span>
+                    <select class="serverLogsSource text_pole">
+                        ${canViewServerLogs ? `<option value="server">${t`Server`}</option>` : ''}
+                        <option value="frontend">${t`Frontend`}</option>
+                    </select>
+                </label>
                 <div class="serverLogsRefreshButton menu_button menu_button_icon">
                     <i class="fa-fw fa-solid fa-rotate"></i>
                     <span>${t`Refresh`}</span>
@@ -687,17 +812,28 @@ async function openServerLogsViewer() {
                 </label>
             </div>
             <textarea class="text_pole serverLogsOutput" rows="20" readonly></textarea>
-            <div class="menu_button_note">${t`This viewer shows runtime backend logs captured in memory.`}</div>
+            <div class="menu_button_note serverLogsNote"></div>
         </div>
     `);
 
     const output = template.find('.serverLogsOutput');
     const autoRefresh = template.find('.serverLogsAutoRefresh');
-    let latestId = 0;
+    const sourceSelect = template.find('.serverLogsSource');
+    const noteElement = template.find('.serverLogsNote');
+    let latestServerId = 0;
+    let latestFrontendId = 0;
     let closed = false;
     let inFlight = false;
+    let currentSource = canViewServerLogs ? 'server' : 'frontend';
+    sourceSelect.val(currentSource);
 
-    const renderLogs = (payload, appendOnly = false) => {
+    const updateNote = () => {
+        noteElement.text(currentSource === 'server'
+            ? t`This viewer shows runtime backend logs captured in memory.`
+            : t`This viewer shows frontend console logs captured in this app session.`);
+    };
+
+    const renderServerLogs = (payload, appendOnly = false) => {
         const lines = Array.isArray(payload?.entries) ? payload.entries.map(formatServerLogEntry) : [];
 
         if (appendOnly) {
@@ -708,7 +844,22 @@ async function openServerLogsViewer() {
             output.val(lines.join('\n'));
         }
 
-        latestId = Number(payload?.latestId) || latestId;
+        latestServerId = Number(payload?.latestId) || latestServerId;
+        output.scrollTop(output[0]?.scrollHeight || 0);
+    };
+
+    const renderFrontendLogs = (payload, appendOnly = false) => {
+        const lines = Array.isArray(payload?.entries) ? payload.entries.map(formatFrontendLogEntry) : [];
+
+        if (appendOnly) {
+            const previous = String(output.val() || '');
+            const next = lines.length ? `${previous}${previous ? '\n' : ''}${lines.join('\n')}` : previous;
+            output.val(next);
+        } else {
+            output.val(lines.join('\n'));
+        }
+
+        latestFrontendId = Number(payload?.latestId) || latestFrontendId;
         output.scrollTop(output[0]?.scrollHeight || 0);
     };
 
@@ -719,11 +870,17 @@ async function openServerLogsViewer() {
 
         inFlight = true;
         try {
-            const payload = await fetchServerLogs(2000, 0);
-            renderLogs(payload, false);
+            if (currentSource === 'server') {
+                const payload = await fetchServerLogs(2000, 0);
+                renderServerLogs(payload, false);
+            } else {
+                const payload = getFrontendLogsSnapshot(2000, 0);
+                renderFrontendLogs(payload, false);
+            }
         } catch (error) {
-            console.error('Failed to load server logs:', error);
-            toastr.error(String(error.message || error), t`Failed to fetch server logs`);
+            const title = currentSource === 'server' ? t`Failed to fetch server logs` : t`Failed to fetch frontend logs`;
+            console.error('Failed to load logs:', error);
+            toastr.error(String(error.message || error), title);
         } finally {
             inFlight = false;
         }
@@ -736,8 +893,13 @@ async function openServerLogsViewer() {
 
         inFlight = true;
         try {
-            const payload = await fetchServerLogs(500, latestId);
-            renderLogs(payload, true);
+            if (currentSource === 'server') {
+                const payload = await fetchServerLogs(500, latestServerId);
+                renderServerLogs(payload, true);
+            } else {
+                const payload = getFrontendLogsSnapshot(500, latestFrontendId);
+                renderFrontendLogs(payload, true);
+            }
         } catch {
             // Keep silent during background refresh to avoid toast spam.
         } finally {
@@ -745,18 +907,37 @@ async function openServerLogsViewer() {
         }
     };
 
+    sourceSelect.on('change', async function () {
+        const nextSource = String($(this).val() || 'frontend');
+        if (nextSource === 'server' && !canViewServerLogs) {
+            currentSource = 'frontend';
+            sourceSelect.val('frontend');
+            toastr.error(t`Only admins can view server logs.`, t`Permission denied`);
+            return;
+        }
+
+        currentSource = nextSource;
+        updateNote();
+        await reloadAll();
+    });
+
     template.find('.serverLogsRefreshButton').on('click', reloadAll);
     template.find('.serverLogsCopyButton').on('click', async () => {
         try {
             await navigator.clipboard.writeText(String(output.val() || ''));
-            toastr.success(t`Logs copied to clipboard.`, t`Server Logs`);
+            const title = currentSource === 'server' ? t`Server Logs` : t`Frontend Logs`;
+            toastr.success(t`Logs copied to clipboard.`, title);
         } catch (error) {
             console.error('Copy logs failed:', error);
-            toastr.error(t`Copy failed.`, t`Server Logs`);
+            const title = currentSource === 'server' ? t`Server Logs` : t`Frontend Logs`;
+            toastr.error(t`Copy failed.`, title);
         }
     });
     template.find('.serverLogsClearButton').on('click', async () => {
-        const confirmed = await callGenericPopup(t`Clear all captured server logs?`, POPUP_TYPE.CONFIRM, '', {
+        const confirmText = currentSource === 'server'
+            ? t`Clear all captured server logs?`
+            : t`Clear all captured frontend logs?`;
+        const confirmed = await callGenericPopup(confirmText, POPUP_TYPE.CONFIRM, '', {
             okButton: t`Clear`,
             cancelButton: t`Cancel`,
             wide: false,
@@ -768,16 +949,24 @@ async function openServerLogsViewer() {
         }
 
         try {
-            await clearServerLogsRemote();
+            if (currentSource === 'server') {
+                await clearServerLogsRemote();
+                latestServerId = 0;
+                toastr.success(t`Server logs cleared.`, t`Server Logs`);
+            } else {
+                clearFrontendLogs();
+                latestFrontendId = 0;
+                toastr.success(t`Frontend logs cleared.`, t`Frontend Logs`);
+            }
             output.val('');
-            latestId = 0;
-            toastr.success(t`Server logs cleared.`, t`Server Logs`);
         } catch (error) {
             console.error('Clear logs failed:', error);
-            toastr.error(String(error.message || error), t`Failed to clear server logs`);
+            const title = currentSource === 'server' ? t`Failed to clear server logs` : t`Failed to clear frontend logs`;
+            toastr.error(String(error.message || error), title);
         }
     });
 
+    updateNote();
     await reloadAll();
     const timer = setInterval(loadIncremental, 1500);
     try {
@@ -1633,7 +1822,7 @@ jQuery(() => {
         openUserProfile();
     });
     $('#server_logs_button').on('click', () => {
-        openServerLogsViewer();
+        openLogsViewer();
     });
     setInterval(async () => {
         if (currentUser) {
