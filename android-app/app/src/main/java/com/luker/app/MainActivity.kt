@@ -525,6 +525,7 @@ class MainActivity : AppCompatActivity() {
                     reportRuntimeFailure(detail ?: "unknown", diagnostics)
                     return@Thread
                 }
+                LukerRuntimeForegroundService.start(applicationContext)
 
                 runOnUiThread { loadingText.setText(R.string.loading_webview) }
                 waitUntilServerReady(240, 1000)

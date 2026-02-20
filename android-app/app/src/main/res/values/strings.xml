@@ -14,6 +14,11 @@
     <string name="runtime_error_share">分享报告</string>
     <string name="runtime_error_copy_done">诊断信息已复制</string>
     <string name="runtime_error_report_saved">诊断报告已保存到：%1$s</string>
+    <string name="runtime_notification_channel_name">Luker 后台服务</string>
+    <string name="runtime_notification_channel_description">保持本地 Luker 服务在后台运行</string>
+    <string name="runtime_notification_title">Luker</string>
+    <string name="runtime_notification_text">本地服务正在后台运行</string>
+    <string name="runtime_notification_exit">退出应用</string>
     <string name="download_queued">文件下载已加入队列</string>
     <string name="download_started">开始下载文件</string>
     <string name="download_failed">下载失败，请重试</string>
