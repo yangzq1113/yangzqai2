@@ -48,12 +48,10 @@ export async function setUserControls(isEnabled) {
         $('#logout_button').hide();
         $('#admin_button').hide();
         $('#server_logs_button').show();
-        $('#data_import_button').show();
         return;
     }
 
     $('#logout_button').show();
-    $('#data_import_button').show();
     await getCurrentUser();
 }
 
@@ -460,6 +458,7 @@ async function openBackupManager(handle, callback) {
     const selectedFileText = template.find('.backupSelectedFileName');
     const restoreButton = template.find('.backupRestoreButton');
     const restoreSelectButton = template.find('.backupRestoreSelectButton');
+    const importDataButton = template.find('.backupImportDataButton');
     const downloadButton = template.find('.backupDownloadButton');
     const checkboxes = template.find('input[name="backupCategory"]');
     const summaryText = template.find('.backupCategorySummary');
@@ -480,14 +479,15 @@ async function openBackupManager(handle, callback) {
     const updateRestoreState = () => {
         const hasFile = Boolean(fileInput[0]?.files?.[0]);
         restoreButton.toggleClass('disabled', !hasFile);
+        importDataButton.toggleClass('disabled', !hasFile);
     };
 
-    const runRestore = async (file) => {
+    const runRestore = async (file, selectionOverride = null) => {
         if (!file) {
             return;
         }
 
-        const selection = collectBackupSelection(template);
+        const selection = selectionOverride ?? collectBackupSelection(template);
         if (!Object.values(selection).some(Boolean)) {
             toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
             return;
@@ -518,6 +518,7 @@ async function openBackupManager(handle, callback) {
             );
             restoreButton.addClass('disabled');
             restoreSelectButton.addClass('disabled');
+            importDataButton.addClass('disabled');
             downloadButton.addClass('disabled');
             const result = await restoreUserData(handle, file, selection, mode);
             toastr.success(
@@ -534,6 +535,7 @@ async function openBackupManager(handle, callback) {
             }
             restoreButton.removeClass('disabled');
             restoreSelectButton.removeClass('disabled');
+            importDataButton.removeClass('disabled');
             downloadButton.removeClass('disabled');
             fileInput.val('');
             selectedFileText.text(t`No ZIP selected.`);
@@ -570,12 +572,14 @@ async function openBackupManager(handle, callback) {
         $(this).addClass('disabled');
         restoreSelectButton.addClass('disabled');
         restoreButton.addClass('disabled');
+        importDataButton.addClass('disabled');
 
         try {
             await backupUserData(handle, () => { }, selection);
         } finally {
             $(this).removeClass('disabled');
             restoreSelectButton.removeClass('disabled');
+            importDataButton.removeClass('disabled');
             updateRestoreState();
         }
     });
@@ -595,6 +599,15 @@ async function openBackupManager(handle, callback) {
         await runRestore(file);
     });
 
+    importDataButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const file = fileInput[0]?.files?.[0];
+        await runRestore(file, BACKUP_FULL_SELECTION);
+    });
+
     fileInput.on('change', function () {
         const file = this instanceof HTMLInputElement ? this.files?.[0] : null;
         selectedFileText.text(file ? t`${file.name} (${humanFileSize(file.size)})` : t`No ZIP selected.`);
@@ -605,131 +618,6 @@ async function openBackupManager(handle, callback) {
 
     await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
         okButton: 'Close',
-        wide: true,
-        large: false,
-        allowVerticalScrolling: true,
-        allowHorizontalScrolling: false,
-    });
-}
-
-async function openDataZipImport() {
-    if (!currentUser) {
-        await getCurrentUser();
-    }
-
-    const handle = String(currentUser?.handle || getCurrentUserHandle()).trim();
-    if (!handle) {
-        toastr.error(t`No active user context found.`, t`Import failed`);
-        return;
-    }
-
-    const template = $(`
-        <div class="userBackupManager flex-container flexFlowColumn flexNoGap">
-            <h3 class="marginBot5">${t`Import Data ZIP`}</h3>
-            <div class="marginBot10">${t`Import a data ZIP directly into the current user profile.`}</div>
-            <div class="marginBot10">
-                <span>${t`Restore mode:`}</span>
-                <label class="checkbox_label backupRestoreModeLabel">
-                    <input type="radio" name="directImportMode" value="merge" checked>
-                    <span>${t`Incremental Update`}</span>
-                </label>
-                <label class="checkbox_label backupRestoreModeLabel">
-                    <input type="radio" name="directImportMode" value="overwrite">
-                    <span>${t`Overwrite Update`}</span>
-                </label>
-            </div>
-            <div class="backupActionRow flex-container flexGap10 marginBot5">
-                <div class="directImportSelectButton menu_button menu_button_icon">
-                    <i class="fa-fw fa-solid fa-folder-open"></i>
-                    <span>${t`Select ZIP`}</span>
-                </div>
-                <div class="directImportRunButton menu_button menu_button_icon disabled">
-                    <i class="fa-fw fa-solid fa-file-import"></i>
-                    <span>${t`Start Import`}</span>
-                </div>
-            </div>
-            <div class="directImportFileName marginBot5">${t`No ZIP selected.`}</div>
-            <div class="menu_button_note">
-                <span>${t`This import writes all supported data categories for the current user.`}</span><br>
-                <span>${t`Overwrite Update clears known categories first, then restores files from ZIP.`}</span>
-            </div>
-            <form hidden>
-                <input type="file" class="directImportFileInput" accept=".zip,application/zip">
-            </form>
-        </div>
-    `);
-
-    const fileInput = template.find('.directImportFileInput');
-    const fileNameLabel = template.find('.directImportFileName');
-    const selectButton = template.find('.directImportSelectButton');
-    const runButton = template.find('.directImportRunButton');
-
-    const updateState = () => {
-        const file = fileInput[0] instanceof HTMLInputElement ? fileInput[0].files?.[0] : null;
-        runButton.toggleClass('disabled', !file);
-        fileNameLabel.text(file ? t`${file.name} (${humanFileSize(file.size)})` : t`No ZIP selected.`);
-    };
-
-    selectButton.on('click', () => fileInput.trigger('click'));
-    fileInput.on('change', updateState);
-
-    runButton.on('click', async function () {
-        if ($(this).hasClass('disabled')) {
-            return;
-        }
-
-        const file = fileInput[0] instanceof HTMLInputElement ? fileInput[0].files?.[0] : null;
-        if (!file) {
-            return;
-        }
-
-        const modeValue = String(template.find('input[name="directImportMode"]:checked').val() || 'merge');
-        const mode = modeValue === 'overwrite' ? 'overwrite' : 'merge';
-        const confirmMessage = mode === 'overwrite'
-            ? t`Overwrite mode will clear existing data before restore. Continue?`
-            : t`Import in incremental mode and overwrite files on path conflicts?`;
-        const confirmed = await callGenericPopup(confirmMessage, POPUP_TYPE.CONFIRM, '', {
-            okButton: t`Start Import`,
-            cancelButton: t`Cancel`,
-            wide: false,
-            large: false,
-        });
-
-        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
-            return;
-        }
-
-        let progressToast;
-        try {
-            progressToast = toastr.info(
-                t`Please wait...`,
-                t`Import Data ZIP`,
-                { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
-            );
-            runButton.addClass('disabled');
-            selectButton.addClass('disabled');
-
-            const result = await restoreUserData(handle, file, BACKUP_FULL_SELECTION, mode);
-            toastr.success(
-                t`Imported ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
-                t`Import complete`,
-            );
-        } catch (error) {
-            console.error('Direct data import failed:', error);
-            toastr.error(String(error.message || error), t`Import failed`);
-        } finally {
-            if (progressToast) {
-                toastr.clear(progressToast);
-            }
-            fileInput.val('');
-            updateState();
-            selectButton.removeClass('disabled');
-        }
-    });
-
-    updateState();
-    await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
-        okButton: t`Close`,
         wide: true,
         large: false,
         allowVerticalScrolling: true,
@@ -1743,9 +1631,6 @@ jQuery(() => {
     });
     $('#account_button').on('click', () => {
         openUserProfile();
-    });
-    $('#data_import_button').on('click', () => {
-        openDataZipImport();
     });
     $('#server_logs_button').on('click', () => {
         openServerLogsViewer();

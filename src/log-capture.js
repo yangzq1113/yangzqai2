@@ -10,18 +10,27 @@ const entries = [];
 let nextId = 1;
 const capacity = DEFAULT_CAPACITY;
 
+function stripAnsiArtifacts(input) {
+    return String(input)
+        .replace(/\u001b\[[0-9;]*m/g, '')
+        .replace(/(?:^|[\s])\[(?:\d{1,3}(?:;\d{1,3})*)m/g, (match) => match.startsWith(' ') ? ' ' : '')
+        .replace(/\[(?:\d{1,3}(?:;\d{1,3})*)m(?=[^\s])/g, '');
+}
+
 function toSafeString(value) {
     if (typeof value === 'string') {
-        return value;
+        return stripAnsiArtifacts(value);
     }
 
-    return util.inspect(value, {
+    const inspected = util.inspect(value, {
         depth: 8,
         maxArrayLength: null,
         maxStringLength: null,
         breakLength: 140,
         compact: 2,
     });
+
+    return stripAnsiArtifacts(inspected);
 }
 
 function appendEntry(level, args) {
