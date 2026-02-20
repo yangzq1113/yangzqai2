@@ -5948,6 +5948,11 @@ function ensureStyles() {
     background: rgba(0,0,0,0.18);
     overflow: auto;
 }
+.luker_orch_iter_conversation,
+.luker_orch_iter_msg,
+.luker_orch_iter_msg_head,
+.luker_orch_iter_msg_body,
+.luker_orch_iter_pending_text { text-align: left; }
 .luker_orch_iter_conversation {
     min-height: 260px;
     max-height: 420px;
@@ -6101,6 +6106,11 @@ function ensureStyles() {
     table-layout: fixed;
     font-size: 0.82rem;
 }
+.luker_orch_line_diff_pre,
+.luker_orch_line_diff_table,
+.luker_orch_line_diff_row td,
+.luker_orch_line_diff_text,
+.luker_orch_line_diff_text_inner { text-align: left; }
 .luker_orch_line_diff_row td {
     border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.24));
     padding: 2px 6px;
