@@ -3,6 +3,8 @@ package com.luker.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -21,18 +23,26 @@ import android.webkit.ValueCallback
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import java.io.File
 import java.io.IOException
+import java.io.PrintWriter
+import java.io.StringWriter
 
 class MainActivity : AppCompatActivity() {
     private val tag = "LukerMainActivity"
+    private val runtimeReportFileName = "luker-runtime-last-error.txt"
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
+    @Volatile
+    private var runtimeFailureDialogShown: Boolean = false
     private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingWebPermissionRequest: PermissionRequest? = null
     private var pendingWebPermissionResources: Array<String>? = null
@@ -385,15 +395,10 @@ class MainActivity : AppCompatActivity() {
             try {
                 val result = LukerRuntimeManager.startIfNeeded(applicationContext)
                 if (!result.ok) {
-                    runOnUiThread {
-                        val detail = result.error?.trim()?.takeIf { it.isNotEmpty() }
-                        Log.e(tag, "Runtime start failed: ${detail ?: "unknown"}")
-                        loadingText.text = if (detail == null) {
-                            getString(R.string.loading_failed)
-                        } else {
-                            getString(R.string.loading_failed_with_reason, detail)
-                        }
-                    }
+                    val detail = result.error?.trim()?.takeIf { it.isNotEmpty() }
+                    val diagnostics = collectRuntimeDiagnosticsSafe()
+                    Log.e(tag, "Runtime start failed: ${detail ?: "unknown"}\n$diagnostics")
+                    reportRuntimeFailure(detail ?: "unknown", diagnostics)
                     return@Thread
                 }
 
@@ -401,12 +406,8 @@ class MainActivity : AppCompatActivity() {
                 waitUntilServerReady(240, 1000)
             } catch (t: Throwable) {
                 Log.e(tag, "bootstrapRuntime crashed", t)
-                runOnUiThread {
-                    loadingText.text = getString(
-                        R.string.loading_failed_with_reason,
-                        t.message ?: "unknown error",
-                    )
-                }
+                val diagnostics = collectRuntimeDiagnosticsSafe()
+                reportRuntimeFailure(t.message ?: "unknown error", diagnostics, t)
             }
         }.start()
     }
@@ -422,27 +423,123 @@ class MainActivity : AppCompatActivity() {
             if (!LukerRuntimeManager.isNodeProcessRunning()) {
                 val diagnostics = LukerRuntimeManager.collectDiagnostics(applicationContext)
                 Log.e(tag, "Node runtime stopped before server became ready.\n$diagnostics")
-                runOnUiThread {
-                    loadingText.text = getString(
-                        R.string.loading_failed_with_reason,
-                        "Node exited before startup completed. Check Logcat tag: $tag",
-                    )
-                }
+                reportRuntimeFailure("Node exited before startup completed", diagnostics)
                 return
             }
 
             if (remaining <= 0) {
                 val diagnostics = LukerRuntimeManager.collectDiagnostics(applicationContext)
                 Log.e(tag, "Server readiness timed out.\n$diagnostics")
-                runOnUiThread {
-                    loadingText.text = getString(R.string.loading_failed_timeout)
-                }
+                reportRuntimeFailure(getString(R.string.loading_failed_timeout), diagnostics)
                 return
             }
 
             remaining -= 1
             Thread.sleep(delayMs)
         }
+    }
+
+    private fun collectRuntimeDiagnosticsSafe(): String {
+        return runCatching { LukerRuntimeManager.collectDiagnostics(applicationContext) }
+            .getOrElse { t -> "diagnostics_unavailable: ${t.message ?: t.javaClass.simpleName}" }
+    }
+
+    private fun reportRuntimeFailure(
+        reason: String,
+        diagnostics: String,
+        throwable: Throwable? = null,
+    ) {
+        val safeReason = reason.trim().ifEmpty { "unknown error" }
+        val report = buildRuntimeFailureReport(safeReason, diagnostics, throwable)
+        val reportFile = runCatching { persistRuntimeReport(report) }.getOrNull()
+
+        runOnUiThread {
+            loadingText.text = getString(R.string.loading_failed_with_reason, safeReason)
+            if (runtimeFailureDialogShown) {
+                return@runOnUiThread
+            }
+            runtimeFailureDialogShown = true
+            showRuntimeFailureDialog(report, reportFile)
+        }
+    }
+
+    private fun buildRuntimeFailureReport(
+        reason: String,
+        diagnostics: String,
+        throwable: Throwable?,
+    ): String {
+        val throwableText = throwable?.let {
+            val writer = StringWriter()
+            PrintWriter(writer).use { printer ->
+                throwable.printStackTrace(printer)
+            }
+            writer.toString().trim()
+        }
+
+        return buildString {
+            append("reason=").append(reason).append('\n')
+            append("server=").append(LukerRuntimeManager.SERVER_URL).append('\n')
+            append("device=").append(android.os.Build.MANUFACTURER)
+                .append(' ')
+                .append(android.os.Build.MODEL)
+                .append('\n')
+            append("android=").append(android.os.Build.VERSION.RELEASE)
+                .append(" (sdk=").append(android.os.Build.VERSION.SDK_INT).append(")\n")
+            append("package=").append(packageName).append('\n')
+            append("timestamp=").append(System.currentTimeMillis()).append('\n')
+            if (!throwableText.isNullOrEmpty()) {
+                append("\nstacktrace:\n").append(throwableText).append('\n')
+            }
+            append("\ndiagnostics:\n").append(diagnostics.trim())
+        }
+    }
+
+    private fun persistRuntimeReport(report: String): File {
+        val file = File(filesDir, runtimeReportFileName)
+        file.writeText(report, Charsets.UTF_8)
+        return file
+    }
+
+    private fun showRuntimeFailureDialog(report: String, reportFile: File?) {
+        val reportView = TextView(this).apply {
+            text = report
+            setTextIsSelectable(true)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(32, 24, 32, 24)
+        }
+        val scrollView = ScrollView(this).apply {
+            addView(reportView)
+        }
+
+        val intro = buildString {
+            append(getString(R.string.runtime_error_dialog_intro))
+            if (reportFile != null) {
+                append('\n').append(getString(R.string.runtime_error_report_saved, reportFile.absolutePath))
+            }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle(R.string.runtime_error_dialog_title)
+            .setMessage(intro)
+            .setView(scrollView)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNeutralButton(R.string.runtime_error_copy) { _, _ ->
+                val clipboard = getSystemService(ClipboardManager::class.java)
+                clipboard?.setPrimaryClip(ClipData.newPlainText("luker-runtime-error", report))
+                Toast.makeText(this, getString(R.string.runtime_error_copy_done), Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(R.string.runtime_error_share) { _, _ ->
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "Luker runtime startup report")
+                    putExtra(Intent.EXTRA_TEXT, report)
+                }
+                runCatching {
+                    startActivity(Intent.createChooser(shareIntent, getString(R.string.runtime_error_share)))
+                }
+            }
+            .setCancelable(false)
+            .show()
     }
 
     override fun onDestroy() {
