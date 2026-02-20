@@ -5941,6 +5941,45 @@ body:not(.movingUI) .drawer-content.maximized {
     display: inline-flex;
 }
 
+.onboarding .onboardingMigrationPanel {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    padding: 10px;
+    background: var(--black30a);
+}
+
+.onboarding .onboardingMigrationPanel h3 {
+    margin: 0 0 5px 0;
+}
+
+.onboarding .onboardingMigrationSteps {
+    margin-left: 20px;
+}
+
+.onboarding .onboardingMigrationActions {
+    justify-content: flex-start;
+    text-align: left;
+}
+
+.onboarding .onboardingMigrationActions .menu_button {
+    margin: 0;
+}
+
+.onboarding .onboardingMigrationActions .menu_button span {
+    writing-mode: horizontal-tb;
+    white-space: nowrap;
+}
+
+.onboarding .onboardingMigrationActions .menu_button.disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.onboarding .onboardingMigrationStatus {
+    min-height: 1.2em;
+    text-align: left;
+}
+
 .onboarding>h3 {
     align-self: center;
 }

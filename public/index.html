@@ -7268,6 +7268,37 @@
                     <li><span data-i18n="welcome_message_part_4">Type</span> <code>/help</code> <span data-i18n="welcome_message_part_5">in chat for commands and macros.</span></li>
                     <li><span data-i18n="welcome_message_part_6">Join the</span> <a href="https://discord.gg/sillytavern" data-i18n="Discord server" target="_blank">Discord server</a> <span data-i18n="welcome_message_part_7">for info and announcements.</span></li>
                 </ul>
+                <div class="onboardingMigrationPanel">
+                    <h3 data-i18n="Migrate from SillyTavern">Migrate from SillyTavern</h3>
+                    <div class="justifyLeft onboardingMigrationIntro" data-i18n="Import your existing data before you start chatting.">
+                        Import your existing data before you start chatting.
+                    </div>
+                    <ol class="justifyLeft onboardingMigrationSteps marginTopBot5">
+                        <li data-i18n="Prepare and upload your previous data folder ZIP.">Prepare and upload your previous data folder ZIP.</li>
+                        <li data-i18n="Upload your previous config.yaml if you want to carry over server settings.">Upload your previous config.yaml if you want to carry over server settings.</li>
+                        <li data-i18n="Upload global third-party extensions ZIP if you used server-wide plugins.">Upload global third-party extensions ZIP if you used server-wide plugins.</li>
+                    </ol>
+                    <div class="onboardingMigrationActions flex-container flexWrap flexGap10 marginTopBot5">
+                        <div class="menu_button menu_button_icon onboardingImportDataZipButton">
+                            <i class="fa-fw fa-solid fa-box-archive"></i>
+                            <span data-i18n="Import Data ZIP">Import Data ZIP</span>
+                        </div>
+                        <div class="menu_button menu_button_icon onboardingImportConfigButton">
+                            <i class="fa-fw fa-solid fa-file-lines"></i>
+                            <span data-i18n="Import config.yaml">Import config.yaml</span>
+                        </div>
+                        <div class="menu_button menu_button_icon onboardingImportGlobalExtensionsButton">
+                            <i class="fa-fw fa-solid fa-puzzle-piece"></i>
+                            <span data-i18n="Import Global Extensions ZIP">Import Global Extensions ZIP</span>
+                        </div>
+                    </div>
+                    <div class="onboardingMigrationStatus menu_button_note marginTopBot5"></div>
+                    <form hidden>
+                        <input type="file" class="onboardingImportDataZipInput" accept=".zip,application/zip">
+                        <input type="file" class="onboardingImportConfigInput" accept=".yaml,.yml,text/yaml,application/x-yaml,text/plain">
+                        <input type="file" class="onboardingImportGlobalExtensionsInput" accept=".zip,application/zip">
+                    </form>
+                </div>
                 <div class="expander"></div>
                 <div class="textAlignCenter">
                     <h3 data-i18n="Looking for AI characters?">

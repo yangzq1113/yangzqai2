@@ -14,6 +14,10 @@ import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import { color, Cache, ensureDirectory, normalizeZipEntryPath } from '../util.js';
 
 const RESET_CACHE = new Cache(5 * 60 * 1000);
+const FULL_IMPORT_SELECTION = Object.freeze(
+    Object.fromEntries(Object.keys(normalizeUserBackupSelection({})).map((key) => [key, true])),
+);
+const BACKUP_CATEGORY_ORDER = Object.freeze(Object.keys(FULL_IMPORT_SELECTION));
 
 function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, allowedDirectories) {
     const parts = normalizedEntryPath.split('/').filter(Boolean);
@@ -50,6 +54,153 @@ function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, 
     return '';
 }
 
+function addRestoreReportSample(report, entry, reason) {
+    if (!entry || !reason) {
+        return;
+    }
+
+    if (!Array.isArray(report.sampleSkippedEntries)) {
+        report.sampleSkippedEntries = [];
+    }
+
+    if (report.sampleSkippedEntries.length >= 30) {
+        return;
+    }
+
+    report.sampleSkippedEntries.push({ entry, reason });
+}
+
+function buildRestoreCategoryTargets(directories, selection) {
+    const categories = [];
+    for (const category of BACKUP_CATEGORY_ORDER) {
+        if (!selection[category]) {
+            continue;
+        }
+
+        const categorySelection = Object.fromEntries(BACKUP_CATEGORY_ORDER.map((key) => [key, key === category]));
+        const categoryTargets = getUserBackupTargets(directories, categorySelection);
+        categories.push({
+            name: category,
+            files: new Set(categoryTargets.files.map(file => path.resolve(file))),
+            directories: categoryTargets.directories.map(directory => path.resolve(directory)),
+        });
+    }
+    return categories;
+}
+
+function resolveRestoreCategoryByTargetPath(targetPath, categoryTargets) {
+    for (const category of categoryTargets) {
+        if (category.files.has(targetPath)) {
+            return category.name;
+        }
+
+        for (const directory of category.directories) {
+            if (targetPath.startsWith(directory + path.sep)) {
+                return category.name;
+            }
+        }
+    }
+
+    return '';
+}
+
+async function analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, targetDirectories, categoryTargets) {
+    /** @type {Map<string, { targetPath: string, category: string }>} */
+    const targetByNormalizedEntry = new Map();
+    const categoryStats = Object.fromEntries(
+        categoryTargets.map((category) => [
+            category.name,
+            { targetableEntries: 0, restoredEntries: 0, failedEntries: 0 },
+        ]),
+    );
+    const report = {
+        totalEntries: 0,
+        fileEntries: 0,
+        directoryEntries: 0,
+        targetableEntries: 0,
+        skippedEntries: 0,
+        rejectedEntries: 0,
+        categoryStats,
+        sampleSkippedEntries: [],
+    };
+
+    await new Promise((resolve, reject) => {
+        yauzl.open(uploadPath, { lazyEntries: true, decodeStrings: true }, (openError, zipfile) => {
+            if (openError) {
+                reject(openError);
+                return;
+            }
+
+            let finished = false;
+            const finish = (error) => {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                if (error) {
+                    reject(error);
+                } else {
+                    resolve();
+                }
+            };
+
+            zipfile.readEntry();
+
+            zipfile.on('entry', (entry) => {
+                try {
+                    report.totalEntries += 1;
+                    const normalized = normalizeZipEntryPath(entry.fileName);
+                    if (!normalized) {
+                        report.rejectedEntries += 1;
+                        addRestoreReportSample(report, String(entry.fileName || ''), 'invalid_path');
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    if (entry.fileName.endsWith('/')) {
+                        report.directoryEntries += 1;
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    const unixFileType = (entry.externalFileAttributes >> 16) & 0o170000;
+                    if (unixFileType === 0o120000) {
+                        report.rejectedEntries += 1;
+                        addRestoreReportSample(report, normalized, 'symlink_rejected');
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    report.fileEntries += 1;
+                    const targetPath = resolveAllowedRestorePath(normalized, targetRoot, targetFiles, targetDirectories);
+                    if (!targetPath) {
+                        report.skippedEntries += 1;
+                        addRestoreReportSample(report, normalized, 'path_not_in_selected_categories');
+                        zipfile.readEntry();
+                        return;
+                    }
+
+                    const category = resolveRestoreCategoryByTargetPath(targetPath, categoryTargets);
+                    targetByNormalizedEntry.set(normalized, { targetPath, category });
+                    report.targetableEntries += 1;
+                    if (category && report.categoryStats[category]) {
+                        report.categoryStats[category].targetableEntries += 1;
+                    }
+                    zipfile.readEntry();
+                } catch (error) {
+                    finish(error);
+                }
+            });
+
+            zipfile.on('end', () => finish());
+            zipfile.on('close', () => finish());
+            zipfile.on('error', finish);
+        });
+    });
+
+    return { targetByNormalizedEntry, report };
+}
+
 async function restoreUserBackupArchive(uploadPath, directories, selection, mode) {
     const backupTargets = getUserBackupTargets(directories, selection);
     const targetRoot = path.resolve(directories.root);
@@ -58,6 +209,13 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
 
     if (targetDirectories.length === 0 && targetFiles.size === 0) {
         throw new Error('At least one restore category must be selected.');
+    }
+
+    const categoryTargets = buildRestoreCategoryTargets(directories, selection);
+    const analysis = await analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, targetDirectories, categoryTargets);
+
+    if (mode === 'overwrite' && analysis.report.targetableEntries === 0) {
+        throw new Error('Archive does not match selected restore categories. Overwrite was cancelled to protect existing data.');
     }
 
     if (mode === 'overwrite') {
@@ -73,8 +231,10 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
 
     const result = {
         restoredCount: 0,
-        skippedCount: 0,
-        rejectedCount: 0,
+        failedCount: 0,
+        skippedCount: analysis.report.skippedEntries,
+        rejectedCount: analysis.report.rejectedEntries,
+        preflight: analysis.report,
     };
 
     await new Promise((resolve, reject) => {
@@ -103,7 +263,6 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
                 (async () => {
                     const normalized = normalizeZipEntryPath(entry.fileName);
                     if (!normalized) {
-                        result.rejectedCount += 1;
                         zipfile.readEntry();
                         return;
                     }
@@ -115,18 +274,17 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
 
                     const unixFileType = (entry.externalFileAttributes >> 16) & 0o170000;
                     if (unixFileType === 0o120000) {
-                        result.rejectedCount += 1;
                         zipfile.readEntry();
                         return;
                     }
 
-                    const targetPath = resolveAllowedRestorePath(normalized, targetRoot, targetFiles, targetDirectories);
-                    if (!targetPath) {
-                        result.skippedCount += 1;
+                    const targetMapping = analysis.targetByNormalizedEntry.get(normalized);
+                    if (!targetMapping) {
                         zipfile.readEntry();
                         return;
                     }
 
+                    const targetPath = targetMapping.targetPath;
                     ensureDirectory(path.dirname(targetPath));
 
                     zipfile.openReadStream(entry, async (streamError, readStream) => {
@@ -148,8 +306,16 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
                                 }
                             }
                             result.restoredCount += 1;
+                            if (targetMapping.category && result.preflight.categoryStats[targetMapping.category]) {
+                                result.preflight.categoryStats[targetMapping.category].restoredEntries += 1;
+                            }
                             zipfile.readEntry();
                         } catch (error) {
+                            result.failedCount += 1;
+                            if (targetMapping.category && result.preflight.categoryStats[targetMapping.category]) {
+                                result.preflight.categoryStats[targetMapping.category].failedEntries += 1;
+                            }
+                            addRestoreReportSample(result.preflight, normalized, `write_failed:${error instanceof Error ? error.message : String(error)}`);
                             finish(error);
                         }
                     });
@@ -161,6 +327,10 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
             zipfile.on('error', finish);
         });
     });
+
+    if (result.preflight.targetableEntries === 0 && mode !== 'overwrite') {
+        addRestoreReportSample(result.preflight, '(archive)', 'no_restorable_entries_detected');
+    }
 
     return result;
 }
@@ -365,7 +535,42 @@ router.post('/restore-backup', async (request, response) => {
         });
     } catch (error) {
         console.error('Restore failed', error);
-        return response.status(500).json({ error: error?.message || 'Restore failed' });
+        const message = error?.message || 'Restore failed';
+        const statusCode = message.includes('Archive does not match selected restore categories') ? 400 : 500;
+        return response.status(statusCode).json({ error: message });
+    } finally {
+        if (uploadPath) {
+            await fsPromises.rm(uploadPath, { force: true });
+        }
+    }
+});
+
+router.post('/import/data-zip', async (request, response) => {
+    let uploadPath = '';
+
+    try {
+        if (!request.file) {
+            return response.status(400).json({ error: 'No backup file uploaded' });
+        }
+
+        const originalName = String(request.file.originalname || '');
+        if (!originalName.toLowerCase().endsWith('.zip')) {
+            return response.status(400).json({ error: 'Backup file must be a .zip archive' });
+        }
+
+        uploadPath = request.file.path;
+        const mode = String(request.body.mode || 'merge').toLowerCase() === 'overwrite' ? 'overwrite' : 'merge';
+        const restoreResult = await restoreUserBackupArchive(uploadPath, request.user.directories, FULL_IMPORT_SELECTION, mode);
+
+        return response.json({
+            mode,
+            ...restoreResult,
+        });
+    } catch (error) {
+        console.error('Data ZIP import failed', error);
+        const message = error?.message || 'Data ZIP import failed';
+        const statusCode = message.includes('Archive does not match selected restore categories') ? 400 : 500;
+        return response.status(statusCode).json({ error: message });
     } finally {
         if (uploadPath) {
             await fsPromises.rm(uploadPath, { force: true });

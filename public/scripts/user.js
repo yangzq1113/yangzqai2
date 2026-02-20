@@ -613,6 +613,102 @@ async function restoreUserData(handle, file, selection, mode, callback) {
     return data;
 }
 
+function buildRestoreDiagnosticReport({ handle, file, mode, selection, result }) {
+    return {
+        timestamp: new Date().toISOString(),
+        handle: String(handle || ''),
+        mode: String(mode || 'merge'),
+        file: {
+            name: String(file?.name || ''),
+            size: Number(file?.size || 0),
+            type: String(file?.type || ''),
+        },
+        selection: selection || {},
+        result: {
+            restoredCount: Number(result?.restoredCount || 0),
+            skippedCount: Number(result?.skippedCount || 0),
+            rejectedCount: Number(result?.rejectedCount || 0),
+            failedCount: Number(result?.failedCount || 0),
+            preflight: result?.preflight || {},
+        },
+    };
+}
+
+function hasRestoreWarnings(result) {
+    const skipped = Number(result?.skippedCount || 0);
+    const rejected = Number(result?.rejectedCount || 0);
+    const failed = Number(result?.failedCount || 0);
+    const targetable = Number(result?.preflight?.targetableEntries || 0);
+    return skipped > 0 || rejected > 0 || failed > 0 || targetable === 0;
+}
+
+function getRestoreCategoryRows(report) {
+    const categoryStats = report?.result?.preflight?.categoryStats;
+    if (!categoryStats || typeof categoryStats !== 'object') {
+        return [];
+    }
+
+    return Object.entries(categoryStats).map(([category, stats]) => ({
+        category,
+        targetableEntries: Number(stats?.targetableEntries || 0),
+        restoredEntries: Number(stats?.restoredEntries || 0),
+        failedEntries: Number(stats?.failedEntries || 0),
+    }));
+}
+
+async function showRestoreDiagnosticReport(report) {
+    const content = $('<div class="flex-container flexFlowColumn flexNoGap"></div>');
+    content.append(`<h4 class="marginBot10">${t`Restore Diagnostic Report`}</h4>`);
+
+    const totals = report?.result || {};
+    const preflight = totals.preflight || {};
+    const summary = $(`
+        <div class="menu_button_note justifyLeft marginBot10">
+            <div><strong>${t`Restore Summary`}</strong></div>
+            <div>${t`Restored entries`}: ${Number(totals.restoredCount || 0)}</div>
+            <div>${t`Skipped entries`}: ${Number(totals.skippedCount || 0)}</div>
+            <div>${t`Rejected entries`}: ${Number(totals.rejectedCount || 0)}</div>
+            <div>${t`Failed writes`}: ${Number(totals.failedCount || 0)}</div>
+            <div>${t`Preflight total files`}: ${Number(preflight.fileEntries || 0)} / ${t`targetable`}: ${Number(preflight.targetableEntries || 0)}</div>
+        </div>
+    `);
+    content.append(summary);
+
+    const rows = getRestoreCategoryRows(report);
+    if (rows.length > 0) {
+        const categoryBlock = $('<div class="menu_button_note justifyLeft marginBot10"></div>');
+        categoryBlock.append(`<div><strong>${t`Restored by category`}</strong></div>`);
+        const list = $('<ul class="justifyLeft marginTopBot5"></ul>');
+        for (const row of rows) {
+            list.append(`<li>${row.category}: ${t`restored`} ${row.restoredEntries} / ${t`targetable`} ${row.targetableEntries}${row.failedEntries > 0 ? ` (${t`failed`} ${row.failedEntries})` : ''}</li>`);
+        }
+        categoryBlock.append(list);
+        content.append(categoryBlock);
+    }
+
+    const samples = Array.isArray(preflight.sampleSkippedEntries) ? preflight.sampleSkippedEntries : [];
+    if (samples.length > 0) {
+        const sampleText = samples.slice(0, 12).map(item => `${item.entry} -> ${item.reason}`).join('\n');
+        content.append(`<div class="menu_button_note justifyLeft marginBot10"><strong>${t`Sample skipped entries`}</strong></div>`);
+        content.append(`<textarea class="text_pole marginBot10" rows="8" readonly>${sampleText}</textarea>`);
+    }
+
+    const detailWrapper = $('<details class="marginBot5"></details>');
+    detailWrapper.append(`<summary>${t`Raw JSON report`}</summary>`);
+    const output = $('<textarea class="text_pole marginTopBot5" rows="16" readonly></textarea>');
+    output.val(JSON.stringify(report, null, 2));
+    detailWrapper.append(output);
+    content.append(detailWrapper);
+
+    await callGenericPopup(content, POPUP_TYPE.TEXT, '', {
+        okButton: t`Close`,
+        wide: true,
+        large: false,
+        allowVerticalScrolling: true,
+        allowHorizontalScrolling: false,
+    });
+}
+
 async function openBackupManager(handle, callback) {
     const template = $(await renderTemplateAsync('userBackupManager'));
     const fileInput = template.find('.backupRestoreFileInput');
@@ -682,10 +778,16 @@ async function openBackupManager(handle, callback) {
             importDataButton.addClass('disabled');
             downloadButton.addClass('disabled');
             const result = await restoreUserData(handle, file, selection, mode);
+            const diagnosticReport = buildRestoreDiagnosticReport({ handle, file, mode, selection, result });
+            console.info('BACKUP_RESTORE_REPORT', diagnosticReport);
             toastr.success(
                 t`Restored ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
                 t`Backup Restored`,
             );
+            if (hasRestoreWarnings(result)) {
+                toastr.warning(t`Restore completed with warnings. Showing diagnostic report.`, t`Restore Warnings`);
+                await showRestoreDiagnosticReport(diagnosticReport);
+            }
             callback?.(result);
         } catch (error) {
             console.error('Error restoring user data:', error);

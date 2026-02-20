@@ -254,7 +254,7 @@ import { initTextGenModels } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
-import { currentUser, setUserControls } from './scripts/user.js';
+import { currentUser, isAdmin, setUserControls } from './scripts/user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
 import { renderTemplate, renderTemplateAsync } from './scripts/templates.js';
 import { initScrapers } from './scripts/scrapers.js';
@@ -9621,7 +9621,8 @@ export function setUserName(value, { toastPersonaNameChange = true } = {}) {
 }
 
 async function doOnboarding(avatarId) {
-    const template = $('#onboarding_template .onboarding');
+    const template = $('#onboarding_template .onboarding').clone();
+    bindOnboardingImportActions(template);
     let userName = await callGenericPopup(template, POPUP_TYPE.INPUT, currentUser?.name || name1, { wider: true, cancelButton: false });
 
     if (userName) {
@@ -9634,6 +9635,121 @@ async function doOnboarding(avatarId) {
             position: persona_description_positions.IN_PROMPT,
         };
     }
+}
+
+async function uploadOnboardingImport(url, file) {
+    const formData = new FormData();
+    formData.append('avatar', file);
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+        body: formData,
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(data?.error || t`Import failed`);
+    }
+
+    return data;
+}
+
+function bindOnboardingImportActions(template) {
+    const status = template.find('.onboardingMigrationStatus');
+    const dataButton = template.find('.onboardingImportDataZipButton');
+    const configButton = template.find('.onboardingImportConfigButton');
+    const globalExtensionsButton = template.find('.onboardingImportGlobalExtensionsButton');
+    const dataInput = template.find('.onboardingImportDataZipInput');
+    const configInput = template.find('.onboardingImportConfigInput');
+    const globalExtensionsInput = template.find('.onboardingImportGlobalExtensionsInput');
+    let serverLevelLocked = false;
+
+    const setStatus = (text = '') => {
+        status.text(String(text || ''));
+    };
+
+    const setBusy = (busy) => {
+        dataButton.toggleClass('disabled', Boolean(busy));
+        if (!serverLevelLocked) {
+            configButton.toggleClass('disabled', Boolean(busy));
+            globalExtensionsButton.toggleClass('disabled', Boolean(busy));
+        }
+    };
+
+    const runImport = async (label, input, endpoint, successTextFactory) => {
+        const file = input[0] instanceof HTMLInputElement ? input[0].files?.[0] : null;
+        if (!file) {
+            return;
+        }
+
+        setBusy(true);
+        setStatus(t`Importing ${label}...`);
+        try {
+            const result = await uploadOnboardingImport(endpoint, file);
+            const message = typeof successTextFactory === 'function' ? successTextFactory(result) : t`Import completed`;
+            setStatus(message);
+            toastr.success(message, t`Import completed`);
+        } catch (error) {
+            const message = String(error?.message || error || t`Import failed`);
+            setStatus(message);
+            toastr.error(message, t`Import failed`);
+        } finally {
+            if (input[0] instanceof HTMLInputElement) {
+                input[0].value = '';
+            }
+            setBusy(false);
+        }
+    };
+
+    dataButton.on('click', () => {
+        if (dataButton.hasClass('disabled')) {
+            return;
+        }
+        dataInput.trigger('click');
+    });
+    dataInput.on('change', () => runImport(
+        t`Data ZIP`,
+        dataInput,
+        '/api/users/import/data-zip',
+        (result) => t`Data ZIP imported: restored ${result?.restoredCount ?? 0}, skipped ${result?.skippedCount ?? 0}, rejected ${result?.rejectedCount ?? 0}.`,
+    ));
+
+    const canImportServerLevel = isAdmin();
+    if (!canImportServerLevel) {
+        serverLevelLocked = true;
+        const hint = t`Only administrators can import config.yaml and global extensions.`;
+        configButton.addClass('disabled').attr('title', hint);
+        globalExtensionsButton.addClass('disabled').attr('title', hint);
+        setStatus(hint);
+        return;
+    }
+
+    configButton.on('click', () => {
+        if (configButton.hasClass('disabled')) {
+            return;
+        }
+        configInput.trigger('click');
+    });
+    configInput.on('change', () => runImport(
+        t`config.yaml`,
+        configInput,
+        '/api/users/import/config',
+        () => t`config.yaml imported. Some settings may require backend restart to fully apply.`,
+    ));
+
+    globalExtensionsButton.on('click', () => {
+        if (globalExtensionsButton.hasClass('disabled')) {
+            return;
+        }
+        globalExtensionsInput.trigger('click');
+    });
+    globalExtensionsInput.on('change', () => runImport(
+        t`Global Extensions ZIP`,
+        globalExtensionsInput,
+        '/api/users/import/global-extensions',
+        (result) => t`Global extensions imported: ${result?.importedCount ?? 0} files.`,
+    ));
 }
 
 function reloadLoop() {
