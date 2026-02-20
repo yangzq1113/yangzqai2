@@ -5,6 +5,7 @@ import { CONNECT_API_MAP, saveSettings, saveSettingsDebounced } from '../../../s
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
+import { getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate } from '../../world-info.js';
 
 const MODULE_NAME = 'memory_graph';
@@ -14,6 +15,7 @@ const STYLE_ID = 'memory_graph_style';
 const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
+const RECALL_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
 
 const LEVEL = {
@@ -865,6 +867,7 @@ let activeRecallAbortController = null;
 let activeExtractionAbortController = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
+let latestRecallSnapshot = null;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -4362,6 +4365,38 @@ function getRecallQueryBundle(payload, context, settings = null) {
     };
 }
 
+function buildLastUserAnchorFromMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (!message || !message.is_user) {
+            continue;
+        }
+        const text = String(message.mes ?? '');
+        return {
+            floor: i + 1,
+            hash: String(getStringHash(text)),
+        };
+    }
+    return null;
+}
+
+function canReuseLatestRecallSnapshot(chatKey, anchor) {
+    if (!latestRecallSnapshot || typeof latestRecallSnapshot !== 'object') {
+        return false;
+    }
+    if (!anchor || typeof anchor !== 'object') {
+        return false;
+    }
+    if (String(latestRecallSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return false;
+    }
+    return Number(latestRecallSnapshot.anchorFloor) === Number(anchor.floor)
+        && String(latestRecallSnapshot.anchorHash || '') === String(anchor.hash || '');
+}
+
 function getNodeRecallExposure(settings, node, context = null) {
     if (!node) {
         return 'high_only';
@@ -5598,6 +5633,23 @@ async function injectMemoryPrompts(context, payload) {
         updateUiStatus(i18n('Memory store unavailable for current chat.'));
         return false;
     }
+    const chatKey = getChatKey(context, targetHint);
+    const anchor = buildLastUserAnchorFromMessages(payload?.coreChat);
+    const shouldReuseSnapshot = settings.recallEnabled
+        && RECALL_REUSE_GENERATION_TYPES.has(generationType)
+        && canReuseLatestRecallSnapshot(chatKey, anchor);
+    if (shouldReuseSnapshot) {
+        const blocks = structuredClone(latestRecallSnapshot.blocks || { corePacket: '', focusPacket: '' });
+        await syncLorebookProjection(context, settings, blocks);
+        store.lastRecallTrace = structuredClone(Array.isArray(latestRecallSnapshot.trace) ? latestRecallSnapshot.trace : []);
+        store.lastRecallProjection = {
+            at: Date.now(),
+            blocks,
+        };
+        await persistMemoryStoreByChatKey(context, chatKey, store);
+        updateUiStatus(i18nFormat('Recall ready. selected=${0}', Math.max(0, Number(latestRecallSnapshot.selectedCount || 0))));
+        return true;
+    }
 
     const { selectedNodes, alwaysInjectNodes, trace, query } = await runLLMDrivenRecall(context, store, payload);
     store.lastRecallTrace = trace;
@@ -5611,8 +5663,17 @@ async function injectMemoryPrompts(context, payload) {
         at: Date.now(),
         blocks,
     };
-    const chatKey = getChatKey(context, targetHint);
     await persistMemoryStoreByChatKey(context, chatKey, store);
+    latestRecallSnapshot = anchor
+        ? {
+            chatKey,
+            anchorFloor: anchor.floor,
+            anchorHash: anchor.hash,
+            blocks: structuredClone(blocks),
+            trace: structuredClone(trace),
+            selectedCount: selectedNodes.length,
+        }
+        : null;
     updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
     return true;
 }
@@ -9093,6 +9154,9 @@ jQuery(() => {
         try {
             await ensureMemoryStoreLoaded(runtimeContext);
             const chatKey = getChatKey(runtimeContext);
+            if (latestRecallSnapshot?.chatKey === chatKey) {
+                latestRecallSnapshot = null;
+            }
             const store = memoryStoreCache.get(chatKey);
             if (!store) {
                 return;
@@ -9133,6 +9197,7 @@ jQuery(() => {
     }
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
         const runtimeContext = getContext();
+        latestRecallSnapshot = null;
         ensureUi();
         ensureMemoryStoreLoaded(runtimeContext)
             .then(() => refreshUiStats())

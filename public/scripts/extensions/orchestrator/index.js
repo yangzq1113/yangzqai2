@@ -5,6 +5,7 @@ import { CONNECT_API_MAP, extension_prompt_roles, extension_prompt_types, saveSe
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { chat_completion_sources, proxies, sendOpenAIRequest } from '../../openai.js';
+import { getStringHash } from '../../utils.js';
 
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
@@ -32,6 +33,7 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
 ].join('\n');
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_orchestration'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
+const ORCH_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
 const ANTI_DATA_BLOCKED_LEXICON = [
     '观察', '分析', '评估', '统计', '监测', '检测', '实验', '推测', '记录', '汇报',
@@ -612,6 +614,7 @@ let activeAiBuildToast = null;
 let activeAiIterationAbortController = null;
 let activeOrchRunAbortController = null;
 let activeAiBuildAbortController = null;
+let latestOrchestrationSnapshot = null;
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -894,6 +897,32 @@ function extractLastUserMessage(messages) {
     }
 
     return { index: -1, message: null };
+}
+
+function buildLastUserAnchorFromMessages(messages) {
+    const { index, message } = extractLastUserMessage(messages);
+    if (index < 0 || !message) {
+        return null;
+    }
+    const text = String(message.mes ?? '');
+    return {
+        floor: index + 1,
+        hash: String(getStringHash(text)),
+    };
+}
+
+function canReuseLatestOrchestrationSnapshot(chatKey, anchor) {
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        return false;
+    }
+    if (!anchor || typeof anchor !== 'object') {
+        return false;
+    }
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return false;
+    }
+    return Number(latestOrchestrationSnapshot.anchorFloor) === Number(anchor.floor)
+        && String(latestOrchestrationSnapshot.anchorHash || '') === String(anchor.hash || '');
 }
 
 function getEffectiveProfile(context) {
@@ -2014,6 +2043,22 @@ async function onWorldInfoFinalized(payload) {
             clearLastCapsuleMetadata(context);
             return;
         }
+        const generationType = String(payload?.type || '').trim().toLowerCase();
+        const chatKey = getChatKey(context);
+        const anchor = buildLastUserAnchorFromMessages(messages);
+        if (ORCH_REUSE_GENERATION_TYPES.has(generationType) && canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
+            const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
+            if (capsuleText) {
+                injectCapsule(context, capsuleText);
+                saveLastCapsuleMetadata(context, capsuleText, payload, {
+                    source: String(latestOrchestrationSnapshot.profileSource || 'global'),
+                    key: String(latestOrchestrationSnapshot.profileKey || 'global'),
+                });
+                updateUiStatus(i18n('Orchestrator completed.'));
+                clearRunInfoToast();
+                return;
+            }
+        }
         updateUiStatus(i18n('Orchestrator running...'));
         showRunInfoToast(i18n('Orchestrator running...'), {
             stopLabel: i18n('Stop'),
@@ -2031,6 +2076,16 @@ async function onWorldInfoFinalized(payload) {
         });
         injectCapsule(context, capsuleText);
         saveLastCapsuleMetadata(context, capsuleText, payload, profile);
+        latestOrchestrationSnapshot = anchor
+            ? {
+                chatKey,
+                anchorFloor: anchor.floor,
+                anchorHash: anchor.hash,
+                capsuleText,
+                profileSource: String(profile?.source || 'global'),
+                profileKey: String(profile?.key || 'global'),
+            }
+            : null;
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
     } catch (error) {
@@ -2063,6 +2118,10 @@ async function onWorldInfoFinalized(payload) {
 
 function onMessageDeleted() {
     const context = getContext();
+    const chatKey = getChatKey(context);
+    if (latestOrchestrationSnapshot?.chatKey === chatKey) {
+        latestOrchestrationSnapshot = null;
+    }
     clearCapsulePrompt(context);
     clearLastCapsuleMetadata(context);
 }
@@ -6474,6 +6533,7 @@ jQuery(() => {
         context.eventSource.on(eventName, () => ensureUi());
     }
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
+        latestOrchestrationSnapshot = null;
         clearCapsulePrompt(context);
         ensureUi();
     });
