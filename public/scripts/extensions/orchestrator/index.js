@@ -2118,10 +2118,6 @@ async function onWorldInfoFinalized(payload) {
 
 function onMessageDeleted() {
     const context = getContext();
-    const chatKey = getChatKey(context);
-    if (latestOrchestrationSnapshot?.chatKey === chatKey) {
-        latestOrchestrationSnapshot = null;
-    }
     clearCapsulePrompt(context);
     clearLastCapsuleMetadata(context);
 }

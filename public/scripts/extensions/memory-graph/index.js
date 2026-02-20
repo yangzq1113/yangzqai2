@@ -9154,9 +9154,6 @@ jQuery(() => {
         try {
             await ensureMemoryStoreLoaded(runtimeContext);
             const chatKey = getChatKey(runtimeContext);
-            if (latestRecallSnapshot?.chatKey === chatKey) {
-                latestRecallSnapshot = null;
-            }
             const store = memoryStoreCache.get(chatKey);
             if (!store) {
                 return;
