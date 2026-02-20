@@ -5,6 +5,7 @@ plugins {
 
 val projectRootDir = rootProject.projectDir.parentFile
 val generatedNodeProjectDir = layout.buildDirectory.dir("generated/nodejs-project")
+val generatedNodeProjectLukerDir = generatedNodeProjectDir.map { it.dir("luker") }
 val jniLibsDir = file("src/main/jniLibs")
 val availableNodeAbis = jniLibsDir
     .listFiles()
@@ -56,7 +57,7 @@ val prepareNodeProject by tasks.registering(Sync::class) {
         exclude("**/*.map")
         exclude("**/.DS_Store")
     }
-    into(generatedNodeProjectDir.map { it.dir("luker") })
+    into(generatedNodeProjectLukerDir)
 }
 
 android {
@@ -137,7 +138,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            assets.srcDir(generatedNodeProjectDir)
+            assets.srcDir(prepareNodeProject.map { it.destinationDir })
             jniLibs.srcDir("src/main/jniLibs")
         }
     }
@@ -155,10 +156,15 @@ android {
     }
 }
 
-tasks.matching { task ->
-    task.name.startsWith("merge") && task.name.endsWith("Assets")
-}.configureEach {
-    dependsOn(prepareNodeProject)
+tasks.configureEach {
+    val taskName = name
+    val requiresPreparedNodeProject =
+        (taskName.startsWith("merge") && taskName.endsWith("Assets")) ||
+        taskName.startsWith("lintVitalAnalyze") ||
+        taskName.endsWith("LintVitalReportModel")
+    if (requiresPreparedNodeProject) {
+        dependsOn(prepareNodeProject)
+    }
 }
 
 dependencies {
