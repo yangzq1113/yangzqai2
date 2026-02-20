@@ -138,7 +138,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            assets.srcDir(prepareNodeProject.map { it.destinationDir })
+            assets.srcDir(generatedNodeProjectDir)
             jniLibs.srcDir("src/main/jniLibs")
         }
     }
