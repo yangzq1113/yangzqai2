@@ -747,15 +747,17 @@ async function getClientVersion() {
 }
 
 function maybeNotifyLukerUpdate(versionData) {
-    try {
-        if (!versionData || versionData.isLatest !== false) {
+    if (!versionData || versionData.isLatest !== false) {
+        return;
+    }
+
+    if (versionData.isDocker === true) {
+        if (lukerUpdatePromptShown) {
             return;
         }
-        const branch = String(versionData.gitBranch || '').trim();
-        const revision = String(versionData.gitRevision || '').trim();
-        const branchText = branch ? ` (${branch}${revision ? ` @ ${revision}` : ''})` : '';
+        lukerUpdatePromptShown = true;
         toastr.info(
-            t`A Luker update is available. Pull latest changes to update your instance.` + branchText,
+            t`A Luker update is available for this Docker deployment. Pull the latest image and recreate the container to update.`,
             t`Update Available`,
             {
                 timeOut: 0,
@@ -764,8 +766,261 @@ function maybeNotifyLukerUpdate(versionData) {
                 preventDuplicates: true,
             },
         );
-    } catch {
-        // Silent fallback by design.
+        return;
+    }
+
+    void showLukerUpdatePrompt(versionData);
+}
+
+let lukerUpdatePromptShown = false;
+
+function hasAndroidUpdateBridge() {
+    return typeof window !== 'undefined'
+        && typeof window.LukerAndroid === 'object'
+        && typeof window.LukerAndroid.installApkFromUrl === 'function';
+}
+
+async function callLukerUpdateApi(path, payload = {}) {
+    const response = await fetch(`/api/users/update/${path}`, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        let message = `Request failed (${response.status})`;
+        try {
+            const errorData = await response.json();
+            message = String(errorData?.error || errorData?.message || message);
+        } catch {
+            // Keep fallback message.
+        }
+        throw new Error(message);
+    }
+
+    if (response.status === 204) {
+        return null;
+    }
+
+    return await response.json();
+}
+
+function formatUpdateLogLine(entry) {
+    const timestamp = Number(entry?.timestamp);
+    const time = Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString() : '--:--:--';
+    return `[${time}] ${String(entry?.message || '').trim()}`;
+}
+
+async function showUpdateProgressPopup(title, runner) {
+    const template = $(`
+        <div class="justifyLeft">
+            <div class="menu_button_note lukerUpdateStatus"></div>
+            <textarea class="text_pole lukerUpdateLogs" rows="16" readonly></textarea>
+        </div>
+    `);
+
+    const statusElement = template.find('.lukerUpdateStatus');
+    const logsElement = template.find('.lukerUpdateLogs');
+    const pushLog = (line) => {
+        const text = String(line ?? '').trim();
+        if (!text) {
+            return;
+        }
+        const previous = String(logsElement.val() || '');
+        const next = previous ? `${previous}\n${text}` : text;
+        logsElement.val(next);
+        logsElement.scrollTop(logsElement[0]?.scrollHeight || 0);
+    };
+    const setStatus = (text) => {
+        statusElement.text(String(text || ''));
+    };
+
+    let canClose = false;
+    let flowError = null;
+    const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
+        okButton: t`Close`,
+        cancelButton: false,
+        wide: true,
+        large: true,
+        leftAlign: true,
+        allowVerticalScrolling: true,
+        onOpen: (instance) => {
+            instance.okButton.classList.add('disabled');
+            instance.okButton.style.pointerEvents = 'none';
+        },
+        onClosing: () => canClose,
+    });
+
+    const popupPromise = popup.show();
+    void (async () => {
+        try {
+            await runner({ pushLog, setStatus });
+        } catch (error) {
+            flowError = error;
+            setStatus(t`Update failed.`);
+            pushLog(String(error?.message || error));
+        } finally {
+            canClose = true;
+            popup.okButton.classList.remove('disabled');
+            popup.okButton.style.pointerEvents = '';
+        }
+    })();
+
+    await popupPromise;
+    if (flowError) {
+        throw flowError;
+    }
+}
+
+function getGitUpdateStatusLabel(status) {
+    switch (status) {
+        case 'running':
+            return t`Updating repository...`;
+        case 'succeeded':
+            return t`Update completed.`;
+        case 'failed':
+            return t`Update failed.`;
+        default:
+            return t`Preparing update...`;
+    }
+}
+
+async function runServerGitUpdateFlow() {
+    let finalState = null;
+    await showUpdateProgressPopup(t`Luker Update`, async ({ pushLog, setStatus }) => {
+        setStatus(t`Submitting update request...`);
+        try {
+            const startResult = await callLukerUpdateApi('start', {});
+            if (startResult?.started) {
+                pushLog(t`Update task started.`);
+            }
+        } catch (error) {
+            const conflict = String(error?.message || '').toLowerCase().includes('already_running');
+            if (!conflict) {
+                throw error;
+            }
+            pushLog(t`An update task is already running. Attaching to the current task...`);
+        }
+
+        let sinceId = 0;
+        while (true) {
+            const payload = await callLukerUpdateApi('status', { sinceId, limit: 600 });
+            const gitState = payload?.git;
+            if (!gitState) {
+                throw new Error(t`Update status payload is invalid.`);
+            }
+
+            finalState = gitState;
+            setStatus(getGitUpdateStatusLabel(String(gitState.status || 'idle')));
+
+            const logs = Array.isArray(gitState.logs) ? gitState.logs : [];
+            for (const entry of logs) {
+                const id = Number(entry?.id);
+                if (Number.isFinite(id)) {
+                    sinceId = Math.max(sinceId, id);
+                }
+                pushLog(formatUpdateLogLine(entry));
+            }
+
+            if (!gitState.running && ['succeeded', 'failed', 'idle'].includes(String(gitState.status || ''))) {
+                break;
+            }
+
+            await delay(1000);
+        }
+
+        if (!finalState || finalState.status === 'failed') {
+            throw new Error(String(finalState?.lastError || t`Update failed.`));
+        }
+    });
+
+    if (!finalState) {
+        throw new Error(t`Update finished without status.`);
+    }
+
+    if (finalState.status === 'succeeded' && finalState.restartRecommended) {
+        await Popup.show.text(
+            t`Manual Restart Required`,
+            t`The update has been applied. Please restart your backend process manually to use the new version.`,
+        );
+        return;
+    }
+
+    if (finalState.status === 'succeeded') {
+        const updated = finalState.updated === true;
+        toastr.success(
+            updated ? t`Luker update completed.` : t`Luker is already up to date.`,
+            t`Luker Update`,
+        );
+    }
+}
+
+async function runAndroidApkUpdateFlow() {
+    if (!hasAndroidUpdateBridge()) {
+        throw new Error(t`Android update bridge is unavailable.`);
+    }
+
+    await showUpdateProgressPopup(t`Luker App Update`, async ({ pushLog, setStatus }) => {
+        setStatus(t`Fetching latest APK release...`);
+        const release = await callLukerUpdateApi('apk-latest', {});
+        const apkName = String(release?.apk?.name || '');
+        const apkUrl = String(release?.apk?.url || '');
+        const tagName = String(release?.tagName || '');
+
+        if (!apkName || !apkUrl) {
+            throw new Error(t`Latest release does not include a valid APK asset.`);
+        }
+
+        pushLog(tagName ? `${t`Release`}: ${tagName}` : t`Release metadata loaded.`);
+        pushLog(`${t`APK`}: ${apkName}`);
+        setStatus(t`Starting APK download...`);
+        window.LukerAndroid.installApkFromUrl(apkUrl, apkName);
+        pushLog(t`APK download started. Android will open the installer when the download finishes.`);
+        setStatus(t`Installer handoff started.`);
+    });
+}
+
+async function showLukerUpdatePrompt(versionData) {
+    if (lukerUpdatePromptShown) {
+        return;
+    }
+    lukerUpdatePromptShown = true;
+
+    try {
+        const branch = String(versionData.gitBranch || '').trim();
+        const revision = String(versionData.gitRevision || '').trim();
+        const environmentText = hasAndroidUpdateBridge()
+            ? t`This instance is running inside the Android app.`
+            : t`This instance is running in Node.js server mode.`;
+        const branchText = branch ? `${branch}${revision ? ` @ ${revision}` : ''}` : t`unknown branch`;
+        const promptBody = `
+            <div class="justifyLeft">
+                <div>${t`A Luker update is available.`}</div>
+                <div class="menu_button_note">${environmentText}</div>
+                <div class="menu_button_note">${t`Current source`}: ${branchText}</div>
+            </div>
+        `;
+
+        const result = await callGenericPopup(promptBody, POPUP_TYPE.CONFIRM, '', {
+            okButton: hasAndroidUpdateBridge() ? t`Download Update` : t`Update Now`,
+            cancelButton: t`Later`,
+            wide: true,
+            large: false,
+            leftAlign: true,
+        });
+
+        if (result !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        if (hasAndroidUpdateBridge()) {
+            await runAndroidApkUpdateFlow();
+        } else {
+            await runServerGitUpdateFlow();
+        }
+    } catch (error) {
+        console.error('Luker update flow failed:', error);
+        toastr.error(String(error?.message || error), t`Luker Update`);
     }
 }
 
@@ -8708,16 +8963,16 @@ export async function patchChatMessages(operations, retryCount = 0) {
         const response = await fetch('/api/chats/patch', {
             method: 'POST',
             cache: 'no-cache',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({
-                    ch_name: charName,
-                    file_name: fileName,
-                    operations: guardedOperations,
-                    avatar_url: avatar,
-                    chat_metadata: { ...chat_metadata },
-                    integrity: chat_metadata?.integrity,
-                }),
-            });
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ch_name: charName,
+                file_name: fileName,
+                operations: guardedOperations,
+                avatar_url: avatar,
+                chat_metadata: { ...chat_metadata },
+                integrity: chat_metadata?.integrity,
+            }),
+        });
 
         if (response.ok) {
             const payload = await response.json().catch(() => null);

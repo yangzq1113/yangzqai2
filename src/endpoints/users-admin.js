@@ -23,6 +23,11 @@ import {
 } from '../users.js';
 import { DEFAULT_USER } from '../constants.js';
 import { clearCapturedLogs, getCapturedLogs } from '../log-capture.js';
+import {
+    fetchLatestApkReleaseInfo,
+    getGitUpdateStatus,
+    startGitUpdate,
+} from '../updater.js';
 
 export const router = express.Router();
 
@@ -49,6 +54,45 @@ router.post('/logs/clear', requireAdminMiddleware, async (_request, response) =>
     } catch (error) {
         console.error('Admin logs clear failed:', error);
         return response.sendStatus(500);
+    }
+});
+
+router.post('/update/status', requireAdminMiddleware, async (request, response) => {
+    try {
+        const parsedSinceId = Number(request.body?.sinceId);
+        const parsedLimit = Number(request.body?.limit);
+        const sinceId = Number.isFinite(parsedSinceId) ? Math.max(0, Math.floor(parsedSinceId)) : 0;
+        const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.floor(parsedLimit)) : undefined;
+
+        return response.json({
+            git: getGitUpdateStatus({ sinceId, limit }),
+        });
+    } catch (error) {
+        console.error('Update status failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/update/start', requireAdminMiddleware, async (_request, response) => {
+    try {
+        const result = startGitUpdate();
+        if (!result.started) {
+            return response.status(409).json({ error: String(result.reason || 'already_running'), ...result });
+        }
+        return response.status(202).json(result);
+    } catch (error) {
+        console.error('Start update failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/update/apk-latest', requireAdminMiddleware, async (_request, response) => {
+    try {
+        const release = await fetchLatestApkReleaseInfo();
+        return response.json(release);
+    } catch (error) {
+        console.error('APK latest release fetch failed:', error);
+        return response.status(400).json({ error: String(error?.message || error) });
     }
 });
 

@@ -3,12 +3,16 @@ package com.luker.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.util.Base64
@@ -49,6 +53,25 @@ class MainActivity : AppCompatActivity() {
     private var pendingSaveBytes: ByteArray? = null
     private var pendingSaveMimeType: String? = null
     private var pendingSaveFileName: String? = null
+    private var pendingApkDownloadId: Long? = null
+    private var apkDownloadReceiverRegistered = false
+
+    private val apkDownloadReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) {
+                return
+            }
+
+            val finishedDownloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+            val pendingId = pendingApkDownloadId ?: return
+            if (finishedDownloadId <= 0L || pendingId != finishedDownloadId) {
+                return
+            }
+
+            pendingApkDownloadId = null
+            handleApkDownloadFinished(finishedDownloadId)
+        }
+    }
 
     private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val callback = pendingFilePathCallback ?: return@registerForActivityResult
@@ -218,6 +241,7 @@ class MainActivity : AppCompatActivity() {
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             enqueueDownload(url, userAgent, contentDisposition, mimeType)
         }
+        registerApkDownloadReceiver()
 
         bootstrapRuntime()
     }
@@ -235,6 +259,17 @@ class MainActivity : AppCompatActivity() {
             val resolvedName = sanitizeFileName(suggestedName).ifBlank { "download" }
             val resolvedMime = if (mimeType.isNullOrBlank()) parsed.first else mimeType
             runOnUiThread { requestSaveFile(parsed.second, resolvedName, resolvedMime) }
+        }
+
+        @JavascriptInterface
+        fun installApkFromUrl(downloadUrl: String?, suggestedName: String?) {
+            val url = downloadUrl?.trim().orEmpty()
+            if (url.isEmpty()) {
+                return
+            }
+            runOnUiThread {
+                enqueueApkInstallDownload(url, suggestedName)
+            }
         }
     }
 
@@ -352,6 +387,95 @@ class MainActivity : AppCompatActivity() {
             pendingSaveBytes = null
             pendingSaveMimeType = null
             pendingSaveFileName = null
+            Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun registerApkDownloadReceiver() {
+        if (apkDownloadReceiverRegistered) {
+            return
+        }
+        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(apkDownloadReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(apkDownloadReceiver, filter)
+        }
+        apkDownloadReceiverRegistered = true
+    }
+
+    private fun enqueueApkInstallDownload(url: String, suggestedName: String?) {
+        val parsedUri = runCatching { Uri.parse(url) }.getOrNull()
+        val scheme = parsedUri?.scheme?.lowercase()
+        if (parsedUri == null || (scheme != "http" && scheme != "https")) {
+            Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (pendingApkDownloadId != null) {
+            Toast.makeText(this, getString(R.string.update_download_in_progress), Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val baseName = sanitizeFileName(suggestedName).ifBlank { "luker-update.apk" }
+        val fileName = if (baseName.lowercase().endsWith(".apk")) baseName else "$baseName.apk"
+        try {
+            val request = DownloadManager.Request(parsedUri).apply {
+                setTitle(fileName)
+                setMimeType("application/vnd.android.package-archive")
+                setDescription(getString(R.string.update_download_queued))
+                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+            }
+            val manager = getSystemService(DownloadManager::class.java)
+            pendingApkDownloadId = manager.enqueue(request)
+            Toast.makeText(this, getString(R.string.update_download_started), Toast.LENGTH_SHORT).show()
+        } catch (t: Throwable) {
+            pendingApkDownloadId = null
+            Log.e(tag, "Failed to enqueue APK update download: $url", t)
+            Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun handleApkDownloadFinished(downloadId: Long) {
+        try {
+            val manager = getSystemService(DownloadManager::class.java)
+            val query = DownloadManager.Query().setFilterById(downloadId)
+            manager.query(query).use { cursor ->
+                if (!cursor.moveToFirst()) {
+                    Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+                    return
+                }
+
+                val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                if (status != DownloadManager.STATUS_SUCCESSFUL) {
+                    Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+                    return
+                }
+            }
+
+            val apkUri = manager.getUriForDownloadedFile(downloadId)
+            if (apkUri == null) {
+                Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(apkUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+
+            try {
+                startActivity(installIntent)
+                Toast.makeText(this, getString(R.string.update_install_prompt), Toast.LENGTH_SHORT).show()
+            } catch (e: ActivityNotFoundException) {
+                Log.e(tag, "No activity can handle APK install intent", e)
+                Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
+            }
+        } catch (t: Throwable) {
+            Log.e(tag, "Failed to process completed APK download", t)
             Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
         }
     }
@@ -551,6 +675,11 @@ class MainActivity : AppCompatActivity() {
         pendingSaveBytes = null
         pendingSaveMimeType = null
         pendingSaveFileName = null
+        pendingApkDownloadId = null
+        if (apkDownloadReceiverRegistered) {
+            runCatching { unregisterReceiver(apkDownloadReceiver) }
+            apkDownloadReceiverRegistered = false
+        }
         super.onDestroy()
     }
 }

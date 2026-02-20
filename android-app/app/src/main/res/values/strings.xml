@@ -19,4 +19,8 @@
     <string name="download_failed">下载失败，请重试</string>
     <string name="download_saved">文件已保存：%1$s</string>
     <string name="download_in_progress">已有下载保存操作进行中</string>
+    <string name="update_download_queued">更新包下载已加入队列</string>
+    <string name="update_download_started">开始下载更新包</string>
+    <string name="update_download_in_progress">已有更新包下载任务正在进行</string>
+    <string name="update_install_prompt">下载完成，正在打开安装器</string>
 </resources>
