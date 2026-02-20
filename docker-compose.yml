@@ -1,6 +1,6 @@
 services:
   luker:
-    image: ghcr.io/funnycups/luker:dev
+    image: ghcr.io/funnycups/luker:latest
     container_name: luker
     ports:
       - 127.0.0.1:8000:8000
