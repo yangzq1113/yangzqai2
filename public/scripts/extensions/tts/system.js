@@ -4,6 +4,12 @@ import { saveTtsProviderSettings } from './index.js';
 export { SystemTtsProvider };
 import { t } from '../../i18n.js';
 
+function isSystemTtsSupported() {
+    return typeof window !== 'undefined'
+        && typeof window.speechSynthesis === 'object'
+        && typeof window.SpeechSynthesisUtterance === 'function';
+}
+
 /**
  * Chunkify
  * Google Chrome Speech Synthesis Chunking Pattern
@@ -15,6 +21,13 @@ import { t } from '../../i18n.js';
  */
 
 var speechUtteranceChunker = function (utt, settings, callback) {
+    if (!isSystemTtsSupported()) {
+        if (callback !== undefined) {
+            callback();
+        }
+        return;
+    }
+
     settings = settings || {};
     var newUtt;
     var txt = (settings && settings.offset !== undefined ? utt.text.substring(settings.offset) : utt.text);
@@ -43,7 +56,7 @@ var speechUtteranceChunker = function (utt, settings, callback) {
             return;
         }
         var chunk = chunkArr[0];
-        newUtt = new SpeechSynthesisUtterance(chunk);
+        newUtt = new window.SpeechSynthesisUtterance(chunk);
         var x;
         for (x in utt) {
             if (Object.hasOwn(utt, x) && x !== 'text') {
@@ -96,7 +109,7 @@ class SystemTtsProvider {
     };
 
     get settingsHtml() {
-        if (!('speechSynthesis' in window)) {
+        if (!isSystemTtsSupported()) {
             return t`Your browser or operating system doesn't support speech synthesis`;
         }
 
@@ -129,10 +142,18 @@ class SystemTtsProvider {
                 if (hasEnabledVoice) {
                     return;
                 }
-                const utterance = new SpeechSynthesisUtterance(' . ');
-                utterance.volume = 0;
-                speechSynthesis.speak(utterance);
-                hasEnabledVoice = true;
+                if (!isSystemTtsSupported()) {
+                    return;
+                }
+
+                try {
+                    const utterance = new window.SpeechSynthesisUtterance(' . ');
+                    utterance.volume = 0;
+                    speechSynthesis.speak(utterance);
+                    hasEnabledVoice = true;
+                } catch (error) {
+                    console.warn('SystemTTS warmup failed:', error);
+                }
             });
         }
 
@@ -172,7 +193,7 @@ class SystemTtsProvider {
     //  TTS Interfaces //
     //#################//
     fetchTtsVoiceObjects() {
-        if (!('speechSynthesis' in window)) {
+        if (!isSystemTtsSupported()) {
             return Promise.resolve([]);
         }
 
@@ -201,7 +222,7 @@ class SystemTtsProvider {
     }
 
     previewTtsVoice(voiceId) {
-        if (!('speechSynthesis' in window)) {
+        if (!isSystemTtsSupported()) {
             throw new Error('Speech synthesis API is not supported');
         }
 
@@ -222,7 +243,7 @@ class SystemTtsProvider {
         speechSynthesis.cancel();
         const langForPreview = voice ? voice.lang : (navigator.language || 'en-US');
         const text = getPreviewString(langForPreview);
-        const utterance = new SpeechSynthesisUtterance(text);
+        const utterance = new window.SpeechSynthesisUtterance(text);
 
         if (voice) {
             utterance.voice = voice;
@@ -239,7 +260,7 @@ class SystemTtsProvider {
     }
 
     async getVoice(voiceName) {
-        if (!('speechSynthesis' in window)) {
+        if (!isSystemTtsSupported()) {
             return { voice_id: null, name: 'API Not Supported' };
         }
 
@@ -270,7 +291,7 @@ class SystemTtsProvider {
     }
 
     async generateTts(text, voiceId) {
-        if (!('speechSynthesis' in window)) {
+        if (!isSystemTtsSupported()) {
             throw 'Speech synthesis API is not supported';
         }
 
@@ -279,7 +300,7 @@ class SystemTtsProvider {
         return new Promise((resolve, reject) => {
             const voices = speechSynthesis.getVoices();
             const voice = voices.find(x => x.voiceURI === voiceId);
-            const utterance = new SpeechSynthesisUtterance(text);
+            const utterance = new window.SpeechSynthesisUtterance(text);
             utterance.voice = voice;
             utterance.rate = this.settings.rate || 1;
             utterance.pitch = this.settings.pitch || 1;
