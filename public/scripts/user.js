@@ -159,7 +159,7 @@ export async function setUserControls(isEnabled) {
 
     if (!isEnabled) {
         $('#logout_button').hide();
-        $('#admin_button').hide();
+        $('#admin_button').show();
         $('#server_logs_button').show();
         return;
     }
