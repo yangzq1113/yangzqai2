@@ -2794,8 +2794,12 @@ function buildDynamicExtractTools(schema = [], options = {}) {
         },
     });
     specByToolName.set(linkUpsertToolName, {
-        ...buildSpecFallback('link', { tableName: 'link' }),
         id: 'link',
+        tableName: 'link',
+        tableColumns: [],
+        requiredColumns: [],
+        columnHints: {},
+        editable: true,
         op: 'link_upsert',
         toolName: linkUpsertToolName,
     });
