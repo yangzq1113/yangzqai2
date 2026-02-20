@@ -16,12 +16,13 @@ import { color, Cache, ensureDirectory, normalizeZipEntryPath } from '../util.js
 const RESET_CACHE = new Cache(5 * 60 * 1000);
 
 function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, allowedDirectories) {
-    const candidates = [normalizedEntryPath];
+    const parts = normalizedEntryPath.split('/').filter(Boolean);
+    const candidates = [];
 
-    if (normalizedEntryPath.includes('/')) {
-        const stripped = normalizedEntryPath.split('/').slice(1).join('/');
-        if (stripped && stripped !== normalizedEntryPath) {
-            candidates.push(stripped);
+    for (let index = 0; index < parts.length; index++) {
+        const candidate = parts.slice(index).join('/');
+        if (candidate) {
+            candidates.push(candidate);
         }
     }
 

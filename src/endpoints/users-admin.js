@@ -22,8 +22,35 @@ import {
     ensurePublicDirectoriesExist,
 } from '../users.js';
 import { DEFAULT_USER } from '../constants.js';
+import { clearCapturedLogs, getCapturedLogs } from '../log-capture.js';
 
 export const router = express.Router();
+
+router.post('/logs/get', requireAdminMiddleware, async (request, response) => {
+    try {
+        const parsedLimit = Number(request.body?.limit);
+        const parsedSinceId = Number(request.body?.sinceId);
+        const limit = Number.isFinite(parsedLimit) ? Math.min(5000, Math.max(1, Math.floor(parsedLimit))) : 800;
+        const sinceId = Number.isFinite(parsedSinceId) ? Math.max(0, Math.floor(parsedSinceId)) : 0;
+        const levels = Array.isArray(request.body?.levels) ? request.body.levels : undefined;
+
+        const result = getCapturedLogs({ sinceId, limit, levels });
+        return response.json(result);
+    } catch (error) {
+        console.error('Admin logs get failed:', error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/logs/clear', requireAdminMiddleware, async (_request, response) => {
+    try {
+        clearCapturedLogs();
+        return response.sendStatus(204);
+    } catch (error) {
+        console.error('Admin logs clear failed:', error);
+        return response.sendStatus(500);
+    }
+});
 
 router.post('/overview', requireAdminMiddleware, async (_request, response) => {
     try {

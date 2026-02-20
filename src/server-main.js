@@ -58,6 +58,7 @@ import {
     setWindowTitle,
     getConfigValue,
 } from './util.js';
+import { installLogCapture } from './log-capture.js';
 import { UPLOADS_DIRECTORY } from './constants.js';
 import { ensureThumbnailCache } from './endpoints/thumbnails.js';
 
@@ -83,6 +84,7 @@ if (process.versions && process.versions.node && process.versions.node.match(/20
 util.inspect.defaultOptions.maxArrayLength = null;
 util.inspect.defaultOptions.maxStringLength = null;
 util.inspect.defaultOptions.depth = 4;
+installLogCapture();
 
 /** @type {import('./command-line.js').CommandLineArguments} */
 const cliArgs = globalThis.COMMAND_LINE_ARGS;
@@ -388,6 +390,7 @@ async function postSetupTasks(result) {
     console.log('\n' + getSeparator(plainGoToLog.length) + '\n');
 
     setupLogLevel();
+    installLogCapture();
     serverEvents.emit(EVENT_NAMES.SERVER_STARTED, { url: browserLaunchUrl });
 }
 

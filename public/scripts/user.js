@@ -34,6 +34,7 @@ const BACKUP_DEFAULT_SELECTION = Object.freeze({
     extensions: true,
     vectors: false,
 });
+const BACKUP_FULL_SELECTION = Object.freeze(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])));
 
 /**
  * Enable or disable user account controls in the UI.
@@ -46,10 +47,13 @@ export async function setUserControls(isEnabled) {
     if (!isEnabled) {
         $('#logout_button').hide();
         $('#admin_button').hide();
+        $('#server_logs_button').show();
+        $('#data_import_button').show();
         return;
     }
 
     $('#logout_button').show();
+    $('#data_import_button').show();
     await getCurrentUser();
 }
 
@@ -93,6 +97,7 @@ async function getCurrentUser() {
 
         currentUser = await response.json();
         $('#admin_button').toggle(accountsEnabled && isAdmin());
+        $('#server_logs_button').toggle(!accountsEnabled || isAdmin());
     } catch (error) {
         console.error('Error getting current user:', error);
     }
@@ -605,6 +610,300 @@ async function openBackupManager(handle, callback) {
         allowVerticalScrolling: true,
         allowHorizontalScrolling: false,
     });
+}
+
+async function openDataZipImport() {
+    if (!currentUser) {
+        await getCurrentUser();
+    }
+
+    const handle = String(currentUser?.handle || getCurrentUserHandle()).trim();
+    if (!handle) {
+        toastr.error(t`No active user context found.`, t`Import failed`);
+        return;
+    }
+
+    const template = $(`
+        <div class="userBackupManager flex-container flexFlowColumn flexNoGap">
+            <h3 class="marginBot5">${t`Import Data ZIP`}</h3>
+            <div class="marginBot10">${t`Import a data ZIP directly into the current user profile.`}</div>
+            <div class="marginBot10">
+                <span>${t`Restore mode:`}</span>
+                <label class="checkbox_label backupRestoreModeLabel">
+                    <input type="radio" name="directImportMode" value="merge" checked>
+                    <span>${t`Incremental Update`}</span>
+                </label>
+                <label class="checkbox_label backupRestoreModeLabel">
+                    <input type="radio" name="directImportMode" value="overwrite">
+                    <span>${t`Overwrite Update`}</span>
+                </label>
+            </div>
+            <div class="backupActionRow flex-container flexGap10 marginBot5">
+                <div class="directImportSelectButton menu_button menu_button_icon">
+                    <i class="fa-fw fa-solid fa-folder-open"></i>
+                    <span>${t`Select ZIP`}</span>
+                </div>
+                <div class="directImportRunButton menu_button menu_button_icon disabled">
+                    <i class="fa-fw fa-solid fa-file-import"></i>
+                    <span>${t`Start Import`}</span>
+                </div>
+            </div>
+            <div class="directImportFileName marginBot5">${t`No ZIP selected.`}</div>
+            <div class="menu_button_note">
+                <span>${t`This import writes all supported data categories for the current user.`}</span><br>
+                <span>${t`Overwrite Update clears known categories first, then restores files from ZIP.`}</span>
+            </div>
+            <form hidden>
+                <input type="file" class="directImportFileInput" accept=".zip,application/zip">
+            </form>
+        </div>
+    `);
+
+    const fileInput = template.find('.directImportFileInput');
+    const fileNameLabel = template.find('.directImportFileName');
+    const selectButton = template.find('.directImportSelectButton');
+    const runButton = template.find('.directImportRunButton');
+
+    const updateState = () => {
+        const file = fileInput[0] instanceof HTMLInputElement ? fileInput[0].files?.[0] : null;
+        runButton.toggleClass('disabled', !file);
+        fileNameLabel.text(file ? t`${file.name} (${humanFileSize(file.size)})` : t`No ZIP selected.`);
+    };
+
+    selectButton.on('click', () => fileInput.trigger('click'));
+    fileInput.on('change', updateState);
+
+    runButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const file = fileInput[0] instanceof HTMLInputElement ? fileInput[0].files?.[0] : null;
+        if (!file) {
+            return;
+        }
+
+        const modeValue = String(template.find('input[name="directImportMode"]:checked').val() || 'merge');
+        const mode = modeValue === 'overwrite' ? 'overwrite' : 'merge';
+        const confirmMessage = mode === 'overwrite'
+            ? t`Overwrite mode will clear existing data before restore. Continue?`
+            : t`Import in incremental mode and overwrite files on path conflicts?`;
+        const confirmed = await callGenericPopup(confirmMessage, POPUP_TYPE.CONFIRM, '', {
+            okButton: t`Start Import`,
+            cancelButton: t`Cancel`,
+            wide: false,
+            large: false,
+        });
+
+        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        let progressToast;
+        try {
+            progressToast = toastr.info(
+                t`Please wait...`,
+                t`Import Data ZIP`,
+                { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
+            );
+            runButton.addClass('disabled');
+            selectButton.addClass('disabled');
+
+            const result = await restoreUserData(handle, file, BACKUP_FULL_SELECTION, mode);
+            toastr.success(
+                t`Imported ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
+                t`Import complete`,
+            );
+        } catch (error) {
+            console.error('Direct data import failed:', error);
+            toastr.error(String(error.message || error), t`Import failed`);
+        } finally {
+            if (progressToast) {
+                toastr.clear(progressToast);
+            }
+            fileInput.val('');
+            updateState();
+            selectButton.removeClass('disabled');
+        }
+    });
+
+    updateState();
+    await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
+        okButton: t`Close`,
+        wide: true,
+        large: false,
+        allowVerticalScrolling: true,
+        allowHorizontalScrolling: false,
+    });
+}
+
+async function fetchServerLogs(limit = 1000, sinceId = 0) {
+    const response = await fetch('/api/users/logs/get', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ limit, sinceId }),
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to fetch server logs');
+    }
+
+    return response.json();
+}
+
+async function clearServerLogsRemote() {
+    const response = await fetch('/api/users/logs/clear', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to clear server logs');
+    }
+}
+
+function formatServerLogEntry(entry) {
+    const date = new Date(Number(entry?.timestamp) || Date.now());
+    const level = String(entry?.level || 'log').toUpperCase();
+    const message = String(entry?.message || '');
+    return `[${date.toLocaleString()}] [${level}] ${message}`;
+}
+
+async function openServerLogsViewer() {
+    if (accountsEnabled && !isAdmin()) {
+        toastr.error(t`Only admins can view server logs.`, t`Permission denied`);
+        return;
+    }
+
+    const template = $(`
+        <div class="userBackupManager flex-container flexFlowColumn flexNoGap">
+            <h3 class="marginBot5">${t`Server Logs`}</h3>
+            <div class="backupActionRow flex-container flexGap10 marginBot10">
+                <div class="serverLogsRefreshButton menu_button menu_button_icon">
+                    <i class="fa-fw fa-solid fa-rotate"></i>
+                    <span>${t`Refresh`}</span>
+                </div>
+                <div class="serverLogsCopyButton menu_button menu_button_icon">
+                    <i class="fa-fw fa-solid fa-copy"></i>
+                    <span>${t`Copy`}</span>
+                </div>
+                <div class="serverLogsClearButton menu_button menu_button_icon">
+                    <i class="fa-fw fa-solid fa-trash"></i>
+                    <span>${t`Clear`}</span>
+                </div>
+                <label class="checkbox_label backupRestoreModeLabel">
+                    <input type="checkbox" class="serverLogsAutoRefresh" checked>
+                    <span>${t`Auto refresh`}</span>
+                </label>
+            </div>
+            <textarea class="text_pole serverLogsOutput" rows="20" readonly></textarea>
+            <div class="menu_button_note">${t`This viewer shows runtime backend logs captured in memory.`}</div>
+        </div>
+    `);
+
+    const output = template.find('.serverLogsOutput');
+    const autoRefresh = template.find('.serverLogsAutoRefresh');
+    let latestId = 0;
+    let closed = false;
+    let inFlight = false;
+
+    const renderLogs = (payload, appendOnly = false) => {
+        const lines = Array.isArray(payload?.entries) ? payload.entries.map(formatServerLogEntry) : [];
+
+        if (appendOnly) {
+            const previous = String(output.val() || '');
+            const next = lines.length ? `${previous}${previous ? '\n' : ''}${lines.join('\n')}` : previous;
+            output.val(next);
+        } else {
+            output.val(lines.join('\n'));
+        }
+
+        latestId = Number(payload?.latestId) || latestId;
+        output.scrollTop(output[0]?.scrollHeight || 0);
+    };
+
+    const reloadAll = async () => {
+        if (inFlight || closed) {
+            return;
+        }
+
+        inFlight = true;
+        try {
+            const payload = await fetchServerLogs(2000, 0);
+            renderLogs(payload, false);
+        } catch (error) {
+            console.error('Failed to load server logs:', error);
+            toastr.error(String(error.message || error), t`Failed to fetch server logs`);
+        } finally {
+            inFlight = false;
+        }
+    };
+
+    const loadIncremental = async () => {
+        if (inFlight || closed || !autoRefresh.is(':checked')) {
+            return;
+        }
+
+        inFlight = true;
+        try {
+            const payload = await fetchServerLogs(500, latestId);
+            renderLogs(payload, true);
+        } catch {
+            // Keep silent during background refresh to avoid toast spam.
+        } finally {
+            inFlight = false;
+        }
+    };
+
+    template.find('.serverLogsRefreshButton').on('click', reloadAll);
+    template.find('.serverLogsCopyButton').on('click', async () => {
+        try {
+            await navigator.clipboard.writeText(String(output.val() || ''));
+            toastr.success(t`Logs copied to clipboard.`, t`Server Logs`);
+        } catch (error) {
+            console.error('Copy logs failed:', error);
+            toastr.error(t`Copy failed.`, t`Server Logs`);
+        }
+    });
+    template.find('.serverLogsClearButton').on('click', async () => {
+        const confirmed = await callGenericPopup(t`Clear all captured server logs?`, POPUP_TYPE.CONFIRM, '', {
+            okButton: t`Clear`,
+            cancelButton: t`Cancel`,
+            wide: false,
+            large: false,
+        });
+
+        if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        try {
+            await clearServerLogsRemote();
+            output.val('');
+            latestId = 0;
+            toastr.success(t`Server logs cleared.`, t`Server Logs`);
+        } catch (error) {
+            console.error('Clear logs failed:', error);
+            toastr.error(String(error.message || error), t`Failed to clear server logs`);
+        }
+    });
+
+    await reloadAll();
+    const timer = setInterval(loadIncremental, 1500);
+    try {
+        await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
+            okButton: t`Close`,
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+            allowHorizontalScrolling: false,
+        });
+    } finally {
+        closed = true;
+        clearInterval(timer);
+    }
 }
 
 /**
@@ -1444,6 +1743,12 @@ jQuery(() => {
     });
     $('#account_button').on('click', () => {
         openUserProfile();
+    });
+    $('#data_import_button').on('click', () => {
+        openDataZipImport();
+    });
+    $('#server_logs_button').on('click', () => {
+        openServerLogsViewer();
     });
     setInterval(async () => {
         if (currentUser) {
