@@ -50,6 +50,14 @@ export function setConfigFilePath(configFilePath) {
 }
 
 /**
+ * Returns the resolved config file path.
+ * @returns {string|null} Absolute config path
+ */
+export function getConfigFilePath() {
+    return CONFIG_PATH;
+}
+
+/**
  * Returns the config object from the config.yaml file.
  * @returns {object} Config object
  */
@@ -183,6 +191,15 @@ export async function getVersion() {
     const compatAgent = `Luker:${stCompatVersion}:Cohee#1207`;
     const isDockerRuntime = isDocker();
     return { agent, compatAgent, stCompatVersion, pkgVersion, gitRevision, gitBranch, commitDate: commitDate?.trim() ?? null, isLatest, isDocker: isDockerRuntime };
+}
+
+/**
+ * Clears the config cache and reloads it from disk.
+ * @returns {object} Config object
+ */
+export function reloadConfigCache() {
+    CACHED_CONFIG = null;
+    return getConfig();
 }
 
 /**

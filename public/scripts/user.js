@@ -303,6 +303,54 @@ async function saveAdminPanelSettings(payload) {
 }
 
 /**
+ * Get runtime config file content.
+ * @returns {Promise<{path: string, content: string} | undefined>} Config payload
+ */
+async function getRuntimeConfigFile() {
+    try {
+        const response = await fetch('/api/users/config/get', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            toastr.error(data?.error || t`Unknown error`, t`Failed to load config file`);
+            throw new Error('Failed to load config file');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error loading runtime config file:', error);
+    }
+}
+
+/**
+ * Save runtime config file content.
+ * @param {string} content Config file content
+ * @returns {Promise<{ok: boolean, hotReloadApplied: boolean, restartRecommended: boolean} | undefined>} Save result
+ */
+async function saveRuntimeConfigFile(content) {
+    try {
+        const response = await fetch('/api/users/config/save', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ content }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            toastr.error(data?.error || t`Unknown error`, t`Failed to save config file`);
+            throw new Error('Failed to save config file');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error saving runtime config file:', error);
+    }
+}
+
+/**
  * Set per-user storage quota.
  * @param {string} handle User handle
  * @param {number|null} quotaBytes Quota bytes, null to clear override
@@ -1482,6 +1530,7 @@ async function changeAvatar(handle, avatar) {
 
 async function openAdminPanel() {
     let currentAdminSettings = null;
+    let runtimeConfigPath = '';
 
     const bytesToMbInput = (value) => {
         const n = Number(value);
@@ -1545,6 +1594,20 @@ async function openAdminPanel() {
                 },
             },
         };
+    }
+
+    function populateRuntimeConfigForm(payload) {
+        runtimeConfigPath = String(payload?.path || '');
+        template.find('.runtimeConfigPath').text(runtimeConfigPath || '-');
+        template.find('.runtimeConfigEditor').val(String(payload?.content || ''));
+    }
+
+    async function renderRuntimeConfig() {
+        const config = await getRuntimeConfigFile();
+        if (!config) {
+            return;
+        }
+        populateRuntimeConfigForm(config);
     }
 
     async function promptAndSetQuota(user) {
@@ -1708,6 +1771,8 @@ async function openAdminPanel() {
 
         if (target === 'adminOverviewTab' || target === 'adminSecurityTab' || target === 'authAndQuotaTab') {
             renderOverview();
+        } else if (target === 'configEditorTab') {
+            renderRuntimeConfig();
         }
     });
 
@@ -1724,6 +1789,27 @@ async function openAdminPanel() {
         populateAuthSettingsForm(saved);
         toastr.success('Admin settings saved.', 'Saved');
         await renderOverview();
+    });
+
+    template.find('.reloadRuntimeConfigButton').on('click', async () => {
+        await renderRuntimeConfig();
+    });
+
+    template.find('.saveRuntimeConfigButton').on('click', async () => {
+        const content = String(template.find('.runtimeConfigEditor').val() || '');
+        const result = await saveRuntimeConfigFile(content);
+        if (!result?.ok) {
+            return;
+        }
+
+        toastr.success(t`Config file saved.`, t`Saved`);
+        if (result.restartRecommended) {
+            toastr.info(t`Some settings may require a backend restart to fully apply.`, t`Restart recommended`);
+        }
+
+        if (runtimeConfigPath) {
+            template.find('.runtimeConfigPath').text(runtimeConfigPath);
+        }
     });
 
     template.find('.createUserDisplayName').on('input', async function () {

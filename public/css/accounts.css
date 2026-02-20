@@ -58,3 +58,24 @@
 .userBackupManager .backupActionRow .menu_button {
     width: auto;
 }
+
+.configEditorTab .runtimeConfigEditor {
+    width: 100%;
+    min-height: 360px;
+    resize: vertical;
+    font-family: var(--monoFontFamily);
+    white-space: pre;
+    overflow-wrap: normal;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
+.configEditorTab .menu_button {
+    width: auto;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
+.configEditorTab .runtimeConfigPath {
+    word-break: break-all;
+}

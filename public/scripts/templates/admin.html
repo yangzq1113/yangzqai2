@@ -12,6 +12,9 @@
         <button type="button" class="authQuotaButton menu_button menu_button_icon" data-target-tab="authAndQuotaTab">
             <h4>Auth & Limits</h4>
         </button>
+        <button type="button" class="configEditorButton menu_button menu_button_icon" data-target-tab="configEditorTab">
+            <h4>Config</h4>
+        </button>
         <button type="button" class="newUserButton menu_button menu_button_icon" data-target-tab="registerNewUserBlock">
             <h4>New User</h4>
         </button>
@@ -148,6 +151,28 @@
                 <span>Save Auth & Limit Settings</span>
             </div>
         </div>
+    </div>
+
+    <div class="navTab configEditorTab flex-container flexFlowColumn flexGap10" style="display: none;">
+        <div class="flex-container alignItemsCenter spaceBetween">
+            <h4 class="margin0">Runtime Config (config.yaml)</h4>
+            <div class="flex-container alignItemsCenter flexGap10">
+                <button type="button" class="reloadRuntimeConfigButton menu_button menu_button_icon">
+                    <i class="fa-fw fa-solid fa-arrows-rotate"></i>
+                    <span>Reload</span>
+                </button>
+                <button type="button" class="saveRuntimeConfigButton menu_button menu_button_icon">
+                    <i class="fa-fw fa-solid fa-save"></i>
+                    <span>Save</span>
+                </button>
+            </div>
+        </div>
+        <div class="flex-container flexFlowColumn flexNoGap">
+            <small class="runtimeConfigPathLabel">Path:</small>
+            <code class="runtimeConfigPath">-</code>
+        </div>
+        <textarea class="runtimeConfigEditor text_pole" spellcheck="false" rows="20" placeholder="config.yaml content"></textarea>
+        <small class="runtimeConfigHint">Changes are validated as YAML before save. Some settings may require backend restart.</small>
     </div>
 
     <div class="navTab registerNewUserBlock" style="display: none;">

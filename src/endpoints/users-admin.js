@@ -3,6 +3,7 @@ import { promises as fsPromises } from 'node:fs';
 import storage from 'node-persist';
 import express from 'express';
 import lodash from 'lodash';
+import yaml from 'yaml';
 import {
     getAdminSettings,
     saveAdminSettings,
@@ -28,6 +29,7 @@ import {
     getGitUpdateStatus,
     startGitUpdate,
 } from '../updater.js';
+import { getConfigFilePath, reloadConfigCache } from '../util.js';
 
 export const router = express.Router();
 
@@ -173,6 +175,51 @@ router.post('/settings/save', requireAdminMiddleware, async (request, response) 
     } catch (error) {
         console.error('Admin settings save failed:', error);
         return response.sendStatus(500);
+    }
+});
+
+router.post('/config/get', requireAdminMiddleware, async (_request, response) => {
+    try {
+        const configPath = getConfigFilePath();
+        if (!configPath) {
+            return response.status(500).json({ error: 'Config path not initialized' });
+        }
+
+        const content = await fsPromises.readFile(configPath, 'utf8');
+        return response.json({ path: configPath, content });
+    } catch (error) {
+        console.error('Config get failed:', error);
+        return response.status(500).json({ error: String(error?.message || error) });
+    }
+});
+
+router.post('/config/save', requireAdminMiddleware, async (request, response) => {
+    try {
+        const content = request.body?.content;
+        if (typeof content !== 'string') {
+            return response.status(400).json({ error: 'Missing config content' });
+        }
+
+        const configPath = getConfigFilePath();
+        if (!configPath) {
+            return response.status(500).json({ error: 'Config path not initialized' });
+        }
+
+        yaml.parse(content);
+        await fsPromises.writeFile(configPath, content, 'utf8');
+        reloadConfigCache();
+
+        return response.json({
+            ok: true,
+            hotReloadApplied: true,
+            restartRecommended: true,
+        });
+    } catch (error) {
+        if (error instanceof Error && error.name.startsWith('YAML')) {
+            return response.status(400).json({ error: error.message });
+        }
+        console.error('Config save failed:', error);
+        return response.status(500).json({ error: String(error?.message || error) });
     }
 });
 
