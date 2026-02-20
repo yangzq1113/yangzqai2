@@ -18,9 +18,16 @@ object LukerRuntimeManager {
     private const val RUNTIME_MARKER = ".runtime-version"
     private const val RUNTIME_DIR_NAME = "luker-runtime"
     private const val PERSISTENT_DATA_DIR_NAME = "luker-data"
+    private const val RUNTIME_PERSIST_DIR_NAME = "_runtime-persist"
     private const val NODE_SCRIPT_PATH = "nodejs-project/bootstrap.js"
     private const val NODE_PROJECT_ASSET_PATH = "luker"
     private const val BOOTSTRAP_LOG_FILE = "bootstrap.log"
+    private val RUNTIME_PERSIST_RELATIVE_PATHS = listOf(
+        "plugins",
+        "public/scripts/extensions/third-party",
+        "config.yaml",
+        "whitelist.txt",
+    )
 
     const val SERVER_URL = "http://127.0.0.1:8000"
 
@@ -109,29 +116,90 @@ object LukerRuntimeManager {
     private fun prepareRuntime(context: Context): RuntimePaths {
         val runtimeRoot = File(context.filesDir, RUNTIME_DIR_NAME)
         val dataRoot = File(context.filesDir, PERSISTENT_DATA_DIR_NAME)
+        val persistRoot = File(dataRoot, RUNTIME_PERSIST_DIR_NAME)
         val markerFile = File(runtimeRoot, RUNTIME_MARKER)
         val legacyDataRoot = File(runtimeRoot, "data")
         migrateLegacyDataRoot(legacyDataRoot, dataRoot)
+        if (!dataRoot.exists()) {
+            dataRoot.mkdirs()
+        }
 
         val markerValue = buildRuntimeMarker(context)
         val needsRefresh = !runtimeRoot.exists() || !markerFile.exists() || markerFile.readText() != markerValue
 
         if (needsRefresh) {
             if (runtimeRoot.exists()) {
+                persistRuntimeArtifacts(runtimeRoot, persistRoot)
                 runtimeRoot.deleteRecursively()
             }
             runtimeRoot.mkdirs()
             copyAssetDirectory(context.assets, NODE_PROJECT_ASSET_PATH, runtimeRoot)
             copyAssetFile(context.assets, NODE_SCRIPT_PATH, File(runtimeRoot, "bootstrap.js"))
+            restoreRuntimeArtifacts(persistRoot, runtimeRoot)
             markerFile.writeText(markerValue)
             Log.i(TAG, "Runtime assets prepared at ${runtimeRoot.absolutePath}")
         }
 
-        if (!dataRoot.exists()) {
-            dataRoot.mkdirs()
+        return RuntimePaths(runtimeRoot = runtimeRoot, dataRoot = dataRoot)
+    }
+
+    private fun persistRuntimeArtifacts(runtimeRoot: File, persistRoot: File) {
+        for (relativePath in RUNTIME_PERSIST_RELATIVE_PATHS) {
+            val source = File(runtimeRoot, relativePath)
+            val target = File(persistRoot, relativePath)
+
+            try {
+                if (!source.exists()) {
+                    if (target.exists()) {
+                        target.deleteRecursively()
+                    }
+                    continue
+                }
+
+                target.parentFile?.mkdirs()
+                if (target.exists()) {
+                    target.deleteRecursively()
+                }
+
+                if (source.isDirectory) {
+                    source.copyRecursively(target, overwrite = true)
+                } else {
+                    source.copyTo(target, overwrite = true)
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to persist runtime artifact: $relativePath", t)
+            }
+        }
+    }
+
+    private fun restoreRuntimeArtifacts(persistRoot: File, runtimeRoot: File) {
+        if (!persistRoot.exists()) {
+            return
         }
 
-        return RuntimePaths(runtimeRoot = runtimeRoot, dataRoot = dataRoot)
+        for (relativePath in RUNTIME_PERSIST_RELATIVE_PATHS) {
+            val source = File(persistRoot, relativePath)
+            val target = File(runtimeRoot, relativePath)
+
+            try {
+                if (!source.exists()) {
+                    continue
+                }
+
+                target.parentFile?.mkdirs()
+                if (target.exists()) {
+                    target.deleteRecursively()
+                }
+
+                if (source.isDirectory) {
+                    source.copyRecursively(target, overwrite = true)
+                } else {
+                    source.copyTo(target, overwrite = true)
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to restore runtime artifact: $relativePath", t)
+            }
+        }
     }
 
     private fun migrateLegacyDataRoot(legacyDataRoot: File, dataRoot: File) {
