@@ -7,11 +7,15 @@ import java.io.File
 import java.io.FileOutputStream
 import java.lang.Exception
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 
 object LukerRuntimeManager {
     private const val TAG = "LukerRuntime"
+    private const val DEFAULT_SERVER_PORT = 8000
+    private const val MAX_PORT_PROBE_ATTEMPTS = 50
     private val started = AtomicBoolean(false)
     private val librariesLoaded = AtomicBoolean(false)
     private const val RUNTIME_LAYOUT_VERSION = "2"
@@ -29,7 +33,10 @@ object LukerRuntimeManager {
         "whitelist.txt",
     )
 
-    const val SERVER_URL = "http://127.0.0.1:8000"
+    @Volatile
+    private var serverPort: Int = DEFAULT_SERVER_PORT
+    val SERVER_URL: String
+        get() = "http://127.0.0.1:$serverPort"
 
     @Volatile
     private var runtimeDir: File? = null
@@ -90,11 +97,15 @@ object LukerRuntimeManager {
                 val paths = prepareRuntime(context)
                 runtimeDir = paths.runtimeRoot
                 dataRootDir = paths.dataRoot
+                val selectedPort = selectServerPort(DEFAULT_SERVER_PORT, MAX_PORT_PROBE_ATTEMPTS)
+                serverPort = selectedPort
 
                 val script = File(paths.runtimeRoot, "bootstrap.js")
                 val args = arrayOf(
                     "node",
                     script.absolutePath,
+                    "--port",
+                    selectedPort.toString(),
                     "--dataRoot",
                     paths.dataRoot.absolutePath,
                 )
@@ -104,12 +115,34 @@ object LukerRuntimeManager {
                     return StartResult(ok = false, error = "Node process exited with code $exitCode")
                 }
                 started.set(true)
-                Log.i(TAG, "Node runtime launch requested. running=${isNodeProcessRunning()}")
+                Log.i(TAG, "Node runtime launch requested on port=$selectedPort. running=${isNodeProcessRunning()}")
                 StartResult(ok = true)
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to start runtime", t)
                 StartResult(ok = false, error = t.message)
             }
+        }
+    }
+
+    private fun selectServerPort(basePort: Int, maxAttempts: Int): Int {
+        for (offset in 0 until maxAttempts) {
+            val candidate = basePort + offset
+            if (isPortAvailable(candidate)) {
+                return candidate
+            }
+        }
+        throw IllegalStateException("No available port in range $basePort..${basePort + maxAttempts - 1}")
+    }
+
+    private fun isPortAvailable(port: Int): Boolean {
+        return try {
+            ServerSocket().use { socket ->
+                socket.reuseAddress = true
+                socket.bind(InetSocketAddress("127.0.0.1", port))
+            }
+            true
+        } catch (_: Throwable) {
+            false
         }
     }
 
