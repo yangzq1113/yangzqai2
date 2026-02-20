@@ -8846,11 +8846,26 @@ function applyIntegrityFromWritePayload(payload) {
     chat_metadata.integrity = nextIntegrity;
 }
 
+function invalidateCurrentChatWriteSnapshot() {
+    const target = resolveChatStateTarget();
+    const snapshotKey = getChatMessageSnapshotKey(target);
+    if (snapshotKey) {
+        chatMessageSnapshotCache.delete(snapshotKey);
+        chatMetadataSnapshotCache.delete(snapshotKey);
+    }
+    if (chat_metadata && typeof chat_metadata === 'object') {
+        delete chat_metadata.integrity;
+    }
+}
+
 async function shouldRetryChatWriteOnConflict(response, retryCount = 0) {
     if (!response || response.status !== 409 || retryCount > 0) {
         return false;
     }
-    await reloadCurrentChat();
+    // Keep local in-memory edits/generation state intact. Reloading chat here can
+    // overwrite current local mutations (e.g. regenerate/edit-in-progress) and
+    // make behavior look like random refresh or duplicate replies.
+    invalidateCurrentChatWriteSnapshot();
     return true;
 }
 
