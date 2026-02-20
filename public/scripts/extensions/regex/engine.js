@@ -33,6 +33,28 @@ export const SCRIPT_TYPE_UNKNOWN = -1;
  * @type {Readonly<GetRegexScriptsOptions>}
  */
 const DEFAULT_GET_REGEX_SCRIPTS_OPTIONS = Object.freeze({ allowedOnly: false });
+const warnedInvalidPlacementScripts = new Set();
+let shownInvalidPlacementToast = false;
+
+/**
+ * Warns once per broken script when placement is not a valid array.
+ * @param {RegexScript} script The broken regex script
+ * @param {number} index Script index
+ */
+function warnInvalidRegexPlacement(script, index) {
+    const scriptName = String(script?.scriptName || '').trim() || `<unnamed #${index}>`;
+    const warningKey = `${scriptName}:${index}`;
+    if (warnedInvalidPlacementScripts.has(warningKey)) {
+        return;
+    }
+    warnedInvalidPlacementScripts.add(warningKey);
+    console.error(`Regex script "${scriptName}" has invalid placement and will be skipped.`);
+
+    if (!shownInvalidPlacementToast && typeof toastr !== 'undefined') {
+        shownInvalidPlacementToast = true;
+        toastr.error('Some regex scripts are invalid and were skipped. Open Regex Editor to fix or delete them.', 'Regex script error');
+    }
+}
 
 /**
  * Manages the compiled regex cache with LRU eviction.
@@ -344,7 +366,17 @@ export function getRegexedString(rawString, placement, { characterOverride, isMa
     }
 
     const allRegex = getRegexScripts({ allowedOnly: true });
-    allRegex.forEach((script) => {
+    allRegex.forEach((script, index) => {
+        if (!script || typeof script !== 'object') {
+            return;
+        }
+
+        const placementList = Array.isArray(script.placement) ? script.placement : null;
+        if (!placementList) {
+            warnInvalidRegexPlacement(script, index);
+            return;
+        }
+
         if (
             // Script applies to Markdown and input is Markdown
             (script.markdownOnly && isMarkdown) ||
@@ -371,7 +403,7 @@ export function getRegexedString(rawString, placement, { characterOverride, isMa
                 }
             }
 
-            if (script.placement.includes(placement)) {
+            if (placementList.includes(placement)) {
                 finalString = runRegexScript(script, finalString, { characterOverride });
             }
         }

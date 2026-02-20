@@ -530,6 +530,9 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
     }
 
     // Is there someplace to place results?
+    if (!Array.isArray(regexScript.placement)) {
+        regexScript.placement = [];
+    }
     if (regexScript.placement.length === 0) {
         toastr.warning(t`This regex script will not work, but was saved anyway: One "Affects" checkbox must be selected!`);
     }
@@ -788,7 +791,8 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
             editorHtml.find('input[name="min_depth"]').val(existingScript.minDepth ?? '');
             editorHtml.find('input[name="max_depth"]').val(existingScript.maxDepth ?? '');
 
-            existingScript.placement.forEach((element) => {
+            const existingPlacement = Array.isArray(existingScript.placement) ? existingScript.placement : [];
+            existingPlacement.forEach((element) => {
                 editorHtml
                     .find(`input[name="replace_position"][value="${element}"]`)
                     .prop('checked', true);
@@ -1501,6 +1505,11 @@ async function onRegexImportObjectChange(regexScript, scriptType) {
     try {
         if (!regexScript.scriptName) {
             throw new Error('No script name provided.');
+        }
+
+        if (!Array.isArray(regexScript.placement)) {
+            regexScript.placement = [];
+            toastr.warning(t`Imported regex script has invalid "Affects" settings and was normalized. Please review it.`);
         }
 
         // Assign a new UUID
