@@ -422,7 +422,8 @@ router.post('/install', async (request, response) => {
             fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
         }
 
-        const { url, global, branch } = request.body;
+        const { url, global, branch, replace } = request.body;
+        const shouldReplace = replace === true;
 
         if (global && !request.user.profile.admin) {
             console.error(`User ${request.user.profile.handle} does not have permission to install global extensions.`);
@@ -433,7 +434,10 @@ router.post('/install', async (request, response) => {
         const extensionPath = path.join(basePath, getInstallDirectoryNameFromUrl(url));
 
         if (fs.existsSync(extensionPath)) {
-            return response.status(409).send(`Directory already exists at ${extensionPath}`);
+            if (!shouldReplace) {
+                return response.status(409).send(`Directory already exists at ${extensionPath}`);
+            }
+            await fs.promises.rm(extensionPath, { recursive: true, force: true });
         }
 
         const cloneOptions = { '--depth': 1 };
@@ -807,7 +811,10 @@ router.post('/delete', async (request, response) => {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
-        await fs.promises.rm(extensionPath, { recursive: true });
+        await fs.promises.rm(extensionPath, { recursive: true, force: true });
+        if (fs.existsSync(extensionPath)) {
+            return response.status(409).send(`Directory still exists at ${extensionPath}. It may be locked by another process.`);
+        }
         console.info(`Extension has been deleted at ${extensionPath}`);
 
         return response.send(`Extension has been deleted at ${extensionPath}`);

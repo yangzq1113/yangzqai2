@@ -1135,7 +1135,7 @@ async function moveExtension(extensionName, source, destination) {
  */
 export async function deleteExtension(extensionName) {
     try {
-        await fetch('/api/extensions/delete', {
+        const response = await fetch('/api/extensions/delete', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
@@ -1143,8 +1143,17 @@ export async function deleteExtension(extensionName) {
                 global: getExtensionType(extensionName) === 'global',
             }),
         });
+
+        if (!response.ok) {
+            const text = await response.text();
+            toastr.error(text || response.statusText, t`Extension delete failed`, { timeOut: 5000 });
+            console.error('Extension delete failed', response.status, response.statusText, text);
+            return;
+        }
     } catch (error) {
         console.error('Error:', error);
+        toastr.error(t`Extension delete failed`);
+        return;
     }
 
     toastr.success(t`Extension ${extensionName} deleted`);
@@ -1255,7 +1264,7 @@ async function switchExtensionBranch(extensionName, isGlobal, branch) {
  * @param {boolean} global Is the extension global?
  * @returns {Promise<void>}
  */
-export async function installExtension(url, global, branch = '') {
+export async function installExtension(url, global, branch = '', replace = false) {
     console.debug('Extension installation started', url);
 
     toastr.info(t`Please wait...`, t`Installing extension`);
@@ -1267,11 +1276,22 @@ export async function installExtension(url, global, branch = '') {
             url,
             global,
             branch,
+            replace,
         }),
     });
 
     if (!request.ok) {
         const text = await request.text();
+        if (!replace && request.status === 409) {
+            const overwrite = await Popup.show.confirm(
+                t`Extension folder already exists`,
+                t`The extension directory already exists. Do you want to remove it and reinstall?`,
+            );
+            if (overwrite) {
+                await installExtension(url, global, branch, true);
+                return;
+            }
+        }
         toastr.warning(text || request.statusText, t`Extension installation failed`, { timeOut: 5000 });
         console.error('Extension installation failed', request.status, request.statusText, text);
         return;
