@@ -7232,5 +7232,6 @@
     "restored": "已恢复",
     "failed": "失败",
     "Sample skipped entries": "跳过条目示例",
-    "Raw JSON report": "原始 JSON 报告"
+    "Raw JSON report": "原始 JSON 报告",
+    "Finish current input composition before sending.": "请先完成当前输入法候选上屏，再发送。"
 }

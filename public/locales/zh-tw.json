@@ -8445,5 +8445,6 @@
     "restored": "已還原",
     "failed": "失敗",
     "Sample skipped entries": "跳過條目範例",
-    "Raw JSON report": "原始 JSON 報告"
+    "Raw JSON report": "原始 JSON 報告",
+    "Finish current input composition before sending.": "請先完成目前輸入法候選上屏，再送出。"
 }

@@ -1109,6 +1109,8 @@ export let online_status = 'no_connection';
 
 export let is_send_press = false; //Send generation
 export const isGenerating = () => (is_send_press || is_group_generating);
+let isSendTextareaComposing = false;
+let pendingUserInputText = null;
 let activeWorldInfoPromptSnapshot = {
     chatId: '',
     worldInfoBefore: '',
@@ -2350,6 +2352,22 @@ export async function reloadCurrentChat() {
     refreshSwipeButtons();
 }
 
+async function getSettledSendTextareaState(maxWaitMs = 700) {
+    const startedAt = Date.now();
+
+    while (isSendTextareaComposing && (Date.now() - startedAt) < maxWaitMs) {
+        await delay(16);
+    }
+
+    // Let potential trailing input events flush after compositionend.
+    await delay(0);
+
+    return {
+        text: String($('#send_textarea').val()),
+        composing: isSendTextareaComposing,
+    };
+}
+
 /**
  * Send the message currently typed into the chat box.
  */
@@ -2368,7 +2386,13 @@ export async function sendTextareaMessage() {
     let generateType = 'normal';
     // "Continue on send" is activated when the user hits "send" (or presses enter) on an empty chat box, and the last
     // message was sent from a character (not the user or the system).
-    const textareaText = String($('#send_textarea').val());
+    const textareaState = await getSettledSendTextareaState();
+    if (textareaState.composing) {
+        toastr.warning(t`Finish current input composition before sending.`);
+        showSwipeButtons();
+        return;
+    }
+    const textareaText = textareaState.text;
     if (power_user.continue_on_send &&
         !hasPendingFileAttachment() &&
         !textareaText &&
@@ -2384,9 +2408,14 @@ export async function sendTextareaMessage() {
         await newAssistantChat({ temporary: false });
     }
 
-    let generation = await Generate(generateType);
-    showSwipeButtons();
-    return generation;
+    try {
+        pendingUserInputText = textareaText;
+        let generation = await Generate(generateType);
+        return generation;
+    } finally {
+        pendingUserInputText = null;
+        showSwipeButtons();
+    }
 }
 
 /**
@@ -5087,7 +5116,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     let textareaText;
     if (type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate && !dryRun) {
         is_send_press = true;
-        textareaText = String($('#send_textarea').val());
+        if (typeof pendingUserInputText === 'string') {
+            textareaText = pendingUserInputText;
+        } else {
+            const textareaState = await getSettledSendTextareaState();
+            textareaText = textareaState.text;
+        }
         $('#send_textarea').val('')[0].dispatchEvent(new Event('input', { bubbles: true }));
     } else {
         textareaText = '';
@@ -13079,6 +13113,15 @@ jQuery(async function () {
     let S_TAPreviouslyFocused = false;
     $('#send_textarea').on('focusin focus click', () => {
         S_TAPreviouslyFocused = true;
+    });
+    $('#send_textarea').on('compositionstart', () => {
+        isSendTextareaComposing = true;
+    });
+    $('#send_textarea').on('compositionend', () => {
+        isSendTextareaComposing = false;
+    });
+    $('#send_textarea').on('blur', () => {
+        isSendTextareaComposing = false;
     });
     $('#send_but, #option_regenerate, #option_continue, #mes_continue, #mes_impersonate').on('click', () => {
         if (S_TAPreviouslyFocused) {
