@@ -112,14 +112,14 @@
             "lodash-es": "^4.17.23"
         }
     },
-    "name": "sillytavern",
+    "name": "luker",
     "type": "module",
     "license": "AGPL-3.0",
     "repository": {
         "type": "git",
-        "url": "https://github.com/SillyTavern/SillyTavern.git"
+        "url": "https://github.com/funnycups/Luker.git"
     },
-    "version": "1.0.0",
+    "version": "1.1.0",
     "scripts": {
         "start": "node server.js",
         "debug": "node --inspect server.js",
@@ -135,7 +135,7 @@
         "plugins:install": "node plugins install"
     },
     "bin": {
-        "sillytavern": "./src/server-global.js"
+        "luker": "./src/server-global.js"
     },
     "rules": {
         "no-path-concat": "off",
