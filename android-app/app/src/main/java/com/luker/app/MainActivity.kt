@@ -102,6 +102,11 @@ class MainActivity : AppCompatActivity() {
             request.grant(allowed.toTypedArray())
         }
     }
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) {
+            Log.w(tag, "Notification permission denied. Foreground runtime notification may be hidden.")
+        }
+    }
     private val saveFileLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val bytes = pendingSaveBytes
         val mimeType = pendingSaveMimeType
@@ -242,8 +247,22 @@ class MainActivity : AppCompatActivity() {
             enqueueDownload(url, userAgent, contentDisposition, mimeType)
         }
         registerApkDownloadReceiver()
+        ensureNotificationPermissionIfNeeded()
 
         bootstrapRuntime()
+    }
+
+    private fun ensureNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     private inner class LukerAndroidBridge {

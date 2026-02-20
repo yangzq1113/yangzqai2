@@ -8907,7 +8907,7 @@ export async function appendChatMessages(messages, retryCount = 0) {
                 return true;
             }
             if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return await appendChatMessages(messages, retryCount + 1);
+                return false;
             }
             return false;
         }
@@ -8941,7 +8941,7 @@ export async function appendChatMessages(messages, retryCount = 0) {
             return true;
         }
         if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-            return await appendChatMessages(messages, retryCount + 1);
+            return false;
         }
         return false;
     } catch (error) {
@@ -8996,7 +8996,7 @@ export async function patchChatMessages(operations, retryCount = 0) {
                 return true;
             }
             if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return await patchChatMessages(normalizedOperations, retryCount + 1);
+                return false;
             }
             return false;
         }
@@ -9030,7 +9030,7 @@ export async function patchChatMessages(operations, retryCount = 0) {
             return true;
         }
         if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-            return await patchChatMessages(normalizedOperations, retryCount + 1);
+            return false;
         }
         return false;
     } catch (error) {
