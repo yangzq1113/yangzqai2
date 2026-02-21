@@ -21,6 +21,7 @@ import android.os.Environment
 import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -43,6 +44,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.view.ViewCompat
 import java.io.File
 import java.io.IOException
 import java.io.PrintWriter
@@ -476,6 +478,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun applyImmersiveMode(enabled: Boolean) {
         immersiveModeEnabled = enabled
+        updateDisplayCutoutMode(enabled)
         WindowCompat.setDecorFitsSystemWindows(window, !enabled)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -483,6 +486,28 @@ class MainActivity : AppCompatActivity() {
             controller.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+        window.decorView.post {
+            ViewCompat.requestApplyInsets(window.decorView)
+            if (this::webView.isInitialized) {
+                webView.requestLayout()
+            }
+        }
+    }
+
+    private fun updateDisplayCutoutMode(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return
+        }
+        val params = window.attributes
+        val desiredMode = if (enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        } else {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        if (params.layoutInDisplayCutoutMode != desiredMode) {
+            params.layoutInDisplayCutoutMode = desiredMode
+            window.attributes = params
         }
     }
 
