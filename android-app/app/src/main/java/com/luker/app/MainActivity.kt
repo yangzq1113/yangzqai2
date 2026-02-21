@@ -493,7 +493,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyImmersiveMode(enabled: Boolean) {
         immersiveModeEnabled = enabled
         updateDisplayCutoutMode(enabled)
-        WindowCompat.setDecorFitsSystemWindows(window, true)
+        WindowCompat.setDecorFitsSystemWindows(window, !enabled)
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         if (enabled) {
