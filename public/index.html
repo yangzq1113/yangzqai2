@@ -8026,12 +8026,18 @@
     <script type="module" src="script.js"></script>
     <script>
         window.addEventListener('load', (event) => {
-            const documentHeight = () => {
+            const updateViewportMetrics = () => {
                 const doc = document.documentElement;
                 doc.style.setProperty('--doc-height', `${window.innerHeight}px`);
+                const viewportHeight = window.visualViewport?.height || window.innerHeight;
+                doc.style.setProperty('--luker-viewport-height', `${Math.round(viewportHeight)}px`);
             }
-            window.addEventListener('resize', documentHeight);
-            documentHeight();
+            window.addEventListener('resize', updateViewportMetrics);
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', updateViewportMetrics);
+                window.visualViewport.addEventListener('scroll', updateViewportMetrics);
+            }
+            updateViewportMetrics();
         });
     </script>
 </body>
