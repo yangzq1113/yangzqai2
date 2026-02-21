@@ -5351,6 +5351,30 @@ body:not(.caption) .mes_img_caption {
 
 }
 
+#immersive_mode_toggle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+}
+
+body.luker-immersive-mode #top-bar,
+body.luker-immersive-mode #top-settings-holder {
+    display: none !important;
+}
+
+body.luker-immersive-mode #sheld {
+    top: 0;
+    height: calc(100vh - 1px);
+    height: calc(100dvh - 1px);
+    max-height: calc(100dvh - 1px);
+}
+
+body.luker-immersive-mode #chat {
+    max-height: calc(100vh - var(--bottomFormBlockSize));
+    max-height: calc(100dvh - var(--bottomFormBlockSize));
+}
+
 body:has(.drawer-content.maximized) #top-settings-holder:has(.drawer-content.openDrawer:not(.fillLeft):not(.fillRight)),
 body:has(.drawer-content.open) #top-settings-holder:has(.drawer-content.openDrawer:not(.fillLeft):not(.fillRight)),
 body:has(#character_popup.open) #top-settings-holder:has(.drawer-content.openDrawer:not(.fillLeft):not(.fillRight)) {

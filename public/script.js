@@ -666,6 +666,117 @@ let exportPopper = Popper.createPopper(document.getElementById('export_button'),
     placement: 'left',
 });
 let isExportPopupOpen = false;
+let isImmersiveModeEnabled = false;
+let immersiveModeUsesFullscreen = false;
+
+function getFullscreenElement() {
+    return document.fullscreenElement
+        || document.webkitFullscreenElement
+        || document.mozFullScreenElement
+        || document.msFullscreenElement
+        || null;
+}
+
+function canUseFullscreenApi() {
+    const doc = /** @type {any} */ (document);
+    const root = /** @type {any} */ (document.documentElement);
+    return Boolean(
+        doc.fullscreenEnabled
+        || doc.webkitFullscreenEnabled
+        || doc.mozFullScreenEnabled
+        || doc.msFullscreenEnabled
+        || typeof root.requestFullscreen === 'function'
+        || typeof root.webkitRequestFullscreen === 'function'
+        || typeof root.mozRequestFullScreen === 'function'
+        || typeof root.msRequestFullscreen === 'function',
+    );
+}
+
+async function requestImmersiveFullscreen() {
+    if (!canUseFullscreenApi() || getFullscreenElement()) {
+        return;
+    }
+    const root = /** @type {any} */ (document.documentElement);
+    const request =
+        root.requestFullscreen
+        || root.webkitRequestFullscreen
+        || root.mozRequestFullScreen
+        || root.msRequestFullscreen;
+    if (typeof request !== 'function') {
+        return;
+    }
+    try {
+        await request.call(root);
+    } catch (error) {
+        console.debug('Immersive fullscreen request was rejected', error);
+    }
+}
+
+async function exitImmersiveFullscreen() {
+    if (!getFullscreenElement()) {
+        return;
+    }
+    const doc = /** @type {any} */ (document);
+    const exit =
+        doc.exitFullscreen
+        || doc.webkitExitFullscreen
+        || doc.mozCancelFullScreen
+        || doc.msExitFullscreen;
+    if (typeof exit !== 'function') {
+        return;
+    }
+    try {
+        await exit.call(doc);
+    } catch (error) {
+        console.debug('Immersive fullscreen exit was rejected', error);
+    }
+}
+
+function updateImmersiveModeUi() {
+    const icon = $('#immersiveModeIcon');
+    if (!icon.length) {
+        return;
+    }
+    icon
+        .toggleClass('fa-expand', !isImmersiveModeEnabled)
+        .toggleClass('fa-compress', isImmersiveModeEnabled)
+        .toggleClass('closedIcon', !isImmersiveModeEnabled)
+        .toggleClass('openIcon', isImmersiveModeEnabled)
+        .attr('title', isImmersiveModeEnabled ? t`Exit immersive mode` : t`Enter immersive mode`);
+}
+
+async function onImmersiveFullscreenChanged() {
+    updateImmersiveModeUi();
+    if (!immersiveModeUsesFullscreen) {
+        return;
+    }
+    if (!getFullscreenElement() && isImmersiveModeEnabled) {
+        await setImmersiveMode(false, { useFullscreen: false });
+    }
+}
+
+async function setImmersiveMode(enabled, { useFullscreen = true } = {}) {
+    const shouldEnable = Boolean(enabled);
+    immersiveModeUsesFullscreen = shouldEnable ? Boolean(useFullscreen && canUseFullscreenApi()) : false;
+    isImmersiveModeEnabled = shouldEnable;
+    document.body.classList.toggle('luker-immersive-mode', shouldEnable);
+    updateImmersiveModeUi();
+
+    if (shouldEnable) {
+        if (useFullscreen) {
+            await requestImmersiveFullscreen();
+        }
+        return;
+    }
+
+    if (useFullscreen) {
+        await exitImmersiveFullscreen();
+    }
+}
+
+async function toggleImmersiveMode() {
+    await setImmersiveMode(!isImmersiveModeEnabled);
+}
 
 // Saved here for performance reasons
 const messageTemplate = $('#message_template .mes');
@@ -13604,6 +13715,12 @@ jQuery(async function () {
             showMenu();
         }
     });
+    $('#immersive_mode_toggle').on('click', async function () {
+        await toggleImmersiveMode();
+    });
+    document.addEventListener('fullscreenchange', () => { void onImmersiveFullscreenChanged(); });
+    document.addEventListener('webkitfullscreenchange', () => { void onImmersiveFullscreenChanged(); });
+    updateImmersiveModeUi();
     $(document).on('click', function () {
         if (!isOptionsMenuVisible) return;
         if (!isMouseOverButtonOrMenu()) { hideMenu(); }
@@ -13711,28 +13828,7 @@ jQuery(async function () {
         }
 
         else if (id === 'option_settings') {
-            //var checkBox = document.getElementById("waifuMode");
-            var topBar = document.getElementById('top-bar');
-            var topSettingsHolder = document.getElementById('top-settings-holder');
-            var divchat = document.getElementById('chat');
-
-            //if (checkBox.checked) {
-            if (topBar.style.display === 'none') {
-                topBar.style.display = ''; // or "inline-block" if that's the original display value
-                topSettingsHolder.style.display = ''; // or "inline-block" if that's the original display value
-
-                divchat.style.borderRadius = '';
-                divchat.style.backgroundColor = '';
-
-            } else {
-
-                divchat.style.borderRadius = '10px'; // Adjust the value to control the roundness of the corners
-                divchat.style.backgroundColor = ''; // Set the background color to your preference
-
-                topBar.style.display = 'none';
-                topSettingsHolder.style.display = 'none';
-            }
-            //}
+            await toggleImmersiveMode();
         }
         hideMenu();
     });

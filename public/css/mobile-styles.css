@@ -512,6 +512,18 @@
         bottom: unset;
     }
 
+    body.luker-immersive-mode #sheld {
+        top: 0 !important;
+        height: 100vh !important;
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+    }
+
+    body.luker-immersive-mode #chat {
+        max-height: calc(100vh - var(--bottomFormBlockSize)) !important;
+        max-height: calc(100dvh - var(--bottomFormBlockSize)) !important;
+    }
+
 
     #leftSendForm,
     #rightSendForm {
