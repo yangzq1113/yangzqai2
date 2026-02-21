@@ -96,6 +96,8 @@ import {
     applyStylePins,
     notifyMessageComplete,
     notifyMessageFailure,
+    notifyMessageProgressStart,
+    clearMessageProgressNotification,
 } from './scripts/power-user.js';
 
 import {
@@ -6457,6 +6459,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         }
     }
 
+    if (type !== 'quiet') {
+        notifyMessageProgressStart(String(name2 || chat?.[chat.length - 1]?.name || ''));
+    }
+
     return finishGenerating().then(onSuccess, onError);
 
     /**
@@ -6619,6 +6625,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
      * @throws {Error|object} Re-throws the exception
      */
     function onError(exception) {
+        clearMessageProgressNotification();
+
         const isAbortedError = abortController?.signal?.aborted
             || exception?.name === 'AbortError'
             || /aborted/i.test(String(exception?.message || ''));
@@ -6649,6 +6657,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
  * Stops the generation and any streaming if it is currently running.
  */
 export function stopGeneration() {
+    clearMessageProgressNotification();
+
     let stopped = false;
     const generationId = getLastLukerGenerationIdForApi();
     if (generationId) {

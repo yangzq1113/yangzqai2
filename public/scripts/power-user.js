@@ -379,6 +379,8 @@ const contextControls = [
 ];
 
 let browser_has_focus = true;
+let messageGenerationInProgress = false;
+let messageProgressSpeakerHint = '';
 const debug_functions = [];
 
 const setHotswapsDebounced = debounce(favsToHotswap);
@@ -409,6 +411,13 @@ function canUseAndroidBridgeNotifications() {
     return typeof window !== 'undefined'
         && typeof window.LukerAndroid === 'object'
         && typeof window.LukerAndroid.notifyMessageFinished === 'function';
+}
+
+function canUseAndroidBridgeProgressNotifications() {
+    return typeof window !== 'undefined'
+        && typeof window.LukerAndroid === 'object'
+        && typeof window.LukerAndroid.notifyMessageProgress === 'function'
+        && typeof window.LukerAndroid.clearMessageProgressNotification === 'function';
 }
 
 function shouldSuppressBackgroundNotification() {
@@ -443,6 +452,10 @@ function buildMessageFailureNotificationBody(errorText) {
 
     const errorSummary = normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
     return `${t`Message generation failed.`} ${errorSummary}`.trim();
+}
+
+function buildMessageProgressNotificationBody() {
+    return t`Message generation is in progress...`;
 }
 
 function resolveNotificationSpeakerName(explicitName = '') {
@@ -491,7 +504,90 @@ async function ensureMessageNotificationPermission() {
     }
 }
 
+let activeMessageProgressNotification = null;
+
+function closeActiveMessageProgressNotification() {
+    if (activeMessageProgressNotification) {
+        try {
+            activeMessageProgressNotification.close();
+        } catch (error) {
+            console.warn('Failed to close active message progress notification', error);
+        }
+    }
+    activeMessageProgressNotification = null;
+}
+
+function clearDisplayedMessageProgressNotification() {
+    closeActiveMessageProgressNotification();
+
+    if (canUseAndroidBridgeProgressNotifications()) {
+        try {
+            window.LukerAndroid.clearMessageProgressNotification();
+        } catch (error) {
+            console.warn('Failed to clear Android progress notification via bridge', error);
+        }
+    }
+}
+
+function maybeShowMessageProgressNotification() {
+    if (!messageGenerationInProgress) {
+        return;
+    }
+    if (!power_user.message_complete_notification) {
+        return;
+    }
+    if (shouldSuppressBackgroundNotification()) {
+        return;
+    }
+
+    const title = t`Luker`;
+    const body = buildMessageProgressNotificationBody();
+    const speakerName = resolveNotificationSpeakerName(messageProgressSpeakerHint);
+    const bodyWithSpeaker = speakerName ? `${speakerName}: ${body}` : body;
+
+    if (canUseBrowserNotifications() && Notification.permission === 'granted') {
+        try {
+            closeActiveMessageProgressNotification();
+            const notification = new Notification(title, {
+                body: bodyWithSpeaker,
+                tag: 'luker-generation-progress',
+                renotify: false,
+            });
+            notification.onclick = () => window.focus();
+            activeMessageProgressNotification = notification;
+        } catch (error) {
+            console.warn('Failed to show browser progress notification', error);
+        }
+    }
+
+    if (canUseAndroidBridgeProgressNotifications()) {
+        try {
+            window.LukerAndroid.notifyMessageProgress(title, bodyWithSpeaker);
+        } catch (error) {
+            console.warn('Failed to show Android progress notification via bridge', error);
+        }
+    }
+}
+
+export function clearMessageProgressNotification() {
+    messageGenerationInProgress = false;
+    messageProgressSpeakerHint = '';
+    clearDisplayedMessageProgressNotification();
+}
+
+export function notifyMessageProgressStart(assistantName = '') {
+    messageGenerationInProgress = true;
+    messageProgressSpeakerHint = String(assistantName || '').trim();
+
+    if (!power_user.message_complete_notification) {
+        return;
+    }
+    maybeShowMessageProgressNotification();
+}
+
 export function notifyMessageComplete(messageText = '', assistantName = '') {
+    clearMessageProgressNotification();
+
     if (!power_user.message_complete_notification) {
         return;
     }
@@ -529,6 +625,8 @@ export function notifyMessageComplete(messageText = '', assistantName = '') {
 }
 
 export function notifyMessageFailure(errorText = '', assistantName = '') {
+    clearMessageProgressNotification();
+
     if (!power_user.message_complete_notification) {
         return;
     }
@@ -4413,10 +4511,20 @@ jQuery(() => {
 
     $(window).on('focus', function () {
         browser_has_focus = true;
+        clearDisplayedMessageProgressNotification();
     });
 
     $(window).on('blur', function () {
         browser_has_focus = false;
+        maybeShowMessageProgressNotification();
+    });
+
+    $(document).on('visibilitychange', function () {
+        if (document.visibilityState === 'visible') {
+            clearDisplayedMessageProgressNotification();
+            return;
+        }
+        maybeShowMessageProgressNotification();
     });
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({

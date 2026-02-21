@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private val runtimeReportFileName = "luker-runtime-last-error.txt"
     private val messageNotificationChannelId = "luker_message_updates"
     private val messageNotificationId = 12001
+    private val messageProgressNotificationId = 12002
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
@@ -315,6 +316,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showMessageCompletionNotification(rawTitle: String?, rawBody: String?) {
+        clearMessageProgressNotificationInternal()
+
+        val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+            || ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            return
+        }
+
+        ensureMessageNotificationChannel()
+
+        val title = rawTitle?.trim().orEmpty().ifBlank {
+            getString(R.string.message_notification_default_title)
+        }
+        val body = rawBody?.trim().orEmpty().ifBlank {
+            getString(R.string.message_notification_progress_body)
+        }
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(this, messageNotificationChannelId)
+            .setSmallIcon(R.drawable.ic_notification_runtime)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        runCatching {
+            NotificationManagerCompat.from(this).notify(messageNotificationId, notification)
+        }.onFailure {
+            Log.w(tag, "Failed to post message completion notification", it)
+        }
+    }
+
+    private fun showMessageProgressNotification(rawTitle: String?, rawBody: String?) {
         val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
             || ContextCompat.checkSelfPermission(
                 this,
@@ -348,15 +397,25 @@ class MainActivity : AppCompatActivity() {
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(false)
             .setContentIntent(pendingIntent)
             .build()
 
         runCatching {
-            NotificationManagerCompat.from(this).notify(messageNotificationId, notification)
+            NotificationManagerCompat.from(this).notify(messageProgressNotificationId, notification)
         }.onFailure {
-            Log.w(tag, "Failed to post message completion notification", it)
+            Log.w(tag, "Failed to post message progress notification", it)
+        }
+    }
+
+    private fun clearMessageProgressNotificationInternal() {
+        runCatching {
+            NotificationManagerCompat.from(this).cancel(messageProgressNotificationId)
+        }.onFailure {
+            Log.w(tag, "Failed to clear message progress notification", it)
         }
     }
 
@@ -390,6 +449,20 @@ class MainActivity : AppCompatActivity() {
         fun notifyMessageFinished(rawTitle: String?, rawBody: String?) {
             runOnUiThread {
                 showMessageCompletionNotification(rawTitle, rawBody)
+            }
+        }
+
+        @JavascriptInterface
+        fun notifyMessageProgress(rawTitle: String?, rawBody: String?) {
+            runOnUiThread {
+                showMessageProgressNotification(rawTitle, rawBody)
+            }
+        }
+
+        @JavascriptInterface
+        fun clearMessageProgressNotification() {
+            runOnUiThread {
+                clearMessageProgressNotificationInternal()
             }
         }
 

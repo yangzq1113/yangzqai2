@@ -8456,6 +8456,7 @@
     "Show a notification when message generation finishes while Luker is in the background.": "當 Luker 在背景時，訊息生成完成後顯示通知。",
     "A new assistant reply is ready.": "助手新回覆已就緒。",
     "Message generation is complete.": "回覆生成已完成。",
+    "Message generation is in progress...": "回覆生成進行中...",
     "Message generation failed.": "回覆生成失敗。",
     "Server cannot be reached.": "無法連線到伺服器。"
 }
