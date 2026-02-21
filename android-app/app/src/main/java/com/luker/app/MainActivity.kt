@@ -71,6 +71,11 @@ class MainActivity : AppCompatActivity() {
     private var pendingApkDownloadId: Long? = null
     private var apkDownloadReceiverRegistered = false
     private var immersiveModeEnabled: Boolean = false
+    private var webViewBasePaddingLeft: Int = 0
+    private var webViewBasePaddingTop: Int = 0
+    private var webViewBasePaddingRight: Int = 0
+    private var webViewBasePaddingBottom: Int = 0
+    private var lastAppliedImeOverlapBottom: Int = -1
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             if (immersiveModeEnabled) {
@@ -175,6 +180,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         applyImmersiveMode(false)
         onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
@@ -189,6 +195,11 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
         }
+        webViewBasePaddingLeft = webView.paddingLeft
+        webViewBasePaddingTop = webView.paddingTop
+        webViewBasePaddingRight = webView.paddingRight
+        webViewBasePaddingBottom = webView.paddingBottom
+        installImeInsetsHandling()
         webView.addJavascriptInterface(LukerAndroidBridge(), "LukerAndroid")
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
@@ -503,6 +514,9 @@ class MainActivity : AppCompatActivity() {
         window.decorView.post {
             ViewCompat.requestApplyInsets(window.decorView)
             if (this::webView.isInitialized) {
+                ViewCompat.requestApplyInsets(webView)
+            }
+            if (this::webView.isInitialized) {
                 webView.requestLayout()
             }
         }
@@ -540,6 +554,49 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus && immersiveModeEnabled) {
             applyImmersiveMode(true)
         }
+        if (hasFocus && this::webView.isInitialized) {
+            ViewCompat.requestApplyInsets(webView)
+        }
+    }
+
+    private fun installImeInsetsHandling() {
+        if (!this::webView.isInitialized) {
+            return
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
+            applyImeInsetsToWebView(insets)
+            insets
+        }
+        webView.post {
+            ViewCompat.requestApplyInsets(webView)
+        }
+    }
+
+    private fun applyImeInsetsToWebView(insets: WindowInsetsCompat) {
+        if (!this::webView.isInitialized) {
+            return
+        }
+
+        val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+        val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+        val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+        val imeOverlapBottom = if (imeVisible) {
+            (imeBottom - systemBottom).coerceAtLeast(0)
+        } else {
+            0
+        }
+
+        if (imeOverlapBottom == lastAppliedImeOverlapBottom) {
+            return
+        }
+
+        lastAppliedImeOverlapBottom = imeOverlapBottom
+        webView.setPadding(
+            webViewBasePaddingLeft,
+            webViewBasePaddingTop,
+            webViewBasePaddingRight,
+            webViewBasePaddingBottom + imeOverlapBottom,
+        )
     }
 
     private fun installBlobDownloadBridge() {

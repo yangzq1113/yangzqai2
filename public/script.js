@@ -672,9 +672,13 @@ let isExportPopupOpen = false;
 let isImmersiveModeEnabled = false;
 let immersiveModeUsesFullscreen = false;
 
-function canUseAndroidImmersiveBridge() {
+function isRunningInLukerAndroidApp() {
     return typeof window !== 'undefined'
-        && typeof window.LukerAndroid === 'object'
+        && typeof window.LukerAndroid === 'object';
+}
+
+function canUseAndroidImmersiveBridge() {
+    return isRunningInLukerAndroidApp()
         && typeof window.LukerAndroid.setImmersiveModeEnabled === 'function';
 }
 
@@ -698,6 +702,10 @@ function getFullscreenElement() {
 }
 
 function canUseFullscreenApi() {
+    if (isRunningInLukerAndroidApp()) {
+        return false;
+    }
+
     const doc = /** @type {any} */ (document);
     const root = /** @type {any} */ (document.documentElement);
     return Boolean(
