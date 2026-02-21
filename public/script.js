@@ -8749,7 +8749,14 @@ export function buildChatMessagePatchOperations(previousMessages, nextMessages) 
 }
 
 function buildChatMetadataPatchOperations(previousMetadata, nextMetadata) {
-    return buildObjectPatchOperations(previousMetadata, nextMetadata, { maxOperations: 2000 });
+    // `integrity` is a concurrency token, not business metadata.
+    // Excluding it avoids stale-snapshot JSON-Patch test failures on /integrity.
+    const normalize = (metadata) => {
+        const source = isPlainObject(metadata) ? cloneJsonValue(metadata) : {};
+        delete source.integrity;
+        return source;
+    };
+    return buildObjectPatchOperations(normalize(previousMetadata), normalize(nextMetadata), { maxOperations: 2000 });
 }
 
 function rememberChatMetadataSnapshot(target = resolveChatStateTarget(), metadata = chat_metadata) {

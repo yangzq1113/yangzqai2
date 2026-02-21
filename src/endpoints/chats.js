@@ -1230,12 +1230,23 @@ router.post('/meta/patch', validateAvatarUrlMiddleware, async function (request,
         const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
         const force = Boolean(request.body.force);
 
-        const result = await patchChatMetadataInFile({
-            filePath: chatFilePath,
-            operations,
-            integritySlug,
-            force,
-        });
+        let result;
+        try {
+            result = await patchChatMetadataInFile({
+                filePath: chatFilePath,
+                operations,
+                integritySlug,
+                force,
+            });
+        } catch (error) {
+            if (isChatStatePatchConflictError(error)) {
+                return response.status(409).send({ error: 'Chat metadata patch conflict.' });
+            }
+            if (isJsonPatchValidationError(error)) {
+                return response.status(400).send({ error: 'Invalid metadata patch payload.' });
+            }
+            throw error;
+        }
 
         return response.send({ ok: true, ...result });
     } catch (error) {
@@ -1893,12 +1904,23 @@ router.post('/group/meta/patch', async function (request, response) {
         const integritySlug = typeof request.body.integrity === 'string' ? request.body.integrity : undefined;
         const force = Boolean(request.body.force);
 
-        const result = await patchChatMetadataInFile({
-            filePath: chatFilePath,
-            operations,
-            integritySlug,
-            force,
-        });
+        let result;
+        try {
+            result = await patchChatMetadataInFile({
+                filePath: chatFilePath,
+                operations,
+                integritySlug,
+                force,
+            });
+        } catch (error) {
+            if (isChatStatePatchConflictError(error)) {
+                return response.status(409).send({ error: 'Chat metadata patch conflict.' });
+            }
+            if (isJsonPatchValidationError(error)) {
+                return response.status(400).send({ error: 'Invalid metadata patch payload.' });
+            }
+            throw error;
+        }
 
         return response.send({ ok: true, ...result });
     } catch (error) {
