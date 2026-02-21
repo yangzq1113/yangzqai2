@@ -670,6 +670,23 @@ let isExportPopupOpen = false;
 let isImmersiveModeEnabled = false;
 let immersiveModeUsesFullscreen = false;
 
+function canUseAndroidImmersiveBridge() {
+    return typeof window !== 'undefined'
+        && typeof window.LukerAndroid === 'object'
+        && typeof window.LukerAndroid.setImmersiveModeEnabled === 'function';
+}
+
+function syncAndroidImmersiveMode(enabled) {
+    if (!canUseAndroidImmersiveBridge()) {
+        return;
+    }
+    try {
+        window.LukerAndroid.setImmersiveModeEnabled(Boolean(enabled));
+    } catch (error) {
+        console.warn('Failed to sync Android immersive mode', error);
+    }
+}
+
 function getFullscreenElement() {
     return document.fullscreenElement
         || document.webkitFullscreenElement
@@ -761,6 +778,7 @@ async function setImmersiveMode(enabled, { useFullscreen = true } = {}) {
     immersiveModeUsesFullscreen = shouldEnable ? Boolean(useFullscreen && canUseFullscreenApi()) : false;
     isImmersiveModeEnabled = shouldEnable;
     document.body.classList.toggle('luker-immersive-mode', shouldEnable);
+    syncAndroidImmersiveMode(shouldEnable);
     updateImmersiveModeUi();
 
     if (shouldEnable) {

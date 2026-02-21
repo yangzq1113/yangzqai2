@@ -39,6 +39,9 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.io.File
 import java.io.IOException
 import java.io.PrintWriter
@@ -62,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingSaveFileName: String? = null
     private var pendingApkDownloadId: Long? = null
     private var apkDownloadReceiverRegistered = false
+    private var immersiveModeEnabled: Boolean = false
 
     private val apkDownloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -149,6 +153,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        applyImmersiveMode(false)
 
         webView = findViewById(R.id.lukerWebView)
         loadingOverlay = findViewById(R.id.loadingOverlay)
@@ -367,6 +372,32 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 showMessageCompletionNotification(rawTitle, rawBody)
             }
+        }
+
+        @JavascriptInterface
+        fun setImmersiveModeEnabled(enabled: Boolean) {
+            runOnUiThread {
+                applyImmersiveMode(enabled)
+            }
+        }
+    }
+
+    private fun applyImmersiveMode(enabled: Boolean) {
+        immersiveModeEnabled = enabled
+        WindowCompat.setDecorFitsSystemWindows(window, !enabled)
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        if (enabled) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && immersiveModeEnabled) {
+            applyImmersiveMode(true)
         }
     }
 
