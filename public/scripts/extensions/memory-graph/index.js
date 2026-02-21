@@ -7956,6 +7956,30 @@ function ensureStyles() {
     gap: 4px;
 }
 
+.luker-rpg-memory-advanced-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    padding-top: 8px;
+}
+
+.luker-rpg-memory-advanced-footer-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.luker-rpg-memory-advanced-footer-note {
+    opacity: 0.76;
+    font-size: 0.86em;
+}
+
 .luker-rpg-memory-advanced-actions {
     display: flex;
     justify-content: flex-end;
@@ -8014,6 +8038,10 @@ function ensureStyles() {
     }
     .luker-rpg-memory-advanced-actions {
         justify-content: flex-start;
+    }
+    .luker-rpg-memory-advanced-footer {
+        flex-direction: column;
+        align-items: stretch;
     }
     .luker-rpg-memory-graph-workspace {
         grid-template-columns: minmax(0, 1fr);
@@ -8273,19 +8301,6 @@ async function persistAdvancedToCharacter(context, avatar, advancedSettings) {
     return await persistCharacterAdvancedOverride(context, targetAvatar, advancedSettings);
 }
 
-async function persistAdvancedToEffectiveScope(context, settings, advancedSettings) {
-    const info = getAdvancedScopeInfo(context, settings);
-    if (info.hasOverride && info.hasAvatar) {
-        const ok = await persistAdvancedToCharacter(context, info.avatar, advancedSettings);
-        if (!ok) {
-            return { ok: false, scope: 'character' };
-        }
-        return { ok: true, scope: 'character', avatar: info.avatar, characterName: info.characterName };
-    }
-    await persistAdvancedToGlobal(settings, advancedSettings);
-    return { ok: true, scope: 'global' };
-}
-
 function buildSchemaEditorPopupHtml(popupId, scopeInfo) {
     const normalized = normalizeNodeTypeSchema(scopeInfo?.schema);
     const cardsHtml = normalized.map((spec, index) => renderNodeTypeSchemaCard(spec, index)).join('');
@@ -8516,10 +8531,14 @@ async function openSchemaEditorPopup(context, settings, root) {
     }
 }
 
-function buildAdvancedSettingsPopupHtml(popupId, settings) {
+function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
+    const settings = scopeInfo?.settings || defaultSettings;
     const extractPrompt = String(settings.extractSystemPrompt || defaultSettings.extractSystemPrompt || '');
     const routePrompt = String(settings.recallRouteSystemPrompt || defaultSettings.recallRouteSystemPrompt || '');
     const finalizePrompt = String(settings.recallFinalizeSystemPrompt || defaultSettings.recallFinalizeSystemPrompt || '');
+    const scopeText = scopeInfo?.hasOverride
+        ? i18nFormat('Advanced scope: character override (${0})', scopeInfo.characterName || scopeInfo.avatar || i18n('(unset)'))
+        : i18n('Advanced scope: global');
     return `
 <div id="${popupId}" class="luker-rpg-memory-advanced-popup">
     <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
@@ -8550,8 +8569,16 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
     <label>${escapeHtml(i18n('Recall Stage 2 Prompt (Finalize)'))}
         <textarea id="${popupId}_recall_finalize_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(finalizePrompt)}</textarea>
     </label>
-    <div class="luker-rpg-memory-advanced-actions">
-        <div id="${popupId}_reset_advanced" class="menu_button">${escapeHtml(i18n('Reset Advanced Settings'))}</div>
+    <div class="luker-rpg-memory-advanced-footer">
+        <div class="luker-rpg-memory-advanced-footer-meta">
+            <div id="${popupId}_advanced_scope" class="luker-rpg-memory-advanced-footer-note">${escapeHtml(scopeText)}</div>
+        </div>
+        <div class="luker-rpg-memory-advanced-actions">
+            <div id="${popupId}_reset_advanced" class="menu_button">${escapeHtml(i18n('Reset Advanced Settings'))}</div>
+            <div id="${popupId}_advanced_save_global" class="menu_button">${escapeHtml(i18n('Save Advanced to Global'))}</div>
+            <div id="${popupId}_advanced_save_character" class="menu_button">${escapeHtml(i18n('Save Advanced to Character'))}</div>
+            <div id="${popupId}_advanced_clear_character_override" class="menu_button">${escapeHtml(i18n('Clear Character Advanced Override'))}</div>
+        </div>
     </div>
 </div>`;
 }
@@ -8559,7 +8586,10 @@ function buildAdvancedSettingsPopupHtml(popupId, settings) {
 async function openAdvancedSettingsPopup(context, settings, root) {
     const popupId = `luker_rpg_memory_advanced_popup_${Date.now()}`;
     const currentScopeInfo = getAdvancedScopeInfo(context, settings);
-    const html = buildAdvancedSettingsPopupHtml(popupId, currentScopeInfo.settings);
+    const html = buildAdvancedSettingsPopupHtml(popupId, currentScopeInfo);
+    const namespace = `.lukerAdvancedPopup_${popupId}`;
+    const selector = `#${popupId}`;
+    const getPopupRoot = () => jQuery(selector);
     const applyValuesToPopup = (popupRoot, source) => {
         if (!popupRoot?.length) {
             return;
@@ -8574,8 +8604,38 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_finalize_prompt`).val(String(source.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT));
     };
+    const setPopupScopeUi = (nextScopeInfo) => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const hasAvatar = Boolean(nextScopeInfo?.hasAvatar);
+        const hasOverride = Boolean(nextScopeInfo?.hasAvatar && nextScopeInfo?.hasOverride);
+        const scopeText = nextScopeInfo?.hasOverride
+            ? i18nFormat('Advanced scope: character override (${0})', nextScopeInfo.characterName || nextScopeInfo.avatar || i18n('(unset)'))
+            : i18n('Advanced scope: global');
+        popupRoot.find(`#${popupId}_advanced_scope`).text(scopeText);
+        popupRoot.find(`#${popupId}_advanced_save_character`)
+            .toggle(hasAvatar)
+            .prop('disabled', !hasAvatar);
+        popupRoot.find(`#${popupId}_advanced_clear_character_override`)
+            .toggle(hasAvatar)
+            .prop('disabled', !hasOverride);
+    };
+    const syncRootScopeUi = () => {
+        if (!root?.length) {
+            return;
+        }
+        const schemaScopeInfo = getSchemaScopeInfo(context, settings);
+        const advancedScopeInfo = getAdvancedScopeInfo(context, settings);
+        updateSchemaSummary(root, schemaScopeInfo.schema);
+        updateSchemaScopeIndicator(root, schemaScopeInfo);
+        updateAdvancedScopeIndicator(root, advancedScopeInfo);
+        root.find('#luker_rpg_memory_advanced_save_character').prop('disabled', !advancedScopeInfo.hasAvatar);
+        root.find('#luker_rpg_memory_advanced_clear_character_override').prop('disabled', !(advancedScopeInfo.hasAvatar && advancedScopeInfo.hasOverride));
+    };
     const readAdvancedValues = () => {
-        const popupRoot = jQuery(`#${popupId}`);
+        const popupRoot = getPopupRoot();
         if (!popupRoot.length) {
             return null;
         }
@@ -8591,43 +8651,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             recallFinalizePromptValue: String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim(),
         };
     };
-    let capturedValues = null;
-    const result = await context.callGenericPopup(
-        html,
-        context.POPUP_TYPE.CONFIRM,
-        '',
-        {
-            okButton: i18n('Save Advanced Settings'),
-            cancelButton: i18n('Cancel'),
-            wide: true,
-            large: false,
-            allowVerticalScrolling: true,
-            onOpen: () => {
-                const popupRoot = jQuery(`#${popupId}`);
-                popupRoot.find(`#${popupId}_reset_advanced`).off('click').on('click', () => {
-                    if (!window.confirm(i18n('Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.'))) {
-                        return;
-                    }
-                    applyValuesToPopup(popupRoot, defaultSettings);
-                    notifySuccess(i18n('Advanced settings reset to defaults in editor.'));
-                });
-            },
-            onClosing: () => {
-                capturedValues = readAdvancedValues();
-                return true;
-            },
-        },
-    );
-
-    if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
-        return;
-    }
-    const values = capturedValues || readAdvancedValues();
-    if (!values) {
-        notifyError(i18n('Failed to read advanced settings.'));
-        return;
-    }
-    const nextAdvancedSettings = normalizeAdvancedSettings({
+    const buildAdvancedSettingsFromValues = (values, fallbackSettings) => normalizeAdvancedSettings({
         recentRawTurns: values.recentRawTurnsValue,
         recallMaxIterations: values.recallIterationsValue,
         toolCallRetryMax: values.toolRetriesValue,
@@ -8637,27 +8661,103 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         extractSystemPrompt: values.extractSystemPromptValue,
         recallRouteSystemPrompt: values.recallRoutePromptValue,
         recallFinalizeSystemPrompt: values.recallFinalizePromptValue,
-    }, currentScopeInfo.settings);
-    const persistResult = await persistAdvancedToEffectiveScope(context, settings, nextAdvancedSettings);
-    if (!persistResult.ok) {
-        notifyError(i18n('Failed to persist character advanced override.'));
-        return;
+    }, fallbackSettings);
+
+    const popupPromise = context.callGenericPopup(
+        html,
+        context.POPUP_TYPE.TEXT,
+        '',
+        {
+            wide: true,
+            large: false,
+            allowVerticalScrolling: true,
+            onOpen: () => {
+                setPopupScopeUi(getAdvancedScopeInfo(context, settings));
+            },
+        },
+    );
+    const popupScopeSyncEvents = [
+        context?.eventTypes?.CHAT_CHANGED,
+        context?.eventTypes?.CHARACTER_REPLACED,
+        context?.eventTypes?.CHARACTER_EDITED,
+    ].filter(Boolean);
+    const handlePopupScopeSync = () => setPopupScopeUi(getAdvancedScopeInfo(context, settings));
+    for (const eventName of popupScopeSyncEvents) {
+        context?.eventSource?.on?.(eventName, handlePopupScopeSync);
     }
 
-    const nextScopeInfo = getAdvancedScopeInfo(context, settings);
-    if (persistResult.scope === 'character') {
-        notifySuccess(i18nFormat('Advanced settings saved to character override: ${0}.', nextScopeInfo.characterName || persistResult.characterName || persistResult.avatar));
-        updateUiStatus(i18nFormat('Advanced settings saved to character override: ${0}.', nextScopeInfo.characterName || persistResult.characterName || persistResult.avatar));
-    } else {
+    jQuery(document).off(namespace);
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_reset_advanced`, function () {
+        if (!window.confirm(i18n('Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.'))) {
+            return;
+        }
+        applyValuesToPopup(getPopupRoot(), defaultSettings);
+        notifySuccess(i18n('Advanced settings reset to defaults in editor.'));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_advanced_save_global`, async function () {
+        const values = readAdvancedValues();
+        if (!values) {
+            notifyError(i18n('Failed to read advanced settings.'));
+            return;
+        }
+        const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, getAdvancedScopeInfo(context, settings).settings);
+        await persistAdvancedToGlobal(settings, nextAdvancedSettings);
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        setPopupScopeUi(nextScopeInfo);
+        syncRootScopeUi();
         notifySuccess(i18n('Advanced settings saved to global settings.'));
         updateUiStatus(i18n('Advanced settings saved to global settings.'));
-    }
-    bindUi();
-    if (root?.length) {
-        const schemaScopeInfo = getSchemaScopeInfo(context, settings);
-        updateSchemaSummary(root, schemaScopeInfo.schema);
-        updateSchemaScopeIndicator(root, schemaScopeInfo);
-        updateAdvancedScopeIndicator(root, nextScopeInfo);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_advanced_save_character`, async function () {
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        if (!nextScopeInfo.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const values = readAdvancedValues();
+        if (!values) {
+            notifyError(i18n('Failed to read advanced settings.'));
+            return;
+        }
+        const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, nextScopeInfo.settings);
+        const ok = await persistAdvancedToCharacter(context, nextScopeInfo.avatar, nextAdvancedSettings);
+        if (!ok) {
+            notifyError(i18n('Failed to persist character advanced override.'));
+            return;
+        }
+        const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
+        setPopupScopeUi(refreshedScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18nFormat('Advanced settings saved to character override: ${0}.', refreshedScopeInfo.characterName || nextScopeInfo.characterName || nextScopeInfo.avatar));
+        updateUiStatus(i18nFormat('Advanced settings saved to character override: ${0}.', refreshedScopeInfo.characterName || nextScopeInfo.characterName || nextScopeInfo.avatar));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_advanced_clear_character_override`, async function () {
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        if (!nextScopeInfo.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await removeCharacterAdvancedOverride(context, nextScopeInfo.avatar);
+        if (!ok) {
+            notifyError(i18n('Failed to clear character advanced override.'));
+            return;
+        }
+        const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
+        applyValuesToPopup(getPopupRoot(), refreshedScopeInfo.settings);
+        setPopupScopeUi(refreshedScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18nFormat('Cleared character advanced override: ${0}.', nextScopeInfo.characterName || nextScopeInfo.avatar));
+        updateUiStatus(i18nFormat('Cleared character advanced override: ${0}.', nextScopeInfo.characterName || nextScopeInfo.avatar));
+    });
+
+    try {
+        await popupPromise;
+    } finally {
+        jQuery(document).off(namespace);
+        for (const eventName of popupScopeSyncEvents) {
+            context?.eventSource?.removeListener?.(eventName, handlePopupScopeSync);
+        }
+        bindUi();
     }
 }
 
