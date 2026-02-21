@@ -12,6 +12,7 @@ import {
     event_types,
     eventSource,
     extension_prompts,
+    extension_prompt_roles,
     extractMessageFromData,
     Generate,
     generateQuietPrompt,
@@ -608,7 +609,215 @@ function formatPluginWorldInfoContent(value, completionCore) {
     return wiFormat;
 }
 
-function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalizedMessages) {
+function getWorldInfoRoleOrder(role) {
+    switch (normalizeLayoutRole(role)) {
+        case 'user':
+            return 1;
+        case 'assistant':
+            return 2;
+        case 'system':
+        default:
+            return 0;
+    }
+}
+
+function normalizeRuntimeWorldInfoDepth(rawDepthEntries) {
+    if (!Array.isArray(rawDepthEntries)) {
+        return [];
+    }
+    const grouped = new Map();
+    for (const item of rawDepthEntries) {
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+        const depth = Math.max(0, Math.floor(Number(item.depth) || 0));
+        const numericRole = Number(item.role);
+        let role = 'system';
+        if (Number.isFinite(numericRole)) {
+            if (numericRole === Number(extension_prompt_roles.USER)) {
+                role = 'user';
+            } else if (numericRole === Number(extension_prompt_roles.ASSISTANT)) {
+                role = 'assistant';
+            }
+        } else {
+            role = normalizeLayoutRole(item.role);
+        }
+        const entries = Array.isArray(item.entries)
+            ? item.entries.map(entry => String(entry ?? '').trim()).filter(Boolean)
+            : [];
+        if (entries.length === 0) {
+            continue;
+        }
+        const key = `${depth}:${role}`;
+        const existing = grouped.get(key);
+        if (existing) {
+            existing.entries.push(...entries);
+            continue;
+        }
+        grouped.set(key, { depth, role, entries: [...entries] });
+    }
+
+    return Array.from(grouped.values())
+        .sort((a, b) => {
+            if (a.depth !== b.depth) {
+                return a.depth - b.depth;
+            }
+            return getWorldInfoRoleOrder(a.role) - getWorldInfoRoleOrder(b.role);
+        });
+}
+
+function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
+    return {
+        worldInfoBefore: String(source.worldInfoBefore || ''),
+        worldInfoAfter: String(source.worldInfoAfter || ''),
+        worldInfoDepth: normalizeRuntimeWorldInfoDepth(source.worldInfoDepth),
+        outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
+        worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
+    };
+}
+
+function mergeWorldInfoDepthIntoMessages(messages, worldInfoDepthEntries) {
+    const base = Array.isArray(messages)
+        ? messages.map(message => ({ ...message }))
+        : [];
+    const depthEntries = Array.isArray(worldInfoDepthEntries) ? worldInfoDepthEntries : [];
+    if (depthEntries.length === 0) {
+        return base;
+    }
+
+    const depthGroups = new Map();
+    for (const entry of depthEntries) {
+        const depth = Math.max(0, Math.floor(Number(entry?.depth) || 0));
+        const role = normalizeLayoutRole(entry?.role);
+        const content = Array.isArray(entry?.entries)
+            ? entry.entries.map(line => String(line ?? '').trim()).filter(Boolean).join('\n').trim()
+            : '';
+        if (!content) {
+            continue;
+        }
+        const group = depthGroups.get(depth) || { system: '', user: '', assistant: '' };
+        const existing = String(group[role] || '').trim();
+        group[role] = existing ? `${existing}\n${content}` : content;
+        depthGroups.set(depth, group);
+    }
+
+    let totalInserted = 0;
+    const orderedDepths = Array.from(depthGroups.keys()).sort((a, b) => a - b);
+    for (const depth of orderedDepths) {
+        const group = depthGroups.get(depth);
+        const roleMessages = ['system', 'user', 'assistant']
+            .map(role => ({ role, content: String(group?.[role] || '').trim() }))
+            .filter(item => item.content)
+            .map(item => ({ role: item.role, content: item.content }));
+        if (roleMessages.length === 0) {
+            continue;
+        }
+        const reverseInsertionIndex = Math.min(depth + totalInserted, base.length);
+        const insertionIndex = Math.max(0, base.length - reverseInsertionIndex);
+        base.splice(insertionIndex, 0, ...roleMessages);
+        totalInserted += roleMessages.length;
+    }
+
+    return base;
+}
+
+function resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo = null) {
+    if (runtimeWorldInfo && typeof runtimeWorldInfo === 'object') {
+        return normalizeRuntimeWorldInfo(runtimeWorldInfo);
+    }
+    return normalizeRuntimeWorldInfo({
+        ...getActiveWorldInfoPromptFields(),
+        worldInfoDepth: [],
+    });
+}
+
+function normalizeWorldInfoSourceMessages(messages) {
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+    const normalized = [];
+    for (const message of messages) {
+        if (!message || typeof message !== 'object') {
+            continue;
+        }
+        const hasChatShape = Object.hasOwn(message, 'mes') || Object.hasOwn(message, 'is_user') || Object.hasOwn(message, 'is_system');
+        const role = normalizeLayoutRole(message.role);
+        const text = hasChatShape
+            ? String(message.mes ?? message.content ?? message.text ?? '').trim()
+            : String(message.content ?? message.text ?? '').trim();
+        if (!text) {
+            continue;
+        }
+        const isUser = hasChatShape
+            ? Boolean(message.is_user) || role === 'user'
+            : role === 'user';
+        const isSystem = hasChatShape
+            ? Boolean(message.is_system) || role === 'system'
+            : role === 'system';
+        let speaker = String(message.name || '').trim();
+        if (!speaker) {
+            if (isUser) {
+                speaker = String(name1 || 'User');
+            } else if (!isSystem) {
+                speaker = String(name2 || 'Assistant');
+            }
+        }
+        normalized.push({
+            name: speaker,
+            is_user: isUser,
+            is_system: isSystem,
+            mes: text,
+        });
+    }
+    return normalized;
+}
+
+async function resolveWorldInfoForMessages(messages = [], {
+    type = 'quiet',
+    maxContext = undefined,
+    includeNames = true,
+    globalScanData = undefined,
+    fallbackToCurrentChat = true,
+} = {}) {
+    const sourceMessages = Array.isArray(messages) && messages.length > 0
+        ? messages
+        : (fallbackToCurrentChat ? (Array.isArray(chat) ? chat : []) : []);
+    const coreChat = normalizeWorldInfoSourceMessages(sourceMessages)
+        .filter(item => !item.is_system);
+    if (coreChat.length === 0) {
+        return normalizeRuntimeWorldInfo();
+    }
+
+    const request = {
+        coreChat,
+        type: String(type || 'quiet'),
+        includeNames: includeNames !== false,
+    };
+    const maxContextValue = Number(maxContext);
+    if (Number.isFinite(maxContextValue) && maxContextValue > 0) {
+        request.maxContext = Math.floor(maxContextValue);
+    }
+    if (globalScanData && typeof globalScanData === 'object') {
+        request.globalScanData = globalScanData;
+    }
+
+    try {
+        const resolution = await simulateWorldInfoActivation(request);
+        return normalizeRuntimeWorldInfo({
+            worldInfoBefore: resolution?.worldInfoBefore || '',
+            worldInfoAfter: resolution?.worldInfoAfter || '',
+            worldInfoDepth: Array.isArray(resolution?.worldInfoDepth) ? resolution.worldInfoDepth : [],
+            outletEntries: resolution?.outletEntries && typeof resolution.outletEntries === 'object' ? resolution.outletEntries : {},
+            worldInfoExamples: Array.isArray(resolution?.worldInfoExamples) ? resolution.worldInfoExamples : [],
+        });
+    } catch (error) {
+        console.warn('[LUKER] resolveWorldInfoForMessages failed', error);
+        return normalizeRuntimeWorldInfo();
+    }
+}
+
+function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalizedMessages, runtimeWorldInfo = null) {
     const prompts = Array.isArray(completionCore?.prompts) ? completionCore.prompts : [];
     const promptMap = new Map(prompts
         .filter(prompt => prompt && typeof prompt === 'object' && typeof prompt.identifier === 'string')
@@ -622,7 +831,8 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
 
     const result = [];
     let historyInjected = false;
-    const runtimePromptFields = getActiveWorldInfoPromptFields();
+    const runtimePromptFields = resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo);
+    const historyMessages = mergeWorldInfoDepthIntoMessages(normalizedMessages, runtimePromptFields.worldInfoDepth);
 
     for (const entry of orderEntries) {
         if (!entry || entry.enabled === false) {
@@ -650,7 +860,7 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
 
         if (identifier === 'chatHistory') {
             historyInjected = true;
-            result.push(...normalizedMessages);
+            result.push(...historyMessages);
             continue;
         }
 
@@ -669,8 +879,8 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
         result.push({ role, content });
     }
 
-    if (!historyInjected && normalizedMessages.length > 0) {
-        result.push(...normalizedMessages);
+    if (!historyInjected && historyMessages.length > 0) {
+        result.push(...historyMessages);
     }
 
     return result;
@@ -730,6 +940,7 @@ function buildPresetAwarePromptMessages({
     envelope = null,
     envelopeOptions = {},
     promptPresetName = '',
+    runtimeWorldInfo = null,
 } = {}) {
     const normalizedMessages = normalizePromptMessages(messages);
     const resolvedEnvelopeOptions = envelopeOptions && typeof envelopeOptions === 'object'
@@ -759,6 +970,7 @@ function buildPresetAwarePromptMessages({
         resolvedEnvelope?.promptCore?.completion,
         resolvedEnvelope,
         normalizedMessages,
+        runtimeWorldInfo,
     );
     if (Array.isArray(orderedMessages)) {
         return orderedMessages;
@@ -890,6 +1102,7 @@ export function getContext() {
         buildWorldInfoChatInput,
         buildWorldInfoGlobalScanData,
         simulateWorldInfoActivation,
+        resolveWorldInfoForMessages,
         uuidv4,
         humanizedDateTime,
         updateMessageBlock,

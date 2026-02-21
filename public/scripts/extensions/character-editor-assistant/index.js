@@ -487,7 +487,12 @@ function getLorebookSyncRequestPresetOptions(context = getContext()) {
     };
 }
 
-function buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, { llmPresetName = '', requestApi = '' } = {}) {
+async function buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
+    llmPresetName = '',
+    requestApi = '',
+    worldInfoMessages = null,
+    runtimeWorldInfo = null,
+} = {}) {
     const baseMessages = [
         { role: 'system', content: String(systemPrompt || '').trim() },
         { role: 'user', content: String(userPrompt || '').trim() },
@@ -499,6 +504,15 @@ function buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, { l
 
     const selectedPromptPresetName = String(llmPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (String(requestApi || context?.mainApi || 'openai').trim() || 'openai');
+    let resolvedRuntimeWorldInfo = runtimeWorldInfo && typeof runtimeWorldInfo === 'object'
+        ? runtimeWorldInfo
+        : null;
+    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && Array.isArray(worldInfoMessages)) {
+        resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
+            type: 'quiet',
+            fallbackToCurrentChat: false,
+        });
+    }
     try {
         const built = context.buildPresetAwarePromptMessages({
             messages: baseMessages,
@@ -508,6 +522,7 @@ function buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, { l
                 promptPresetName: selectedPromptPresetName,
             },
             promptPresetName: selectedPromptPresetName,
+            runtimeWorldInfo: resolvedRuntimeWorldInfo,
         });
         if (Array.isArray(built) && built.length > 0) {
             return built;
@@ -2533,7 +2548,7 @@ async function requestModelLorebookDiffAnalysis(context, plan) {
         JSON.stringify(contextPayload),
     ].join('\n\n');
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
-    const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+    const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
 
     const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
         requestScope: 'extension_internal',
@@ -2588,7 +2603,10 @@ async function requestModelLorebookConversationReply(context, plan, conversation
         }),
     ].join('\n\n');
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
-    const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+    const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
+        ...requestPresetOptions,
+        worldInfoMessages: history,
+    });
     const settings = getSettings();
     const allowedToolNames = ['lorebook_upsert_entry', 'lorebook_delete_entry'];
 
@@ -2900,7 +2918,10 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         }),
     ].join('\n\n');
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
-    const requestMessages = buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+    const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
+        ...requestPresetOptions,
+        worldInfoMessages: history,
+    });
     const settings = getSettings();
     const allowedToolNames = Object.values(TOOL_NAMES);
     const { calls: rawCalls, assistantText } = await requestLorebookToolCallsWithRetry(

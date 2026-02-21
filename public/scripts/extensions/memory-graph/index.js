@@ -2113,15 +2113,33 @@ function buildCompressionSummaryInstruction(baseInstruction) {
     ].join('\n');
 }
 
-function buildPresetAwareLLMMessages(
+async function buildPresetAwareLLMMessages(
     context,
     settings,
-    { api = '', systemPrompt = '', userPrompt = '', includeCharacterCard = true, promptPresetName = '' } = {},
+    {
+        api = '',
+        systemPrompt = '',
+        userPrompt = '',
+        includeCharacterCard = true,
+        promptPresetName = '',
+        worldInfoMessages = null,
+        runtimeWorldInfo = null,
+        worldInfoType = 'quiet',
+    } = {},
 ) {
     const systemText = String(systemPrompt || '').trim();
     const userText = String(userPrompt || '').trim();
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    let resolvedRuntimeWorldInfo = runtimeWorldInfo && typeof runtimeWorldInfo === 'object'
+        ? runtimeWorldInfo
+        : null;
+    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && Array.isArray(worldInfoMessages)) {
+        resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
+            type: String(worldInfoType || 'quiet'),
+            fallbackToCurrentChat: false,
+        });
+    }
 
     return context.buildPresetAwarePromptMessages({
         messages: [
@@ -2134,6 +2152,7 @@ function buildPresetAwareLLMMessages(
             promptPresetName: selectedPromptPresetName,
         },
         promptPresetName: selectedPromptPresetName,
+        runtimeWorldInfo: resolvedRuntimeWorldInfo,
     });
 }
 
@@ -2585,6 +2604,9 @@ async function runFunctionCallTask(context, settings, {
     userPrompt = '',
     promptPresetName = '',
     apiPresetName = '',
+    worldInfoMessages = null,
+    runtimeWorldInfo = null,
+    worldInfoType = 'quiet',
     functionName = '',
     functionDescription = '',
     parameters = {},
@@ -2597,12 +2619,15 @@ async function runFunctionCallTask(context, settings, {
 
     const resolvedApiPresetName = String(apiPresetName || '').trim();
     const requestApi = resolveRequestApiFromConnectionProfileName(context, resolvedApiPresetName);
-    const prompt = buildPresetAwareLLMMessages(context, settings, {
+    const prompt = await buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
         systemPrompt,
         userPrompt,
         includeCharacterCard: true,
         promptPresetName: String(promptPresetName || '').trim(),
+        worldInfoMessages,
+        runtimeWorldInfo,
+        worldInfoType,
     });
 
     const apiSettingsOverride = buildApiSettingsOverrideFromConnectionProfileName(
@@ -3446,7 +3471,7 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             visible_node_count: graphNodes.length,
             nodes: graphNodes,
         };
-    const promptMessages = buildPresetAwareLLMMessages(context, settings, {
+    const promptMessages = await buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
         systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
         userPrompt: buildExtractInputXml(
@@ -3456,6 +3481,12 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
         ),
         includeCharacterCard: true,
         promptPresetName,
+        worldInfoMessages: messages.map(item => ({
+            role: item.role,
+            content: item.text,
+            name: item.name,
+        })),
+        worldInfoType: 'quiet',
     });
     const { tools, specByToolName } = buildDynamicExtractTools(schema, {
         allowEditDelete: !rebuildCreateOnly,
@@ -4814,6 +4845,11 @@ async function chooseRecallRoute(context, settings, recallState) {
             }),
             apiPresetName: settings.recallApiPresetName || '',
             promptPresetName: String(settings.recallPresetName || '').trim(),
+            worldInfoMessages: Array.isArray(recallState?.worldInfoMessages) ? recallState.worldInfoMessages : null,
+            runtimeWorldInfo: recallState?.runtimeWorldInfo && typeof recallState.runtimeWorldInfo === 'object'
+                ? recallState.runtimeWorldInfo
+                : null,
+            worldInfoType: 'quiet',
             functionName: 'luker_rpg_recall_plan',
             functionDescription: 'Plan recall as finalize or drill with optional expansion plan.',
             parameters: {
@@ -5006,6 +5042,11 @@ async function chooseFocusNodes(context, settings, recallState) {
             }),
             apiPresetName: settings.recallApiPresetName || '',
             promptPresetName: String(settings.recallPresetName || '').trim(),
+            worldInfoMessages: Array.isArray(recallState?.worldInfoMessages) ? recallState.worldInfoMessages : null,
+            runtimeWorldInfo: recallState?.runtimeWorldInfo && typeof recallState.runtimeWorldInfo === 'object'
+                ? recallState.runtimeWorldInfo
+                : null,
+            worldInfoType: 'quiet',
             functionName: 'luker_rpg_recall_finalize',
             functionDescription: 'Finalize memory node IDs to inject.',
             parameters: {
@@ -5420,6 +5461,14 @@ async function runLLMDrivenRecall(context, store, payload) {
 
     const queryBundle = getRecallQueryBundle(payload, context, settings);
     const query = normalizeText(queryBundle.fullText || '');
+    const runtimeWorldInfo = {
+        worldInfoBefore: String(payload?.worldInfoBefore || ''),
+        worldInfoAfter: String(payload?.worldInfoAfter || ''),
+        worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
+        outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
+        worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
+    };
+    const worldInfoMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : [];
     const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
     const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context);
     const maxIterations = Math.max(2, Math.min(6, Number(settings.recallMaxIterations || 3)));
@@ -5440,6 +5489,8 @@ async function runLLMDrivenRecall(context, store, payload) {
             queryBundle,
             candidates: currentCandidates,
             alwaysInjectIds,
+            worldInfoMessages,
+            runtimeWorldInfo,
             abortSignal,
         });
         latestRoute = route;
@@ -5500,6 +5551,8 @@ async function runLLMDrivenRecall(context, store, payload) {
             route: latestRoute || {},
             candidates: currentCandidates,
             alwaysInjectIds,
+            worldInfoMessages,
+            runtimeWorldInfo,
             abortSignal,
         });
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];

@@ -1620,14 +1620,26 @@ function buildAiSuggestInputXml({
     ].join('\n');
 }
 
-function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
+async function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     api = '',
     promptPresetName = '',
+    worldInfoMessages = null,
+    runtimeWorldInfo = null,
+    worldInfoType = 'quiet',
 } = {}) {
     const systemText = String(systemPrompt || '').trim() || 'Return concise guidance through function-call fields.';
     const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    let resolvedRuntimeWorldInfo = runtimeWorldInfo && typeof runtimeWorldInfo === 'object'
+        ? runtimeWorldInfo
+        : null;
+    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && Array.isArray(worldInfoMessages)) {
+        resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
+            type: String(worldInfoType || 'quiet'),
+            fallbackToCurrentChat: false,
+        });
+    }
 
     return context.buildPresetAwarePromptMessages({
         messages: [
@@ -1640,6 +1652,7 @@ function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
             promptPresetName: selectedPromptPresetName,
         },
         promptPresetName: selectedPromptPresetName,
+        runtimeWorldInfo: resolvedRuntimeWorldInfo,
     });
 }
 
@@ -1682,7 +1695,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         llmApiPresetName,
         String(context?.chatCompletionSettings?.chat_completion_source || ''),
     );
-    const promptMessages = buildPresetAwareMessages(
+    const promptMessages = await buildPresetAwareMessages(
         context,
         settings,
         String(preset.systemPrompt || '').trim(),
@@ -1690,6 +1703,15 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         {
             api,
             promptPresetName,
+            worldInfoMessages: messages,
+            worldInfoType: String(payload?.type || 'quiet'),
+            runtimeWorldInfo: {
+                worldInfoBefore: String(payload?.worldInfoBefore || ''),
+                worldInfoAfter: String(payload?.worldInfoAfter || ''),
+                worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
+                outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
+                worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
+            },
         },
     );
 
@@ -3247,7 +3269,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
 
     const aiSuggestApiPresetName = String(settings.aiSuggestApiPresetName || '').trim();
     const suggestPresetName = String(settings.aiSuggestPresetName || '').trim();
-    const promptMessages = buildPresetAwareMessages(
+    const promptMessages = await buildPresetAwareMessages(
         context,
         settings,
         suggestSystemPrompt,
@@ -4907,7 +4929,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
     const tools = buildAiIterationToolSet();
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
 
-    const promptMessages = buildPresetAwareMessages(
+    const promptMessages = await buildPresetAwareMessages(
         context,
         settings,
         buildAiIterationSystemPrompt(settings),
@@ -4915,6 +4937,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         {
             api,
             promptPresetName: suggestPresetName,
+            worldInfoMessages: session.messages,
         },
     );
     const detailed = await requestToolCallsWithRetry(settings, promptMessages, {

@@ -5036,16 +5036,13 @@ function setActiveWorldInfoPromptSnapshot({ worldInfoBefore = '', worldInfoAfter
 }
 
 /**
- * Returns runtime WI prompt fields for plugin preset assembly in the current generation cycle.
- * The snapshot is only exposed while generation is active for the current chat.
+ * Returns cached WI prompt fields for plugin preset assembly.
+ * Snapshot is scoped by chat and refreshed during generation WI pipeline.
  * @returns {{ worldInfoBefore: string, worldInfoAfter: string }}
  */
 export function getActiveWorldInfoPromptFields() {
     const currentChatId = String(getCurrentChatId() || '');
     if (!currentChatId || activeWorldInfoPromptSnapshot.chatId !== currentChatId) {
-        return { worldInfoBefore: '', worldInfoAfter: '' };
-    }
-    if (!is_send_press && !is_group_generating) {
         return { worldInfoBefore: '', worldInfoAfter: '' };
     }
     return {
@@ -5581,6 +5578,11 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         worldInfoResolutionOverride: wiScanPayload.worldInfoResolutionOverride ?? null,
         simulateWorldInfo: async (overrides = {}) => await runWIScan(overrides),
     };
+    // Expose latest WI prompt snapshot before AFTER_WORLD_INFO_SCAN hooks run.
+    setActiveWorldInfoPromptSnapshot({
+        worldInfoBefore: String(wiAfterPayload.worldInfoBefore || ''),
+        worldInfoAfter: String(wiAfterPayload.worldInfoAfter || ''),
+    });
     await eventSource.emit(event_types.GENERATION_AFTER_WORLD_INFO_SCAN, wiAfterPayload);
 
     if (Array.isArray(wiAfterPayload.coreChat)) {
