@@ -57,8 +57,6 @@ class MainActivity : AppCompatActivity() {
     private val messageProgressNotificationChannelId = "luker_message_progress_v1"
     private val messageNotificationId = 12001
     private val messageProgressNotificationId = 12002
-    private var lastSyncedViewportHeightPx: Int = -1
-    private var lastSyncedImeBottomPx: Int = -1
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
@@ -177,7 +175,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         applyImmersiveMode(false)
         onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
@@ -192,7 +189,6 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
         }
-        installViewportSync()
         webView.addJavascriptInterface(LukerAndroidBridge(), "LukerAndroid")
         webView.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
@@ -279,7 +275,6 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 installBlobDownloadBridge()
-                syncWebViewportHeightFromInsets()
                 loadingOverlay.visibility = View.GONE
             }
         }
@@ -509,7 +504,6 @@ class MainActivity : AppCompatActivity() {
             ViewCompat.requestApplyInsets(window.decorView)
             if (this::webView.isInitialized) {
                 webView.requestLayout()
-                syncWebViewportHeightFromInsets()
             }
         }
     }
@@ -546,80 +540,6 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus && immersiveModeEnabled) {
             applyImmersiveMode(true)
         }
-        if (hasFocus) {
-            syncWebViewportHeightFromInsets()
-        }
-    }
-
-    private fun installViewportSync() {
-        if (!this::webView.isInitialized) {
-            return
-        }
-        webView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-            syncWebViewportHeightFromInsets()
-        }
-        ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
-            syncWebViewportHeightFromInsets(insets)
-            insets
-        }
-        webView.post {
-            ViewCompat.requestApplyInsets(webView)
-            syncWebViewportHeightFromInsets()
-        }
-    }
-
-    private fun syncWebViewportHeightFromInsets(insets: WindowInsetsCompat? = null) {
-        if (!this::webView.isInitialized) {
-            return
-        }
-
-        val baseHeight = when {
-            window.decorView.height > 0 -> window.decorView.height
-            webView.height > 0 -> webView.height
-            else -> return
-        }
-
-        val rootInsets = insets ?: ViewCompat.getRootWindowInsets(webView)
-        val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) == true
-        val imeBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-        val systemBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
-        val keyboardOverlap = if (imeVisible) {
-            (imeBottom - systemBottom).coerceAtLeast(0)
-        } else {
-            0
-        }
-        val viewportHeight = (baseHeight - keyboardOverlap).coerceAtLeast(1)
-
-        if (viewportHeight == lastSyncedViewportHeightPx && imeBottom == lastSyncedImeBottomPx) {
-            return
-        }
-
-        lastSyncedViewportHeightPx = viewportHeight
-        lastSyncedImeBottomPx = imeBottom
-        syncWebViewportHeight(viewportHeight)
-    }
-
-    private fun syncWebViewportHeight(heightPx: Int) {
-        if (!this::webView.isInitialized) {
-            return
-        }
-        val safeHeight = heightPx.coerceAtLeast(1)
-        val script = """
-            (function () {
-              const h = ${safeHeight};
-              const doc = document.documentElement;
-              if (doc) {
-                doc.style.setProperty('--luker-viewport-height', h + 'px');
-                doc.style.setProperty('--doc-height', h + 'px');
-                doc.classList.add('luker-android-app');
-              }
-              if (document.body) {
-                document.body.classList.add('luker-android-app');
-              }
-              window.dispatchEvent(new Event('resize'));
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(script, null)
     }
 
     private fun installBlobDownloadBridge() {

@@ -19,7 +19,6 @@
 :root {
     interpolate-size: allow-keywords;
     --doc-height: 100%;
-    --luker-viewport-height: 100dvh;
     --transparent: rgba(0, 0, 0, 0);
 
     --black30a: rgba(0, 0, 0, 0.3);
@@ -165,22 +164,6 @@ body {
     color: var(--SmartThemeBodyColor);
     overflow: hidden;
     color-scheme: only light;
-}
-
-html.luker-android-app,
-body.luker-android-app {
-    height: var(--luker-viewport-height);
-    max-height: var(--luker-viewport-height);
-    overflow: hidden !important;
-}
-
-body.luker-android-app {
-    position: fixed;
-    inset: 0;
-    width: 100%;
-    overflow: hidden !important;
-    touch-action: manipulation;
-    overscroll-behavior: none;
 }
 
 ::-webkit-scrollbar {
@@ -789,8 +772,7 @@ hr {
     /* -1px to give sheld some wiggle room to bounce off tobar when moving*/
     height: calc(100vh - var(--topBarBlockSize) - 1px);
     height: calc(100dvh - var(--topBarBlockSize) - 1px);
-    height: calc(var(--luker-viewport-height) - var(--topBarBlockSize) - 1px);
-    max-height: calc(var(--luker-viewport-height) - var(--topBarBlockSize) - 1px);
+    max-height: calc(100dvh - var(--topBarBlockSize) - 1px);
     overflow-x: hidden;
     /* max-width: 50vw; */
     position: absolute;
@@ -875,8 +857,6 @@ body .panelControlBar {
 
 #chat {
     max-height: calc(100vh - calc(var(--topBarBlockSize) + var(--bottomFormBlockSize)));
-    max-height: calc(100dvh - calc(var(--topBarBlockSize) + var(--bottomFormBlockSize)));
-    max-height: calc(var(--luker-viewport-height) - calc(var(--topBarBlockSize) + var(--bottomFormBlockSize)));
     overflow-x: hidden;
     padding-bottom: 0;
     overflow-y: scroll;
@@ -5387,14 +5367,12 @@ body.luker-immersive-mode #sheld {
     top: 0;
     height: calc(100vh - 1px);
     height: calc(100dvh - 1px);
-    height: calc(var(--luker-viewport-height) - 1px);
-    max-height: calc(var(--luker-viewport-height) - 1px);
+    max-height: calc(100dvh - 1px);
 }
 
 body.luker-immersive-mode #chat {
     max-height: calc(100vh - var(--bottomFormBlockSize));
     max-height: calc(100dvh - var(--bottomFormBlockSize));
-    max-height: calc(var(--luker-viewport-height) - var(--bottomFormBlockSize));
 }
 
 body:has(.drawer-content.maximized) #top-settings-holder:has(.drawer-content.openDrawer:not(.fillLeft):not(.fillRight)),
