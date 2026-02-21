@@ -35,6 +35,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -66,6 +67,23 @@ class MainActivity : AppCompatActivity() {
     private var pendingApkDownloadId: Long? = null
     private var apkDownloadReceiverRegistered = false
     private var immersiveModeEnabled: Boolean = false
+    private val backPressedCallback = object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+            if (immersiveModeEnabled) {
+                applyImmersiveMode(false)
+                syncWebImmersiveMode(false)
+                return
+            }
+
+            if (this@MainActivity::webView.isInitialized && webView.canGoBack()) {
+                webView.goBack()
+                return
+            }
+
+            isEnabled = false
+            onBackPressedDispatcher.onBackPressed()
+        }
+    }
 
     private val apkDownloadReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -154,6 +172,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         applyImmersiveMode(false)
+        onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
         webView = findViewById(R.id.lukerWebView)
         loadingOverlay = findViewById(R.id.loadingOverlay)
@@ -392,6 +411,17 @@ class MainActivity : AppCompatActivity() {
         } else {
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
+    }
+
+    private fun syncWebImmersiveMode(enabled: Boolean) {
+        if (!this::webView.isInitialized) {
+            return
+        }
+        val jsEnabled = if (enabled) "true" else "false"
+        webView.evaluateJavascript(
+            "window.__lukerSetImmersiveModeFromNative && window.__lukerSetImmersiveModeFromNative($jsEnabled);",
+            null,
+        )
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

@@ -797,6 +797,12 @@ async function toggleImmersiveMode() {
     await setImmersiveMode(!isImmersiveModeEnabled);
 }
 
+if (typeof window !== 'undefined') {
+    window.__lukerSetImmersiveModeFromNative = (enabled) => {
+        void setImmersiveMode(Boolean(enabled), { useFullscreen: false });
+    };
+}
+
 // Saved here for performance reasons
 const messageTemplate = $('#message_template .mes');
 export const chatElement = $('#chat');
