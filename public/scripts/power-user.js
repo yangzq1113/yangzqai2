@@ -152,6 +152,7 @@ export const power_user = {
     show_card_avatar_urls: false,
     play_message_sound: false,
     play_sound_unfocused: true,
+    message_complete_notification: false,
     auto_save_msg_edits: false,
     confirm_message_delete: true,
 
@@ -391,6 +392,85 @@ export function playMessageSound() {
         audio.pause();
         audio.currentTime = 0;
         audio.play();
+    }
+}
+
+function canUseBrowserNotifications() {
+    return typeof window !== 'undefined' && typeof window.Notification === 'function';
+}
+
+function canUseAndroidBridgeNotifications() {
+    return typeof window !== 'undefined'
+        && typeof window.LukerAndroid === 'object'
+        && typeof window.LukerAndroid.notifyMessageFinished === 'function';
+}
+
+function shouldSuppressBackgroundNotification() {
+    return browser_has_focus && document.visibilityState === 'visible';
+}
+
+function buildMessageNotificationBody(messageText) {
+    const normalized = String(messageText || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+        return t`A new assistant reply is ready.`;
+    }
+    return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+}
+
+async function ensureMessageNotificationPermission() {
+    if (!canUseBrowserNotifications()) {
+        return canUseAndroidBridgeNotifications();
+    }
+
+    if (Notification.permission === 'granted') {
+        return true;
+    }
+
+    if (Notification.permission === 'denied') {
+        return canUseAndroidBridgeNotifications();
+    }
+
+    try {
+        const permission = await Notification.requestPermission();
+        return permission === 'granted' || canUseAndroidBridgeNotifications();
+    } catch (error) {
+        console.warn('Failed to request notification permission', error);
+        return canUseAndroidBridgeNotifications();
+    }
+}
+
+export function notifyMessageComplete(messageText = '') {
+    if (!power_user.message_complete_notification) {
+        return;
+    }
+
+    if (shouldSuppressBackgroundNotification()) {
+        return;
+    }
+
+    const title = t`Luker`;
+    const body = buildMessageNotificationBody(messageText);
+
+    if (canUseBrowserNotifications() && Notification.permission === 'granted') {
+        try {
+            const notification = new Notification(title, {
+                body,
+                tag: 'luker-generation-complete',
+                renotify: true,
+            });
+            notification.onclick = () => window.focus();
+            return;
+        } catch (error) {
+            console.warn('Failed to show browser notification', error);
+        }
+    }
+
+    if (canUseAndroidBridgeNotifications()) {
+        try {
+            window.LukerAndroid.notifyMessageFinished(title, body);
+        } catch (error) {
+            console.warn('Failed to show Android notification via bridge', error);
+        }
     }
 }
 
@@ -1699,6 +1779,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#auto_continue_target_length').val(power_user.auto_continue.target_length);
     $('#play_message_sound').prop('checked', power_user.play_message_sound);
     $('#play_sound_unfocused').prop('checked', power_user.play_sound_unfocused);
+    $('#message_complete_notification').prop('checked', power_user.message_complete_notification);
     $('#never_resize_avatars').prop('checked', power_user.never_resize_avatars);
     $('#show_card_avatar_urls').prop('checked', power_user.show_card_avatar_urls);
     $('#auto_save_msg_edits').prop('checked', power_user.auto_save_msg_edits);
@@ -3689,6 +3770,14 @@ jQuery(() => {
 
     $('#play_sound_unfocused').on('input', function () {
         power_user.play_sound_unfocused = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#message_complete_notification').on('input', async function () {
+        power_user.message_complete_notification = !!$(this).prop('checked');
+        if (power_user.message_complete_notification) {
+            await ensureMessageNotificationPermission();
+        }
         saveSettingsDebounced();
     });
 

@@ -19,6 +19,10 @@
     <string name="runtime_notification_title">Luker</string>
     <string name="runtime_notification_text">本地服务正在后台运行</string>
     <string name="runtime_notification_exit">退出应用</string>
+    <string name="message_notification_channel_name">Luker 消息通知</string>
+    <string name="message_notification_channel_description">助手回复完成后的提醒通知</string>
+    <string name="message_notification_default_title">Luker</string>
+    <string name="message_notification_default_body">新回复已生成完成</string>
     <string name="download_queued">文件下载已加入队列</string>
     <string name="download_started">开始下载文件</string>
     <string name="download_failed">下载失败，请重试</string>

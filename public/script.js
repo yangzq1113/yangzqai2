@@ -94,6 +94,7 @@ import {
     applyPowerUserSettings,
     generatedTextFiltered,
     applyStylePins,
+    notifyMessageComplete,
 } from './scripts/power-user.js';
 
 import {
@@ -4424,6 +4425,7 @@ class StreamingProcessor {
         }
 
         playMessageSound();
+        notifyMessageComplete(text);
     }
 
     onErrorStreaming() {
@@ -6430,6 +6432,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         if (type !== 'quiet') {
             playMessageSound();
+            notifyMessageComplete(getMessage);
         }
 
         const isAborted = abortController && abortController.signal.aborted;

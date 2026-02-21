@@ -3,6 +3,9 @@ package com.luker.app
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -33,6 +36,8 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.io.File
 import java.io.IOException
@@ -42,6 +47,8 @@ import java.io.StringWriter
 class MainActivity : AppCompatActivity() {
     private val tag = "LukerMainActivity"
     private val runtimeReportFileName = "luker-runtime-last-error.txt"
+    private val messageNotificationChannelId = "luker_message_updates"
+    private val messageNotificationId = 12001
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
@@ -265,6 +272,70 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun ensureMessageNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        val manager = getSystemService(NotificationManager::class.java)
+        if (manager.getNotificationChannel(messageNotificationChannelId) != null) {
+            return
+        }
+        val channel = NotificationChannel(
+            messageNotificationChannelId,
+            getString(R.string.message_notification_channel_name),
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = getString(R.string.message_notification_channel_description)
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    private fun showMessageCompletionNotification(rawTitle: String?, rawBody: String?) {
+        val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+            || ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            return
+        }
+
+        ensureMessageNotificationChannel()
+
+        val title = rawTitle?.trim().orEmpty().ifBlank {
+            getString(R.string.message_notification_default_title)
+        }
+        val body = rawBody?.trim().orEmpty().ifBlank {
+            getString(R.string.message_notification_default_body)
+        }
+
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(this, messageNotificationChannelId)
+            .setSmallIcon(R.drawable.ic_notification_runtime)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        runCatching {
+            NotificationManagerCompat.from(this).notify(messageNotificationId, notification)
+        }.onFailure {
+            Log.w(tag, "Failed to post message completion notification", it)
+        }
+    }
+
     private inner class LukerAndroidBridge {
         @JavascriptInterface
         fun saveFileFromDataUrl(dataUrl: String?, suggestedName: String?, mimeType: String?) {
@@ -288,6 +359,13 @@ class MainActivity : AppCompatActivity() {
             }
             runOnUiThread {
                 enqueueApkInstallDownload(url, suggestedName)
+            }
+        }
+
+        @JavascriptInterface
+        fun notifyMessageFinished(rawTitle: String?, rawBody: String?) {
+            runOnUiThread {
+                showMessageCompletionNotification(rawTitle, rawBody)
             }
         }
     }
