@@ -389,7 +389,7 @@ class RegexPresetManager {
         // Render the changes to the UI
         await loadRegexScripts();
         // Apply the changes to the current chat
-        await reloadCurrentChat();
+        await requestRegexChatReload();
     }
 
     /**
@@ -476,6 +476,56 @@ class RegexPresetManager {
 }
 
 const presetManager = new RegexPresetManager();
+let pendingRegexChatReload = false;
+let regexReloadOnSettingsCloseBound = false;
+
+function isRegexSettingsPanelOpen() {
+    return jQuery('#rm_extensions_block').hasClass('openDrawer');
+}
+
+async function requestRegexChatReload({ force = false } = {}) {
+    if (!getCurrentChatId()) {
+        pendingRegexChatReload = false;
+        return;
+    }
+
+    if (!force && isRegexSettingsPanelOpen()) {
+        pendingRegexChatReload = true;
+        return;
+    }
+
+    pendingRegexChatReload = false;
+    await reloadCurrentChat();
+}
+
+async function flushPendingRegexChatReload() {
+    if (!pendingRegexChatReload) {
+        return;
+    }
+    await requestRegexChatReload({ force: true });
+}
+
+function bindRegexReloadOnSettingsClose() {
+    if (regexReloadOnSettingsCloseBound) {
+        return;
+    }
+    regexReloadOnSettingsCloseBound = true;
+
+    const panel = document.getElementById('rm_extensions_block');
+    if (!panel) {
+        return;
+    }
+
+    let wasOpen = panel.classList.contains('openDrawer');
+    const observer = new MutationObserver(() => {
+        const isOpen = panel.classList.contains('openDrawer');
+        if (wasOpen && !isOpen) {
+            void flushPendingRegexChatReload();
+        }
+        wasOpen = isOpen;
+    });
+    observer.observe(panel, { attributes: true, attributeFilter: ['class'] });
+}
 
 /**
  * Toggle the icon for the "select all" checkbox in the regex settings.
@@ -556,12 +606,7 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
     if (saveSettings) {
         saveSettingsDebounced();
         await loadRegexScripts();
-
-        // Reload the current chat to undo previous markdown
-        const currentChatId = getCurrentChatId();
-        if (currentChatId) {
-            await reloadCurrentChat();
-        }
+        await requestRegexChatReload();
     }
 
     const debuggerPopup = $('#regex_debugger_popup');
@@ -711,7 +756,7 @@ async function loadRegexScripts() {
                 return;
             }
             await deleteRegexScript(script.id, scriptType);
-            await reloadCurrentChat();
+            await requestRegexChatReload();
         });
         scriptHtml.find('.regex_bulk_checkbox').on('change', function () {
             setMoveButtonsVisibility();
@@ -1630,7 +1675,7 @@ async function checkCharEmbeddedRegexScripts() {
 
                     if (result) {
                         allowScopedScripts(character);
-                        await reloadCurrentChat();
+                        await requestRegexChatReload();
                     }
                 }
             }
@@ -1674,7 +1719,7 @@ async function checkPresetEmbeddedRegexScripts() {
                 if (result) {
                     allowPresetScripts(apiId, name);
                     if (getCurrentChatId()) {
-                        await reloadCurrentChat();
+                        await requestRegexChatReload();
                     }
                 }
             }
@@ -1737,6 +1782,7 @@ jQuery(async () => {
 
     const settingsHtml = $(await renderExtensionTemplateAsync('regex', 'dropdown'));
     $('#regex_container').append(settingsHtml);
+    bindRegexReloadOnSettingsClose();
     $('#open_regex_editor').on('click', function () {
         onRegexEditorOpenClick(false, SCRIPT_TYPES.GLOBAL);
     });
@@ -1825,12 +1871,7 @@ jQuery(async () => {
 
         saveSettingsDebounced();
         await loadRegexScripts();
-
-        // Reload the current chat to undo previous markdown
-        const currentChatId = getCurrentChatId();
-        if (currentChatId) {
-            await reloadCurrentChat();
-        }
+        await requestRegexChatReload();
     }
 
     /**
@@ -1849,12 +1890,7 @@ jQuery(async () => {
 
         saveSettingsDebounced();
         await loadRegexScripts();
-
-        // Reload the current chat to undo previous markdown
-        const currentChatId = getCurrentChatId();
-        if (currentChatId) {
-            await reloadCurrentChat();
-        }
+        await requestRegexChatReload();
     }
 
     $('#bulk_regex_move_to_global').on('click', async () => {
@@ -1904,7 +1940,7 @@ jQuery(async () => {
         }
         saveSettingsDebounced();
         await loadRegexScripts();
-        await reloadCurrentChat();
+        await requestRegexChatReload();
     });
 
     $('#bulk_export_regex').on('click', async function () {
@@ -1956,7 +1992,7 @@ jQuery(async () => {
                 saveSettingsDebounced();
 
                 console.debug(`Regex scripts in ${selector} reordered`);
-                await reloadCurrentChat();
+                await requestRegexChatReload();
                 await loadRegexScripts();
             },
         });
@@ -1983,7 +2019,7 @@ jQuery(async () => {
         }
 
         saveSettingsDebounced();
-        reloadCurrentChat();
+        void requestRegexChatReload();
     });
 
     $('#regex_preset_toggle').on('input', function () {
@@ -1997,7 +2033,7 @@ jQuery(async () => {
         }
 
         saveSettingsDebounced();
-        reloadCurrentChat();
+        void requestRegexChatReload();
     });
 
     await loadRegexScripts();
