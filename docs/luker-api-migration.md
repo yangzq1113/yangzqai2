@@ -33,10 +33,16 @@ Global object recommendation:
 - `buildWorldInfoChatInput(options?)`
 - `buildWorldInfoGlobalScanData(options?)`
 
+Behavior notes:
+
+- `buildPresetAwarePromptMessages(options)` preserves active preset content outside chat-history and only replaces chat-history with your supplied message list.
+- For popup/sidecar generation, run world-info simulation/finalization helpers before composing the final request body if you need the same world-info behavior as main chat generation.
+- If your plugin composes request messages after `GENERATION_WORLD_INFO_FINALIZED`, depth-based world-info injections are preserved in the final payload.
+
 ### Lorebook/world info persistence
 
 - `loadWorldInfo(name)`
-- `saveWorldInfo(name, data, immediately?)` (Luker now prefers RFC6902 patch internally, with full-save fallback)
+- `saveWorldInfo(name, data, immediately?)` (patch-first RFC6902 persistence path)
 
 ## 2) Generation Hook Order (Recommended)
 
@@ -55,6 +61,14 @@ Lifecycle hooks:
 
 Practical rule:
 - If you need to read/update lorebook-triggered context for this request, do it at `GENERATION_WORLD_INFO_FINALIZED`.
+
+### Popup generation pattern (Recommended)
+
+- Build popup-local messages first.
+- Build preset-aware request messages with `buildPresetAwarePromptMessages(...)`.
+- Run world-info simulation/finalization helpers or generation hooks in the same order as main generation.
+- Send the final full `messages` array to your generation route.
+- Do not manually strip world-info `before/after` sections from the assembled output.
 
 ## 3) Migration Rules
 
@@ -141,6 +155,13 @@ Path uses JSON Pointer string format:
 ```
 
 Luker context helpers auto-attach lightweight `test` guards on patch-first paths.
+
+### Patch conflict and integrity semantics
+
+- `409 Conflict` means patch preconditions failed (for example: stale state, `test` mismatch, or integrity mismatch).
+- Treat `409` as recoverable: refresh latest state/delta, rebuild operations, then retry.
+- `500` indicates server-side failure and should not be used as a normal patch-conflict response.
+- Prefer context helpers so guard/integrity behavior stays aligned with Luker internals.
 
 ### Chat-completions request body
 
