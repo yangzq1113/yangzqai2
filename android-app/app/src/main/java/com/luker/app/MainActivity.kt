@@ -574,15 +574,20 @@ class MainActivity : AppCompatActivity() {
         }
 
         val baseHeight = when {
-            webView.height > 0 -> webView.height
             window.decorView.height > 0 -> window.decorView.height
+            webView.height > 0 -> webView.height
             else -> return
         }
 
         val rootInsets = insets ?: ViewCompat.getRootWindowInsets(webView)
+        val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) == true
         val imeBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
         val systemBottom = rootInsets?.getInsets(WindowInsetsCompat.Type.systemBars())?.bottom ?: 0
-        val keyboardOverlap = (imeBottom - systemBottom).coerceAtLeast(0)
+        val keyboardOverlap = if (imeVisible) {
+            (imeBottom - systemBottom).coerceAtLeast(0)
+        } else {
+            0
+        }
         val viewportHeight = (baseHeight - keyboardOverlap).coerceAtLeast(1)
 
         if (viewportHeight == lastSyncedViewportHeightPx && imeBottom == lastSyncedImeBottomPx) {

@@ -171,6 +171,7 @@ html.luker-android-app,
 body.luker-android-app {
     height: var(--luker-viewport-height);
     max-height: var(--luker-viewport-height);
+    overflow: hidden !important;
 }
 
 body.luker-android-app {
