@@ -4425,7 +4425,7 @@ class StreamingProcessor {
         }
 
         playMessageSound();
-        notifyMessageComplete(text);
+        notifyMessageComplete(text, String(chat[this.messageId]?.name || ''));
     }
 
     onErrorStreaming() {
@@ -6432,7 +6432,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         if (type !== 'quiet') {
             playMessageSound();
-            notifyMessageComplete(getMessage);
+            notifyMessageComplete(getMessage, String(chat[chat.length - 1]?.name || ''));
         }
 
         const isAborted = abortController && abortController.signal.aborted;

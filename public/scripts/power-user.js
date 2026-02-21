@@ -417,6 +417,30 @@ function buildMessageNotificationBody(messageText) {
     return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
 }
 
+function resolveNotificationSpeakerName(explicitName = '') {
+    const direct = String(explicitName || '').trim();
+    if (direct) {
+        return direct;
+    }
+
+    if (!Array.isArray(chat) || chat.length === 0) {
+        return '';
+    }
+
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const message = chat[i];
+        if (!message || message.is_user || message.is_system) {
+            continue;
+        }
+        const messageName = String(message.name || '').trim();
+        if (messageName) {
+            return messageName;
+        }
+    }
+
+    return '';
+}
+
 async function ensureMessageNotificationPermission() {
     if (!canUseBrowserNotifications()) {
         return canUseAndroidBridgeNotifications();
@@ -439,7 +463,7 @@ async function ensureMessageNotificationPermission() {
     }
 }
 
-export function notifyMessageComplete(messageText = '') {
+export function notifyMessageComplete(messageText = '', assistantName = '') {
     if (!power_user.message_complete_notification) {
         return;
     }
@@ -450,11 +474,13 @@ export function notifyMessageComplete(messageText = '') {
 
     const title = t`Luker`;
     const body = buildMessageNotificationBody(messageText);
+    const speakerName = resolveNotificationSpeakerName(assistantName);
+    const bodyWithSpeaker = speakerName ? `${speakerName}: ${body}` : body;
 
     if (canUseBrowserNotifications() && Notification.permission === 'granted') {
         try {
             const notification = new Notification(title, {
-                body,
+                body: bodyWithSpeaker,
                 tag: 'luker-generation-complete',
                 renotify: true,
             });
@@ -467,7 +493,7 @@ export function notifyMessageComplete(messageText = '') {
 
     if (canUseAndroidBridgeNotifications()) {
         try {
-            window.LukerAndroid.notifyMessageFinished(title, body);
+            window.LukerAndroid.notifyMessageFinished(title, bodyWithSpeaker);
         } catch (error) {
             console.warn('Failed to show Android notification via bridge', error);
         }
