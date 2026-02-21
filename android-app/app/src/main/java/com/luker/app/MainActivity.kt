@@ -57,6 +57,7 @@ class MainActivity : AppCompatActivity() {
     private val messageProgressNotificationChannelId = "luker_message_progress_v1"
     private val messageNotificationId = 12001
     private val messageProgressNotificationId = 12002
+    private lateinit var contentRoot: View
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
@@ -71,10 +72,10 @@ class MainActivity : AppCompatActivity() {
     private var pendingApkDownloadId: Long? = null
     private var apkDownloadReceiverRegistered = false
     private var immersiveModeEnabled: Boolean = false
-    private var webViewBasePaddingLeft: Int = 0
-    private var webViewBasePaddingTop: Int = 0
-    private var webViewBasePaddingRight: Int = 0
-    private var webViewBasePaddingBottom: Int = 0
+    private var contentRootBasePaddingLeft: Int = 0
+    private var contentRootBasePaddingTop: Int = 0
+    private var contentRootBasePaddingRight: Int = 0
+    private var contentRootBasePaddingBottom: Int = 0
     private var lastAppliedImeOverlapBottom: Int = -1
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
@@ -184,6 +185,7 @@ class MainActivity : AppCompatActivity() {
         applyImmersiveMode(false)
         onBackPressedDispatcher.addCallback(this, backPressedCallback)
 
+        contentRoot = findViewById(android.R.id.content)
         webView = findViewById(R.id.lukerWebView)
         loadingOverlay = findViewById(R.id.loadingOverlay)
         loadingText = findViewById(R.id.loadingText)
@@ -195,10 +197,10 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             mediaPlaybackRequiresUserGesture = false
         }
-        webViewBasePaddingLeft = webView.paddingLeft
-        webViewBasePaddingTop = webView.paddingTop
-        webViewBasePaddingRight = webView.paddingRight
-        webViewBasePaddingBottom = webView.paddingBottom
+        contentRootBasePaddingLeft = contentRoot.paddingLeft
+        contentRootBasePaddingTop = contentRoot.paddingTop
+        contentRootBasePaddingRight = contentRoot.paddingRight
+        contentRootBasePaddingBottom = contentRoot.paddingBottom
         installImeInsetsHandling()
         webView.addJavascriptInterface(LukerAndroidBridge(), "LukerAndroid")
         webView.webChromeClient = object : WebChromeClient() {
@@ -514,8 +516,10 @@ class MainActivity : AppCompatActivity() {
         }
         window.decorView.post {
             ViewCompat.requestApplyInsets(window.decorView)
+            if (this::contentRoot.isInitialized) {
+                ViewCompat.requestApplyInsets(contentRoot)
+            }
             if (this::webView.isInitialized) {
-                ViewCompat.requestApplyInsets(webView)
                 webView.requestLayout()
             }
         }
@@ -553,8 +557,8 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus && immersiveModeEnabled) {
             applyImmersiveMode(true)
         }
-        if (hasFocus && this::webView.isInitialized) {
-            ViewCompat.requestApplyInsets(webView)
+        if (hasFocus && this::contentRoot.isInitialized) {
+            ViewCompat.requestApplyInsets(contentRoot)
         }
     }
 
@@ -566,34 +570,38 @@ class MainActivity : AppCompatActivity() {
         }
         window.setSoftInputMode(mode)
         if (!enabled) {
-            resetWebViewImePadding()
+            resetContentRootImeInsetsAdjustment()
         }
     }
 
     private fun installImeInsetsHandling() {
-        if (!this::webView.isInitialized) {
+        if (!this::contentRoot.isInitialized) {
             return
         }
-        ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(contentRoot) { _, insets ->
             applyImeInsetsToWebView(insets)
             insets
         }
-        webView.post {
-            ViewCompat.requestApplyInsets(webView)
+        contentRoot.post {
+            ViewCompat.requestApplyInsets(contentRoot)
         }
     }
 
-    private fun resetWebViewImePadding() {
-        if (!this::webView.isInitialized) {
+    private fun resetContentRootImeInsetsAdjustment() {
+        if (!this::contentRoot.isInitialized) {
             return
         }
         lastAppliedImeOverlapBottom = 0
-        webView.setPadding(
-            webViewBasePaddingLeft,
-            webViewBasePaddingTop,
-            webViewBasePaddingRight,
-            webViewBasePaddingBottom,
+        contentRoot.setPadding(
+            contentRootBasePaddingLeft,
+            contentRootBasePaddingTop,
+            contentRootBasePaddingRight,
+            contentRootBasePaddingBottom,
         )
+        contentRoot.requestLayout()
+        if (this::webView.isInitialized) {
+            webView.requestLayout()
+        }
     }
 
     private fun applyImeInsetsToWebView(insets: WindowInsetsCompat) {
@@ -603,7 +611,7 @@ class MainActivity : AppCompatActivity() {
 
         if (!immersiveModeEnabled) {
             if (lastAppliedImeOverlapBottom != 0) {
-                resetWebViewImePadding()
+                resetContentRootImeInsetsAdjustment()
             }
             return
         }
@@ -622,12 +630,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         lastAppliedImeOverlapBottom = imeOverlapBottom
-        webView.setPadding(
-            webViewBasePaddingLeft,
-            webViewBasePaddingTop,
-            webViewBasePaddingRight,
-            webViewBasePaddingBottom + imeOverlapBottom,
+        contentRoot.setPadding(
+            contentRootBasePaddingLeft,
+            contentRootBasePaddingTop,
+            contentRootBasePaddingRight,
+            contentRootBasePaddingBottom + imeOverlapBottom,
         )
+        contentRoot.requestLayout()
+        webView.requestLayout()
     }
 
     private fun installBlobDownloadBridge() {
