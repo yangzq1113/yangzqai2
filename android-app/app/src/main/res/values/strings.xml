@@ -19,8 +19,10 @@
     <string name="runtime_notification_title">Luker</string>
     <string name="runtime_notification_text">本地服务正在后台运行</string>
     <string name="runtime_notification_exit">退出应用</string>
-    <string name="message_notification_channel_name">Luker 消息通知</string>
-    <string name="message_notification_channel_description">助手回复完成后的提醒通知</string>
+    <string name="message_alert_channel_name">Luker 消息提醒</string>
+    <string name="message_alert_channel_description">助手回复完成或出错时的提醒通知</string>
+    <string name="message_progress_channel_name">Luker 消息进度</string>
+    <string name="message_progress_channel_description">助手回复生成过程中的常驻状态通知</string>
     <string name="message_notification_default_title">Luker</string>
     <string name="message_notification_default_body">新回复已生成完成</string>
     <string name="message_notification_progress_body">回复生成中…</string>

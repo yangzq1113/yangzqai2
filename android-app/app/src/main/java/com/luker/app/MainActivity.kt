@@ -53,7 +53,8 @@ import java.io.StringWriter
 class MainActivity : AppCompatActivity() {
     private val tag = "LukerMainActivity"
     private val runtimeReportFileName = "luker-runtime-last-error.txt"
-    private val messageNotificationChannelId = "luker_message_updates"
+    private val messageAlertNotificationChannelId = "luker_message_alerts_v1"
+    private val messageProgressNotificationChannelId = "luker_message_progress_v1"
     private val messageNotificationId = 12001
     private val messageProgressNotificationId = 12002
     private lateinit var webView: WebView
@@ -300,22 +301,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun ensureMessageNotificationChannel() {
+    private fun ensureMessageNotificationChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             return
         }
         val manager = getSystemService(NotificationManager::class.java)
-        if (manager.getNotificationChannel(messageNotificationChannelId) != null) {
-            return
+        if (manager.getNotificationChannel(messageAlertNotificationChannelId) == null) {
+            val alertChannel = NotificationChannel(
+                messageAlertNotificationChannelId,
+                getString(R.string.message_alert_channel_name),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = getString(R.string.message_alert_channel_description)
+            }
+            manager.createNotificationChannel(alertChannel)
         }
-        val channel = NotificationChannel(
-            messageNotificationChannelId,
-            getString(R.string.message_notification_channel_name),
-            NotificationManager.IMPORTANCE_DEFAULT,
-        ).apply {
-            description = getString(R.string.message_notification_channel_description)
+        if (manager.getNotificationChannel(messageProgressNotificationChannelId) == null) {
+            val progressChannel = NotificationChannel(
+                messageProgressNotificationChannelId,
+                getString(R.string.message_progress_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = getString(R.string.message_progress_channel_description)
+            }
+            manager.createNotificationChannel(progressChannel)
         }
-        manager.createNotificationChannel(channel)
     }
 
     private fun showMessageCompletionNotification(rawTitle: String?, rawBody: String?) {
@@ -330,7 +340,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        ensureMessageNotificationChannel()
+        ensureMessageNotificationChannels()
 
         val title = rawTitle?.trim().orEmpty().ifBlank {
             getString(R.string.message_notification_default_title)
@@ -349,12 +359,14 @@ class MainActivity : AppCompatActivity() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(this, messageNotificationChannelId)
+        val notification = NotificationCompat.Builder(this, messageAlertNotificationChannelId)
             .setSmallIcon(R.drawable.ic_notification_runtime)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .build()
@@ -376,7 +388,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        ensureMessageNotificationChannel()
+        ensureMessageNotificationChannels()
 
         val title = rawTitle?.trim().orEmpty().ifBlank {
             getString(R.string.message_notification_default_title)
@@ -395,7 +407,7 @@ class MainActivity : AppCompatActivity() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(this, messageNotificationChannelId)
+        val notification = NotificationCompat.Builder(this, messageProgressNotificationChannelId)
             .setSmallIcon(R.drawable.ic_notification_runtime)
             .setContentTitle(title)
             .setContentText(body)
@@ -403,6 +415,7 @@ class MainActivity : AppCompatActivity() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
             .setAutoCancel(false)
             .setContentIntent(pendingIntent)
             .build()
