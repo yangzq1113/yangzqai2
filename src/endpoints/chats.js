@@ -1415,6 +1415,9 @@ router.post('/state/patch', function (request, response) {
             if (isChatStatePatchConflictError(error)) {
                 return response.status(409).send({ error: 'Chat state patch conflict.' });
             }
+            if (isJsonPatchValidationError(error)) {
+                return response.status(400).send({ error: 'Invalid chat state patch payload.' });
+            }
             throw error;
         }
 

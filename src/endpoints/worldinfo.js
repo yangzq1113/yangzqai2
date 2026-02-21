@@ -56,9 +56,23 @@ function applyWorldInfoPatch(state, operations) {
     return { applied: operations.length, state: patched };
 }
 
-function isJsonPatchTestFailure(error) {
+function isJsonPatchConflictError(error) {
     const message = String(error?.message || '');
-    return message.includes('JSON Patch test failed at path');
+    return message.includes('JSON Patch test failed')
+        || message.includes('Invalid JSON Patch replace path.')
+        || message.includes('Invalid JSON Patch remove path.')
+        || message.includes('Array index out of bounds');
+}
+
+function isJsonPatchValidationError(error) {
+    const message = String(error?.message || '');
+    return message.includes('JSON Patch operation is missing op.')
+        || message.includes('JSON Patch operation must be an object.')
+        || message.includes('JSON Patch document must be an array.')
+        || message.includes('JSON Patch add operation requires value.')
+        || message.includes('JSON Patch replace operation requires value.')
+        || message.includes('Invalid JSON Patch path.')
+        || message.includes('Unsupported JSON Patch operation:');
 }
 
 router.post('/list', async (request, response) => {
@@ -211,8 +225,11 @@ router.post('/patch', (request, response) => {
         writeFileAtomicSync(pathToFile, JSON.stringify(state, null, 4), 'utf8');
         return response.send({ ok: true, applied });
     } catch (error) {
-        if (isJsonPatchTestFailure(error)) {
+        if (isJsonPatchConflictError(error)) {
             return response.status(409).send({ error: 'World info patch test conflict.', code: 'patch_test_failed', details: String(error?.message || '') });
+        }
+        if (isJsonPatchValidationError(error)) {
+            return response.status(400).send({ error: 'Invalid world info patch payload.', code: 'patch_payload_invalid', details: String(error?.message || '') });
         }
         console.error('Error patching world info:', error);
         return response.status(500).send({ error: 'Failed to patch world info.' });
