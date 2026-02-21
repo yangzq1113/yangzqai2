@@ -2612,8 +2612,8 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                         direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                     },
                     anyOf: [
-                        { required: ['target_ref'] },
-                        { required: ['target_node_id'] },
+                        { type: 'object', required: ['target_ref'] },
+                        { type: 'object', required: ['target_node_id'] },
                     ],
                     additionalProperties: false,
                 },
@@ -2765,8 +2765,8 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                                 direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                             },
                             anyOf: [
-                                { required: ['target_ref'] },
-                                { required: ['target_node_id'] },
+                                { type: 'object', required: ['target_ref'] },
+                                { type: 'object', required: ['target_node_id'] },
                             ],
                             additionalProperties: false,
                         },
@@ -2786,8 +2786,8 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                 },
                 required: ['links'],
                 anyOf: [
-                    { required: ['source_ref'] },
-                    { required: ['source_node_id'] },
+                    { type: 'object', required: ['source_ref'] },
+                    { type: 'object', required: ['source_node_id'] },
                 ],
                 additionalProperties: false,
             },
