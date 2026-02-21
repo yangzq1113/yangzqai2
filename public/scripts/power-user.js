@@ -119,6 +119,11 @@ export const persona_description_positions = {
     NONE: 9,
 };
 
+const messageNotificationDetailModes = {
+    STATUS: 'status',
+    CONTENT: 'content',
+};
+
 export const power_user = {
     charListGrid: false,
     tokenizer: tokenizers.BEST_MATCH,
@@ -153,6 +158,7 @@ export const power_user = {
     play_message_sound: false,
     play_sound_unfocused: true,
     message_complete_notification: false,
+    message_complete_notification_detail_mode: messageNotificationDetailModes.CONTENT,
     auto_save_msg_edits: false,
     confirm_message_delete: true,
 
@@ -409,12 +415,34 @@ function shouldSuppressBackgroundNotification() {
     return browser_has_focus && document.visibilityState === 'visible';
 }
 
+function normalizeMessageNotificationDetailMode(value) {
+    return Object.values(messageNotificationDetailModes).includes(value)
+        ? value
+        : messageNotificationDetailModes.CONTENT;
+}
+
 function buildMessageNotificationBody(messageText) {
+    const detailMode = normalizeMessageNotificationDetailMode(power_user.message_complete_notification_detail_mode);
+    if (detailMode === messageNotificationDetailModes.STATUS) {
+        return t`Message generation is complete.`;
+    }
+
     const normalized = String(messageText || '').replace(/\s+/g, ' ').trim();
     if (!normalized) {
         return t`A new assistant reply is ready.`;
     }
     return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+}
+
+function buildMessageFailureNotificationBody(errorText) {
+    const detailMode = normalizeMessageNotificationDetailMode(power_user.message_complete_notification_detail_mode);
+    const normalized = String(errorText || '').replace(/\s+/g, ' ').trim();
+    if (!normalized || detailMode === messageNotificationDetailModes.STATUS) {
+        return t`Message generation failed.`;
+    }
+
+    const errorSummary = normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+    return `${t`Message generation failed.`} ${errorSummary}`.trim();
 }
 
 function resolveNotificationSpeakerName(explicitName = '') {
@@ -482,6 +510,43 @@ export function notifyMessageComplete(messageText = '', assistantName = '') {
             const notification = new Notification(title, {
                 body: bodyWithSpeaker,
                 tag: 'luker-generation-complete',
+                renotify: true,
+            });
+            notification.onclick = () => window.focus();
+            return;
+        } catch (error) {
+            console.warn('Failed to show browser notification', error);
+        }
+    }
+
+    if (canUseAndroidBridgeNotifications()) {
+        try {
+            window.LukerAndroid.notifyMessageFinished(title, bodyWithSpeaker);
+        } catch (error) {
+            console.warn('Failed to show Android notification via bridge', error);
+        }
+    }
+}
+
+export function notifyMessageFailure(errorText = '', assistantName = '') {
+    if (!power_user.message_complete_notification) {
+        return;
+    }
+
+    if (shouldSuppressBackgroundNotification()) {
+        return;
+    }
+
+    const title = t`Luker`;
+    const body = buildMessageFailureNotificationBody(errorText);
+    const speakerName = resolveNotificationSpeakerName(assistantName);
+    const bodyWithSpeaker = speakerName ? `${speakerName}: ${body}` : body;
+
+    if (canUseBrowserNotifications() && Notification.permission === 'granted') {
+        try {
+            const notification = new Notification(title, {
+                body: bodyWithSpeaker,
+                tag: 'luker-generation-failed',
                 renotify: true,
             });
             notification.onclick = () => window.focus();
@@ -1672,6 +1737,7 @@ export async function loadPowerUserSettings(settings, data) {
         }
         Object.assign(power_user, settings.power_user);
     }
+    power_user.message_complete_notification_detail_mode = normalizeMessageNotificationDetailMode(power_user.message_complete_notification_detail_mode);
 
     if (power_user.stscript === undefined) {
         power_user.stscript = defaultStscript;
@@ -1806,6 +1872,8 @@ export async function loadPowerUserSettings(settings, data) {
     $('#play_message_sound').prop('checked', power_user.play_message_sound);
     $('#play_sound_unfocused').prop('checked', power_user.play_sound_unfocused);
     $('#message_complete_notification').prop('checked', power_user.message_complete_notification);
+    $('#message_complete_notification_detail_mode').val(power_user.message_complete_notification_detail_mode);
+    $('#message_complete_notification_detail_mode').prop('disabled', !power_user.message_complete_notification);
     $('#never_resize_avatars').prop('checked', power_user.never_resize_avatars);
     $('#show_card_avatar_urls').prop('checked', power_user.show_card_avatar_urls);
     $('#auto_save_msg_edits').prop('checked', power_user.auto_save_msg_edits);
@@ -3801,9 +3869,15 @@ jQuery(() => {
 
     $('#message_complete_notification').on('input', async function () {
         power_user.message_complete_notification = !!$(this).prop('checked');
+        $('#message_complete_notification_detail_mode').prop('disabled', !power_user.message_complete_notification);
         if (power_user.message_complete_notification) {
             await ensureMessageNotificationPermission();
         }
+        saveSettingsDebounced();
+    });
+
+    $('#message_complete_notification_detail_mode').on('input', function () {
+        power_user.message_complete_notification_detail_mode = normalizeMessageNotificationDetailMode(String($(this).val()));
         saveSettingsDebounced();
     });
 

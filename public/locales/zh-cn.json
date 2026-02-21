@@ -7237,6 +7237,12 @@
     "Raw JSON report": "原始 JSON 报告",
     "Finish current input composition before sending.": "请先完成当前输入法候选上屏，再发送。",
     "Generation Complete Notification": "回复完成通知",
+    "Notification Detail": "通知内容",
+    "Status only": "仅状态",
+    "Include message content": "包含消息内容",
     "Show a notification when message generation finishes while Luker is in the background.": "当 Luker 在后台时，消息生成完成后显示通知。",
-    "A new assistant reply is ready.": "助手新回复已就绪。"
+    "A new assistant reply is ready.": "助手新回复已就绪。",
+    "Message generation is complete.": "回复生成已完成。",
+    "Message generation failed.": "回复生成失败。",
+    "Server cannot be reached.": "无法连接服务器。"
 }

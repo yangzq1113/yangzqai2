@@ -95,6 +95,7 @@ import {
     generatedTextFiltered,
     applyStylePins,
     notifyMessageComplete,
+    notifyMessageFailure,
 } from './scripts/power-user.js';
 
 import {
@@ -5171,6 +5172,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         if (!pingResult) {
             unblockGeneration(type);
             toastr.error(t`Verify that the server is running and accessible.`, t`ST Server cannot be reached`);
+            if (type !== 'quiet') {
+                notifyMessageFailure(t`Server cannot be reached.`, String(name2 || ''));
+            }
             throw new Error('Server unreachable');
         }
 
@@ -6591,6 +6595,19 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
      * @throws {Error|object} Re-throws the exception
      */
     function onError(exception) {
+        const isAbortedError = abortController?.signal?.aborted
+            || exception?.name === 'AbortError'
+            || /aborted/i.test(String(exception?.message || ''));
+        const errorMessage = typeof exception?.error?.message === 'string'
+            ? exception.error.message
+            : (typeof exception?.message === 'string'
+                ? exception.message
+                : (typeof exception?.response === 'string' ? exception.response : ''));
+
+        if (type !== 'quiet' && !isAbortedError) {
+            notifyMessageFailure(errorMessage, String(name2 || chat?.[chat.length - 1]?.name || ''));
+        }
+
         // if the response JSON was thrown (novel|textgenerationwebui|kobold), show the error message
         if (typeof exception?.error?.message === 'string') {
             toastr.error(exception.error.message, t`Text generation error`, { timeOut: 10000, extendedTimeOut: 20000 });
