@@ -671,6 +671,8 @@ let exportPopper = Popper.createPopper(document.getElementById('export_button'),
 let isExportPopupOpen = false;
 let isImmersiveModeEnabled = false;
 let immersiveModeUsesFullscreen = false;
+let androidFullscreenShimInstalled = false;
+let androidFullscreenElement = null;
 
 function isRunningInLukerAndroidApp() {
     return typeof window !== 'undefined'
@@ -694,11 +696,130 @@ function syncAndroidImmersiveMode(enabled) {
 }
 
 function getFullscreenElement() {
+    if (isRunningInLukerAndroidApp()) {
+        return androidFullscreenElement;
+    }
     return document.fullscreenElement
         || document.webkitFullscreenElement
         || document.mozFullScreenElement
         || document.msFullscreenElement
         || null;
+}
+
+function dispatchFullscreenChangeEvent() {
+    const eventNames = [
+        'fullscreenchange',
+        'webkitfullscreenchange',
+        'mozfullscreenchange',
+        'MSFullscreenChange',
+    ];
+    for (const name of eventNames) {
+        document.dispatchEvent(new Event(name));
+    }
+}
+
+function setAndroidFullscreenState(enabled, element = null) {
+    if (!isRunningInLukerAndroidApp()) {
+        return;
+    }
+    const nextElement = enabled ? (element || document.documentElement) : null;
+    const changed = androidFullscreenElement !== nextElement;
+    androidFullscreenElement = nextElement;
+    if (changed) {
+        dispatchFullscreenChangeEvent();
+    }
+}
+
+function definePropertyIfPossible(target, propertyName, descriptor) {
+    if (!target) {
+        return;
+    }
+    try {
+        Object.defineProperty(target, propertyName, descriptor);
+    } catch {
+        // Ignore non-configurable built-ins on some WebView builds.
+    }
+}
+
+function overrideMethodIfPossible(target, methodName, replacement) {
+    if (!target || typeof replacement !== 'function') {
+        return;
+    }
+    try {
+        Object.defineProperty(target, methodName, {
+            configurable: true,
+            writable: true,
+            value: replacement,
+        });
+    } catch {
+        // Ignore non-configurable built-ins on some WebView builds.
+    }
+}
+
+function installAndroidFullscreenApiShim() {
+    if (!isRunningInLukerAndroidApp() || androidFullscreenShimInstalled) {
+        return;
+    }
+
+    androidFullscreenShimInstalled = true;
+    const doc = /** @type {any} */ (document);
+    const elementProto = /** @type {any} */ (Element.prototype);
+
+    const requestShim = function () {
+        setAndroidFullscreenState(true, this);
+        void setImmersiveMode(true, { useFullscreen: false });
+        return Promise.resolve();
+    };
+
+    const exitShim = function () {
+        setAndroidFullscreenState(false, null);
+        void setImmersiveMode(false, { useFullscreen: false });
+        return Promise.resolve();
+    };
+
+    overrideMethodIfPossible(elementProto, 'requestFullscreen', requestShim);
+    overrideMethodIfPossible(elementProto, 'webkitRequestFullscreen', requestShim);
+    overrideMethodIfPossible(elementProto, 'mozRequestFullScreen', requestShim);
+    overrideMethodIfPossible(elementProto, 'msRequestFullscreen', requestShim);
+
+    overrideMethodIfPossible(doc, 'exitFullscreen', exitShim);
+    overrideMethodIfPossible(doc, 'webkitExitFullscreen', exitShim);
+    overrideMethodIfPossible(doc, 'mozCancelFullScreen', exitShim);
+    overrideMethodIfPossible(doc, 'msExitFullscreen', exitShim);
+
+    definePropertyIfPossible(doc, 'fullscreenEnabled', {
+        configurable: true,
+        get: () => true,
+    });
+    definePropertyIfPossible(doc, 'webkitFullscreenEnabled', {
+        configurable: true,
+        get: () => true,
+    });
+    definePropertyIfPossible(doc, 'mozFullScreenEnabled', {
+        configurable: true,
+        get: () => true,
+    });
+    definePropertyIfPossible(doc, 'msFullscreenEnabled', {
+        configurable: true,
+        get: () => true,
+    });
+
+    definePropertyIfPossible(doc, 'fullscreenElement', {
+        configurable: true,
+        get: () => androidFullscreenElement,
+    });
+    definePropertyIfPossible(doc, 'webkitFullscreenElement', {
+        configurable: true,
+        get: () => androidFullscreenElement,
+    });
+    definePropertyIfPossible(doc, 'mozFullScreenElement', {
+        configurable: true,
+        get: () => androidFullscreenElement,
+    });
+    definePropertyIfPossible(doc, 'msFullscreenElement', {
+        configurable: true,
+        get: () => androidFullscreenElement,
+    });
 }
 
 function canUseFullscreenApi() {
@@ -787,6 +908,7 @@ async function setImmersiveMode(enabled, { useFullscreen = true } = {}) {
     const shouldEnable = Boolean(enabled);
     immersiveModeUsesFullscreen = shouldEnable ? Boolean(useFullscreen && canUseFullscreenApi()) : false;
     isImmersiveModeEnabled = shouldEnable;
+    setAndroidFullscreenState(shouldEnable, document.documentElement);
     document.body.classList.toggle('luker-immersive-mode', shouldEnable);
     syncAndroidImmersiveMode(shouldEnable);
     updateImmersiveModeUi();
@@ -808,6 +930,7 @@ async function toggleImmersiveMode() {
 }
 
 if (typeof window !== 'undefined') {
+    installAndroidFullscreenApiShim();
     window.__lukerSetImmersiveModeFromNative = (enabled) => {
         void setImmersiveMode(Boolean(enabled), { useFullscreen: false });
     };
