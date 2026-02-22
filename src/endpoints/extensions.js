@@ -14,6 +14,23 @@ import { PUBLIC_DIRECTORIES } from '../constants.js';
  */
 const OPTIONS = Object.freeze({ timeout: { block: 5 * 60 * 1000 } });
 
+async function getIsomorphicGitAuthor(extensionPath) {
+    const configuredName = await isomorphicGit.getConfig({
+        fs,
+        dir: extensionPath,
+        path: 'user.name',
+    }).catch(() => '');
+    const configuredEmail = await isomorphicGit.getConfig({
+        fs,
+        dir: extensionPath,
+        path: 'user.email',
+    }).catch(() => '');
+
+    const name = String(configuredName || '').trim() || 'Luker';
+    const email = String(configuredEmail || '').trim() || 'noreply@luker.local';
+    return { name, email };
+}
+
 function getInstallDirectoryNameFromUrl(url) {
     const raw = String(url || '').trim();
     try {
@@ -227,6 +244,7 @@ async function updateWithIsomorphic(extensionPath) {
     const status = await checkIfRepoIsUpToDateWithIsomorphic(extensionPath);
 
     if (status.currentBranchName && !status.isUpToDate) {
+        const author = await getIsomorphicGitAuthor(extensionPath);
         await isomorphicGit.pull({
             fs,
             http,
@@ -236,6 +254,7 @@ async function updateWithIsomorphic(extensionPath) {
             remoteRef: status.currentBranchName,
             singleBranch: true,
             fastForwardOnly: true,
+            author,
         });
         const currentCommitHash = await isomorphicGit.resolveRef({
             fs,
