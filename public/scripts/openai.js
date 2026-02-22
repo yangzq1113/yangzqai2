@@ -2070,6 +2070,42 @@ function saveModelList(data) {
         }
     }
 
+    if (oai_settings.chat_completion_source == chat_completion_sources.CLAUDE && model_list.length > 0) {
+        $('#model_claude_select').empty();
+        model_list.forEach((model) => {
+            $('#model_claude_select').append(
+                $('<option>', {
+                    value: model.id,
+                    text: model.id,
+                }));
+        });
+
+        const selectedModel = model_list.find(model => model.id === oai_settings.claude_model);
+        if (!selectedModel || !oai_settings.claude_model) {
+            oai_settings.claude_model = model_list[0].id;
+        }
+
+        $('#model_claude_select').val(oai_settings.claude_model).trigger('change');
+    }
+
+    if (oai_settings.chat_completion_source == chat_completion_sources.VERTEXAI && model_list.length > 0) {
+        $('#model_vertexai_select').empty();
+        model_list.forEach((model) => {
+            $('#model_vertexai_select').append(
+                $('<option>', {
+                    value: model.id,
+                    text: model.id,
+                }));
+        });
+
+        const selectedModel = model_list.find(model => model.id === oai_settings.vertexai_model);
+        if (!selectedModel || !oai_settings.vertexai_model) {
+            oai_settings.vertexai_model = model_list[0].id;
+        }
+
+        $('#model_vertexai_select').val(oai_settings.vertexai_model).trigger('change');
+    }
+
     if (oai_settings.chat_completion_source == chat_completion_sources.CUSTOM) {
         $('.model_custom_select').empty();
         $('.model_custom_select').append('<option value="">None</option>');
@@ -4658,9 +4694,7 @@ async function clearCharacterBoundChatCompletionPreset(characterId = this_chid) 
 
 async function getStatusOpen() {
     const noValidateSources = [
-        chat_completion_sources.CLAUDE,
         chat_completion_sources.AI21,
-        chat_completion_sources.VERTEXAI,
         chat_completion_sources.PERPLEXITY,
         chat_completion_sources.ZAI,
     ];
@@ -4712,6 +4746,12 @@ async function getStatusOpen() {
         data.azure_base_url = oai_settings.azure_base_url;
         data.azure_deployment_name = oai_settings.azure_deployment_name;
         data.azure_api_version = oai_settings.azure_api_version;
+    }
+
+    if (oai_settings.chat_completion_source === chat_completion_sources.VERTEXAI) {
+        data.vertexai_auth_mode = oai_settings.vertexai_auth_mode;
+        data.vertexai_region = oai_settings.vertexai_region;
+        data.vertexai_express_project_id = oai_settings.vertexai_express_project_id;
     }
 
     const canBypass = (oai_settings.chat_completion_source === chat_completion_sources.OPENAI && oai_settings.bypass_status_check) || oai_settings.chat_completion_source === chat_completion_sources.CUSTOM;

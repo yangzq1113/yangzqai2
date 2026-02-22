@@ -1821,6 +1821,127 @@ router.post('/status', async function (request, statusResponse) {
             apiUrl = API_FIREWORKS;
             apiKey = readSecret(request.user.directories, SECRET_KEYS.FIREWORKS);
             headers = {};
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CLAUDE) {
+            apiUrl = new URL(request.body.reverse_proxy || API_CLAUDE).toString();
+            apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.CLAUDE);
+
+            if (!apiKey && !request.body.reverse_proxy) {
+                console.warn('Claude API key is missing.');
+                return statusResponse.status(400).send({ error: true });
+            }
+
+            try {
+                const response = await fetch(`${trimTrailingSlash(apiUrl)}/models`, {
+                    method: 'GET',
+                    headers: {
+                        'anthropic-version': '2023-06-01',
+                        ...(apiKey ? { 'x-api-key': apiKey } : {}),
+                    },
+                });
+
+                if (response.ok) {
+                    /** @type {any} */
+                    const data = await response.json();
+                    const models = (Array.isArray(data?.data) ? data.data : [])
+                        .map(model => ({ id: String(model?.id || '').trim() }))
+                        .filter(model => model.id.length > 0);
+
+                    console.info('Available Claude models:', models.map(m => m.id));
+                    return statusResponse.send({ data: models });
+                }
+
+                console.warn('Claude models endpoint failed:', response.status, response.statusText);
+                return statusResponse.send({ error: true, bypass: true, data: { data: [] } });
+            } catch (error) {
+                console.error('Error fetching Claude models:', error);
+                return statusResponse.send({ error: true, bypass: true, data: { data: [] } });
+            }
+        } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.VERTEXAI) {
+            const region = String(request.body.vertexai_region || 'us-central1');
+
+            try {
+                const auth = await getVertexAIAuth(request);
+                const authHeader = auth.authHeader;
+                const authType = auth.authType;
+                let modelsUrl;
+                /** @type {Record<string, string>} */
+                const modelHeaders = {};
+
+                if (authType === 'express') {
+                    const keyParam = authHeader.replace('Bearer ', '');
+                    const projectId = String(request.body.vertexai_express_project_id || '').trim();
+                    const baseUrl = region === 'global'
+                        ? 'https://aiplatform.googleapis.com'
+                        : `https://${region}-aiplatform.googleapis.com`;
+                    modelsUrl = projectId
+                        ? `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models?key=${keyParam}`
+                        : `${baseUrl}/v1/publishers/google/models?key=${keyParam}`;
+                } else if (authType === 'full') {
+                    const serviceAccountJson = readSecret(request.user.directories, SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT);
+
+                    if (!serviceAccountJson) {
+                        console.warn('Vertex AI Service Account JSON is missing.');
+                        return statusResponse.status(400).send({ error: true });
+                    }
+
+                    let projectId;
+                    try {
+                        const serviceAccount = JSON.parse(serviceAccountJson);
+                        projectId = getProjectIdFromServiceAccount(serviceAccount);
+                    } catch (error) {
+                        console.error('Failed to extract project ID from Service Account JSON:', error);
+                        return statusResponse.status(400).send({ error: true });
+                    }
+
+                    modelsUrl = region === 'global'
+                        ? `https://aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models`
+                        : `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models`;
+                    modelHeaders['Authorization'] = authHeader;
+                } else {
+                    apiUrl = trimTrailingSlash(request.body.reverse_proxy || API_VERTEX_AI);
+                    modelsUrl = `${apiUrl}/v1/publishers/google/models`;
+                    modelHeaders['Authorization'] = authHeader;
+                }
+
+                const response = await fetch(modelsUrl, {
+                    method: 'GET',
+                    headers: modelHeaders,
+                });
+
+                if (response.ok) {
+                    /** @type {any} */
+                    const data = await response.json();
+                    const rawModels = Array.isArray(data?.publisherModels) ? data.publisherModels : (Array.isArray(data?.models) ? data.models : []);
+                    const models = rawModels
+                        .filter(model =>
+                            model?.supportedActions?.includes('generateContent') ||
+                            model?.supportedActions?.includes('streamGenerateContent') ||
+                            model?.supportedGenerationMethods?.includes('generateContent') ||
+                            model?.supportedGenerationMethods?.includes('streamGenerateContent'))
+                        .map(model => String(model?.name || model?.id || '').trim())
+                        .map(name => name
+                            .replace(/^projects\/[^/]+\/locations\/[^/]+\/publishers\/[^/]+\/models\//, '')
+                            .replace(/^publishers\/[^/]+\/models\//, '')
+                            .replace(/^models\//, ''))
+                        .filter(Boolean)
+                        .map(id => ({ id }));
+
+                    const uniqueModelMap = new Map();
+                    for (const model of models) {
+                        uniqueModelMap.set(model.id, model);
+                    }
+
+                    const uniqueModels = [...uniqueModelMap.values()].sort((a, b) => a.id.localeCompare(b.id));
+                    console.info('Available Vertex AI models:', uniqueModels.map(m => m.id));
+                    return statusResponse.send({ data: uniqueModels });
+                }
+
+                console.warn('Vertex AI models endpoint failed:', response.status, response.statusText);
+                return statusResponse.send({ error: true, bypass: true, data: { data: [] } });
+            } catch (error) {
+                console.error('Error fetching Vertex AI models:', error);
+                return statusResponse.send({ error: true, bypass: true, data: { data: [] } });
+            }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.MAKERSUITE) {
             apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MAKERSUITE);
             apiUrl = trimTrailingSlash(request.body.reverse_proxy || API_MAKERSUITE);
