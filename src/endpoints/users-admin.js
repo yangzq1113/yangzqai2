@@ -36,7 +36,16 @@ import { ensureDirectory, getConfigFilePath, normalizeZipEntryPath, reloadConfig
 
 export const router = express.Router();
 
-function toGlobalExtensionRelativePath(normalizedEntryPath) {
+function sanitizeDefaultExtensionFolderName(name) {
+    const base = String(name || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 96);
+    return base || 'imported-extension';
+}
+
+function toGlobalExtensionRelativePath(normalizedEntryPath, defaultFolderName = '') {
     const normalized = String(normalizedEntryPath || '').replace(/^\/+/, '');
     if (!normalized) {
         return '';
@@ -49,16 +58,22 @@ function toGlobalExtensionRelativePath(normalizedEntryPath) {
         .replace(/^third-party\//, '');
 
     const candidate = trimmed || normalized;
-    if (!candidate || candidate.startsWith('.') || !candidate.includes('/')) {
+    if (!candidate || candidate.startsWith('.') || candidate.startsWith('..')) {
         return '';
+    }
+
+    if (!candidate.includes('/')) {
+        const safeFolder = sanitizeDefaultExtensionFolderName(defaultFolderName);
+        return `${safeFolder}/${candidate}`;
     }
 
     return candidate;
 }
 
-async function importGlobalExtensionsZip(uploadPath) {
+async function importGlobalExtensionsZip(uploadPath, originalName = '') {
     const targetRoot = path.resolve(PUBLIC_DIRECTORIES.globalExtensions);
     ensureDirectory(targetRoot);
+    const defaultFolderName = sanitizeDefaultExtensionFolderName(path.parse(String(originalName || '')).name);
 
     const result = {
         importedCount: 0,
@@ -109,7 +124,7 @@ async function importGlobalExtensionsZip(uploadPath) {
                         return;
                     }
 
-                    const relativeTargetPath = toGlobalExtensionRelativePath(normalized);
+                    const relativeTargetPath = toGlobalExtensionRelativePath(normalized, defaultFolderName);
                     if (!relativeTargetPath) {
                         result.skippedCount += 1;
                         zipfile.readEntry();
@@ -350,11 +365,6 @@ router.post('/import/config', requireAdminMiddleware, async (request, response) 
         }
         uploadPath = request.file.path;
 
-        const originalName = String(request.file.originalname || '').toLowerCase();
-        if (!originalName.endsWith('.yaml') && !originalName.endsWith('.yml')) {
-            return response.status(400).json({ error: 'Config file must be .yaml or .yml' });
-        }
-
         const content = await fsPromises.readFile(uploadPath, 'utf8');
         yaml.parse(content);
 
@@ -393,13 +403,14 @@ router.post('/import/global-extensions', requireAdminMiddleware, async (request,
             return response.status(400).json({ error: 'No extensions ZIP uploaded' });
         }
 
-        const originalName = String(request.file.originalname || '');
-        if (!originalName.toLowerCase().endsWith('.zip')) {
+        const originalName = String(request.file.originalname || '').trim();
+        const lowerName = originalName.toLowerCase();
+        if (lowerName.includes('.') && !lowerName.endsWith('.zip')) {
             return response.status(400).json({ error: 'Extensions file must be a .zip archive' });
         }
 
         uploadPath = request.file.path;
-        const result = await importGlobalExtensionsZip(uploadPath);
+        const result = await importGlobalExtensionsZip(uploadPath, originalName);
 
         return response.json({
             ok: true,
