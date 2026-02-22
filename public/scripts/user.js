@@ -212,7 +212,7 @@ async function getCurrentUser() {
         }
 
         currentUser = await response.json();
-        $('#admin_button').toggle(accountsEnabled && isAdmin());
+        $('#admin_button').toggle(isAdmin());
         $('#server_logs_button').show();
     } catch (error) {
         console.error('Error getting current user:', error);
