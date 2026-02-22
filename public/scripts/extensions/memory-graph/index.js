@@ -317,7 +317,7 @@ const defaultSettings = {
     extractBatchTurns: 1,
     extractContextTurns: 2,
     recallQueryMessages: 2,
-    recentRawTurns: 5,
+    recentRawTurns: 2,
     llmVisibleRecentMessages: 5,
     lorebookProjectionEnabled: true,
     lorebookNameOverride: '',
@@ -1070,7 +1070,7 @@ function normalizeAdvancedSettings(source = null, fallbackSource = null) {
     return {
         recentRawTurns: Math.max(
             0,
-            Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : Number(base.recentRawTurns || defaultSettings.recentRawTurns)),
+            Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : Number(base.recentRawTurns ?? defaultSettings.recentRawTurns)),
         ),
         llmVisibleRecentMessages: Math.max(
             0,
@@ -4594,7 +4594,7 @@ function buildRecallDebugCoreChat(context, queryText, settings = null) {
     const source = Array.isArray(context?.chat) ? context.chat : [];
     const recentTurns = Math.max(
         1,
-        Math.min(60, Math.floor(Number(settings?.recentRawTurns || defaultSettings.recentRawTurns || 5))),
+        Math.min(60, Math.floor(Number(settings?.recentRawTurns ?? defaultSettings.recentRawTurns))),
     );
     const recentMessageLimit = Math.max(2, recentTurns * 2);
     const history = [];
@@ -4970,8 +4970,8 @@ async function chooseRecallRoute(context, settings, recallState) {
                     compression_mode: String(item?.compression?.mode || 'none'),
                 })),
                 selectionConstraints: {
-                    recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
-                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
+                    recent_message_window: Math.max(3, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
+                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
                     recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
                 },
             }),
@@ -5167,8 +5167,8 @@ async function chooseFocusNodes(context, settings, recallState) {
                 selectionConstraints: {
                     include_non_event_nodes: true,
                     require_event_continuity: true,
-                    recent_message_window: Math.max(3, Number(settings.recentRawTurns || 5)),
-                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns || 5)),
+                    recent_message_window: Math.max(3, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
+                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
                     recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
                     min_event_nodes_if_available: 2,
                 },
@@ -5667,7 +5667,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     const worldInfoMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : [];
     const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
     const latestSeqIndex = getLatestSeqIndex(store);
-    const excludeMessages = Math.max(0, Number(settings.recentRawTurns || 5));
+    const excludeMessages = Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns));
     const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context, {
         latestSeqIndex,
         excludeMessages,
@@ -8821,7 +8821,7 @@ function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
 <div id="${popupId}" class="luker-rpg-memory-advanced-popup">
     <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
     <label>${escapeHtml(i18n('Exclude latest N assistant turns from memory injection'))}
-        <input id="${popupId}_recent_raw_turns" class="text_pole" type="number" min="0" step="1" value="${Number(settings.recentRawTurns || defaultSettings.recentRawTurns)}" />
+        <input id="${popupId}_recent_raw_turns" class="text_pole" type="number" min="0" step="1" value="${Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)}" />
     </label>
     <label>${escapeHtml(i18n('Recall max iterations'))}
         <input id="${popupId}_recall_iterations" class="text_pole" type="number" min="2" max="6" step="1" value="${Number(settings.recallMaxIterations || defaultSettings.recallMaxIterations)}" />
