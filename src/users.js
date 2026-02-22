@@ -1223,6 +1223,31 @@ export function getUserBackupTargets(directories, selection, options = {}) {
 }
 
 /**
+ * Converts an absolute file system path into a stable backup archive path.
+ * Paths inside user root remain user-root relative. Paths outside user root
+ * (for example global extensions) are stored relative to process cwd.
+ * @param {string} rootPath User root path
+ * @param {string} targetPath Absolute file or directory path to archive
+ * @returns {string} Safe relative archive path
+ */
+function getBackupArchivePath(rootPath, targetPath) {
+    const resolvedRoot = path.resolve(rootPath);
+    const resolvedTarget = path.resolve(targetPath);
+
+    const relativeToRoot = path.relative(resolvedRoot, resolvedTarget);
+    if (relativeToRoot && !relativeToRoot.startsWith('..') && !path.isAbsolute(relativeToRoot)) {
+        return path.posix.normalize(relativeToRoot.split(path.sep).join('/'));
+    }
+
+    const relativeToCwd = path.relative(process.cwd(), resolvedTarget);
+    if (relativeToCwd && !relativeToCwd.startsWith('..') && !path.isAbsolute(relativeToCwd)) {
+        return path.posix.normalize(relativeToCwd.split(path.sep).join('/'));
+    }
+
+    return path.posix.normalize(path.basename(resolvedTarget));
+}
+
+/**
  * Creates an archive of selected user data.
  * @param {string} handle User handle
  * @param {import('express').Response} response Express response object to write to
@@ -1275,7 +1300,8 @@ export async function createBackupArchive(handle, response, selectionInput = und
             continue;
         }
 
-        archive.file(filePath, { name: path.relative(directories.root, filePath) });
+        const archivePath = getBackupArchivePath(directories.root, filePath);
+        archive.file(filePath, { name: archivePath });
     }
 
     for (const directoryPath of targets.directories) {
@@ -1283,7 +1309,8 @@ export async function createBackupArchive(handle, response, selectionInput = und
             continue;
         }
 
-        archive.directory(directoryPath, path.relative(directories.root, directoryPath));
+        const archivePath = getBackupArchivePath(directories.root, directoryPath);
+        archive.directory(directoryPath, archivePath);
     }
 
     archive.finalize();

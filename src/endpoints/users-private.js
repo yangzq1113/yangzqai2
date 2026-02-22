@@ -9,7 +9,7 @@ import express from 'express';
 import yauzl from 'yauzl';
 
 import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey, getUserDirectories, getUserBackupTargets, normalizeUserBackupSelection } from '../users.js';
-import { SETTINGS_FILE } from '../constants.js';
+import { SETTINGS_FILE, PUBLIC_DIRECTORIES } from '../constants.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import { color, Cache, ensureDirectory, normalizeZipEntryPath } from '../util.js';
 
@@ -28,7 +28,84 @@ function sanitizeBackupSelectionForUser(selection, isAdminUser) {
     return normalized;
 }
 
-function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, allowedDirectories) {
+function normalizeRestoreArchiveEntryPath(entryName) {
+    const normalized = normalizeZipEntryPath(entryName);
+    if (normalized) {
+        return normalized;
+    }
+
+    if (typeof entryName !== 'string') {
+        return null;
+    }
+
+    const raw = entryName.replace(/\\/g, '/').trim();
+    if (!raw) {
+        return null;
+    }
+
+    const posixNormalized = path.posix.normalize(raw).replace(/^\/+/, '');
+    const looksLikeLegacyGlobalExtensionsPath =
+        posixNormalized.includes('public/scripts/extensions/third-party/') ||
+        posixNormalized.includes('scripts/extensions/third-party/') ||
+        posixNormalized.includes('extensions/third-party/') ||
+        posixNormalized.includes('third-party/');
+
+    if (!looksLikeLegacyGlobalExtensionsPath) {
+        return null;
+    }
+
+    const stripped = posixNormalized.replace(/^(\.\.\/)+/, '');
+    return normalizeZipEntryPath(stripped);
+}
+
+function toPosixRelativePath(basePath, targetPath) {
+    const relative = path.relative(path.resolve(basePath), path.resolve(targetPath));
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        return '';
+    }
+    return path.posix.normalize(relative.split(path.sep).join('/'));
+}
+
+function buildRestoreDirectoryAliases(rootPath, allowedDirectories) {
+    const aliases = [];
+    const globalExtensionsPath = path.resolve(PUBLIC_DIRECTORIES.globalExtensions);
+
+    for (const directory of allowedDirectories) {
+        const resolvedDirectory = path.resolve(directory);
+        const fromRoot = toPosixRelativePath(rootPath, resolvedDirectory);
+        if (fromRoot) {
+            aliases.push({ prefix: fromRoot, directory: resolvedDirectory });
+        }
+
+        const fromCwd = toPosixRelativePath(process.cwd(), resolvedDirectory);
+        if (fromCwd) {
+            aliases.push({ prefix: fromCwd, directory: resolvedDirectory });
+        }
+
+        if (resolvedDirectory === globalExtensionsPath) {
+            aliases.push({ prefix: 'public/scripts/extensions/third-party', directory: resolvedDirectory });
+            aliases.push({ prefix: 'scripts/extensions/third-party', directory: resolvedDirectory });
+            aliases.push({ prefix: 'extensions/third-party', directory: resolvedDirectory });
+            aliases.push({ prefix: 'third-party', directory: resolvedDirectory });
+        }
+    }
+
+    const deduplicated = new Map();
+    for (const alias of aliases) {
+        if (!alias.prefix) {
+            continue;
+        }
+
+        const key = `${alias.directory}::${alias.prefix}`;
+        if (!deduplicated.has(key)) {
+            deduplicated.set(key, alias);
+        }
+    }
+
+    return [...deduplicated.values()];
+}
+
+function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, allowedDirectories, directoryAliases = []) {
     const parts = normalizedEntryPath.split('/').filter(Boolean);
     const candidates = [];
 
@@ -45,9 +122,6 @@ function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, 
         }
 
         const resolved = path.resolve(path.join(rootPath, candidate));
-        if (!(resolved === rootPath || resolved.startsWith(rootPath + path.sep))) {
-            continue;
-        }
 
         if (allowedFiles.has(resolved)) {
             return resolved;
@@ -56,6 +130,22 @@ function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, 
         for (const directory of allowedDirectories) {
             if (resolved.startsWith(directory + path.sep)) {
                 return resolved;
+            }
+        }
+
+        for (const alias of directoryAliases) {
+            if (!candidate.startsWith(`${alias.prefix}/`)) {
+                continue;
+            }
+
+            const suffix = candidate.slice(alias.prefix.length + 1);
+            if (!suffix) {
+                continue;
+            }
+
+            const mappedPath = path.resolve(path.join(alias.directory, suffix));
+            if (mappedPath.startsWith(alias.directory + path.sep)) {
+                return mappedPath;
             }
         }
     }
@@ -132,6 +222,7 @@ async function analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, target
         categoryStats,
         sampleSkippedEntries: [],
     };
+    const directoryAliases = buildRestoreDirectoryAliases(targetRoot, targetDirectories);
 
     await new Promise((resolve, reject) => {
         yauzl.open(uploadPath, { lazyEntries: true, decodeStrings: true }, (openError, zipfile) => {
@@ -158,7 +249,7 @@ async function analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, target
             zipfile.on('entry', (entry) => {
                 try {
                     report.totalEntries += 1;
-                    const normalized = normalizeZipEntryPath(entry.fileName);
+                    const normalized = normalizeRestoreArchiveEntryPath(entry.fileName);
                     if (!normalized) {
                         report.rejectedEntries += 1;
                         addRestoreReportSample(report, String(entry.fileName || ''), 'invalid_path');
@@ -181,7 +272,7 @@ async function analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, target
                     }
 
                     report.fileEntries += 1;
-                    const targetPath = resolveAllowedRestorePath(normalized, targetRoot, targetFiles, targetDirectories);
+                    const targetPath = resolveAllowedRestorePath(normalized, targetRoot, targetFiles, targetDirectories, directoryAliases);
                     if (!targetPath) {
                         report.skippedEntries += 1;
                         addRestoreReportSample(report, normalized, 'path_not_in_selected_categories');
@@ -270,7 +361,7 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
 
             zipfile.on('entry', (entry) => {
                 (async () => {
-                    const normalized = normalizeZipEntryPath(entry.fileName);
+                    const normalized = normalizeRestoreArchiveEntryPath(entry.fileName);
                     if (!normalized) {
                         zipfile.readEntry();
                         return;
