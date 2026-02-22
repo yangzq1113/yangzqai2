@@ -197,7 +197,7 @@ import {
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids, MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, OVERSWIPE_BEHAVIOR, SCROLL_BEHAVIOR, SWIPE_DIRECTION, SWIPE_SOURCE, SWIPE_STATE } from './scripts/constants.js';
 
 import { cancelDebouncedMetadataSave, doDailyExtensionUpdatesCheck, extension_settings, initExtensions, loadExtensionSettings, runGenerationInterceptors } from './scripts/extensions.js';
-import { COMMENT_NAME_DEFAULT, CONNECT_API_MAP, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
+import { COMMENT_NAME_DEFAULT, CONNECT_API_MAP, consumeEphemeralScriptInjectsForMainGeneration, executeSlashCommandsOnChatInput, initDefaultSlashCommands, initSlashCommandAutoComplete, isExecutingCommandsFromChatInput, pauseScriptExecution, stopScriptExecution, UNIQUE_APIS } from './scripts/slash-commands.js';
 import {
     tag_map,
     tags,
@@ -4399,13 +4399,22 @@ export function isStreamingEnabled() {
         || (main_api == 'textgenerationwebui' && textgen_settings.streaming));
 }
 
-function showStopButton() {
+let activeGenerationTypeForStopButton = '';
+
+function showStopButton(generationType = '') {
+    if (typeof generationType === 'string' && generationType.length > 0) {
+        activeGenerationTypeForStopButton = generationType;
+    }
     $('#mes_stop').css({ 'display': 'flex' });
 }
 
 function hideStopButton() {
     // prevent NOOP, because hideStopButton() gets called multiple times
     if ($('#mes_stop').css('display') !== 'none') {
+        if (activeGenerationTypeForStopButton && activeGenerationTypeForStopButton !== 'quiet') {
+            consumeEphemeralScriptInjectsForMainGeneration();
+        }
+        activeGenerationTypeForStopButton = '';
         $('#mes_stop').css({ 'display': 'none' });
         eventSource.emit(event_types.GENERATION_ENDED, chat.length);
     }
@@ -6479,7 +6488,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
         console.debug('rungenerate calling API');
 
-        showStopButton();
+        showStopButton(type);
 
         //set array object for prompt token itemization of this message
         let currentArrayEntry = Number(thisPromptBits.length - 1);

@@ -2439,7 +2439,7 @@ export function initDefaultSlashCommands() {
                 ],
             }),
             new SlashCommandNamedArgument(
-                'ephemeral', t`remove injection after generation`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'false',
+                'ephemeral', t`remove injection after next main generation`, [ARGUMENT_TYPE.BOOLEAN], false, false, 'false',
             ),
             SlashCommandNamedArgument.fromProps({
                 name: 'filter',
@@ -3154,7 +3154,7 @@ function injectCallback(args, value) {
     }
 
     if (value) {
-        const inject = { value, position, depth, scan, role, filter };
+        const inject = { value, position, depth, scan, role, filter, ephemeral };
         chat_metadata.script_injects[id] = inject;
     } else {
         delete chat_metadata.script_injects[id];
@@ -3163,23 +3163,36 @@ function injectCallback(args, value) {
     setExtensionPrompt(prefixedId, String(value), position, depth, scan, role, filterFunction);
     saveMetadataDebounced();
 
-    if (ephemeral) {
-        let deleted = false;
-        const unsetInject = () => {
-            if (deleted) {
-                return;
-            }
-            console.log('Removing ephemeral script injection', id);
-            delete chat_metadata.script_injects[id];
-            setExtensionPrompt(prefixedId, '', position, depth, scan, role, filterFunction);
-            saveMetadataDebounced();
-            deleted = true;
-        };
-        eventSource.once(event_types.GENERATION_ENDED, unsetInject);
-        eventSource.once(event_types.GENERATION_STOPPED, unsetInject);
+    return id;
+}
+
+/**
+ * Clears script injections marked as ephemeral after a main generation cycle.
+ * Quiet/plugin generations must not consume these one-shot injects.
+ * @returns {number} Number of removed ephemeral injections
+ */
+export function consumeEphemeralScriptInjectsForMainGeneration() {
+    if (!chat_metadata.script_injects || typeof chat_metadata.script_injects !== 'object') {
+        return 0;
     }
 
-    return id;
+    let removed = 0;
+    for (const [id, inject] of Object.entries(chat_metadata.script_injects)) {
+        if (!inject || inject.ephemeral !== true) {
+            continue;
+        }
+
+        const prefixedId = `${SCRIPT_PROMPT_KEY}${id}`;
+        setExtensionPrompt(prefixedId, '', inject.position, inject.depth, inject.scan, inject.role);
+        delete chat_metadata.script_injects[id];
+        removed += 1;
+    }
+
+    if (removed > 0) {
+        saveMetadataDebounced();
+    }
+
+    return removed;
 }
 
 async function listInjectsCallback(args) {
