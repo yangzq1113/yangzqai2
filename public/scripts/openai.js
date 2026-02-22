@@ -5791,9 +5791,7 @@ async function onModelChange() {
     const hasModelsLoaded = Array.isArray(model_list) && model_list.length > 0;
 
     if ($(this).is('#model_claude_select')) {
-        if (value.includes('-v')) {
-            value = value.replace('-v', '-');
-        } else if (value === '' || value === 'claude-2') {
+        if (value === '') {
             value = default_settings.claude_model;
         }
         console.log('Claude model changed to', value);
