@@ -14,10 +14,19 @@ import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
 import { color, Cache, ensureDirectory, normalizeZipEntryPath } from '../util.js';
 
 const RESET_CACHE = new Cache(5 * 60 * 1000);
-const FULL_IMPORT_SELECTION = Object.freeze(
-    Object.fromEntries(Object.keys(normalizeUserBackupSelection({})).map((key) => [key, true])),
-);
+const FULL_IMPORT_SELECTION = Object.freeze({
+    ...Object.fromEntries(Object.keys(normalizeUserBackupSelection({})).map((key) => [key, true])),
+    globalExtensions: false,
+});
 const BACKUP_CATEGORY_ORDER = Object.freeze(Object.keys(FULL_IMPORT_SELECTION));
+
+function sanitizeBackupSelectionForUser(selection, isAdminUser) {
+    const normalized = normalizeUserBackupSelection(selection);
+    if (!isAdminUser) {
+        normalized.globalExtensions = false;
+    }
+    return normalized;
+}
 
 function resolveAllowedRestorePath(normalizedEntryPath, rootPath, allowedFiles, allowedDirectories) {
     const parts = normalizedEntryPath.split('/').filter(Boolean);
@@ -70,7 +79,7 @@ function addRestoreReportSample(report, entry, reason) {
     report.sampleSkippedEntries.push({ entry, reason });
 }
 
-function buildRestoreCategoryTargets(directories, selection) {
+function buildRestoreCategoryTargets(directories, selection, options = {}) {
     const categories = [];
     for (const category of BACKUP_CATEGORY_ORDER) {
         if (!selection[category]) {
@@ -78,7 +87,7 @@ function buildRestoreCategoryTargets(directories, selection) {
         }
 
         const categorySelection = Object.fromEntries(BACKUP_CATEGORY_ORDER.map((key) => [key, key === category]));
-        const categoryTargets = getUserBackupTargets(directories, categorySelection);
+        const categoryTargets = getUserBackupTargets(directories, categorySelection, options);
         categories.push({
             name: category,
             files: new Set(categoryTargets.files.map(file => path.resolve(file))),
@@ -201,8 +210,8 @@ async function analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, target
     return { targetByNormalizedEntry, report };
 }
 
-async function restoreUserBackupArchive(uploadPath, directories, selection, mode) {
-    const backupTargets = getUserBackupTargets(directories, selection);
+async function restoreUserBackupArchive(uploadPath, directories, selection, mode, options = {}) {
+    const backupTargets = getUserBackupTargets(directories, selection, options);
     const targetRoot = path.resolve(directories.root);
     const targetDirectories = backupTargets.directories.map(dir => path.resolve(dir));
     const targetFiles = new Set(backupTargets.files.map(file => path.resolve(file)));
@@ -211,7 +220,7 @@ async function restoreUserBackupArchive(uploadPath, directories, selection, mode
         throw new Error('At least one restore category must be selected.');
     }
 
-    const categoryTargets = buildRestoreCategoryTargets(directories, selection);
+    const categoryTargets = buildRestoreCategoryTargets(directories, selection, options);
     const analysis = await analyzeRestoreArchive(uploadPath, targetRoot, targetFiles, targetDirectories, categoryTargets);
 
     if (mode === 'overwrite' && analysis.report.targetableEntries === 0) {
@@ -473,12 +482,13 @@ router.post('/backup', async (request, response) => {
             return response.status(403).json({ error: 'Unauthorized' });
         }
 
-        const selection = normalizeUserBackupSelection(request.body.selection);
+        const isAdminUser = Boolean(request.user?.profile?.admin);
+        const selection = sanitizeBackupSelectionForUser(request.body.selection, isAdminUser);
         if (!Object.values(selection).some(Boolean)) {
             return response.status(400).json({ error: 'At least one backup category must be selected.' });
         }
 
-        await createBackupArchive(handle, response, selection);
+        await createBackupArchive(handle, response, selection, { includeGlobalExtensions: isAdminUser });
     } catch (error) {
         console.error('Backup failed', error);
         return response.sendStatus(500);
@@ -521,13 +531,14 @@ router.post('/restore-backup', async (request, response) => {
             }
         }
 
-        const selection = normalizeUserBackupSelection(parsedSelection);
+        const isAdminUser = Boolean(request.user?.profile?.admin);
+        const selection = sanitizeBackupSelectionForUser(parsedSelection, isAdminUser);
         if (!Object.values(selection).some(Boolean)) {
             return response.status(400).json({ error: 'At least one restore category must be selected.' });
         }
 
         const directories = handle === request.user.profile.handle ? request.user.directories : getUserDirectories(handle);
-        const restoreResult = await restoreUserBackupArchive(uploadPath, directories, selection, mode);
+        const restoreResult = await restoreUserBackupArchive(uploadPath, directories, selection, mode, { includeGlobalExtensions: isAdminUser });
 
         return response.json({
             mode,
@@ -560,7 +571,7 @@ router.post('/import/data-zip', async (request, response) => {
 
         uploadPath = request.file.path;
         const mode = String(request.body.mode || 'merge').toLowerCase() === 'overwrite' ? 'overwrite' : 'merge';
-        const restoreResult = await restoreUserBackupArchive(uploadPath, request.user.directories, FULL_IMPORT_SELECTION, mode);
+        const restoreResult = await restoreUserBackupArchive(uploadPath, request.user.directories, FULL_IMPORT_SELECTION, mode, { includeGlobalExtensions: false });
 
         return response.json({
             mode,

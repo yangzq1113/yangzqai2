@@ -21,6 +21,7 @@ const BACKUP_CATEGORY_KEYS = Object.freeze([
     'presets',
     'assets',
     'extensions',
+    'globalExtensions',
     'vectors',
 ]);
 const BACKUP_DEFAULT_SELECTION = Object.freeze({
@@ -32,9 +33,13 @@ const BACKUP_DEFAULT_SELECTION = Object.freeze({
     presets: true,
     assets: true,
     extensions: true,
+    globalExtensions: false,
     vectors: false,
 });
-const BACKUP_FULL_SELECTION = Object.freeze(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])));
+const BACKUP_FULL_SELECTION = Object.freeze({
+    ...Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])),
+    globalExtensions: false,
+});
 const FRONTEND_LOG_LIMIT = 3000;
 const frontendLogBuffer = [];
 let frontendLogNextId = 1;
@@ -572,10 +577,10 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
     }
 }
 
-function collectBackupSelection(rootElement) {
+function collectBackupSelection(rootElement, categoryKeys = BACKUP_CATEGORY_KEYS) {
     const selection = { ...BACKUP_DEFAULT_SELECTION };
 
-    BACKUP_CATEGORY_KEYS.forEach((key) => {
+    categoryKeys.forEach((key) => {
         const checkbox = rootElement.find(`input[name="backupCategory"][value="${key}"]`);
         if (checkbox.length > 0) {
             selection[key] = checkbox.is(':checked');
@@ -711,6 +716,8 @@ async function showRestoreDiagnosticReport(report) {
 
 async function openBackupManager(handle, callback) {
     const template = $(await renderTemplateAsync('userBackupManager'));
+    const canManageGlobalExtensions = isAdmin();
+    const activeCategoryKeys = BACKUP_CATEGORY_KEYS.filter((key) => canManageGlobalExtensions || key !== 'globalExtensions');
     const fileInput = template.find('.backupRestoreFileInput');
     const selectedFileText = template.find('.backupSelectedFileName');
     const restoreButton = template.find('.backupRestoreButton');
@@ -719,14 +726,22 @@ async function openBackupManager(handle, callback) {
     const downloadButton = template.find('.backupDownloadButton');
     const checkboxes = template.find('input[name="backupCategory"]');
     const summaryText = template.find('.backupCategorySummary');
+    const globalExtensionsItem = template.find('.backupCategoryGlobalExtensions');
+    globalExtensionsItem.toggle(canManageGlobalExtensions);
+    if (!canManageGlobalExtensions) {
+        template.find('input[name="backupCategory"][value="globalExtensions"]').prop('checked', false);
+    }
 
     const updateSelectionSummary = () => {
-        const selectedCount = checkboxes.filter(':checked').length;
-        summaryText.text(t`Selected ${selectedCount} of ${BACKUP_CATEGORY_KEYS.length} categories`);
+        const selectedCount = activeCategoryKeys.reduce((count, key) => {
+            const checkbox = template.find(`input[name="backupCategory"][value="${key}"]`);
+            return count + (checkbox.is(':checked') ? 1 : 0);
+        }, 0);
+        summaryText.text(t`Selected ${selectedCount} of ${activeCategoryKeys.length} categories`);
     };
 
     const setSelection = (selection) => {
-        BACKUP_CATEGORY_KEYS.forEach((key) => {
+        activeCategoryKeys.forEach((key) => {
             const checkbox = template.find(`input[name="backupCategory"][value="${key}"]`);
             checkbox.prop('checked', Boolean(selection[key]));
         });
@@ -744,7 +759,7 @@ async function openBackupManager(handle, callback) {
             return;
         }
 
-        const selection = selectionOverride ?? collectBackupSelection(template);
+        const selection = selectionOverride ?? collectBackupSelection(template, activeCategoryKeys);
         if (!Object.values(selection).some(Boolean)) {
             toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
             return;
@@ -807,7 +822,7 @@ async function openBackupManager(handle, callback) {
     };
 
     template.find('.backupSelectAllButton').on('click', function () {
-        setSelection(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])));
+        setSelection(Object.fromEntries(activeCategoryKeys.map((key) => [key, true])));
     });
 
     template.find('.backupSelectRecommendedButton').on('click', function () {
@@ -815,7 +830,7 @@ async function openBackupManager(handle, callback) {
     });
 
     template.find('.backupSelectNoneButton').on('click', function () {
-        setSelection(Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, false])));
+        setSelection(Object.fromEntries(activeCategoryKeys.map((key) => [key, false])));
     });
 
     checkboxes.on('change', updateSelectionSummary);
@@ -826,7 +841,7 @@ async function openBackupManager(handle, callback) {
             return;
         }
 
-        const selection = collectBackupSelection(template);
+        const selection = collectBackupSelection(template, activeCategoryKeys);
         if (!Object.values(selection).some(Boolean)) {
             toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
             return;

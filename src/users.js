@@ -83,6 +83,7 @@ export const USER_BACKUP_SELECTION_DEFAULTS = Object.freeze({
     presets: true,
     assets: true,
     extensions: true,
+    globalExtensions: false,
     vectors: false,
 });
 
@@ -1149,9 +1150,11 @@ export function normalizeUserBackupSelection(selectionInput) {
  * Gets selected backup target files and directories for a user.
  * @param {UserDirectoryList} directories User directories
  * @param {Record<string, boolean>} selection Selection object
+ * @param {{ includeGlobalExtensions?: boolean }} [options] Additional target options
  * @returns {{ files: string[], directories: string[] }} Backup targets
  */
-export function getUserBackupTargets(directories, selection) {
+export function getUserBackupTargets(directories, selection, options = {}) {
+    const includeGlobalExtensions = options?.includeGlobalExtensions === true;
     const selectedFiles = new Set();
     const selectedDirectories = new Set();
 
@@ -1205,6 +1208,10 @@ export function getUserBackupTargets(directories, selection) {
         selectedDirectories.add(directories.extensions);
     }
 
+    if (selection.globalExtensions && includeGlobalExtensions) {
+        selectedDirectories.add(PUBLIC_DIRECTORIES.globalExtensions);
+    }
+
     if (selection.vectors) {
         selectedDirectories.add(directories.vectors);
     }
@@ -1220,12 +1227,13 @@ export function getUserBackupTargets(directories, selection) {
  * @param {string} handle User handle
  * @param {import('express').Response} response Express response object to write to
  * @param {Record<string, boolean|string|number>} [selectionInput] Backup selection payload
+ * @param {{ includeGlobalExtensions?: boolean }} [options] Additional target options
  * @returns {Promise<void>} Promise that resolves when the archive is created
  */
-export async function createBackupArchive(handle, response, selectionInput = undefined) {
+export async function createBackupArchive(handle, response, selectionInput = undefined, options = {}) {
     const directories = getUserDirectories(handle);
     const selection = normalizeUserBackupSelection(selectionInput);
-    const targets = getUserBackupTargets(directories, selection);
+    const targets = getUserBackupTargets(directories, selection, options);
 
     if (targets.files.length === 0 && targets.directories.length === 0) {
         throw new Error('At least one backup category must be selected.');
