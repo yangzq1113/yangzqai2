@@ -318,6 +318,7 @@ const defaultSettings = {
     extractContextTurns: 2,
     recallQueryMessages: 2,
     recentRawTurns: 5,
+    llmVisibleRecentMessages: 5,
     lorebookProjectionEnabled: true,
     lorebookNameOverride: '',
     lorebookEntryOrderBase: 9800,
@@ -346,6 +347,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '写入上下文 Assistant 楼层数',
         'Recall query recent messages': '召回查询最近消息条数',
+        'Visible chat history messages for generation (0 = disabled)': '创作可见聊天记录条数（0=禁用）',
         'Extract batch assistant turns': '每次抽取请求处理的 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
         'Plain-text function-call mode': '纯文本函数调用模式',
@@ -596,6 +598,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '寫入上下文 Assistant 樓層數',
         'Recall query recent messages': '召回查詢最近訊息條數',
+        'Visible chat history messages for generation (0 = disabled)': '創作可見聊天記錄條數（0=停用）',
         'Extract batch assistant turns': '每次抽取請求處理的 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
         'Plain-text function-call mode': '純文字函式呼叫模式',
@@ -1023,6 +1026,7 @@ function ensureSettings() {
     const extractContextTurnsRaw = Number(extension_settings[MODULE_NAME].extractContextTurns);
     const recallQueryMessagesRaw = Number(extension_settings[MODULE_NAME].recallQueryMessages);
     const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
+    const llmVisibleRecentMessagesRaw = Number(extension_settings[MODULE_NAME].llmVisibleRecentMessages);
     extension_settings[MODULE_NAME].extractBatchTurns = Math.max(
         1,
         Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : defaultSettings.extractBatchTurns),
@@ -1038,6 +1042,10 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].recentRawTurns = Math.max(
         0,
         Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : defaultSettings.recentRawTurns),
+    );
+    extension_settings[MODULE_NAME].llmVisibleRecentMessages = Math.max(
+        0,
+        Math.min(200, Math.floor(Number.isFinite(llmVisibleRecentMessagesRaw) ? llmVisibleRecentMessagesRaw : defaultSettings.llmVisibleRecentMessages)),
     );
     extension_settings[MODULE_NAME].extractSystemPrompt = String(extension_settings[MODULE_NAME].extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallRouteSystemPrompt = String(extension_settings[MODULE_NAME].recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
@@ -1056,12 +1064,17 @@ function normalizeAdvancedSettings(source = null, fallbackSource = null) {
     const extractContextTurnsRaw = Number(input.extractContextTurns);
     const recallQueryMessagesRaw = Number(input.recallQueryMessages);
     const recentRawTurnsRaw = Number(input.recentRawTurns);
+    const llmVisibleRecentMessagesRaw = Number(input.llmVisibleRecentMessages);
     const recallIterationsRaw = Number(input.recallMaxIterations);
     const toolRetryRaw = Number(input.toolCallRetryMax);
     return {
         recentRawTurns: Math.max(
             0,
             Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : Number(base.recentRawTurns || defaultSettings.recentRawTurns)),
+        ),
+        llmVisibleRecentMessages: Math.max(
+            0,
+            Math.min(200, Math.floor(Number.isFinite(llmVisibleRecentMessagesRaw) ? llmVisibleRecentMessagesRaw : Number(base.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages))),
         ),
         recallMaxIterations: Math.max(
             2,
@@ -1095,6 +1108,7 @@ function applyAdvancedSettings(target, values) {
     }
     const normalized = normalizeAdvancedSettings(values, target);
     target.recentRawTurns = normalized.recentRawTurns;
+    target.llmVisibleRecentMessages = normalized.llmVisibleRecentMessages;
     target.recallMaxIterations = normalized.recallMaxIterations;
     target.toolCallRetryMax = normalized.toolCallRetryMax;
     target.extractContextTurns = normalized.extractContextTurns;
@@ -4876,13 +4890,17 @@ function isRecallDiagnosticNode(node) {
     return type === 'recall' || type.startsWith('recall_');
 }
 
-function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = [], context = null) {
+function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = [], context = null, {
+    latestSeqIndex = -1,
+    excludeMessages = 0,
+} = {}) {
     void queryBundle;
     const schema = getEffectiveNodeTypeSchema(context, settings);
     const visibleRows = buildGraphNodeHints(store, schema, 0);
     const visibleNodes = visibleRows
         .map((row) => store?.nodes?.[String(row?.id || '')] || null)
-        .filter((node) => Boolean(node) && !node.archived && !isRecallDiagnosticNode(node));
+        .filter((node) => Boolean(node) && !node.archived && !isRecallDiagnosticNode(node))
+        .filter((node) => !isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages));
     const merged = [
         ...getSortedNodesByRecency(alwaysInjectNodes.filter(Boolean)),
         ...getSortedNodesByRecency(visibleNodes),
@@ -5331,6 +5349,36 @@ function getLatestSeqIndex(store) {
     return Math.max(-1, getSemanticCoverageSeq(store));
 }
 
+function keepRecentCoreMessages(coreChat, keepMessages) {
+    const source = Array.isArray(coreChat) ? coreChat : [];
+    const windowSize = Math.max(0, Math.floor(Number(keepMessages || 0)));
+    if (windowSize <= 0 || source.length <= windowSize) {
+        return source.map(message => ({ ...message }));
+    }
+    return source.slice(source.length - windowSize).map(message => ({ ...message }));
+}
+
+function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
+    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.coreChat)) {
+        return false;
+    }
+    const windowSize = Math.max(0, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)));
+    if (windowSize <= 0 || payload.coreChat.length <= windowSize) {
+        return false;
+    }
+    const beforeCount = payload.coreChat.length;
+    payload.coreChat = keepRecentCoreMessages(payload.coreChat, windowSize);
+    if (Array.isArray(trace)) {
+        trace.push({
+            step: 'apply_generation_history_window',
+            keep_messages: windowSize,
+            before_count: beforeCount,
+            after_count: payload.coreChat.length,
+        });
+    }
+    return true;
+}
+
 function isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages) {
     const windowSize = Math.max(0, Number(excludeMessages || 0));
     if (windowSize <= 0 || latestSeqIndex < 0 || !node) {
@@ -5580,14 +5628,41 @@ async function runLLMDrivenRecall(context, store, payload) {
     const forceWorldInfoResimulate = Boolean(payload?.forceWorldInfoResimulate);
     const worldInfoMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : [];
     const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
-    const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context);
+    const latestSeqIndex = getLatestSeqIndex(store);
+    const excludeMessages = Math.max(0, Number(settings.recentRawTurns || 5));
+    const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context, {
+        latestSeqIndex,
+        excludeMessages,
+    });
     const maxIterations = Math.max(2, Math.min(6, Number(settings.recallMaxIterations || 3)));
     const trace = [];
     const alwaysInjectIds = alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean);
     const alwaysInjectSet = new Set(alwaysInjectIds);
+    const routeCandidates = rootCandidates.filter((node) => node?.id && !alwaysInjectSet.has(String(node.id)));
+
+    if (routeCandidates.length === 0) {
+        trace.push({
+            step: 'skip_recall_route_no_candidates',
+            latest_seq: latestSeqIndex,
+            exclude_messages: excludeMessages,
+            always_inject_count: alwaysInjectNodes.length,
+        });
+        if (alwaysInjectNodes.length > 0) {
+            trace.push({
+                step: 'always_inject',
+                node_ids: alwaysInjectNodes.map(node => node.id),
+            });
+        }
+        return {
+            selectedNodes: [],
+            alwaysInjectNodes,
+            query,
+            trace,
+        };
+    }
 
     let selectedIds = [];
-    let currentCandidates = rootCandidates.slice();
+    let currentCandidates = routeCandidates.slice();
     let latestRoute = null;
     let earlyFinalized = false;
     const drillBudget = Math.max(0, maxIterations - 1);
@@ -5715,8 +5790,6 @@ async function runLLMDrivenRecall(context, store, payload) {
         });
     }
 
-    const latestSeqIndex = getLatestSeqIndex(store);
-    const excludeMessages = Math.max(0, Number(settings.recentRawTurns || 5));
     const excludedNodeIds = [];
     const filteredSelectedNodes = selectedNodes.filter((node) => {
         const excluded = isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages);
@@ -5980,6 +6053,7 @@ async function injectMemoryPrompts(context, payload) {
             blocks,
         };
         await persistMemoryStoreByChatKey(context, chatKey, store);
+        applyGenerationVisibleHistoryWindow(payload, settings);
         updateUiStatus(i18nFormat('Recall ready. selected=${0}', Math.max(0, Number(latestRecallSnapshot.selectedCount || 0))));
         return true;
     }
@@ -6007,6 +6081,7 @@ async function injectMemoryPrompts(context, payload) {
             selectedCount: selectedNodes.length,
         }
         : null;
+    applyGenerationVisibleHistoryWindow(payload, settings, trace);
     updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
     return true;
 }
@@ -8722,6 +8797,9 @@ function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
     <label>${escapeHtml(i18n('Recall query recent messages'))}
         <input id="${popupId}_recall_query_messages" class="text_pole" type="number" min="1" max="64" step="1" value="${Math.max(1, Math.min(64, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages)))}" />
     </label>
+    <label>${escapeHtml(i18n('Visible chat history messages for generation (0 = disabled)'))}
+        <input id="${popupId}_llm_visible_recent_messages" class="text_pole" type="number" min="0" max="200" step="1" value="${Math.max(0, Math.min(200, Number(settings.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))}" />
+    </label>
     <label>${escapeHtml(i18n('Extract batch assistant turns'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
     </label>
@@ -8764,6 +8842,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         popupRoot.find(`#${popupId}_tool_retries`).val(String(Math.max(0, Math.min(10, Number(source.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))));
         popupRoot.find(`#${popupId}_extract_context_turns`).val(String(Math.max(1, Math.min(32, Number(source.extractContextTurns ?? defaultSettings.extractContextTurns)))));
         popupRoot.find(`#${popupId}_recall_query_messages`).val(String(Math.max(1, Math.min(64, Number(source.recallQueryMessages ?? defaultSettings.recallQueryMessages)))));
+        popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val(String(Math.max(0, Math.min(200, Number(source.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))));
         popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(1, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
         popupRoot.find(`#${popupId}_extract_system_prompt`).val(String(source.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
@@ -8810,6 +8889,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             toolRetriesValue: Number(popupRoot.find(`#${popupId}_tool_retries`).val()),
             extractContextTurnsValue: Number(popupRoot.find(`#${popupId}_extract_context_turns`).val()),
             recallQueryMessagesValue: Number(popupRoot.find(`#${popupId}_recall_query_messages`).val()),
+            llmVisibleRecentMessagesValue: Number(popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val()),
             extractBatchTurnsValue: Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val()),
             extractSystemPromptValue: String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim(),
             recallRoutePromptValue: String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim(),
@@ -8822,6 +8902,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         toolCallRetryMax: values.toolRetriesValue,
         extractContextTurns: values.extractContextTurnsValue,
         recallQueryMessages: values.recallQueryMessagesValue,
+        llmVisibleRecentMessages: values.llmVisibleRecentMessagesValue,
         extractBatchTurns: values.extractBatchTurnsValue,
         extractSystemPrompt: values.extractSystemPromptValue,
         recallRouteSystemPrompt: values.recallRoutePromptValue,
