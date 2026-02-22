@@ -182,7 +182,7 @@ const defaultNodeTypeSchema = [
 
 const DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT = [
     'You are a memory recall planner focused on relevance, continuity, and efficiency.',
-    'You may output one short <thought>...</thought> before tool call to explain your plan.',
+    'You must output exactly one short <thought>...</thought> before tool call to explain your plan.',
     'Input format: XML blocks (recall_query_context, candidate_nodes, always_inject_node_ids, schema_overview, selection_constraints). Read all blocks before deciding.',
     'First, extract a compact query profile from recall_query_context: active entities, locations, goals, unresolved commitments, relationship/emotion shifts, and causal constraints.',
     'Do not rely on keywords only. Use semantic cues, intent, and causal context from recent dialogue.',
@@ -196,11 +196,14 @@ const DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT = [
     'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
     'Do not fabricate missing facts. If grounded evidence is weak or absent, prefer conservative selection or empty selection and explain briefly in reason.',
     'Be honest: if no grounded memory should be recalled, return finalize with empty selected_node_ids.',
+    'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one <thought>...</thought>; (2) function call output only.',
+    'Do not output any narrative/body text, markdown, code fences, XML blocks (except <thought>), comments, or any extra JSON payload.',
+    'After function call output, stop immediately.',
 ].join('\n');
 
 const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
     'You are finalizing memory recall node selection after optional drill expansion.',
-    'You may output one short <thought>...</thought> before tool call to explain your final tradeoff.',
+    'You must output exactly one short <thought>...</thought> before tool call to explain your final tradeoff.',
     'Input format: XML blocks (recall_query_context, candidate_nodes, always_inject_node_ids, route_result, selection_constraints). Read all blocks before deciding.',
     'Before selecting, extract the key information needs of this turn from context: who/where/what is active, what must stay continuous, and what unknowns matter now.',
     'Do not rely on keywords only. Use semantic intent and causal continuity.',
@@ -213,6 +216,9 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
     'If no candidate is grounded and useful, return an empty list rather than forcing weak picks or inventing links.',
     'Be explicit and honest when returning empty selection.',
     'Never hallucinate facts not grounded in candidates.',
+    'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one <thought>...</thought>; (2) function call output only.',
+    'Do not output any narrative/body text, markdown, code fences, XML blocks (except <thought>), comments, or any extra JSON payload.',
+    'After function call output, stop immediately.',
 ].join('\n');
 
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
@@ -287,6 +293,10 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Title policy: non-event nodes should use short stable human-readable titles.',
     'Reuse the exact same title for the same ongoing entity/thread/location to keep updates merged.',
     'Type-specific titles: when a type does not define title column in tool schema, omit title.',
+    'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one complete <thought>...</thought>; (2) extraction function calls only.',
+    'Do not output any narrative/body text, markdown, code fences, comments, or XML blocks except <thought>.',
+    'Forbidden examples: <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, duplicate JSON payloads.',
+    'After function call output, stop immediately.',
 ].join('\n');
 
 const defaultSettings = {
@@ -2390,10 +2400,27 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
         : '';
     return [
         'Plain-text function-call mode is enabled.',
-        'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
-        'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+        'Output contract is strict.',
+        'Return exactly two parts in order: (1) one <thought>...</thought>; (2) one and only one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}.',
+        'No narrative/body text, markdown, code fences, comments, XML blocks (except <thought>), or extra JSON before/after the JSON object.',
         requiredLine,
         `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
+    ].filter(Boolean).join('\n');
+}
+
+function buildStrictThoughtAndFunctionOnlyAddendum({ plainTextMode = false, requiredFunctionName = '' } = {}) {
+    const requiredName = String(requiredFunctionName || '').trim();
+    return [
+        'HIGHEST PRIORITY OUTPUT CONTRACT:',
+        'You must return EXACTLY two parts in this order:',
+        '1) one <thought>...</thought> block.',
+        plainTextMode
+            ? '2) exactly one JSON object for function calls: {"tool_calls":[...]}'
+            : '2) function calls only (tool-calls channel).',
+        requiredName ? `Required function name: ${requiredName}.` : '',
+        'Do NOT output any other text or blocks.',
+        'Forbidden: narrative/body text, <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, markdown, code fences, comments, duplicate JSON payloads.',
+        'After function calls, stop immediately.',
     ].filter(Boolean).join('\n');
 }
 
@@ -2502,13 +2529,22 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         function: { name: fnName },
     };
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const requestMessages = usePlainTextCalls
-        ? mergeUserAddendumIntoPromptMessages(
-            promptMessages,
+    let requestMessages = promptMessages;
+    if (usePlainTextCalls) {
+        requestMessages = mergeUserAddendumIntoPromptMessages(
+            requestMessages,
             buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
             'function_call_protocol',
-        )
-        : promptMessages;
+        );
+    }
+    requestMessages = mergeUserAddendumIntoPromptMessages(
+        requestMessages,
+        buildStrictThoughtAndFunctionOnlyAddendum({
+            plainTextMode: usePlainTextCalls,
+            requiredFunctionName: fnName,
+        }),
+        'output_contract',
+    );
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -2562,13 +2598,21 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const requestMessages = usePlainTextCalls
-        ? mergeUserAddendumIntoPromptMessages(
-            promptMessages,
+    let requestMessages = promptMessages;
+    if (usePlainTextCalls) {
+        requestMessages = mergeUserAddendumIntoPromptMessages(
+            requestMessages,
             buildPlainTextToolProtocolMessage(tools),
             'function_call_protocol',
-        )
-        : promptMessages;
+        );
+    }
+    requestMessages = mergeUserAddendumIntoPromptMessages(
+        requestMessages,
+        buildStrictThoughtAndFunctionOnlyAddendum({
+            plainTextMode: usePlainTextCalls,
+        }),
+        'output_contract',
+    );
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
