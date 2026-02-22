@@ -2134,6 +2134,7 @@ async function buildPresetAwareLLMMessages(
         promptPresetName = '',
         worldInfoMessages = null,
         runtimeWorldInfo = null,
+        forceWorldInfoResimulate = false,
         worldInfoType = 'quiet',
     } = {},
 ) {
@@ -2141,8 +2142,8 @@ async function buildPresetAwareLLMMessages(
     const userText = String(userPrompt || '').trim();
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
-    let resolvedRuntimeWorldInfo = runtimeWorldInfo && typeof runtimeWorldInfo === 'object'
-        ? runtimeWorldInfo
+    let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
+        ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
         : null;
     if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && Array.isArray(worldInfoMessages)) {
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
@@ -2164,6 +2165,39 @@ async function buildPresetAwareLLMMessages(
         promptPresetName: selectedPromptPresetName,
         runtimeWorldInfo: resolvedRuntimeWorldInfo,
     });
+}
+
+function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
+    return {
+        worldInfoBefore: String(source.worldInfoBefore || ''),
+        worldInfoAfter: String(source.worldInfoAfter || ''),
+        worldInfoDepth: Array.isArray(source.worldInfoDepth) ? source.worldInfoDepth : [],
+        outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
+        worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
+    };
+}
+
+function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
+    if (normalized.worldInfoBefore || normalized.worldInfoAfter) {
+        return true;
+    }
+    if (normalized.worldInfoDepth.length > 0 || normalized.worldInfoExamples.length > 0) {
+        return true;
+    }
+    return Object.keys(normalized.outletEntries).length > 0;
+}
+
+function buildRuntimeWorldInfoFromPayload(payload = null) {
+    const candidate = normalizeRuntimeWorldInfo({
+        worldInfoBefore: String(payload?.worldInfoBefore || ''),
+        worldInfoAfter: String(payload?.worldInfoAfter || ''),
+        worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
+        outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
+        worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
+    });
+    return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
 }
 
 async function summarizeTextWithLLM(context, settings, instruction, lines, abortSignal = null) {
@@ -2650,6 +2684,7 @@ async function runFunctionCallTask(context, settings, {
     apiPresetName = '',
     worldInfoMessages = null,
     runtimeWorldInfo = null,
+    forceWorldInfoResimulate = false,
     worldInfoType = 'quiet',
     functionName = '',
     functionDescription = '',
@@ -2671,6 +2706,7 @@ async function runFunctionCallTask(context, settings, {
         promptPresetName: String(promptPresetName || '').trim(),
         worldInfoMessages,
         runtimeWorldInfo,
+        forceWorldInfoResimulate,
         worldInfoType,
     });
 
@@ -4540,6 +4576,51 @@ function getSortedNodesByRecency(nodes) {
         .sort(compareNodesByRecency);
 }
 
+function buildRecallDebugCoreChat(context, queryText, settings = null) {
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    const recentTurns = Math.max(
+        1,
+        Math.min(60, Math.floor(Number(settings?.recentRawTurns || defaultSettings.recentRawTurns || 5))),
+    );
+    const recentMessageLimit = Math.max(2, recentTurns * 2);
+    const history = [];
+    for (let i = source.length - 1; i >= 0 && history.length < recentMessageLimit; i -= 1) {
+        const message = source[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        const text = normalizeText(message.mes ?? message.content ?? message.text ?? '');
+        if (!text) {
+            continue;
+        }
+        history.push({
+            is_user: Boolean(message.is_user),
+            name: String(message.name || ''),
+            mes: text,
+        });
+    }
+    history.reverse();
+
+    const query = normalizeText(queryText || '');
+    if (query) {
+        history.push({
+            is_user: true,
+            name: String(context?.name1 || 'User'),
+            mes: query,
+        });
+    }
+
+    if (history.length === 0) {
+        history.push({
+            is_user: true,
+            name: String(context?.name1 || 'User'),
+            mes: query || 'Recall debug for current context.',
+        });
+    }
+
+    return history;
+}
+
 function getRecallQueryBundle(payload, context, settings = null) {
     const payloadMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : null;
     const source = payloadMessages || context.chat || [];
@@ -4881,6 +4962,7 @@ async function chooseRecallRoute(context, settings, recallState) {
             runtimeWorldInfo: recallState?.runtimeWorldInfo && typeof recallState.runtimeWorldInfo === 'object'
                 ? recallState.runtimeWorldInfo
                 : null,
+            forceWorldInfoResimulate: Boolean(recallState?.forceWorldInfoResimulate),
             worldInfoType: 'quiet',
             functionName: 'luker_rpg_recall_plan',
             functionDescription: 'Plan recall as finalize or drill with optional expansion plan.',
@@ -5078,6 +5160,7 @@ async function chooseFocusNodes(context, settings, recallState) {
             runtimeWorldInfo: recallState?.runtimeWorldInfo && typeof recallState.runtimeWorldInfo === 'object'
                 ? recallState.runtimeWorldInfo
                 : null,
+            forceWorldInfoResimulate: Boolean(recallState?.forceWorldInfoResimulate),
             worldInfoType: 'quiet',
             functionName: 'luker_rpg_recall_finalize',
             functionDescription: 'Finalize memory node IDs to inject.',
@@ -5493,13 +5576,8 @@ async function runLLMDrivenRecall(context, store, payload) {
 
     const queryBundle = getRecallQueryBundle(payload, context, settings);
     const query = normalizeText(queryBundle.fullText || '');
-    const runtimeWorldInfo = {
-        worldInfoBefore: String(payload?.worldInfoBefore || ''),
-        worldInfoAfter: String(payload?.worldInfoAfter || ''),
-        worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
-        outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
-        worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
-    };
+    const runtimeWorldInfo = buildRuntimeWorldInfoFromPayload(payload);
+    const forceWorldInfoResimulate = Boolean(payload?.forceWorldInfoResimulate);
     const worldInfoMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : [];
     const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
     const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context);
@@ -5523,6 +5601,7 @@ async function runLLMDrivenRecall(context, store, payload) {
             alwaysInjectIds,
             worldInfoMessages,
             runtimeWorldInfo,
+            forceWorldInfoResimulate,
             abortSignal,
         });
         latestRoute = route;
@@ -5585,6 +5664,7 @@ async function runLLMDrivenRecall(context, store, payload) {
             alwaysInjectIds,
             worldInfoMessages,
             runtimeWorldInfo,
+            forceWorldInfoResimulate,
             abortSignal,
         });
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
@@ -9246,7 +9326,11 @@ function bindUi() {
             return;
         }
         const query = String(root.find('#luker_rpg_memory_debug_query').val() || '');
-        const payload = { coreChat: [{ is_user: true, mes: query || 'Recall debug for current context.' }] };
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        const payload = {
+            coreChat: buildRecallDebugCoreChat(context, query, effectiveSettings),
+            forceWorldInfoResimulate: true,
+        };
 
         const result = await runLLMDrivenRecall(context, store, payload);
         store.lastRecallTrace = result.trace;
