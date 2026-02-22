@@ -2795,15 +2795,11 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                 items: {
                     type: 'object',
                     properties: {
-                        target_ref: { type: 'string' },
-                        target_node_id: { type: 'string' },
+                        target_ref: { type: 'string', description: 'Optional. Use either target_ref or target_node_id.' },
+                        target_node_id: { type: 'string', description: 'Optional. Use either target_node_id or target_ref.' },
                         relation: { type: 'string' },
                         direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                     },
-                    anyOf: [
-                        { type: 'object', required: ['target_ref'] },
-                        { type: 'object', required: ['target_node_id'] },
-                    ],
                     additionalProperties: false,
                 },
             },
@@ -2941,22 +2937,18 @@ function buildDynamicExtractTools(schema = [], options = {}) {
             parameters: {
                 type: 'object',
                 properties: {
-                    source_ref: { type: 'string' },
-                    source_node_id: { type: 'string' },
+                    source_ref: { type: 'string', description: 'Optional. Use either source_ref or source_node_id.' },
+                    source_node_id: { type: 'string', description: 'Optional. Use either source_node_id or source_ref.' },
                     links: {
                         type: 'array',
                         items: {
                             type: 'object',
                             properties: {
-                                target_ref: { type: 'string' },
-                                target_node_id: { type: 'string' },
+                                target_ref: { type: 'string', description: 'Optional. Use either target_ref or target_node_id.' },
+                                target_node_id: { type: 'string', description: 'Optional. Use either target_node_id or target_ref.' },
                                 relation: { type: 'string' },
                                 direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                             },
-                            anyOf: [
-                                { type: 'object', required: ['target_ref'] },
-                                { type: 'object', required: ['target_node_id'] },
-                            ],
                             additionalProperties: false,
                         },
                     },
@@ -2974,10 +2966,6 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                     },
                 },
                 required: ['links'],
-                anyOf: [
-                    { type: 'object', required: ['source_ref'] },
-                    { type: 'object', required: ['source_node_id'] },
-                ],
                 additionalProperties: false,
             },
         },
