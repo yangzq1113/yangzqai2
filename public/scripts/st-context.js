@@ -12,6 +12,7 @@ import {
     event_types,
     eventSource,
     extension_prompts,
+    extension_prompt_types,
     extension_prompt_roles,
     extractMessageFromData,
     Generate,
@@ -722,6 +723,96 @@ function mergeWorldInfoDepthIntoMessages(messages, worldInfoDepthEntries) {
     return base;
 }
 
+function normalizeScriptInjectRole(role) {
+    const value = Number(role);
+    if (value === extension_prompt_roles.USER) {
+        return 'user';
+    }
+    if (value === extension_prompt_roles.ASSISTANT) {
+        return 'assistant';
+    }
+    return 'system';
+}
+
+function canUseScriptInjectPrompt(prompt) {
+    if (!prompt || typeof prompt !== 'object') {
+        return false;
+    }
+    const value = String(prompt.value ?? '').trim();
+    if (!value) {
+        return false;
+    }
+    if (typeof prompt.filter !== 'function') {
+        return true;
+    }
+    try {
+        const passed = prompt.filter();
+        if (passed && typeof passed.then === 'function') {
+            return true;
+        }
+        return Boolean(passed);
+    } catch {
+        return false;
+    }
+}
+
+function collectScriptInjectPromptFields() {
+    const injectEntries = Object.entries(extension_prompts || {})
+        .filter(([key]) => String(key || '').startsWith('script_inject_'))
+        .sort(([a], [b]) => String(a).localeCompare(String(b)))
+        .map(([, prompt]) => prompt)
+        .filter(canUseScriptInjectPrompt);
+    if (injectEntries.length === 0) {
+        return {
+            before: '',
+            after: '',
+            depthEntries: [],
+        };
+    }
+
+    const before = injectEntries
+        .filter(prompt => Number(prompt?.position) === extension_prompt_types.BEFORE_PROMPT)
+        .map(prompt => substituteParams(String(prompt?.value ?? '').trim()))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    const after = injectEntries
+        .filter(prompt => Number(prompt?.position) === extension_prompt_types.IN_PROMPT)
+        .map(prompt => substituteParams(String(prompt?.value ?? '').trim()))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+
+    const depthGroups = new Map();
+    for (const prompt of injectEntries) {
+        if (Number(prompt?.position) !== extension_prompt_types.IN_CHAT) {
+            continue;
+        }
+        const content = substituteParams(String(prompt?.value ?? '').trim());
+        if (!content) {
+            continue;
+        }
+        const depth = Math.max(0, Math.floor(Number(prompt?.depth) || 0));
+        const role = normalizeScriptInjectRole(prompt?.role);
+        const key = `${depth}:${role}`;
+        const group = depthGroups.get(key) || { depth, role, entries: [] };
+        group.entries.push(content);
+        depthGroups.set(key, group);
+    }
+
+    return {
+        before,
+        after,
+        depthEntries: Array.from(depthGroups.values())
+            .map(group => ({
+                depth: group.depth,
+                role: group.role,
+                entries: group.entries,
+            }))
+            .filter(group => Array.isArray(group.entries) && group.entries.length > 0),
+    };
+}
+
 function resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo = null) {
     if (runtimeWorldInfo && typeof runtimeWorldInfo === 'object') {
         return normalizeRuntimeWorldInfo(runtimeWorldInfo);
@@ -832,7 +923,20 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
     const result = [];
     let historyInjected = false;
     const runtimePromptFields = resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo);
-    const historyMessages = mergeWorldInfoDepthIntoMessages(normalizedMessages, runtimePromptFields.worldInfoDepth);
+    const scriptInjectFields = collectScriptInjectPromptFields();
+    const mergedWorldInfoDepth = [
+        ...(Array.isArray(runtimePromptFields.worldInfoDepth) ? runtimePromptFields.worldInfoDepth : []),
+        ...scriptInjectFields.depthEntries,
+    ];
+    const historyMessages = mergeWorldInfoDepthIntoMessages(normalizedMessages, mergedWorldInfoDepth);
+    const worldInfoBeforeText = [scriptInjectFields.before, runtimePromptFields.worldInfoBefore]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    const worldInfoAfterText = [runtimePromptFields.worldInfoAfter, scriptInjectFields.after]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
 
     for (const entry of orderEntries) {
         if (!entry || entry.enabled === false) {
@@ -851,7 +955,8 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
 
         if (identifier === 'worldInfoBefore' || identifier === 'worldInfoAfter') {
             const fieldKey = identifier === 'worldInfoBefore' ? 'worldInfoBefore' : 'worldInfoAfter';
-            const content = formatPluginWorldInfoContent(runtimePromptFields?.[fieldKey] || '', completionCore);
+            const sourceContent = fieldKey === 'worldInfoBefore' ? worldInfoBeforeText : worldInfoAfterText;
+            const content = formatPluginWorldInfoContent(sourceContent || '', completionCore);
             if (content) {
                 result.push({ role: 'system', content });
                 continue;
