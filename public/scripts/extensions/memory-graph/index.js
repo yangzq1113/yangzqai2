@@ -343,11 +343,11 @@ function registerLocaleData() {
         'Extract API preset (Connection profile, empty = current)': '写入 API 预设（连接配置，留空=当前）',
         'Extract preset (params + prompt, empty = current)': '写入预设（参数+提示词，留空=当前）',
         'Project recall output to chat lorebook (rescan WI after inject)': '将召回结果投影到聊天 Lorebook（注入后重扫世界书）',
-        'Exclude latest N messages from memory injection': '记忆注入排除最近 N 条消息',
+        'Exclude latest N assistant turns from memory injection': '记忆注入排除最近 N 条 Assistant 楼层',
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '写入上下文 Assistant 楼层数',
-        'Recall query recent messages': '召回查询最近消息条数',
-        'Visible chat history messages for generation (0 = disabled)': '创作可见聊天记录条数（0=禁用）',
+        'Recall query recent assistant turns': '召回查询最近 Assistant 楼层数',
+        'Visible assistant turns for generation (0 = disabled)': '创作可见最近 Assistant 楼层数（0=禁用）',
         'Extract batch assistant turns': '每次抽取请求处理的 Assistant 楼层数',
         'Tool-call retries': '工具调用重试次数',
         'Plain-text function-call mode': '纯文本函数调用模式',
@@ -391,12 +391,12 @@ function registerLocaleData() {
         'View Graph': '查看图',
         'Fill Graph (Incremental)': '补全图（仅增量）',
         'Rebuild From Chat': '从聊天重建',
-        'Rebuild Recent N Turns': '重建最近 N 层',
-        'Rebuild recent turns: enter N (1-${0}).': '重建最近楼层：请输入 N（1-${0}）。',
+        'Rebuild Recent N Assistant Turns': '重建最近 N 条 Assistant 楼层',
+        'Rebuild recent assistant turns: enter N (1-${0}).': '重建最近 Assistant 楼层：请输入 N（1-${0}）。',
         'Rebuild Recent': '重建最近范围',
         'Please enter a valid integer between 1 and ${0}.': '请输入 1 到 ${0} 之间的整数。',
         'No assistant turns available to rebuild.': '当前没有可重建的 Assistant 楼层。',
-        'Memory graph rebuilt for recent ${0} turn(s).': '已完成最近 ${0} 层的记忆图重建。',
+        'Memory graph rebuilt for recent ${0} assistant turn(s).': '已完成最近 ${0} 条 Assistant 楼层的记忆图重建。',
         'Rebuilt recent memory graph range: seq ${0}-${1}.': '已重建最近范围：楼层 ${0}-${1}。',
         'Manual Compress': '手动压缩',
         'Reset Current Chat': '重置当前聊天',
@@ -594,11 +594,11 @@ function registerLocaleData() {
         'Extract API preset (Connection profile, empty = current)': '寫入 API 預設（連線設定，留空=目前）',
         'Extract preset (params + prompt, empty = current)': '寫入預設（參數+提示詞，留空=目前）',
         'Project recall output to chat lorebook (rescan WI after inject)': '將召回結果投影到聊天 Lorebook（注入後重掃世界書）',
-        'Exclude latest N messages from memory injection': '記憶注入排除最近 N 條訊息',
+        'Exclude latest N assistant turns from memory injection': '記憶注入排除最近 N 條 Assistant 樓層',
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '寫入上下文 Assistant 樓層數',
-        'Recall query recent messages': '召回查詢最近訊息條數',
-        'Visible chat history messages for generation (0 = disabled)': '創作可見聊天記錄條數（0=停用）',
+        'Recall query recent assistant turns': '召回查詢最近 Assistant 樓層數',
+        'Visible assistant turns for generation (0 = disabled)': '創作可見最近 Assistant 樓層數（0=停用）',
         'Extract batch assistant turns': '每次抽取請求處理的 Assistant 樓層數',
         'Tool-call retries': '工具呼叫重試次數',
         'Plain-text function-call mode': '純文字函式呼叫模式',
@@ -642,12 +642,12 @@ function registerLocaleData() {
         'View Graph': '查看圖譜',
         'Fill Graph (Incremental)': '補全圖譜（僅增量）',
         'Rebuild From Chat': '從聊天重建',
-        'Rebuild Recent N Turns': '重建最近 N 層',
-        'Rebuild recent turns: enter N (1-${0}).': '重建最近樓層：請輸入 N（1-${0}）。',
+        'Rebuild Recent N Assistant Turns': '重建最近 N 條 Assistant 樓層',
+        'Rebuild recent assistant turns: enter N (1-${0}).': '重建最近 Assistant 樓層：請輸入 N（1-${0}）。',
         'Rebuild Recent': '重建最近範圍',
         'Please enter a valid integer between 1 and ${0}.': '請輸入 1 到 ${0} 之間的整數。',
         'No assistant turns available to rebuild.': '目前沒有可重建的 Assistant 樓層。',
-        'Memory graph rebuilt for recent ${0} turn(s).': '已完成最近 ${0} 層的記憶圖重建。',
+        'Memory graph rebuilt for recent ${0} assistant turn(s).': '已完成最近 ${0} 條 Assistant 樓層的記憶圖重建。',
         'Rebuilt recent memory graph range: seq ${0}-${1}.': '已重建最近範圍：樓層 ${0}-${1}。',
         'Manual Compress': '手動壓縮',
         'Reset Current Chat': '重設目前聊天',
@@ -4638,19 +4638,20 @@ function buildRecallDebugCoreChat(context, queryText, settings = null) {
 function getRecallQueryBundle(payload, context, settings = null) {
     const payloadMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : null;
     const source = payloadMessages || context.chat || [];
-    const recentLimit = Math.max(
+    const recentAssistantTurns = Math.max(
         1,
         Math.min(
             64,
             Math.floor(Number(settings?.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
         ),
     );
+    const recentWindow = getRecentMessagesByAssistantTurns(source, recentAssistantTurns);
     const recentMessages = [];
     let lastUser = '';
     let lastAssistant = '';
 
-    for (let i = source.length - 1; i >= 0; i--) {
-        const message = source[i];
+    for (let i = recentWindow.length - 1; i >= 0; i--) {
+        const message = recentWindow[i];
         if (!message) {
             continue;
         }
@@ -4658,7 +4659,7 @@ function getRecallQueryBundle(payload, context, settings = null) {
             continue;
         }
         const text = normalizeText(message.mes || '');
-        if (text && recentMessages.length < recentLimit) {
+        if (text) {
             recentMessages.push({
                 role: message.is_user ? 'user' : 'assistant',
                 text,
@@ -4672,7 +4673,7 @@ function getRecallQueryBundle(payload, context, settings = null) {
             lastAssistant = text;
             continue;
         }
-        if (lastUser && lastAssistant && recentMessages.length >= recentLimit) {
+        if (lastUser && lastAssistant) {
             break;
         }
     }
@@ -5349,13 +5350,47 @@ function getLatestSeqIndex(store) {
     return Math.max(-1, getSemanticCoverageSeq(store));
 }
 
-function keepRecentCoreMessages(coreChat, keepMessages) {
-    const source = Array.isArray(coreChat) ? coreChat : [];
-    const windowSize = Math.max(0, Math.floor(Number(keepMessages || 0)));
-    if (windowSize <= 0 || source.length <= windowSize) {
-        return source.map(message => ({ ...message }));
+function getRecentMessagesByAssistantTurns(messages, keepAssistantTurns) {
+    const source = Array.isArray(messages) ? messages : [];
+    const windowSize = Math.max(0, Math.floor(Number(keepAssistantTurns || 0)));
+    if (windowSize <= 0 || source.length === 0) {
+        return source.slice();
     }
-    return source.slice(source.length - windowSize).map(message => ({ ...message }));
+
+    let assistantCount = 0;
+    let startIndex = -1;
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+        const message = source[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (!message.is_user) {
+            assistantCount += 1;
+            if (assistantCount >= windowSize) {
+                startIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (startIndex < 0) {
+        return source.slice();
+    }
+
+    // If the cutoff lands on an assistant message, include directly preceding user inputs for readability.
+    while (startIndex > 0) {
+        const prev = source[startIndex - 1];
+        if (!prev || prev.is_system || !prev.is_user) {
+            break;
+        }
+        startIndex -= 1;
+    }
+
+    return source.slice(startIndex);
+}
+
+function keepRecentCoreMessagesByAssistantTurns(coreChat, keepAssistantTurns) {
+    return getRecentMessagesByAssistantTurns(coreChat, keepAssistantTurns).map(message => ({ ...message }));
 }
 
 function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
@@ -5363,15 +5398,18 @@ function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
         return false;
     }
     const windowSize = Math.max(0, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)));
-    if (windowSize <= 0 || payload.coreChat.length <= windowSize) {
+    if (windowSize <= 0) {
         return false;
     }
     const beforeCount = payload.coreChat.length;
-    payload.coreChat = keepRecentCoreMessages(payload.coreChat, windowSize);
+    payload.coreChat = keepRecentCoreMessagesByAssistantTurns(payload.coreChat, windowSize);
+    if (payload.coreChat.length >= beforeCount) {
+        return false;
+    }
     if (Array.isArray(trace)) {
         trace.push({
             step: 'apply_generation_history_window',
-            keep_messages: windowSize,
+            keep_assistant_turns: windowSize,
             before_count: beforeCount,
             after_count: payload.coreChat.length,
         });
@@ -8782,7 +8820,7 @@ function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
     return `
 <div id="${popupId}" class="luker-rpg-memory-advanced-popup">
     <h3 class="margin0">${escapeHtml(i18n('Advanced Settings'))}</h3>
-    <label>${escapeHtml(i18n('Exclude latest N messages from memory injection'))}
+    <label>${escapeHtml(i18n('Exclude latest N assistant turns from memory injection'))}
         <input id="${popupId}_recent_raw_turns" class="text_pole" type="number" min="0" step="1" value="${Number(settings.recentRawTurns || defaultSettings.recentRawTurns)}" />
     </label>
     <label>${escapeHtml(i18n('Recall max iterations'))}
@@ -8794,10 +8832,10 @@ function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
     <label>${escapeHtml(i18n('Extract context assistant turns'))}
         <input id="${popupId}_extract_context_turns" class="text_pole" type="number" min="1" max="32" step="1" value="${Math.max(1, Math.min(32, Number(settings.extractContextTurns || defaultSettings.extractContextTurns)))}" />
     </label>
-    <label>${escapeHtml(i18n('Recall query recent messages'))}
+    <label>${escapeHtml(i18n('Recall query recent assistant turns'))}
         <input id="${popupId}_recall_query_messages" class="text_pole" type="number" min="1" max="64" step="1" value="${Math.max(1, Math.min(64, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages)))}" />
     </label>
-    <label>${escapeHtml(i18n('Visible chat history messages for generation (0 = disabled)'))}
+    <label>${escapeHtml(i18n('Visible assistant turns for generation (0 = disabled)'))}
         <input id="${popupId}_llm_visible_recent_messages" class="text_pole" type="number" min="0" max="200" step="1" value="${Math.max(0, Math.min(200, Number(settings.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))}" />
     </label>
     <label>${escapeHtml(i18n('Extract batch assistant turns'))}
@@ -9498,7 +9536,7 @@ function bindUi() {
 
         const defaultRecentTurns = Math.min(20, latestSeq);
         const input = await context.callGenericPopup(
-            i18nFormat('Rebuild recent turns: enter N (1-${0}).', latestSeq),
+            i18nFormat('Rebuild recent assistant turns: enter N (1-${0}).', latestSeq),
             context.POPUP_TYPE.INPUT,
             String(defaultRecentTurns),
             { okButton: i18n('Rebuild Recent'), cancelButton: i18n('Cancel') },
@@ -9549,7 +9587,7 @@ function bindUi() {
             });
             await persistMemoryStoreByChatKey(context, chatKey, store);
             refreshUiStats();
-            notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} turn(s).', recentTurns));
+            notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} assistant turn(s).', recentTurns));
             updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, latestSeq));
         } catch (error) {
             if (isAbortError(error, rebuildAbortController.signal)) {
@@ -9707,7 +9745,7 @@ function ensureUi() {
                 <div id="luker_rpg_memory_view_graph" class="menu_button">${escapeHtml(i18n('View Graph'))}</div>
                 <div id="luker_rpg_memory_fill" class="menu_button">${escapeHtml(i18n('Fill Graph (Incremental)'))}</div>
                 <div id="luker_rpg_memory_rebuild" class="menu_button">${escapeHtml(i18n('Rebuild From Chat'))}</div>
-                <div id="luker_rpg_memory_rebuild_recent" class="menu_button">${escapeHtml(i18n('Rebuild Recent N Turns'))}</div>
+                <div id="luker_rpg_memory_rebuild_recent" class="menu_button">${escapeHtml(i18n('Rebuild Recent N Assistant Turns'))}</div>
             </div>
             <div class="flex-container">
                 <div id="luker_rpg_memory_manual_compress" class="menu_button">${escapeHtml(i18n('Manual Compress'))}</div>

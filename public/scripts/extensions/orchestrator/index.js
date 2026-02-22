@@ -189,7 +189,7 @@ function registerLocaleData() {
         'AI build system prompt': 'AI 生成系统提示词',
         'Reset AI build prompt': '重置 AI 生成提示词',
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '确认重置 AI 生成提示词为默认值？这会覆盖当前内容。',
-        'Recent messages (N)': '最近消息数（N）',
+        'Recent assistant turns for orchestration (N)': '编排可见最近 Assistant 楼层数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Capsule injection position': '胶囊注入位置',
         'In-Chat': '聊天内',
@@ -374,7 +374,7 @@ function registerLocaleData() {
         'AI build system prompt': 'AI 生成系統提示詞',
         'Reset AI build prompt': '重置 AI 生成提示詞',
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '確認重置 AI 生成提示詞為預設值？這會覆蓋目前內容。',
-        'Recent messages (N)': '最近訊息數（N）',
+        'Recent assistant turns for orchestration (N)': '編排可見最近 Assistant 樓層數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Capsule injection position': '膠囊注入位置',
         'In-Chat': '聊天內',
@@ -885,8 +885,40 @@ function getCoreMessages(payload) {
     return Array.isArray(payload?.coreChat) ? payload.coreChat : [];
 }
 
-function getRecentMessages(messages, count) {
-    return messages.slice(Math.max(0, messages.length - Math.max(1, count)));
+function getRecentMessages(messages, assistantTurns) {
+    const source = Array.isArray(messages) ? messages : [];
+    const targetTurns = Math.max(1, Math.floor(Number(assistantTurns) || 1));
+
+    let matchedTurns = 0;
+    let startIndex = -1;
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+        const message = source[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (!message.is_user) {
+            matchedTurns += 1;
+            if (matchedTurns >= targetTurns) {
+                startIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (startIndex < 0) {
+        return source.slice();
+    }
+
+    // Include user message(s) immediately before the cutoff assistant turn.
+    while (startIndex > 0) {
+        const prev = source[startIndex - 1];
+        if (!prev || prev.is_system || !prev.is_user) {
+            break;
+        }
+        startIndex -= 1;
+    }
+
+    return source.slice(startIndex);
 }
 
 function extractLastUserMessage(messages) {
@@ -6506,7 +6538,7 @@ function ensureUi() {
             <div class="flex-container">
                 <div id="luker_orch_reset_ai_prompt" class="menu_button menu_button_small">${escapeHtml(i18n('Reset AI build prompt'))}</div>
             </div>
-            <label for="luker_orch_max_recent_messages">${escapeHtml(i18n('Recent messages (N)'))}</label>
+            <label for="luker_orch_max_recent_messages">${escapeHtml(i18n('Recent assistant turns for orchestration (N)'))}</label>
             <input id="luker_orch_max_recent_messages" class="text_pole" type="number" min="1" max="80" step="1" />
             <label for="luker_orch_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
