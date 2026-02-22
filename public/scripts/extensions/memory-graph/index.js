@@ -406,8 +406,8 @@ function registerLocaleData() {
         'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遗迹发生了什么？',
         'Run Recall Debug': '运行召回调试',
         'View Last Injection': '查看最近注入',
-        'Core Packet': '核心注入包',
-        'Core packet is empty.': '核心注入包为空。',
+        'Injection Content': '注入内容',
+        'Injection content is empty.': '注入内容为空。',
         'No recall injection result yet.': '当前还没有召回注入结果。',
         'Memory recall running...': '记忆召回进行中...',
         'Memory graph update running...': '记忆图更新进行中...',
@@ -657,8 +657,8 @@ function registerLocaleData() {
         'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遺跡發生了什麼？',
         'Run Recall Debug': '執行召回除錯',
         'View Last Injection': '查看最近注入',
-        'Core Packet': '核心注入包',
-        'Core packet is empty.': '核心注入包為空。',
+        'Injection Content': '注入內容',
+        'Injection content is empty.': '注入內容為空。',
         'No recall injection result yet.': '目前還沒有召回注入結果。',
         'Memory recall running...': '記憶召回進行中...',
         'Memory graph update running...': '記憶圖更新進行中...',
@@ -1733,6 +1733,13 @@ async function persistMemoryStoreByChatKey(context, chatKey, store) {
 
 function normalizeText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeMultilineText(text) {
+    return String(text || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\u00A0/g, ' ')
+        .trim();
 }
 
 function ensureNodeFieldsObject(node) {
@@ -6429,11 +6436,11 @@ function getLastRecallCorePacketText(store) {
     if (!projection) {
         return '';
     }
-    const fromBlocks = normalizeText(projection?.blocks?.corePacket || '');
+    const fromBlocks = normalizeMultilineText(projection?.blocks?.corePacket || '');
     if (fromBlocks) {
         return fromBlocks;
     }
-    return normalizeText(projection?.corePacket || '');
+    return normalizeMultilineText(projection?.corePacket || '');
 }
 
 function buildLastRecallCorePacketHtml(store, options = {}) {
@@ -6446,7 +6453,7 @@ function buildLastRecallCorePacketHtml(store, options = {}) {
     const at = Number(projection?.at);
     const renderedAt = Number.isFinite(at) ? new Date(at).toLocaleString() : '';
     const header = showHeader
-        ? `<div style="font-weight:600; margin-bottom:6px;">${escapeHtml(i18n('Core Packet'))}</div>`
+        ? `<div style="font-weight:600; margin-bottom:6px;">${escapeHtml(i18n('Injection Content'))}</div>`
         : '';
     const timeLine = renderedAt
         ? `<div style="font-size:12px; opacity:0.8; margin-bottom:8px;">${escapeHtml(renderedAt)}</div>`
@@ -6455,7 +6462,7 @@ function buildLastRecallCorePacketHtml(store, options = {}) {
 <div style="display:flex; flex-direction:column; gap:4px;">
     ${header}
     ${timeLine}
-    <pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(corePacket || i18n('Core packet is empty.'))}</pre>
+    <pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(corePacket || i18n('Injection content is empty.'))}</pre>
 </div>`;
 }
 

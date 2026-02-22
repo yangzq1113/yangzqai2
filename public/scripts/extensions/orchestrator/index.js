@@ -759,21 +759,49 @@ function clearCapsulePrompt(context) {
 function saveLastCapsuleMetadata(context, capsuleText, payload, profile) {
     const capsule = String(capsuleText || '').trim();
     if (!capsule) {
-        return;
+        return null;
     }
     const targetLayer = getTargetAssistantLayer(payload);
+    const entry = {
+        updatedAt: new Date().toISOString(),
+        trigger: String(payload?.type || 'normal'),
+        layer: targetLayer,
+        profileSource: String(profile?.source || 'global'),
+        profileKey: String(profile?.key || 'global'),
+        capsule,
+    };
 
     context.updateChatMetadata({
-        [LAST_CAPSULE_METADATA_KEY]: {
-            updatedAt: new Date().toISOString(),
-            trigger: String(payload?.type || 'normal'),
-            layer: targetLayer,
-            profileSource: String(profile?.source || 'global'),
-            profileKey: String(profile?.key || 'global'),
-            capsule,
-        },
+        [LAST_CAPSULE_METADATA_KEY]: entry,
     });
     context.saveMetadataDebounced();
+    return entry;
+}
+
+function getLatestOrchestrationEntry(context) {
+    const metadata = context?.chatMetadata;
+    const metadataEntry = metadata && typeof metadata === 'object'
+        ? metadata[LAST_CAPSULE_METADATA_KEY]
+        : null;
+    const chatKey = getChatKey(context);
+    const snapshotEntry = latestOrchestrationSnapshot
+        && typeof latestOrchestrationSnapshot === 'object'
+        && String(latestOrchestrationSnapshot.chatKey || '') === String(chatKey || '')
+        && latestOrchestrationSnapshot.entry
+        && typeof latestOrchestrationSnapshot.entry === 'object'
+        ? latestOrchestrationSnapshot.entry
+        : null;
+
+    if (!metadataEntry || typeof metadataEntry !== 'object') {
+        return snapshotEntry && typeof snapshotEntry === 'object' ? snapshotEntry : null;
+    }
+    if (!snapshotEntry || typeof snapshotEntry !== 'object') {
+        return metadataEntry;
+    }
+
+    const metadataTs = Number(new Date(String(metadataEntry.updatedAt || '')).getTime()) || 0;
+    const snapshotTs = Number(new Date(String(snapshotEntry.updatedAt || '')).getTime()) || 0;
+    return snapshotTs >= metadataTs ? snapshotEntry : metadataEntry;
 }
 
 function clearLastCapsuleMetadata(context) {
@@ -815,10 +843,7 @@ function getPreviousOrchestrationCapsuleText(context, payload) {
 }
 
 function renderLastOrchestrationResultHtml(context) {
-    const metadata = context?.chatMetadata;
-    const entry = metadata && typeof metadata === 'object'
-        ? metadata[LAST_CAPSULE_METADATA_KEY]
-        : null;
+    const entry = getLatestOrchestrationEntry(context);
     if (!entry || typeof entry !== 'object') {
         return `<div class="luker_orch_last_run_empty">${escapeHtml(i18n('No recent orchestration result available for this chat.'))}</div>`;
     }
@@ -2133,10 +2158,15 @@ async function onWorldInfoFinalized(payload) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
                 injectCapsule(context, capsuleText);
-                saveLastCapsuleMetadata(context, capsuleText, payload, {
+                const entry = saveLastCapsuleMetadata(context, capsuleText, payload, {
                     source: String(latestOrchestrationSnapshot.profileSource || 'global'),
                     key: String(latestOrchestrationSnapshot.profileKey || 'global'),
                 });
+                latestOrchestrationSnapshot = {
+                    ...latestOrchestrationSnapshot,
+                    chatKey,
+                    entry: entry && typeof entry === 'object' ? entry : latestOrchestrationSnapshot.entry,
+                };
                 updateUiStatus(i18n('Orchestrator completed.'));
                 clearRunInfoToast();
                 return;
@@ -2158,7 +2188,7 @@ async function onWorldInfoFinalized(payload) {
             phase: 'final',
         });
         injectCapsule(context, capsuleText);
-        saveLastCapsuleMetadata(context, capsuleText, payload, profile);
+        const entry = saveLastCapsuleMetadata(context, capsuleText, payload, profile);
         latestOrchestrationSnapshot = anchor
             ? {
                 chatKey,
@@ -2167,6 +2197,7 @@ async function onWorldInfoFinalized(payload) {
                 capsuleText,
                 profileSource: String(profile?.source || 'global'),
                 profileKey: String(profile?.key || 'global'),
+                entry: entry && typeof entry === 'object' ? entry : null,
             }
             : null;
         updateUiStatus(i18n('Orchestrator completed.'));
