@@ -1625,14 +1625,15 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     promptPresetName = '',
     worldInfoMessages = null,
     runtimeWorldInfo = null,
+    forceWorldInfoResimulate = false,
     worldInfoType = 'quiet',
 } = {}) {
     const systemText = String(systemPrompt || '').trim() || 'Return concise guidance through function-call fields.';
     const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
-    let resolvedRuntimeWorldInfo = runtimeWorldInfo && typeof runtimeWorldInfo === 'object'
-        ? runtimeWorldInfo
+    let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
+        ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
         : null;
     if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && Array.isArray(worldInfoMessages)) {
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
@@ -1654,6 +1655,39 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
         promptPresetName: selectedPromptPresetName,
         runtimeWorldInfo: resolvedRuntimeWorldInfo,
     });
+}
+
+function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
+    return {
+        worldInfoBefore: String(source.worldInfoBefore || ''),
+        worldInfoAfter: String(source.worldInfoAfter || ''),
+        worldInfoDepth: Array.isArray(source.worldInfoDepth) ? source.worldInfoDepth : [],
+        outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
+        worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
+    };
+}
+
+function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
+    if (normalized.worldInfoBefore || normalized.worldInfoAfter) {
+        return true;
+    }
+    if (normalized.worldInfoDepth.length > 0 || normalized.worldInfoExamples.length > 0) {
+        return true;
+    }
+    return Object.keys(normalized.outletEntries).length > 0;
+}
+
+function buildRuntimeWorldInfoFromPayload(payload = null) {
+    const candidate = normalizeRuntimeWorldInfo({
+        worldInfoBefore: String(payload?.worldInfoBefore || ''),
+        worldInfoAfter: String(payload?.worldInfoAfter || ''),
+        worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
+        outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
+        worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
+    });
+    return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
 }
 
 async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null) {
@@ -1705,13 +1739,8 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
             promptPresetName,
             worldInfoMessages: messages,
             worldInfoType: String(payload?.type || 'quiet'),
-            runtimeWorldInfo: {
-                worldInfoBefore: String(payload?.worldInfoBefore || ''),
-                worldInfoAfter: String(payload?.worldInfoAfter || ''),
-                worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
-                outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
-                worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
-            },
+            runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+            forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
         },
     );
 
@@ -4674,6 +4703,7 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
         type: String(args?.trigger || 'normal').trim().toLowerCase() || 'normal',
         coreChat: simulationMessages,
         signal: abortSignal,
+        forceWorldInfoResimulate: true,
     };
     const run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
     const allStageOutputs = compactStageOutputs(run?.stageOutputs || []);
