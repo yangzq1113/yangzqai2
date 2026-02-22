@@ -2918,6 +2918,123 @@ function insertSVGIcon(mes, extra) {
     createModelImage('thinking-icon', '.mes_reasoning_header_title', true);
 }
 
+let modelMetadataTapHintBound = false;
+let modelMetadataTapHintElement = null;
+let modelMetadataTapHintTarget = null;
+
+function isCoarsePointerDevice() {
+    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+}
+
+function hideModelMetadataTapHint() {
+    if (!modelMetadataTapHintElement) {
+        return;
+    }
+
+    modelMetadataTapHintElement.style.display = 'none';
+    modelMetadataTapHintTarget = null;
+}
+
+function getModelMetadataHintText(target) {
+    const directTitle = String(target?.getAttribute?.('title') || '').trim();
+    if (directTitle) {
+        return directTitle;
+    }
+
+    const fallbackTitle = String(target?.closest?.('.mes')?.querySelector?.('.timestamp')?.getAttribute?.('title') || '').trim();
+    return fallbackTitle;
+}
+
+function positionModelMetadataTapHint(target) {
+    if (!modelMetadataTapHintElement) {
+        return;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const viewportPadding = 8;
+    const hintRect = modelMetadataTapHintElement.getBoundingClientRect();
+    const hintWidth = hintRect.width;
+    const hintHeight = hintRect.height;
+
+    const left = clamp(
+        Math.round(rect.left + (rect.width / 2) - (hintWidth / 2)),
+        viewportPadding,
+        Math.max(viewportPadding, window.innerWidth - hintWidth - viewportPadding),
+    );
+
+    let top = Math.round(rect.bottom + viewportPadding);
+    if (top + hintHeight > window.innerHeight - viewportPadding) {
+        top = Math.round(rect.top - hintHeight - viewportPadding);
+    }
+    top = clamp(
+        top,
+        viewportPadding,
+        Math.max(viewportPadding, window.innerHeight - hintHeight - viewportPadding),
+    );
+
+    modelMetadataTapHintElement.style.left = `${left}px`;
+    modelMetadataTapHintElement.style.top = `${top}px`;
+}
+
+function showModelMetadataTapHint(target, text) {
+    if (!modelMetadataTapHintElement) {
+        modelMetadataTapHintElement = document.createElement('div');
+        modelMetadataTapHintElement.className = 'model_metadata_tap_hint';
+        document.body.appendChild(modelMetadataTapHintElement);
+    }
+
+    modelMetadataTapHintElement.textContent = text;
+    modelMetadataTapHintElement.style.display = 'block';
+    modelMetadataTapHintTarget = target;
+    positionModelMetadataTapHint(target);
+}
+
+function ensureModelMetadataTapHintBinding() {
+    if (modelMetadataTapHintBound) {
+        return;
+    }
+
+    modelMetadataTapHintBound = true;
+
+    $(document).on('click', '#chat .timestamp-icon, #chat .timestamp', function (event) {
+        if (!isCoarsePointerDevice()) {
+            return;
+        }
+
+        const text = getModelMetadataHintText(this);
+        if (!text) {
+            return;
+        }
+
+        if (modelMetadataTapHintTarget === this && modelMetadataTapHintElement?.style.display === 'block') {
+            hideModelMetadataTapHint();
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
+
+        showModelMetadataTapHint(this, text);
+        event.preventDefault();
+        event.stopPropagation();
+    });
+
+    $(document).on('pointerdown', function (event) {
+        if (!modelMetadataTapHintElement || modelMetadataTapHintElement.style.display !== 'block') {
+            return;
+        }
+
+        const target = event.target;
+        const clickedOnTrigger = $(target).closest('#chat .timestamp-icon, #chat .timestamp').length > 0;
+        const clickedOnTooltip = modelMetadataTapHintElement.contains(target);
+        if (!clickedOnTrigger && !clickedOnTooltip) {
+            hideModelMetadataTapHint();
+        }
+    });
+
+    window.addEventListener('resize', hideModelMetadataTapHint);
+    window.addEventListener('scroll', hideModelMetadataTapHint, true);
+}
+
 
 function getMessageFromTemplate({
     mesId,
@@ -2964,6 +3081,8 @@ function getMessageFromTemplate({
     if (power_user.timestamp_model_icon && extra?.api) {
         insertSVGIcon(mes, extra);
     }
+
+    ensureModelMetadataTapHintBinding();
 
     return mes;
 }
