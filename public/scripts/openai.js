@@ -7261,7 +7261,7 @@ export function initOpenAI() {
         eventSource.emit(event_types.CHATCOMPLETION_SOURCE_CHANGED, oai_settings.chat_completion_source);
     });
 
-    $('#chat_completion_custom_models_apply').on('click', function () {
+    $('#chat_completion_custom_models_apply').on('click', async function () {
         const source = oai_settings.chat_completion_source;
         const binding = getModelBindingForSource(source);
         if (!binding) {
@@ -7273,6 +7273,12 @@ export function initOpenAI() {
         applyCustomModelsToCurrentSource({ triggerModelChange: true });
         refreshCustomModelsEditorForCurrentSource();
         saveSettingsDebounced();
+        startStatusLoading();
+        try {
+            await getStatusOpen();
+        } catch {
+            // getStatusOpen already handles user-facing status/error updates.
+        }
         toastr.success(t`Custom models updated.`);
     });
 

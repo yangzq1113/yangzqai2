@@ -8459,5 +8459,9 @@
     "Message generation is complete.": "回覆生成已完成。",
     "Message generation is in progress...": "回覆生成進行中...",
     "Message generation failed.": "回覆生成失敗。",
-    "Server cannot be reached.": "無法連線到伺服器。"
+    "Server cannot be reached.": "無法連線到伺服器。",
+    "Custom Models (Current Source)": "自訂模型（目前來源）",
+    "One model ID per line. Applies to the currently selected API source.": "每行一個模型 ID。僅套用到目前選擇的 API 來源。",
+    "Apply Custom Models": "套用自訂模型",
+    "Custom models updated.": "自訂模型已更新。"
 }

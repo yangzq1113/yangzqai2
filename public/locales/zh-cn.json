@@ -7246,5 +7246,9 @@
     "Message generation is complete.": "回复生成已完成。",
     "Message generation is in progress...": "回复生成进行中...",
     "Message generation failed.": "回复生成失败。",
-    "Server cannot be reached.": "无法连接服务器。"
+    "Server cannot be reached.": "无法连接服务器。",
+    "Custom Models (Current Source)": "自定义模型（当前来源）",
+    "One model ID per line. Applies to the currently selected API source.": "每行一个模型 ID。仅应用到当前选中的 API 来源。",
+    "Apply Custom Models": "应用自定义模型",
+    "Custom models updated.": "自定义模型已更新。"
 }
