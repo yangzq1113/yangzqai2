@@ -166,3 +166,36 @@ Luker context helpers auto-attach lightweight `test` guards on patch-first paths
 ### Chat-completions request body
 
 For generation requests, send the full `messages` array in the request body.
+
+### Connection profile resolution (recommended for plugins)
+
+If your plugin supports selecting a Connection Manager profile, do not manually map profile fields (`api`, `model`, `api-url`, `proxy`, `secret-id`) to request payload keys.
+
+Use shared resolver:
+
+- `public/scripts/extensions/connection-manager/profile-resolver.js`
+- `resolveChatCompletionRequestProfile({ profileName, defaultApi, defaultSource })`
+
+Return values:
+
+- `requestApi`: normalized API family to use in `buildPresetAwarePromptMessages(...)`
+- `apiSettingsOverride`: normalized connection override object for `sendOpenAIRequest(...)`
+
+This keeps plugin behavior aligned with core connection semantics and avoids drift when new connection fields are added.
+
+### `secret_id` request override (chat-completions)
+
+Luker supports an optional `secret_id` in chat-completions requests:
+
+- `POST /api/backends/chat-completions/generate`
+- `POST /api/backends/chat-completions/status`
+
+Behavior:
+
+- If `secret_id` is provided and valid for the selected provider key, backend uses that secret for this request.
+- If missing/invalid, backend falls back to the provider's currently active secret.
+
+Notes:
+
+- Plugins should prefer profile resolver output over constructing `secret_id` manually.
+- This is request-scoped override behavior; it does not rotate or mutate active secret selection globally.

@@ -1,0 +1,185 @@
+import { CONNECT_API_MAP } from '../../../script.js';
+import { extension_settings } from '../../extensions.js';
+import { chat_completion_sources, proxies } from '../../openai.js';
+
+const CHAT_MODEL_SETTING_BY_SOURCE = {
+    [chat_completion_sources.OPENAI]: 'openai_model',
+    [chat_completion_sources.CLAUDE]: 'claude_model',
+    [chat_completion_sources.OPENROUTER]: 'openrouter_model',
+    [chat_completion_sources.AI21]: 'ai21_model',
+    [chat_completion_sources.MAKERSUITE]: 'google_model',
+    [chat_completion_sources.VERTEXAI]: 'vertexai_model',
+    [chat_completion_sources.MISTRALAI]: 'mistralai_model',
+    [chat_completion_sources.CUSTOM]: 'custom_model',
+    [chat_completion_sources.COHERE]: 'cohere_model',
+    [chat_completion_sources.PERPLEXITY]: 'perplexity_model',
+    [chat_completion_sources.GROQ]: 'groq_model',
+    [chat_completion_sources.ELECTRONHUB]: 'electronhub_model',
+    [chat_completion_sources.CHUTES]: 'chutes_model',
+    [chat_completion_sources.NANOGPT]: 'nanogpt_model',
+    [chat_completion_sources.DEEPSEEK]: 'deepseek_model',
+    [chat_completion_sources.AIMLAPI]: 'aimlapi_model',
+    [chat_completion_sources.XAI]: 'xai_model',
+    [chat_completion_sources.POLLINATIONS]: 'pollinations_model',
+    [chat_completion_sources.MOONSHOT]: 'moonshot_model',
+    [chat_completion_sources.FIREWORKS]: 'fireworks_model',
+    [chat_completion_sources.COMETAPI]: 'cometapi_model',
+    [chat_completion_sources.AZURE_OPENAI]: 'azure_openai_model',
+    [chat_completion_sources.ZAI]: 'zai_model',
+    [chat_completion_sources.SILICONFLOW]: 'siliconflow_model',
+};
+
+const API_ALIAS_TO_CHAT_SOURCE = {
+    openai: chat_completion_sources.OPENAI,
+    claude: chat_completion_sources.CLAUDE,
+    openrouter: chat_completion_sources.OPENROUTER,
+    ai21: chat_completion_sources.AI21,
+    makersuite: chat_completion_sources.MAKERSUITE,
+    vertexai: chat_completion_sources.VERTEXAI,
+    mistralai: chat_completion_sources.MISTRALAI,
+    custom: chat_completion_sources.CUSTOM,
+    cohere: chat_completion_sources.COHERE,
+    perplexity: chat_completion_sources.PERPLEXITY,
+    groq: chat_completion_sources.GROQ,
+    electronhub: chat_completion_sources.ELECTRONHUB,
+    chutes: chat_completion_sources.CHUTES,
+    nanogpt: chat_completion_sources.NANOGPT,
+    deepseek: chat_completion_sources.DEEPSEEK,
+    aimlapi: chat_completion_sources.AIMLAPI,
+    xai: chat_completion_sources.XAI,
+    pollinations: chat_completion_sources.POLLINATIONS,
+    moonshot: chat_completion_sources.MOONSHOT,
+    fireworks: chat_completion_sources.FIREWORKS,
+    cometapi: chat_completion_sources.COMETAPI,
+    azure_openai: chat_completion_sources.AZURE_OPENAI,
+    zai: chat_completion_sources.ZAI,
+    siliconflow: chat_completion_sources.SILICONFLOW,
+};
+
+export function getChatCompletionConnectionProfiles() {
+    const profiles = extension_settings?.connectionManager?.profiles;
+    if (!Array.isArray(profiles)) {
+        return [];
+    }
+
+    return profiles
+        .filter(profile => profile && typeof profile === 'object' && String(profile.mode || '') === 'cc')
+        .map(profile => ({ ...profile, name: String(profile.name || '').trim() }))
+        .filter(profile => profile.name)
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+export function getChatCompletionConnectionProfileByName(name = '') {
+    const target = String(name || '').trim();
+    if (!target) {
+        return null;
+    }
+    return getChatCompletionConnectionProfiles().find(profile => profile.name === target) || null;
+}
+
+function resolveChatSourceFromApiAlias(value, fallbackSource = '') {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) {
+        return String(fallbackSource || '').trim();
+    }
+
+    if (API_ALIAS_TO_CHAT_SOURCE[normalized]) {
+        return API_ALIAS_TO_CHAT_SOURCE[normalized];
+    }
+
+    const mapEntry = Object.entries(CONNECT_API_MAP || {})
+        .find(([alias]) => String(alias || '').toLowerCase() === normalized)?.[1];
+    if (mapEntry?.selected === 'openai' && mapEntry?.source) {
+        return String(mapEntry.source);
+    }
+
+    return String(fallbackSource || '').trim();
+}
+
+function resolveRequestApiFromProfile(defaultApi, profile) {
+    if (!profile) {
+        return defaultApi;
+    }
+
+    const alias = String(profile.api || '').trim().toLowerCase();
+    if (!alias) {
+        return defaultApi;
+    }
+
+    const mapEntry = CONNECT_API_MAP?.[alias];
+    const selectedApi = String(mapEntry?.selected || '').trim();
+    if (selectedApi) {
+        return selectedApi;
+    }
+
+    if (alias === 'koboldhorde') {
+        return 'kobold';
+    }
+    return defaultApi;
+}
+
+function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
+    if (!profile) {
+        return null;
+    }
+
+    const overrides = {};
+    const source = resolveChatSourceFromApiAlias(profile.api, fallbackSource);
+    if (source) {
+        overrides.chat_completion_source = source;
+    }
+
+    const resolvedSource = String(source || fallbackSource || '').trim();
+    const modelField = CHAT_MODEL_SETTING_BY_SOURCE[resolvedSource];
+    const modelValue = String(profile.model || '').trim();
+    if (modelField && modelValue) {
+        overrides[modelField] = modelValue;
+    }
+
+    const apiUrlValue = String(profile['api-url'] || '').trim();
+    if (apiUrlValue) {
+        if (resolvedSource === chat_completion_sources.CUSTOM) {
+            overrides.custom_url = apiUrlValue;
+        } else if (resolvedSource === chat_completion_sources.VERTEXAI) {
+            overrides.vertexai_region = apiUrlValue;
+        } else if (resolvedSource === chat_completion_sources.ZAI) {
+            overrides.zai_endpoint = apiUrlValue;
+        }
+    }
+
+    const promptPostProcessing = String(profile['prompt-post-processing'] || '').trim();
+    if (promptPostProcessing) {
+        overrides.custom_prompt_post_processing = promptPostProcessing;
+    }
+
+    const secretId = String(profile['secret-id'] || '').trim();
+    if (secretId) {
+        overrides.secret_id = secretId;
+    }
+
+    const proxyName = String(profile.proxy || '').trim();
+    if (proxyName && Array.isArray(proxies)) {
+        const proxyPreset = proxies.find(item => String(item?.name || '') === proxyName);
+        if (proxyPreset) {
+            overrides.reverse_proxy = String(proxyPreset.url || '');
+            overrides.proxy_password = String(proxyPreset.password || '');
+        }
+    }
+
+    return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+export function resolveChatCompletionRequestProfile({
+    profileName = '',
+    defaultSource = '',
+    defaultApi = 'openai',
+} = {}) {
+    const profile = getChatCompletionConnectionProfileByName(profileName);
+    const requestApi = resolveRequestApiFromProfile(String(defaultApi || 'openai').trim() || 'openai', profile);
+    const apiSettingsOverride = buildApiSettingsOverrideFromProfile(profile, defaultSource);
+    return {
+        profile,
+        requestApi,
+        apiSettingsOverride,
+    };
+}

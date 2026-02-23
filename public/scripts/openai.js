@@ -3247,6 +3247,15 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
 
     const generate_url = '/api/backends/chat-completions/generate';
     let requestBody = structuredClone(generate_data);
+    const requestSecretId = String(
+        apiSettingsOverride?.secret_id
+        || apiSettingsOverride?.['secret-id']
+        || apiSettingsOverride?.secretId
+        || '',
+    ).trim();
+    if (requestSecretId) {
+        requestBody.secret_id = requestSecretId;
+    }
     const shouldTrackLukerGenerationState = shouldUseLukerServerPersistence(type, requestSettings.chat_completion_source);
     if (shouldTrackLukerGenerationState) {
         lastOpenAIReplyPersistedByServer = false;
