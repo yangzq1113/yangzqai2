@@ -69,6 +69,9 @@ const MODULE_NAME = 'sd';
 // This is a 1x1 transparent PNG
 const PNG_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 const CUSTOM_STOP_EVENT = 'sd_stop_generation';
+let activeGenerations = 0;
+/** @type {JQuery<HTMLElement>|null} */
+let generationToast = null;
 const sources = {
     extras: 'extras',
     horde: 'horde',
@@ -2798,6 +2801,47 @@ function ensureSelectionExists(setting, selector) {
     }
 }
 
+function updateGenerationIndicator() {
+    if (activeGenerations > 0) {
+        const countText = activeGenerations > 1 ? ` (${activeGenerations})` : '';
+        const toastText = `<i class="fa-solid fa-spinner fa-spin"></i> ${t`Generating image`}${countText}...`;
+
+        if (!generationToast) {
+            generationToast = toastr.info(
+                toastText,
+                'Image Generation',
+                {
+                    timeOut: 0,
+                    extendedTimeOut: 0,
+                    tapToDismiss: true,
+                    escapeHtml: false,
+                    onHidden: () => {
+                        generationToast = null;
+                    },
+                },
+            );
+        } else if (activeGenerations > 1) {
+            const toastMessage = $(generationToast).find('.toast-message');
+            if (toastMessage.length) {
+                toastMessage.html(toastText);
+            }
+        }
+    } else if (generationToast) {
+        toastr.clear(generationToast);
+        generationToast = null;
+    }
+}
+
+function startGenerationTracking() {
+    activeGenerations++;
+    updateGenerationIndicator();
+}
+
+function endGenerationTracking() {
+    activeGenerations = Math.max(0, activeGenerations - 1);
+    updateGenerationIndicator();
+}
+
 /**
  * Generates an image based on the given trigger word.
  * @param {string} initiator The initiator of the image generation
@@ -2872,6 +2916,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         await eventSource.emit(event_types.SD_PROMPT_PROCESSING, eventData);
         prompt = eventData.prompt; // Allow extensions to modify the prompt
 
+        startGenerationTracking();
         $(stopButton).show();
         eventSource.once(CUSTOM_STOP_EVENT, stopListener);
 
@@ -2882,6 +2927,12 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         // generate the image
         imagePath = await sendGenerationRequest(generationType, prompt, negativePromptPrefix, characterName, callback, initiator, abortController.signal);
     } catch (err) {
+        if (abortController.signal.aborted) {
+            console.log('SD: Image generation aborted by user');
+            toastr.info('Image generation stopped.', 'Image Generation');
+            return;
+        }
+
         console.trace(err);
         // errors here are most likely due to text generation failure
         // sendGenerationRequest mostly deals with its own errors
@@ -2894,6 +2945,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         $(stopButton).hide();
         restoreOriginalDimensions(dimensions);
         eventSource.removeListener(CUSTOM_STOP_EVENT, stopListener);
+        endGenerationTracking();
     }
 
     return imagePath;
@@ -3085,8 +3137,10 @@ function getUserAvatarUrl() {
  * @returns {Promise<string>} - A promise that resolves when the prompt generation completes.
  */
 async function generatePrompt(quietPrompt) {
+    const toast = toastr.info('Generating image prompt with an LLM...', 'Image Generation');
     const reply = await generateQuietPrompt({ quietPrompt });
     const processedReply = processReply(reply);
+    toastr.clear(toast);
 
     if (!processedReply) {
         toastr.error('Prompt generation produced no text. Make sure you\'re using a valid instruct template and try again', 'Image Generation');
@@ -3211,6 +3265,12 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
             throw new Error('Endpoint did not return image data.');
         }
     } catch (err) {
+        if (signal?.aborted) {
+            console.log('SD: Image generation aborted by user');
+            toastr.info('Image generation stopped.', 'Image Generation');
+            return;
+        }
+
         console.error('Image generation request error: ', err);
         toastr.error('Image generation failed. Please try again.' + '\n\n' + String(err), 'Image Generation');
         return;
@@ -4807,7 +4867,8 @@ function isValidState() {
     }
 }
 
-let buttonAbortController = null;
+/** @type {WeakMap<HTMLElement, AbortController>} */
+const buttonAbortControllers = new WeakMap();
 
 /**
  * "Paintbrush" button handler to generate a new image for a message.
@@ -4825,6 +4886,8 @@ async function sdMessageButton($icon, { animate } = {}) {
         $icon.toggleClass(classes.idle, !isBusy);
         $icon.toggleClass(classes.busy, isBusy);
         $media.toggleClass(classes.animation, isBusy);
+        const trackingFn = isBusy ? startGenerationTracking : endGenerationTracking;
+        trackingFn();
     }
 
     let $media = jQuery();
@@ -4832,9 +4895,19 @@ async function sdMessageButton($icon, { animate } = {}) {
     const classes = { busy: 'fa-hourglass', idle: 'fa-paintbrush', animation: 'fa-fade' };
     const context = getContext();
 
+    const abortController = (() => {
+        const nativeElement = $icon.get(0);
+        if (buttonAbortControllers.has(nativeElement)) {
+            return buttonAbortControllers.get(nativeElement);
+        }
+        const controller = new AbortController();
+        buttonAbortControllers.set(nativeElement, controller);
+        return controller;
+    })();
+
     if ($icon.hasClass(classes.busy)) {
-        buttonAbortController?.abort('Aborted by user');
-        console.log('Previous image is still being generated...');
+        abortController.abort('Aborted by user');
+        console.log('SD: Image generation aborted by user');
         return;
     }
 
@@ -4871,13 +4944,12 @@ async function sdMessageButton($icon, { animate } = {}) {
         $media = messageElement.find(`.mes_media_container[data-index="${index}"]`).find('.mes_img, .mes_video');
     }
 
-    buttonAbortController = new AbortController();
     const newMediaAttachment = await generateMediaSwipe(
         selectedMedia,
         message,
         () => setBusyIcon(true),
         () => setBusyIcon(false),
-        buttonAbortController,
+        abortController,
     );
 
     if (!newMediaAttachment) {
