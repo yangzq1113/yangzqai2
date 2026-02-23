@@ -663,22 +663,26 @@ function sanitizeSpec(spec) {
 }
 
 function sanitizePresetMap(presets) {
-    const base = structuredClone(defaultPresets);
     if (!presets || typeof presets !== 'object') {
-        return base;
+        return {};
     }
 
+    const normalized = {};
     for (const [key, value] of Object.entries(presets)) {
         if (!value || typeof value !== 'object') {
             continue;
         }
-        base[key] = {
-            systemPrompt: String(value.systemPrompt || base[key]?.systemPrompt || '').trim(),
-            userPromptTemplate: String(value.userPromptTemplate || base[key]?.userPromptTemplate || '').trim(),
+        const presetId = sanitizeIdentifierToken(key, '');
+        if (!presetId) {
+            continue;
+        }
+        normalized[presetId] = {
+            systemPrompt: String(value.systemPrompt || '').trim(),
+            userPromptTemplate: String(value.userPromptTemplate || '').trim(),
         };
     }
 
-    return base;
+    return normalized;
 }
 
 function ensureSettings() {
@@ -983,28 +987,28 @@ function getEffectiveProfile(context) {
     const chatKey = getChatKey(context);
     const chatOverride = settings.chatOverrides?.[chatKey];
     if (chatOverride?.enabled && chatOverride?.spec) {
+        const overridePresets = resolveOverridePresetMap(chatOverride, settings.presets);
+        const editablePresets = toEditablePresetMap(overridePresets);
+        const editableSpec = toEditableSpec(chatOverride.spec, editablePresets);
         return {
             source: 'chat',
             key: chatKey,
-            spec: sanitizeSpec(chatOverride.spec),
-            presets: sanitizePresetMap({
-                ...settings.presets,
-                ...(chatOverride.presetPatch || {}),
-            }),
+            spec: sanitizeSpec(editableSpec),
+            presets: sanitizePresetMap(editablePresets),
         };
     }
 
     const avatar = getCurrentAvatar(context);
     const characterOverride = getCharacterOverrideByAvatar(context, avatar);
     if (characterOverride?.enabled && characterOverride?.spec) {
+        const overridePresets = resolveOverridePresetMap(characterOverride, settings.presets);
+        const editablePresets = toEditablePresetMap(overridePresets);
+        const editableSpec = toEditableSpec(characterOverride.spec, editablePresets);
         return {
             source: 'character',
             key: avatar,
-            spec: sanitizeSpec(characterOverride.spec),
-            presets: sanitizePresetMap({
-                ...settings.presets,
-                ...(characterOverride.presetPatch || {}),
-            }),
+            spec: sanitizeSpec(editableSpec),
+            presets: sanitizePresetMap(editablePresets),
         };
     }
 
@@ -2446,6 +2450,9 @@ function toEditableSpec(spec, presets) {
     const sanitized = sanitizeSpec(spec);
     const presetIds = Object.keys(presets);
     const defaultPreset = presetIds[0] || 'distiller';
+    if (!presets[defaultPreset]) {
+        presets[defaultPreset] = createPresetDraft();
+    }
 
     const stages = (Array.isArray(sanitized.stages) ? sanitized.stages : [])
         .map((stage, stageIndex) => {
@@ -2523,30 +2530,6 @@ function serializeEditorPresetMap(editorPresets) {
     return sanitizePresetMap(editorPresets || {});
 }
 
-function buildPresetPatch(basePresets, editedPresets) {
-    const patch = {};
-    for (const [key, preset] of Object.entries(editedPresets || {})) {
-        const base = basePresets?.[key];
-        if (!base) {
-            patch[key] = preset;
-            continue;
-        }
-
-        const delta = {};
-        if (String(preset.systemPrompt || '') !== String(base.systemPrompt || '')) {
-            delta.systemPrompt = preset.systemPrompt;
-        }
-        if (String(preset.userPromptTemplate || '') !== String(base.userPromptTemplate || '')) {
-            delta.userPromptTemplate = preset.userPromptTemplate;
-        }
-
-        if (Object.keys(delta).length > 0) {
-            patch[key] = delta;
-        }
-    }
-    return patch;
-}
-
 function getCharacterByAvatar(context, avatar) {
     const target = String(avatar || '');
     if (!target) {
@@ -2573,6 +2556,20 @@ function getCharacterOverrideByAvatar(context, avatar) {
     const payload = getCharacterExtensionDataByAvatar(context, avatar);
     const override = payload?.override;
     return override && typeof override === 'object' ? override : null;
+}
+
+function resolveOverridePresetMap(override, basePresets = {}) {
+    if (override?.presets && typeof override.presets === 'object') {
+        return sanitizePresetMap(override.presets);
+    }
+    // Legacy compatibility: older overrides stored only presetPatch.
+    if (override?.presetPatch && typeof override.presetPatch === 'object') {
+        return sanitizePresetMap({
+            ...sanitizePresetMap(basePresets),
+            ...sanitizePresetMap(override.presetPatch),
+        });
+    }
+    return {};
 }
 
 function getCharacterCardSnapshot(context, avatar) {
@@ -2606,16 +2603,20 @@ function ensureEditorIntegrity(editor) {
         return;
     }
     if (!editor.presets || typeof editor.presets !== 'object' || Object.keys(editor.presets).length === 0) {
-        editor.presets = toEditablePresetMap(defaultPresets);
+        editor.presets = {};
     }
     editor.spec = toEditableSpec(editor.spec || defaultSpec, editor.presets);
+    editor.presets = toEditablePresetMap(editor.presets);
 }
 
 function pickDefaultPreset(editor) {
     const keys = Object.keys(editor?.presets || {});
     if (keys.length === 0) {
-        editor.presets = toEditablePresetMap(defaultPresets);
-        return Object.keys(editor.presets)[0] || 'distiller';
+        const presetId = 'distiller';
+        editor.presets = {
+            [presetId]: createPresetDraft(),
+        };
+        return presetId;
     }
     return keys[0];
 }
@@ -2645,11 +2646,9 @@ function loadCharacterEditorState(context, avatar) {
     const settings = getSettings();
     const safeAvatar = String(avatar || '');
     const override = getCharacterOverrideByAvatar(context, safeAvatar);
-    const mergedPresets = sanitizePresetMap({
-        ...settings.presets,
-        ...(override?.presetPatch || {}),
-    });
-    const presets = toEditablePresetMap(mergedPresets);
+    const presets = override
+        ? toEditablePresetMap(resolveOverridePresetMap(override, settings.presets))
+        : toEditablePresetMap(settings.presets);
     const spec = toEditableSpec(override?.spec || settings.orchestrationSpec, presets);
     return {
         avatar: safeAvatar,
@@ -3015,6 +3014,7 @@ async function persistCharacterEditor(context, settings, avatar, {
     forceEnabled = null,
     notes = null,
 } = {}) {
+    void settings;
     const target = String(avatar || '');
     if (!target) {
         return false;
@@ -3025,15 +3025,13 @@ async function persistCharacterEditor(context, settings, avatar, {
     }
 
     ensureEditorIntegrity(editor);
-    const globalPresets = serializeEditorPresetMap(settings.presets);
     const characterPresets = serializeEditorPresetMap(editor.presets);
     const sourceEnabled = typeof editor?.enabled === 'boolean' ? editor.enabled : true;
     const sourceNotes = notes === null ? String(editor?.notes || '') : String(notes || '');
-    const presetPatch = buildPresetPatch(globalPresets, characterPresets);
     const overridePayload = {
         enabled: forceEnabled === null ? Boolean(sourceEnabled) : Boolean(forceEnabled),
         spec: serializeEditorSpec(editor.spec),
-        presetPatch,
+        presets: characterPresets,
         updatedAt: Date.now(),
         name: getCharacterDisplayNameByAvatar(context, target),
         notes: sourceNotes,
