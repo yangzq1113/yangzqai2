@@ -10934,9 +10934,6 @@ async function messageEditDone(div) {
     const editedMessageId = Number(this_edit_mes_id);
 
     let { mesBlock, text, mes, bias } = updateMessage(div);
-    if (this_edit_mes_id == 0) {
-        text = substituteParams(text);
-    }
 
     await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
     text = chat[this_edit_mes_id]?.mes ?? text;
