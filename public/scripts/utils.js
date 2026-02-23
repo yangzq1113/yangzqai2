@@ -2736,6 +2736,30 @@ export function versionCompare(srcVersion, minVersion) {
 }
 
 /**
+ * Logs a warning for slash command executions and strips internal arguments.
+ * @param {string} message Warning message.
+ * @param {Record<string, any>} args Slash command args object.
+ * @param {Record<string, any>|null} [valueObj=null] Optional unnamed argument context.
+ */
+export function logSlashCommandWarn(message, args, valueObj = null) {
+    if (valueObj !== null && valueObj !== undefined) {
+        console.warn(message, valueObj, stripInternalArgs(args));
+    } else {
+        console.warn(message, stripInternalArgs(args));
+    }
+
+    function stripInternalArgs(rawArgs) {
+        const result = {};
+        for (const [key, value] of Object.entries(rawArgs ?? {})) {
+            if (!key.startsWith('_')) {
+                result[key] = value;
+            }
+        }
+        return result;
+    }
+}
+
+/**
  * Sets up the scroll-to-top button functionality.
  * @param {object} params Parameters object
  * @param {string} params.scrollContainerId Scrollable container element ID

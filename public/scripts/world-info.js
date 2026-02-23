@@ -1,7 +1,7 @@
 import { Fuse } from '../lib.js';
 
 import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, buildObjectPatchOperations } from '../script.js';
-import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName } from './utils.js';
+import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
 import { isMobile } from './RossAscends-mods.js';
@@ -1461,9 +1461,10 @@ function registerWorldInfoSlashCommands() {
         return getContext().chat.filter(x => !x.is_system).map(x => x.mes);
     }
 
-    async function getEntriesFromFile(file) {
+    async function getEntriesFromFile(file, { args = {}, unnamed = null, callbackName = 'getEntriesFromFile' } = {}) {
         if (!file || !world_names.includes(file)) {
             toastr.warning(t`Valid World Info file name is required`);
+            logSlashCommandWarn(`${callbackName}: Valid World Info file name is required`, args, unnamed);
             return '';
         }
 
@@ -1471,6 +1472,7 @@ function registerWorldInfoSlashCommands() {
 
         if (!data || !('entries' in data)) {
             toastr.warning(t`World Info file has an invalid format`);
+            logSlashCommandWarn(`${callbackName}: World Info file has an invalid format`, args, unnamed);
             return '';
         }
 
@@ -1478,6 +1480,7 @@ function registerWorldInfoSlashCommands() {
 
         if (!entries || entries.length === 0) {
             toastr.warning(t`World Info file has no entries`);
+            logSlashCommandWarn(`${callbackName}: World Info file has no entries`, args, unnamed);
             return '';
         }
 
@@ -1521,6 +1524,7 @@ function registerWorldInfoSlashCommands() {
         const character = findChar({ name: characterIdentifier });
         if (!character) {
             toastr.error(t`Character not found.`);
+            logSlashCommandWarn('getCharBookCallback: Character not found', { type, name, create }, { characterIdentifier });
             return '';
         }
         const books = [];
@@ -1562,6 +1566,7 @@ function registerWorldInfoSlashCommands() {
 
         if (!chatId) {
             toastr.warning(t`Open a chat to get a name of the chat-bound lorebook`);
+            logSlashCommandWarn('getChatBookCallback: Open a chat to get a name of the chat-bound lorebook', args);
             return '';
         }
 
@@ -1607,7 +1612,7 @@ function registerWorldInfoSlashCommands() {
         const file = args.file;
         const field = args.field || 'key';
 
-        const entries = await getEntriesFromFile(file);
+        const entries = await getEntriesFromFile(file, { args, unnamed: { value }, callbackName: 'findBookEntryCallback' });
 
         if (!entries) {
             return '';
@@ -1652,7 +1657,7 @@ function registerWorldInfoSlashCommands() {
         const field = args.field || 'content';
         const tags = getContext().tags;
 
-        const entries = await getEntriesFromFile(file);
+        const entries = await getEntriesFromFile(file, { args, unnamed: { uid }, callbackName: 'getEntryFieldCallback' });
 
         if (!entries) {
             return '';
@@ -1847,7 +1852,7 @@ function registerWorldInfoSlashCommands() {
         const uid = value;
         const effect = args.effect;
 
-        const entries = await getEntriesFromFile(file);
+        const entries = await getEntriesFromFile(file, { args, unnamed: { value }, callbackName: 'getTimedEffectCallback' });
 
         if (!entries) {
             return '';
@@ -1893,7 +1898,7 @@ function registerWorldInfoSlashCommands() {
             return '';
         }
 
-        const entries = await getEntriesFromFile(file);
+        const entries = await getEntriesFromFile(file, { args, unnamed: { value }, callbackName: 'setTimedEffectCallback' });
 
         if (!entries) {
             return '';
@@ -2938,7 +2943,12 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     });
 
     $('#world_duplicate').off('click').on('click', async () => {
-        const tempName = getFreeWorldName();
+        // Find current name for the world selected
+        const selectedIndex = String($('#world_editor_select').find(':selected').val());
+        const worldName = world_names[selectedIndex] || null;
+
+        // Use the current name as default input, then ask user for the name
+        const tempName = getFreeWorldName(worldName);
         const finalName = await Popup.show.input('Create a new World Info?', 'Enter a name for the new file:', tempName);
 
         if (finalName) {
@@ -3715,8 +3725,8 @@ async function showActivationTracePopup(worldName, uid) {
         <div style="opacity:.78;">${escapeHtmlText(formatTraceTime(entry.newestAt))}</div>
     </div>
     ${entry.repeatCount > 1
-            ? `<div style="margin-top:4px;opacity:.82;">${escapeHtmlText(t`Merged identical scans`)} ×${escapeHtmlText(String(entry.repeatCount))}</div>`
-            : ''}
+        ? `<div style="margin-top:4px;opacity:.82;">${escapeHtmlText(t`Merged identical scans`)} ×${escapeHtmlText(String(entry.repeatCount))}</div>`
+        : ''}
     ${isDryRunScan ? `<div style="margin-top:4px;opacity:.8;">${escapeHtmlText(t`Simulated activation (dry run)`)}.</div>` : ''}
     <div style="margin-top:4px;">
         <span style="font-weight:600;color:${activated ? 'var(--SmartThemeQuoteColor)' : 'var(--SmartThemeBodyColor)'};">
@@ -4714,10 +4724,25 @@ export function getFreeWorldEntryUid(data) {
     return null;
 }
 
-export function getFreeWorldName() {
+
+/**
+ * Generates a free world name based on the given input name.
+ * If the input name is null, a default name is used.
+ * If the input name already exists, a numbered suffix is added.
+ *
+ * @param {string|null} worldName - The name to base the new world name on. If null, a default name is used.
+ * @param {Object} [options={}] - Optional parameters.
+ * @param {boolean} [options.stripIndex=true] - Whether to strip any numbered suffix from the input name before generating the new name.
+ * @return {string|undefined} The generated free world name, or undefined if no free name could be found after trying 100,000 times.
+ */
+export function getFreeWorldName(worldName = null, { stripIndex = true } = {}) {
+    worldName ??= t`New World`;
+    if (stripIndex) {
+        worldName = worldName.replace(/\s*\(\d+\)$/, '');
+    }
     const MAX_FREE_NAME = 100_000;
     for (let index = 1; index < MAX_FREE_NAME; index++) {
-        const newName = `New World (${index})`;
+        const newName = `${worldName} (${index})`;
         if (world_names.includes(newName)) {
             continue;
         }
