@@ -2197,6 +2197,7 @@ export async function replaceCurrentChat() {
 }
 
 export async function showMoreMessages(messagesToLoad = null) {
+    const showMoreButton = $('#show_more_messages');
     const firstDisplayedMesId = chatElement.children('.mes').first().attr('mesid');
     let messageId = Number(firstDisplayedMesId);
     let count = messagesToLoad || power_user.chat_truncation || Number.MAX_SAFE_INTEGER;
@@ -2235,19 +2236,24 @@ export async function showMoreMessages(messagesToLoad = null) {
             const olderMessages = Array.isArray(delta?.chat) ? delta.chat : [];
             if (olderMessages.length > 0) {
                 chat.unshift(...olderMessages);
+                const olderMessageElements = olderMessages.map((olderMessage, offset) => addOneMessage(olderMessage, {
+                    scroll: false,
+                    forceId: offset,
+                    showSwipes: false,
+                    insert: false,
+                })[0]);
 
-                for (const olderMessage of olderMessages) {
-                    const insertBefore = getFirstDisplayedMessageId();
-                    addOneMessage(olderMessage, {
-                        insertBefore: Number.isInteger(insertBefore) ? insertBefore : null,
-                        scroll: false,
-                        forceId: 0,
-                        showSwipes: false,
-                    });
+                if (olderMessageElements.length) {
+                    if (showMoreButton[0]) {
+                        showMoreButton.after(olderMessageElements);
+                    } else {
+                        chatElement.prepend(olderMessageElements);
+                    }
                 }
 
                 updateViewMessageIds(0);
                 refreshSwipeButtons();
+                applyCharacterTagsToMessageDivs({ mesIds: lodash.range(0, olderMessages.length, 1) });
                 applyStylePins();
 
                 chatServerState.nextOlderIndex = Math.max(0, Number(delta?.from_index) || 0);
@@ -2276,13 +2282,23 @@ export async function showMoreMessages(messagesToLoad = null) {
     console.debug('Inserting messages before', messageId, 'count', count, 'chat length', chat.length);
     const prevHeight = chatElement.prop('scrollHeight');
     const isButtonInView = isElementInViewport($('#show_more_messages')[0]);
+    const firstId = clamp(messageId - count, 0, Infinity);
+    const messageElements = chat.slice(firstId, messageId).map((message, offset) => addOneMessage(message, {
+        scroll: false,
+        forceId: firstId + offset,
+        showSwipes: false,
+        insert: false,
+    })[0]);
 
-    while (messageId > 0 && count > 0) {
-        let newMessageId = messageId - 1;
-        addOneMessage(chat[newMessageId], { insertBefore: messageId >= chat.length ? null : messageId, scroll: false, forceId: newMessageId, showSwipes: false });
-        count--;
-        messageId--;
+    if (messageElements.length) {
+        if (showMoreButton[0]) {
+            showMoreButton.after(messageElements);
+        } else {
+            chatElement.prepend(messageElements);
+        }
+        applyCharacterTagsToMessageDivs({ mesIds: lodash.range(firstId, messageId, 1) });
     }
+    messageId = firstId;
     refreshSwipeButtons();
 
     if (messageId == 0 && !chatServerState.hasMore) {
