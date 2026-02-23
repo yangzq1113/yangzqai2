@@ -5527,12 +5527,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     setGenerationProgress(0);
     generation_started = new Date();
     setActiveWorldInfoPromptSnapshot({ worldInfoBefore: '', worldInfoAfter: '' });
+    const generationEventParams = { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage };
 
     // Prevent generation from shallow characters
     await unshallowCharacter(this_chid);
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
-    await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
+    await eventSource.emit(event_types.GENERATION_STARTED, type, generationEventParams, dryRun);
 
     // Don't recreate abort controller if signal is passed
     if (!(abortController && signal)) {
@@ -5554,7 +5555,20 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     // Occurs only if the generation is not aborted due to slash commands execution
-    await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
+    await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, generationEventParams, dryRun);
+
+    // Compatibility bridge for scripts that rewrite #send_textarea during GENERATION_AFTER_COMMANDS.
+    // v1.4.0 snapshots textarea early to protect IME input; if a listener intentionally rewrites the
+    // textarea text in this phase, sync the one-shot pending input with the rewritten value.
+    if (!dryRun && type !== 'regenerate' && type !== 'swipe' && type !== 'quiet' && !isImpersonate) {
+        const currentTextareaText = String($('#send_textarea').val());
+        const textareaChangedAfterSnapshot = typeof pendingUserInputText === 'string'
+            && currentTextareaText !== pendingUserInputText;
+
+        if (textareaChangedAfterSnapshot) {
+            pendingUserInputText = currentTextareaText;
+        }
+    }
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error(t`Streaming is enabled, but the version of Kobold used does not support token streaming.`, undefined, { timeOut: 10000, preventDuplicates: true });
