@@ -5554,7 +5554,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         if (chat.length && chat[chat.length - 1]['is_user']) {
             //do nothing? why does this check exist?
         }
-<<<<<<< HEAD
         else if (type !== 'quiet' && type !== 'swipe' && !isImpersonate && !dryRun && !depth && chat.length) {
             deleteItemizedPromptForMessage(chat.length - 1);
             const deletedMessage = chat[chat.length - 1];
