@@ -3672,6 +3672,21 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
         mes.swipes = [mes.mes];
     }
 
+    // Resolve message index for both append and explicit insert scenarios.
+    const messageId = (() => {
+        if (typeof forceId === 'number') {
+            return forceId;
+        }
+        if (typeof insertBefore === 'number') {
+            return insertBefore - 1;
+        }
+        if (typeof insertAfter === 'number') {
+            return insertAfter + 1;
+        }
+        const index = chat.indexOf(mes);
+        return index !== -1 ? index : chat.length - 1;
+    })();
+
     let avatarImg = getThumbnailUrl('persona', user_avatar);
     const isSystem = mes.is_system;
     const title = mes.title;
@@ -3714,7 +3729,7 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
     let bookmarkLink = mes?.extra?.bookmark_link ?? '';
 
     let params = {
-        mesId: forceId ?? chat.length - 1,
+        mesId: messageId,
         swipeId: mes.swipe_id ?? 0,
         characterName: mes.name,
         isUser: mes.is_user,
@@ -3734,22 +3749,21 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
     const renderedMessage = getMessageFromTemplate(params);
 
     if (type !== 'swipe' && insert) {
-        if (!insertAfter && !insertBefore) {
+        if (typeof insertAfter !== 'number' && typeof insertBefore !== 'number') {
             chatElement.append(renderedMessage);
         }
-        else if (insertAfter) {
+        else if (typeof insertAfter === 'number' && insertAfter >= 0) {
             const target = chatElement.find(`.mes[mesid="${insertAfter}"]`);
             $(renderedMessage).insertAfter(target);
-        } else {
+        } else if (typeof insertBefore === 'number' && insertBefore >= 0) {
             const target = chatElement.find(`.mes[mesid="${insertBefore}"]`);
             $(renderedMessage).insertBefore(target);
+        } else {
+            chatElement.append(renderedMessage);
         }
     }
 
-    // Callers push the new message to chat before calling addOneMessage
-    const newMessageId = typeof forceId == 'number' ? forceId : chat.length - 1;
-
-    const newMessage = insert ? chatElement.find(`[mesid="${newMessageId}"]`) : renderedMessage;
+    const newMessage = insert ? chatElement.find(`[mesid="${messageId}"]`) : renderedMessage;
     const isSmallSys = mes?.extra?.isSmallSys;
 
     if (isSmallSys === true) {
@@ -3761,7 +3775,7 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
     }
 
     //shows or hides the Prompt display button
-    let mesIdToFind = type === 'swipe' ? params.mesId - 1 : params.mesId;  //Number(newMessage.attr('mesId'));
+    let mesIdToFind = type === 'swipe' ? messageId - 1 : messageId;  //Number(newMessage.attr('mesId'));
 
     //if we have itemized messages, and the array isn't null..
     if (params.isUser === false && Array.isArray(itemizedPrompts) && itemizedPrompts.length > 0) {
@@ -3802,7 +3816,7 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
 
     // Set the swipes counter for all non-user messages.
     if (!params.isUser) {
-        updateSwipeCounter(newMessageId, { messageElement: newMessage });
+        updateSwipeCounter(messageId, { messageElement: newMessage });
     }
 
     // The caller should handle the rest after adding a message to DOM.
@@ -3818,11 +3832,11 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
     }
 
     // Don't scroll if not inserting last
-    if (!insertAfter && !insertBefore && scroll) {
+    if (typeof insertAfter !== 'number' && typeof insertBefore !== 'number' && scroll) {
         scrollChatToBottom({ waitForFrame: true });
     }
 
-    applyCharacterTagsToMessageDivs({ mesIds: newMessageId });
+    applyCharacterTagsToMessageDivs({ mesIds: messageId });
     updateEditArrowClasses();
 
     return newMessage;
