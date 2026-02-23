@@ -14862,18 +14862,59 @@ jQuery(async function () {
                         : JSON.parse(JSON.stringify(characters[this_chid])))
                     : null;
                 const previousAvatar = String(previousCharacter?.avatar || characters[this_chid]?.avatar || '').trim();
+                const previousBookName = String(previousCharacter?.data?.extensions?.world || '').trim();
+                let previousLorebookSnapshot = null;
+                if (previousBookName) {
+                    try {
+                        const response = await fetch('/api/worldinfo/get', {
+                            method: 'POST',
+                            headers: getRequestHeaders(),
+                            body: JSON.stringify({ name: previousBookName }),
+                            cache: 'no-cache',
+                        });
+                        if (response.ok) {
+                            const payload = await response.json();
+                            const entries = payload && typeof payload === 'object' && payload.entries && typeof payload.entries === 'object'
+                                ? payload.entries
+                                : {};
+                            previousLorebookSnapshot = {
+                                avatar: previousAvatar,
+                                characterName: String(previousCharacter?.name || ''),
+                                bookName: previousBookName,
+                                entries,
+                                capturedAt: Date.now(),
+                            };
+                        }
+                    } catch (error) {
+                        console.warn('Failed to capture previous lorebook snapshot before replace', error);
+                    }
+                }
 
                 async function emitCharacterReplacedEvent() {
                     try {
-                        if (previousAvatar) {
-                            await getOneCharacter(previousAvatar);
-                        }
                         const replacedIndex = previousAvatar
                             ? characters.findIndex(item => String(item?.avatar || '').trim() === previousAvatar)
                             : this_chid;
-                        const replacedCharacter = replacedIndex >= 0
-                            ? characters[replacedIndex]
-                            : characters[this_chid];
+                        let replacedCharacter = null;
+                        if (previousAvatar) {
+                            const response = await fetch('/api/characters/get', {
+                                method: 'POST',
+                                headers: getRequestHeaders(),
+                                body: JSON.stringify({ avatar_url: previousAvatar }),
+                                cache: 'no-cache',
+                            });
+                            if (response.ok) {
+                                replacedCharacter = await response.json();
+                            }
+                        }
+                        if (!replacedCharacter) {
+                            if (previousAvatar) {
+                                await getOneCharacter(previousAvatar);
+                            }
+                            replacedCharacter = replacedIndex >= 0
+                                ? characters[replacedIndex]
+                                : characters[this_chid];
+                        }
                         if (!replacedCharacter) {
                             return;
                         }
@@ -14882,6 +14923,7 @@ jQuery(async function () {
                                 id: replacedIndex >= 0 ? replacedIndex : this_chid,
                                 character: replacedCharacter,
                                 previousCharacter,
+                                previousLorebookSnapshot,
                                 source: 'replace_update',
                             },
                         });

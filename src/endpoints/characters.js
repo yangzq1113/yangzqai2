@@ -226,14 +226,18 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
             requireExistingOutput = false,
         } = options && typeof options === 'object' ? options : {};
 
+        const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
+
         // Reset the cache
         for (const key of memoryCache.keys()) {
             if (Buffer.isBuffer(inputFile)) {
-                break;
+                if (key.startsWith(outputImagePath)) {
+                    memoryCache.delete(key);
+                }
+                continue;
             }
-            if (key.startsWith(inputFile)) {
+            if (key.startsWith(inputFile) || key.startsWith(outputImagePath)) {
                 memoryCache.delete(key);
-                break;
             }
         }
         if (useDiskCache && !Buffer.isBuffer(inputFile)) {
@@ -265,12 +269,25 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
 
         // Get the chunks
         const outputImage = write(inputImage, data);
-        const outputImagePath = path.join(request.user.directories.characters, `${outputFile}.png`);
         if (requireExistingOutput && !fs.existsSync(outputImagePath)) {
             throw new Error(`Target character image is missing: ${outputImagePath}`);
         }
 
         writeFileAtomicSync(outputImagePath, outputImage);
+
+        // Refresh in-memory and disk caches with the newly written character payload.
+        const outputCacheKey = getCacheKey(outputImagePath);
+        if (outputCacheKey) {
+            !isAndroid && memoryCache.set(outputCacheKey, data);
+            if (useDiskCache) {
+                try {
+                    const cache = await diskCache.instance();
+                    await cache.setItem(outputCacheKey, data);
+                } catch (error) {
+                    console.warn('Error while writing output character payload to disk cache:', error);
+                }
+            }
+        }
         return true;
     } catch (err) {
         console.error(err);
@@ -704,7 +721,9 @@ function charaFormatData(data, directories) {
     _.set(char, 'data.extensions.depth_prompt.depth', depth_value);
     _.set(char, 'data.extensions.depth_prompt.role', role_value);
 
-    if (data.world) {
+    const existingCharacterBookEntries = _.get(char, 'data.character_book.entries');
+    const hasEmbeddedCharacterBook = Array.isArray(existingCharacterBookEntries) && existingCharacterBookEntries.length > 0;
+    if (data.world && !hasEmbeddedCharacterBook) {
         try {
             const file = readWorldInfoFile(directories, data.world, false);
 

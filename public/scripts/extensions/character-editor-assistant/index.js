@@ -158,11 +158,13 @@ function registerLocaleData() {
         'No replacement applied. Restored previous lorebook binding: ${0}': '未执行替换，已恢复旧世界书绑定：${0}',
         'Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.': '请查看模型分析并可补充要求。点“保存并更新”将应用模型修改；点“取消并恢复旧世界书”会恢复导入前绑定。',
         'Analyzing lorebook differences with model...': '正在用模型分析世界书差异...',
+        'Detected ${0} candidate changes between old and new lorebook.': '检测到新旧世界书间 ${0} 个候选变更。',
         'Model analysis failed: ${0}': '模型分析失败：${0}',
         'No analysis output.': '模型未返回分析内容。',
         'Model analysis is still running. Please wait or cancel to restore previous lorebook.': '模型分析仍在进行中。请等待或取消并恢复旧世界书。',
         'Finalize lorebook replacement: ${0} -> ${1}': '世界书替换完成：${0} -> ${1}',
         'Lorebook finalization skipped due failed operations.': '存在失败操作，已跳过世界书最终替换。',
+        'No lorebook changes detected.': '未检测到世界书变更。',
         'Send': '发送',
         'Type your requirement to continue this conversation...': '输入你的要求继续对话...',
         'Assistant is thinking...': '模型思考中...',
@@ -250,11 +252,13 @@ function registerLocaleData() {
         'No replacement applied. Restored previous lorebook binding: ${0}': '未執行替換，已恢復舊世界書綁定：${0}',
         'Review model analysis and optionally add requirements. Save will apply model edits; cancel will restore the previous lorebook.': '請查看模型分析並可補充要求。按「儲存並更新」將套用模型修改；按「取消並恢復舊世界書」會恢復匯入前綁定。',
         'Analyzing lorebook differences with model...': '正在用模型分析世界書差異...',
+        'Detected ${0} candidate changes between old and new lorebook.': '檢測到新舊世界書間 ${0} 個候選變更。',
         'Model analysis failed: ${0}': '模型分析失敗：${0}',
         'No analysis output.': '模型未回傳分析內容。',
         'Model analysis is still running. Please wait or cancel to restore previous lorebook.': '模型分析仍在進行中。請等待或取消並恢復舊世界書。',
         'Finalize lorebook replacement: ${0} -> ${1}': '世界書替換完成：${0} -> ${1}',
         'Lorebook finalization skipped due failed operations.': '存在失敗操作，已跳過世界書最終替換。',
+        'No lorebook changes detected.': '未檢測到世界書變更。',
         'Send': '發送',
         'Type your requirement to continue this conversation...': '輸入你的要求繼續對話...',
         'Assistant is thinking...': '模型思考中...',
@@ -949,15 +953,34 @@ async function loadLorebookData(context, bookName) {
     return { entries: {} };
 }
 
+async function loadCharacterByAvatar(context, avatar) {
+    const safeAvatar = String(avatar || '').trim();
+    if (!safeAvatar) {
+        return null;
+    }
+    const response = await fetch('/api/characters/get', {
+        method: 'POST',
+        headers: context?.getRequestHeaders?.() || {},
+        body: JSON.stringify({ avatar_url: safeAvatar }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        return null;
+    }
+    const payload = await response.json().catch(() => null);
+    return payload && typeof payload === 'object' ? payload : null;
+}
+
 function normalizeLorebookEntryForSync(entry, uid) {
+    const normalizeLineEndings = (value) => String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const source = entry && typeof entry === 'object' ? entry : {};
     const normalizedUid = Number.isInteger(asFiniteInteger(uid, null))
         ? Number(asFiniteInteger(uid, 0))
         : Number(asFiniteInteger(source.uid, 0) || 0);
     return {
         uid: normalizedUid,
-        comment: String(source.comment ?? ''),
-        content: String(source.content ?? ''),
+        comment: normalizeLineEndings(source.comment ?? ''),
+        content: normalizeLineEndings(source.content ?? ''),
         key: Array.isArray(source.key) ? source.key.map(item => String(item ?? '').trim()).filter(Boolean) : [],
         keysecondary: Array.isArray(source.keysecondary) ? source.keysecondary.map(item => String(item ?? '').trim()).filter(Boolean) : [],
         selectiveLogic: asFiniteInteger(source.selectiveLogic, 0) ?? 0,
@@ -995,7 +1018,7 @@ async function captureCharacterLorebookSnapshot(context, character) {
     const target = character && typeof character === 'object' ? character : null;
     const avatar = String(target?.avatar || '').trim();
     const characterName = String(target?.name || '').trim();
-    const bookName = getPrimaryLorebookName(target);
+    const bookName = String(getPrimaryLorebookName(target) || '').trim();
     let entries = {};
     if (bookName) {
         try {
@@ -1014,6 +1037,36 @@ async function captureCharacterLorebookSnapshot(context, character) {
     };
 }
 
+function captureEmbeddedLorebookSnapshot(character) {
+    const target = character && typeof character === 'object' ? character : null;
+    const rawBook = target?.data?.character_book;
+    if (!rawBook || !Array.isArray(rawBook.entries)) {
+        return null;
+    }
+    const safeBook = clone(rawBook);
+    const converted = convertCharacterBook(safeBook);
+    if (!converted || typeof converted !== 'object' || !converted.entries || typeof converted.entries !== 'object') {
+        return null;
+    }
+    const avatar = String(target?.avatar || '').trim();
+    const characterName = String(target?.name || '').trim();
+    const preferredBookName = String(
+        getPrimaryLorebookName(target)
+        || safeBook?.name
+        || `${characterName || 'Character'}'s Lorebook`,
+    ).trim();
+    if (!preferredBookName) {
+        return null;
+    }
+    return {
+        avatar,
+        characterName,
+        bookName: preferredBookName,
+        entries: clone(converted.entries || {}) || {},
+        capturedAt: Date.now(),
+    };
+}
+
 function buildLorebookSyncPlan(previousSnapshot, currentSnapshot) {
     const previous = previousSnapshot && typeof previousSnapshot === 'object' ? previousSnapshot : {};
     const current = currentSnapshot && typeof currentSnapshot === 'object' ? currentSnapshot : {};
@@ -1025,52 +1078,44 @@ function buildLorebookSyncPlan(previousSnapshot, currentSnapshot) {
     const operations = [];
     const diffItems = [];
     const maxOperations = 300;
-    for (const [rawUid, oldEntryRaw] of Object.entries(previousEntries)) {
-        const uid = asFiniteInteger(rawUid, asFiniteInteger(oldEntryRaw?.uid, null));
-        if (!Number.isInteger(uid) || uid < 0) {
+    const uids = new Set([
+        ...collectLorebookEntryUids(previousEntries),
+        ...collectLorebookEntryUids(currentEntries),
+    ]);
+    const sortedUids = Array.from(uids.values()).sort((a, b) => a - b);
+    for (const uid of sortedUids) {
+        const oldEntryRaw = getLorebookEntryByUid(previousEntries, uid);
+        const newEntryRaw = getLorebookEntryByUid(currentEntries, uid);
+        const oldEntry = oldEntryRaw ? normalizeLorebookEntryForSync(oldEntryRaw, uid) : null;
+        const newEntry = newEntryRaw ? normalizeLorebookEntryForSync(newEntryRaw, uid) : null;
+        if (oldEntry && newEntry && areLorebookEntriesEqualForSync(oldEntry, newEntry)) {
             continue;
         }
-        const oldEntry = normalizeLorebookEntryForSync(oldEntryRaw, uid);
-        const newEntry = Object.hasOwn(currentEntries, uid)
-            ? normalizeLorebookEntryForSync(currentEntries[uid], uid)
-            : (Object.hasOwn(currentEntries, String(uid))
-                ? normalizeLorebookEntryForSync(currentEntries[String(uid)], uid)
-                : null);
-        if (newEntry && areLorebookEntriesEqualForSync(oldEntry, newEntry)) {
-            continue;
-        }
+        const reason = !oldEntry
+            ? 'added'
+            : (!newEntry ? 'missing' : 'changed');
         diffItems.push({
             uid,
-            reason: newEntry ? 'changed' : 'missing',
+            reason,
             oldEntry,
             newEntry,
         });
-        if (targetBook && operations.length < maxOperations) {
+        if (!targetBook || operations.length >= maxOperations) {
+            continue;
+        }
+        if (newEntry) {
             operations.push({
                 kind: 'lorebook_upsert_entry',
-                args: buildLorebookEntryUpsertArgs(targetBook, uid, oldEntry),
+                args: buildLorebookEntryUpsertArgs(targetBook, uid, newEntry),
             });
-        }
-    }
-
-    // Add reverse-side diffs so model can see entries that exist only in the new lorebook.
-    for (const [rawUid, newEntryRaw] of Object.entries(currentEntries)) {
-        const uid = asFiniteInteger(rawUid, asFiniteInteger(newEntryRaw?.uid, null));
-        if (!Number.isInteger(uid) || uid < 0) {
             continue;
         }
-        const oldEntryRaw = Object.hasOwn(previousEntries, uid)
-            ? previousEntries[uid]
-            : (Object.hasOwn(previousEntries, String(uid)) ? previousEntries[String(uid)] : null);
-        if (oldEntryRaw) {
-            continue;
-        }
-        const newEntry = normalizeLorebookEntryForSync(newEntryRaw, uid);
-        diffItems.push({
-            uid,
-            reason: 'added',
-            oldEntry: null,
-            newEntry,
+        operations.push({
+            kind: 'lorebook_delete_entry',
+            args: {
+                book_name: targetBook,
+                entry_uid: uid,
+            },
         });
     }
 
@@ -1081,43 +1126,17 @@ function buildLorebookSyncPlan(previousSnapshot, currentSnapshot) {
         targetCharacterName: String(current.characterName || '').trim(),
         sourceEntryCount: Object.keys(previousEntries).length,
         targetEntryCount: Object.keys(currentEntries).length,
+        sourceMaxEntryUid: Math.max(-1, ...collectLorebookEntryUids(previousEntries)),
+        targetMaxEntryUid: Math.max(-1, ...collectLorebookEntryUids(currentEntries)),
         diffItems,
         operations,
     };
 }
 
-function getEmbeddedLorebookImportPayload(character) {
-    const target = character && typeof character === 'object' ? character : null;
-    const rawBook = target?.data?.character_book;
-    if (!rawBook || !Array.isArray(rawBook.entries)) {
-        return null;
-    }
-    const safeBook = clone(rawBook);
-    const bookName = String(safeBook?.name || `${String(target?.name || 'Character')}'s Lorebook`).trim();
-    if (!bookName) {
-        return null;
-    }
-    try {
-        const converted = convertCharacterBook(safeBook);
-        if (!converted || typeof converted !== 'object' || !converted.entries || typeof converted.entries !== 'object') {
-            return null;
-        }
-        return {
-            bookName,
-            data: converted,
-        };
-    } catch (error) {
-        console.warn(`[${MODULE_NAME}] Failed to convert embedded character book`, error);
-        return null;
-    }
-}
-
 async function applyDirectLorebookReplace(context, previousSnapshot, currentSnapshot, currentCharacter) {
     const previousBook = String(previousSnapshot?.bookName || '').trim();
-    const embeddedImport = getEmbeddedLorebookImportPayload(currentCharacter);
-    const fallbackTargetBook = String(currentSnapshot?.bookName || '').trim();
-    const targetBook = embeddedImport?.bookName || fallbackTargetBook;
-    const targetData = embeddedImport?.data || (targetBook ? { entries: clone(currentSnapshot?.entries || {}) } : null);
+    const targetBook = String(currentSnapshot?.bookName || '').trim();
+    const targetData = targetBook ? { entries: clone(currentSnapshot?.entries || {}) || {} } : null;
     if (!targetBook || !targetData || !targetData.entries || typeof targetData.entries !== 'object') {
         throw new Error('No target lorebook data available for direct replacement.');
     }
@@ -1179,20 +1198,83 @@ async function restorePreviousLorebookBinding(context, previousSnapshot, current
 }
 
 function compactEntryForModel(entry, uid) {
-    const normalized = normalizeLorebookEntryForSync(entry, uid);
+    return normalizeLorebookEntryForSync(entry, uid);
+}
+
+function clipLorebookDebugText(value, maxLength = 80) {
+    const text = String(value ?? '');
+    if (text.length <= maxLength) {
+        return text;
+    }
+    return `${text.slice(0, maxLength)}…`;
+}
+
+function summarizeLorebookEntryForDebug(entry) {
+    const safe = entry && typeof entry === 'object' ? entry : null;
+    if (!safe) {
+        return null;
+    }
+    const key = Array.isArray(safe.key) ? safe.key : [];
+    const keysecondary = Array.isArray(safe.keysecondary) ? safe.keysecondary : [];
     return {
-        uid: normalized.uid,
-        key: normalized.key,
-        keysecondary: normalized.keysecondary,
-        comment: String(normalized.comment ?? ''),
-        content: String(normalized.content ?? ''),
-        selectiveLogic: normalized.selectiveLogic,
-        order: normalized.order,
-        position: normalized.position,
-        depth: normalized.depth,
-        disable: normalized.disable,
-        constant: normalized.constant,
+        uid: asFiniteInteger(safe.uid, null),
+        key_head: key.slice(0, 3),
+        keysecondary_head: keysecondary.slice(0, 3),
+        comment: clipLorebookDebugText(safe.comment ?? ''),
+        content_head: clipLorebookDebugText(safe.content ?? ''),
+        order: asFiniteInteger(safe.order, null),
+        position: asFiniteInteger(safe.position, null),
+        depth: asFiniteInteger(safe.depth, null),
+        disable: Boolean(safe.disable),
+        constant: Boolean(safe.constant),
     };
+}
+
+function summarizeLorebookSnapshotForDebug(snapshot) {
+    const safe = snapshot && typeof snapshot === 'object' ? snapshot : null;
+    if (!safe) {
+        return null;
+    }
+    const entries = safe.entries && typeof safe.entries === 'object' ? safe.entries : {};
+    const uids = Array.from(collectLorebookEntryUids(entries).values()).sort((a, b) => a - b);
+    const firstEntry = uids.length > 0 ? getLorebookEntryByUid(entries, uids[0]) : null;
+    return {
+        avatar: String(safe.avatar || ''),
+        character: String(safe.characterName || ''),
+        book: String(safe.bookName || ''),
+        entry_count: uids.length,
+        first_uid: uids.length > 0 ? uids[0] : null,
+        first_entry: summarizeLorebookEntryForDebug(firstEntry),
+        capturedAt: Number(safe.capturedAt || 0),
+    };
+}
+
+function summarizeLorebookPlanForDebug(plan) {
+    const safePlan = plan && typeof plan === 'object' ? plan : {};
+    const diffItems = Array.isArray(safePlan.diffItems) ? safePlan.diffItems : [];
+    const operations = Array.isArray(safePlan.operations) ? safePlan.operations : [];
+    return {
+        sourceBook: String(safePlan.sourceBook || ''),
+        targetBook: String(safePlan.targetBook || ''),
+        sourceEntryCount: Number(safePlan.sourceEntryCount || 0),
+        targetEntryCount: Number(safePlan.targetEntryCount || 0),
+        diffCount: diffItems.length,
+        operationCount: operations.length,
+        diffPreview: diffItems.slice(0, 3).map(item => ({
+            uid: asFiniteInteger(item?.uid, null),
+            reason: String(item?.reason || ''),
+            old: summarizeLorebookEntryForDebug(item?.oldEntry),
+            new: summarizeLorebookEntryForDebug(item?.newEntry),
+        })),
+    };
+}
+
+function logLorebookSyncDebug(stage, payload = null) {
+    try {
+        console.info(`[${MODULE_NAME}] lorebook-sync:${String(stage || 'event')}`, payload || {});
+    } catch {
+        // ignore debug logging failures
+    }
 }
 
 function renderLorebookSyncAnalysisMarkdown(markdownText) {
@@ -1288,6 +1370,14 @@ function buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, after
     const kind = String(operation?.kind || '');
     const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
     const entryUid = asFiniteInteger(args.entry_uid, null);
+    const beforeNormalized = beforeEntry ? normalizeLorebookEntryForSync(beforeEntry, entryUid) : null;
+    const afterNormalized = afterEntry ? normalizeLorebookEntryForSync(afterEntry, entryUid) : null;
+    if (kind === 'lorebook_upsert_entry' && beforeNormalized && afterNormalized && areLorebookEntriesEqualForSync(beforeNormalized, afterNormalized)) {
+        return null;
+    }
+    if (kind === 'lorebook_delete_entry' && !beforeNormalized) {
+        return null;
+    }
     const preview = {
         title: buildOperationSummary(operation),
         fields: [],
@@ -1331,19 +1421,27 @@ function buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, after
         if (!spec.touched) {
             continue;
         }
-        const beforeValue = beforeEntry ? getEntryPreviewValue(beforeEntry, spec.key) : '';
-        const afterValue = afterEntry ? getEntryPreviewValue(afterEntry, spec.key) : i18n('(deleted)');
-        pushDiffField(preview.fields, spec.label, beforeValue, afterValue, { force: !beforeEntry });
+        const beforeValue = beforeNormalized ? getEntryPreviewValue(beforeNormalized, spec.key) : '';
+        const afterValue = afterNormalized ? getEntryPreviewValue(afterNormalized, spec.key) : i18n('(deleted)');
+        pushDiffField(preview.fields, spec.label, beforeValue, afterValue, { force: !beforeNormalized });
     }
 
     if (preview.fields.length === 0) {
-        pushDiffField(
-            preview.fields,
-            'entry',
-            beforeEntry ? 'exists' : '',
-            afterEntry ? 'exists' : i18n('(deleted)'),
-            { force: true },
-        );
+        if (beforeNormalized && afterNormalized && !areLorebookEntriesEqualForSync(beforeNormalized, afterNormalized)) {
+            pushDiffField(
+                preview.fields,
+                'entry',
+                JSON.stringify(beforeNormalized, null, 2),
+                JSON.stringify(afterNormalized, null, 2),
+                { force: true },
+            );
+            return preview;
+        }
+        if (!beforeNormalized && afterNormalized) {
+            pushDiffField(preview.fields, 'entry', '', 'exists', { force: true });
+            return preview;
+        }
+        return null;
     }
     return preview;
 }
@@ -1368,15 +1466,32 @@ function applyDraftOperationsAndBuildPreviews(targetBook, draftEntries, operatio
 
         if (kind === 'lorebook_upsert_entry') {
             afterEntry = applyLorebookEntryArgs(beforeEntry, args, uid);
+            if (
+                beforeEntry
+                && afterEntry
+                && areLorebookEntriesEqualForSync(
+                    normalizeLorebookEntryForSync(beforeEntry, uid),
+                    normalizeLorebookEntryForSync(afterEntry, uid),
+                )
+            ) {
+                continue;
+            }
             entries[String(uid)] = clone(afterEntry);
         } else if (kind === 'lorebook_delete_entry') {
+            if (!beforeEntry) {
+                continue;
+            }
             delete entries[String(uid)];
             afterEntry = null;
         } else {
             continue;
         }
 
-        previews.push(buildLorebookDraftDiffPreview(spec, targetBook, beforeEntry, afterEntry));
+        const preview = buildLorebookDraftDiffPreview(spec, targetBook, beforeEntry, afterEntry);
+        if (!preview) {
+            continue;
+        }
+        previews.push(preview);
         appliedOperations.push({
             kind,
             args: clone(args),
@@ -1501,6 +1616,15 @@ function buildFinalDiffReviewContext(operationSpecs, approvalMap) {
         pending: Number(summary.pending),
         decisions,
     };
+}
+
+function cacheLorebookSnapshot(snapshot) {
+    const safeSnapshot = snapshot && typeof snapshot === 'object' ? clone(snapshot) : null;
+    const avatar = String(safeSnapshot?.avatar || '').trim();
+    if (!safeSnapshot || !avatar) {
+        return;
+    }
+    lorebookSnapshotCache.set(avatar, safeSnapshot);
 }
 
 function rebuildLorebookDraftEntriesFromConversation(targetBook, baselineEntries, draftEntries, conversationMessages) {
@@ -2079,11 +2203,13 @@ async function selectLorebookSyncMode(plan) {
 
 function buildLorebookModelContextPayload(plan, requirements = '', analysisSummary = '') {
     const candidateItems = Array.isArray(plan?.diffItems) ? plan.diffItems : [];
+    const targetMaxEntryUid = asFiniteInteger(plan?.targetMaxEntryUid, -1);
     return {
         source_lorebook: String(plan?.sourceBook || ''),
         target_lorebook: String(plan?.targetBook || ''),
         source_entry_count: Number(plan?.sourceEntryCount || 0),
         target_entry_count: Number(plan?.targetEntryCount || 0),
+        target_max_entry_uid: Number.isInteger(targetMaxEntryUid) ? targetMaxEntryUid : -1,
         candidates: candidateItems.map(item => ({
             uid: Number(item?.uid || 0),
             reason: String(item?.reason || ''),
@@ -2095,18 +2221,41 @@ function buildLorebookModelContextPayload(plan, requirements = '', analysisSumma
     };
 }
 
-function buildLorebookSyncBaselineData(embeddedImport, baselineEntries) {
-    const embeddedData = embeddedImport?.data;
-    if (embeddedData && typeof embeddedData === 'object') {
-        const data = clone(embeddedData);
-        if (!data.entries || typeof data.entries !== 'object') {
-            data.entries = {};
-        }
-        return data;
-    }
+function buildLorebookSyncBaselineData(baselineEntries) {
     return {
         entries: clone(baselineEntries || {}) || {},
     };
+}
+
+function buildLorebookSyncSeedDiffPreviews(plan) {
+    const targetBook = String(plan?.targetBook || '').trim();
+    const items = Array.isArray(plan?.diffItems) ? plan.diffItems : [];
+    const previews = [];
+    for (const item of items) {
+        const uid = asFiniteInteger(item?.uid, asFiniteInteger(item?.newEntry?.uid, asFiniteInteger(item?.oldEntry?.uid, null)));
+        if (!Number.isInteger(uid) || uid < 0) {
+            continue;
+        }
+        const beforeEntry = item?.oldEntry && typeof item.oldEntry === 'object' ? clone(item.oldEntry) : null;
+        const afterEntry = item?.newEntry && typeof item.newEntry === 'object' ? clone(item.newEntry) : null;
+        const operation = afterEntry
+            ? {
+                kind: 'lorebook_upsert_entry',
+                args: buildLorebookEntryUpsertArgs(targetBook, uid, afterEntry),
+            }
+            : {
+                kind: 'lorebook_delete_entry',
+                args: {
+                    book_name: targetBook,
+                    entry_uid: uid,
+                },
+            };
+        const preview = buildLorebookDraftDiffPreview(operation, targetBook, beforeEntry, afterEntry);
+        if (preview) {
+            previews.push(preview);
+        }
+    }
+    return previews;
 }
 
 function buildLorebookSyncModelTools() {
@@ -2464,6 +2613,23 @@ function normalizeModelOperationArgs(kind, args, targetBook) {
         if (!Number.isInteger(entryUid) || entryUid < 0) {
             return null;
         }
+        const upsertPayloadKeys = [
+            'key_csv',
+            'secondary_key_csv',
+            'comment',
+            'content',
+            'selective_logic',
+            'order',
+            'position',
+            'depth',
+            'enabled',
+            'disable',
+            'constant',
+        ];
+        const hasPayload = upsertPayloadKeys.some(key => Object.hasOwn(safeArgs, key));
+        if (!hasPayload) {
+            return null;
+        }
         const normalized = {
             book_name: targetBook,
             entry_uid: entryUid,
@@ -2536,10 +2702,23 @@ async function requestModelLorebookDiffAnalysis(context, plan) {
         };
     }
     const contextPayload = buildLorebookModelContextPayload(plan, '');
+    logLorebookSyncDebug('model-analysis-request', {
+        plan: summarizeLorebookPlanForDebug(plan),
+        candidatesPreview: Array.isArray(contextPayload?.candidates)
+            ? contextPayload.candidates.slice(0, 3).map(item => ({
+                uid: asFiniteInteger(item?.uid, null),
+                reason: String(item?.reason || ''),
+                old: summarizeLorebookEntryForDebug(item?.old_entry),
+                new: summarizeLorebookEntryForDebug(item?.new_entry),
+            }))
+            : [],
+    });
     const systemPrompt = [
         'You are analyzing differences between an old lorebook and a new lorebook.',
         'Do not call tools in this step. Provide analysis only.',
-        'Focus on migration risk, conflicts, and what should likely be preserved from the old lorebook.',
+        'The new lorebook is the target baseline to keep.',
+        'The old lorebook is reference-only, used to identify optional carry-over details.',
+        'Focus on migration risk, conflicts, and concrete recommendations without reverting to the old lorebook by default.',
         `Target lorebook is "${targetBook}".`,
     ].join('\n');
     const userPrompt = [
@@ -2548,7 +2727,10 @@ async function requestModelLorebookDiffAnalysis(context, plan) {
         JSON.stringify(contextPayload),
     ].join('\n\n');
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
-    const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, requestPresetOptions);
+    const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
+        ...requestPresetOptions,
+        runtimeWorldInfo: {},
+    });
 
     const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
         requestScope: 'extension_internal',
@@ -2562,7 +2744,7 @@ async function requestModelLorebookDiffAnalysis(context, plan) {
     };
 }
 
-async function requestModelLorebookConversationReply(context, plan, conversationMessages, { draftEntries = {}, finalOperationSpecs = [], approvalMap = null } = {}) {
+async function requestModelLorebookConversationReply(context, plan, conversationMessages, { finalOperationSpecs = [], approvalMap = null } = {}) {
     const targetBook = String(plan?.targetBook || '').trim();
     if (!targetBook) {
         return { assistantText: '', operations: [] };
@@ -2575,17 +2757,29 @@ async function requestModelLorebookConversationReply(context, plan, conversation
             content: String(item?.content || '').trim(),
         }))
         .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content);
-
-    const safeDraftEntries = draftEntries && typeof draftEntries === 'object' ? draftEntries : {};
-    const draftEntryUids = Array.from(collectLorebookEntryUids(safeDraftEntries).values()).sort((a, b) => a - b);
-    const draftEntrySample = draftEntryUids.map(uid => compactEntryForModel(getLorebookEntryByUid(safeDraftEntries, uid), uid));
     const reviewContext = buildFinalDiffReviewContext(finalOperationSpecs, approvalMap);
+    logLorebookSyncDebug('model-conversation-request', {
+        plan: summarizeLorebookPlanForDebug(plan),
+        conversationCount: history.length,
+        finalOperationCount: Array.isArray(finalOperationSpecs) ? finalOperationSpecs.length : 0,
+        reviewSummary: reviewContext?.summary || null,
+        candidatesPreview: Array.isArray(contextPayload?.candidates)
+            ? contextPayload.candidates.slice(0, 3).map(item => ({
+                uid: asFiniteInteger(item?.uid, null),
+                reason: String(item?.reason || ''),
+                old: summarizeLorebookEntryForDebug(item?.old_entry),
+                new: summarizeLorebookEntryForDebug(item?.new_entry),
+            }))
+            : [],
+    });
 
     const systemPrompt = [
         'You are assisting the user in reviewing lorebook diffs.',
         'Continue the conversation and answer the user message directly.',
         'After your reply, you may provide tool calls to propose draft lorebook edits for this round.',
         'Tool calls are draft-only proposals and will not be auto-applied immediately.',
+        'Treat the new lorebook as the target baseline.',
+        'Do not revert entries back to old lorebook content unless user explicitly asks for that exact rollback.',
         'Respect review decisions: rejected operations are intentionally excluded.',
         'Do not re-propose rejected {kind, entry_uid} operations unless user explicitly asks to reconsider them.',
         'Use tool calls only when proposing concrete entry changes; otherwise return no tool calls.',
@@ -2598,14 +2792,12 @@ async function requestModelLorebookConversationReply(context, plan, conversation
             context: contextPayload,
             conversation_history: history,
             final_diff_review: reviewContext,
-            draft_entry_count: Number(draftEntryUids.length),
-            draft_entry_sample: draftEntrySample,
         }),
     ].join('\n\n');
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
     const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
         ...requestPresetOptions,
-        worldInfoMessages: history,
+        runtimeWorldInfo: {},
     });
     const settings = getSettings();
     const allowedToolNames = ['lorebook_upsert_entry', 'lorebook_delete_entry'];
@@ -2628,8 +2820,7 @@ async function requestModelLorebookConversationReply(context, plan, conversation
 
 async function finalizeLorebookSyncReplacement(context, previousSnapshot, currentSnapshot, currentCharacter) {
     const previousBook = String(previousSnapshot?.bookName || '').trim();
-    const embeddedImport = getEmbeddedLorebookImportPayload(currentCharacter);
-    const targetBook = String(embeddedImport?.bookName || currentSnapshot?.bookName || '').trim();
+    const targetBook = String(currentSnapshot?.bookName || '').trim();
     const avatar = String(currentSnapshot?.avatar || currentCharacter?.avatar || '').trim();
 
     if (avatar && targetBook) {
@@ -2801,10 +2992,14 @@ function normalizeCharacterEditorOperationsFromCalls(rawCalls) {
                 continue;
             }
             const normalizedArgs = { entry_uid: uid };
+            let hasPayload = false;
             const passThrough = ['book_name', 'key_csv', 'secondary_key_csv', 'comment', 'content'];
             for (const key of passThrough) {
                 if (Object.hasOwn(args, key)) {
                     normalizedArgs[key] = String(args[key] ?? '');
+                    if (key !== 'book_name') {
+                        hasPayload = true;
+                    }
                 }
             }
             const intFields = ['selective_logic', 'order', 'position', 'depth'];
@@ -2815,13 +3010,20 @@ function normalizeCharacterEditorOperationsFromCalls(rawCalls) {
                 const value = asFiniteInteger(args[key], null);
                 if (value !== null) {
                     normalizedArgs[key] = value;
+                    hasPayload = true;
                 }
             }
             const boolFields = ['create_if_missing', 'enabled', 'disable', 'constant'];
             for (const key of boolFields) {
                 if (Object.hasOwn(args, key)) {
                     normalizedArgs[key] = Boolean(args[key]);
+                    if (key !== 'create_if_missing') {
+                        hasPayload = true;
+                    }
                 }
+            }
+            if (!hasPayload) {
+                continue;
             }
             output.push({ kind: 'lorebook_upsert_entry', args: normalizedArgs });
             continue;
@@ -2870,6 +3072,7 @@ async function buildCharacterEditorContextPayload(context, avatar = '') {
     const recentJournal = Array.isArray(operationState?.journal) ? operationState.journal : [];
     const entryUids = Object.keys(lorebookData.entries || {}).map(uid => asFiniteInteger(uid, null)).filter(uid => Number.isInteger(uid) && uid >= 0).sort((a, b) => a - b);
     const entrySample = entryUids.map(uid => compactEntryForModel(lorebookData.entries[uid], uid));
+    const maxEntryUid = entryUids.length > 0 ? entryUids[entryUids.length - 1] : -1;
     return {
         avatar: record.avatar,
         name: String(character?.name || ''),
@@ -2885,6 +3088,7 @@ async function buildCharacterEditorContextPayload(context, avatar = '') {
         primary_lorebook: {
             name: primaryBook,
             entry_count: Number(Object.keys(lorebookData.entries || {}).length),
+            max_entry_uid: maxEntryUid,
             sample: entrySample,
         },
         recent_journal: recentJournal.map(item => ({
@@ -2950,7 +3154,10 @@ function buildCharacterFieldsDiffPreview(operation, draftCharacter) {
         }
         const beforeValue = String(draftCharacter?.[key] ?? '');
         const afterValue = String(args[key] ?? '');
-        pushDiffField(preview.fields, key, beforeValue, afterValue, { force: true });
+        pushDiffField(preview.fields, key, beforeValue, afterValue);
+        if (beforeValue === afterValue) {
+            continue;
+        }
         draftCharacter[key] = afterValue;
     }
     const data = draftCharacter?.data && typeof draftCharacter.data === 'object' ? draftCharacter.data : {};
@@ -2963,11 +3170,14 @@ function buildCharacterFieldsDiffPreview(operation, draftCharacter) {
         }
         const beforeValue = String(data?.[key] ?? '');
         const afterValue = String(args[key] ?? '');
-        pushDiffField(preview.fields, key, beforeValue, afterValue, { force: true });
+        pushDiffField(preview.fields, key, beforeValue, afterValue);
+        if (beforeValue === afterValue) {
+            continue;
+        }
         data[key] = afterValue;
     }
     if (preview.fields.length === 0) {
-        pushDiffField(preview.fields, 'fields', '', '', { force: true });
+        return null;
     }
     return preview;
 }
@@ -2982,7 +3192,10 @@ function buildPrimaryLorebookDiffPreview(operation, draftCharacter) {
         meta: [],
         rawArgs: clone(args),
     };
-    pushDiffField(preview.fields, 'primary lorebook', beforeName || '', afterName || '', { force: true });
+    pushDiffField(preview.fields, 'primary lorebook', beforeName || '', afterName || '');
+    if (preview.fields.length === 0) {
+        return null;
+    }
     if (!draftCharacter.data || typeof draftCharacter.data !== 'object') {
         draftCharacter.data = {};
     }
@@ -3015,14 +3228,25 @@ async function buildCharacterEditorDiffPreviews(context, operations, { avatar = 
     };
 
     const previews = [];
+    const filteredOperations = [];
     for (const operation of Array.isArray(operations) ? operations : []) {
         const kind = String(operation?.kind || '').trim();
         if (kind === 'character_fields') {
-            previews.push(buildCharacterFieldsDiffPreview(operation, draftCharacter));
+            const preview = buildCharacterFieldsDiffPreview(operation, draftCharacter);
+            if (!preview) {
+                continue;
+            }
+            filteredOperations.push({ kind, args: clone(operation?.args || {}) });
+            previews.push(preview);
             continue;
         }
         if (kind === 'set_primary_lorebook') {
-            previews.push(buildPrimaryLorebookDiffPreview(operation, draftCharacter));
+            const preview = buildPrimaryLorebookDiffPreview(operation, draftCharacter);
+            if (!preview) {
+                continue;
+            }
+            filteredOperations.push({ kind, args: clone(operation?.args || {}) });
+            previews.push(preview);
             continue;
         }
         if (kind === 'lorebook_upsert_entry' || kind === 'lorebook_delete_entry') {
@@ -3036,6 +3260,7 @@ async function buildCharacterEditorDiffPreviews(context, operations, { avatar = 
                     meta: [],
                     rawArgs: clone(args),
                 });
+                filteredOperations.push({ kind, args: clone(args) });
                 continue;
             }
             const lorebookData = await getDraftLorebook(bookName);
@@ -3043,17 +3268,36 @@ async function buildCharacterEditorDiffPreviews(context, operations, { avatar = 
             let afterEntry = beforeEntry ? clone(beforeEntry) : null;
             if (kind === 'lorebook_upsert_entry') {
                 afterEntry = applyLorebookEntryArgs(beforeEntry, args, entryUid);
+                if (
+                    beforeEntry
+                    && afterEntry
+                    && areLorebookEntriesEqualForSync(
+                        normalizeLorebookEntryForSync(beforeEntry, entryUid),
+                        normalizeLorebookEntryForSync(afterEntry, entryUid),
+                    )
+                ) {
+                    continue;
+                }
                 lorebookData.entries[String(entryUid)] = clone(afterEntry);
             } else {
+                if (!beforeEntry) {
+                    continue;
+                }
                 delete lorebookData.entries[String(entryUid)];
                 afterEntry = null;
             }
-            previews.push(buildLorebookDraftDiffPreview(
-                { kind, args: { ...clone(args), book_name: bookName, entry_uid: entryUid } },
+            const normalizedOperation = { kind, args: { ...clone(args), book_name: bookName, entry_uid: entryUid } };
+            const preview = buildLorebookDraftDiffPreview(
+                normalizedOperation,
                 bookName,
                 beforeEntry,
                 afterEntry,
-            ));
+            );
+            if (!preview) {
+                continue;
+            }
+            previews.push(preview);
+            filteredOperations.push(normalizedOperation);
             continue;
         }
         previews.push({
@@ -3062,8 +3306,12 @@ async function buildCharacterEditorDiffPreviews(context, operations, { avatar = 
             meta: [],
             rawArgs: clone(operation?.args || {}),
         });
+        filteredOperations.push({ kind, args: clone(operation?.args || {}) });
     }
-    return previews;
+    return {
+        operations: filteredOperations,
+        previews,
+    };
 }
 
 function renderCharacterEditorBatchDiffItems(previews, operations) {
@@ -3280,10 +3528,12 @@ async function openCharacterEditorPopup(context = getContext()) {
                                 rejectedOperationKeys: Array.from(rejectedOperationKeys.values()),
                             },
                         );
-                        const operations = Array.isArray(reply?.operations) ? reply.operations : [];
-                        const diffPreviews = operations.length > 0
-                            ? await buildCharacterEditorDiffPreviews(context, operations, { avatar })
-                            : [];
+                        const rawOperations = Array.isArray(reply?.operations) ? reply.operations : [];
+                        const round = rawOperations.length > 0
+                            ? await buildCharacterEditorDiffPreviews(context, rawOperations, { avatar })
+                            : { operations: [], previews: [] };
+                        const operations = Array.isArray(round?.operations) ? round.operations : [];
+                        const diffPreviews = Array.isArray(round?.previews) ? round.previews : [];
                         const assistantText = String(reply?.assistantText || '').trim()
                             || (operations.length > 0
                                 ? i18nFormat('Proposed ${0} operations in this round.', operations.length)
@@ -3469,37 +3719,42 @@ async function openCharacterEditorPopup(context = getContext()) {
 }
 
 async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, currentCharacter = null) {
-    const embeddedImport = getEmbeddedLorebookImportPayload(currentCharacter);
-    const effectiveCurrentSnapshot = embeddedImport
-        ? {
-            ...(currentSnapshot && typeof currentSnapshot === 'object' ? currentSnapshot : {}),
-            bookName: String(embeddedImport.bookName || ''),
-            entries: clone(embeddedImport.data?.entries || {}),
-        }
-        : currentSnapshot;
+    const latestCharacter = currentCharacter && typeof currentCharacter === 'object' ? currentCharacter : null;
+    const effectiveCurrentSnapshot = currentSnapshot && typeof currentSnapshot === 'object' ? currentSnapshot : {};
     const plan = buildLorebookSyncPlan(previousSnapshot, effectiveCurrentSnapshot);
-    const targetAvatar = String(currentCharacter?.avatar || effectiveCurrentSnapshot?.avatar || '').trim();
-    if (!plan.targetBook && !embeddedImport?.bookName && !plan.sourceBook) {
+    logLorebookSyncDebug('flow-start', {
+        previous: summarizeLorebookSnapshotForDebug(previousSnapshot),
+        current: summarizeLorebookSnapshotForDebug(effectiveCurrentSnapshot),
+        plan: summarizeLorebookPlanForDebug(plan),
+    });
+    const targetAvatar = String(latestCharacter?.avatar || effectiveCurrentSnapshot?.avatar || '').trim();
+    if (!plan.targetBook && !plan.sourceBook) {
         return;
     }
 
-    // If no meaningful diff, just do raw replace to avoid unnecessary interaction.
-    if (!plan.targetBook || !Array.isArray(plan.diffItems) || plan.diffItems.length === 0) {
-        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+    const hasMeaningfulDiff = Array.isArray(plan.diffItems) && plan.diffItems.length > 0;
+    const changedBinding = String(plan.sourceBook || '').trim() !== String(plan.targetBook || '').trim();
+    const shouldAskMode = hasMeaningfulDiff || changedBinding;
+
+    if (!plan.targetBook) {
+        return;
+    }
+
+    if (!shouldAskMode) {
+        notifyInfo(i18n('No lorebook changes detected.'));
         await refreshUiState(context);
-        notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
         return;
     }
 
     const selectedMode = await selectLorebookSyncMode(plan);
     if (selectedMode === 'direct_replace') {
-        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        const replaced = await applyDirectLorebookReplace(context, previousSnapshot, effectiveCurrentSnapshot, latestCharacter);
         await refreshUiState(context);
         notifySuccess(`Lorebook replaced: ${String(replaced.targetBook || '(none)')}`);
         return;
     }
     if (selectedMode === 'skip_replace') {
-        const restored = await restorePreviousLorebookBinding(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        const restored = await restorePreviousLorebookBinding(context, previousSnapshot, effectiveCurrentSnapshot, latestCharacter);
         await refreshUiState(context);
         notifyWarning(i18nFormat('No replacement applied. Restored previous lorebook binding: ${0}', restored.previousBook || '(none)'));
         return;
@@ -3510,7 +3765,16 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
     const conversationMessages = [];
     const baselineTargetEntries = clone(effectiveCurrentSnapshot?.entries || {}) || {};
     const draftTargetEntries = clone(baselineTargetEntries) || {};
-    const baselineLorebookData = buildLorebookSyncBaselineData(embeddedImport, baselineTargetEntries);
+    const baselineLorebookData = buildLorebookSyncBaselineData(baselineTargetEntries);
+    const seedDiffPreviews = buildLorebookSyncSeedDiffPreviews(plan);
+    if (seedDiffPreviews.length > 0) {
+        conversationMessages.push({
+            role: 'assistant',
+            content: i18nFormat('Detected ${0} candidate changes between old and new lorebook.', seedDiffPreviews.length),
+            operations: [],
+            diffPreviews: seedDiffPreviews,
+        });
+    }
     const operationApprovalMap = new Map();
     const getCurrentFinalOperationSpecs = () => buildFinalLorebookOperationSpecsFromDraft(
         plan.targetBook,
@@ -3636,7 +3900,6 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     renderConversation(true, i18n('Assistant is thinking...'));
                     try {
                         const reply = await requestModelLorebookConversationReply(context, plan, conversationMessages, {
-                            draftEntries: draftTargetEntries,
                             finalOperationSpecs: getCurrentFinalOperationSpecs(),
                             approvalMap: operationApprovalMap,
                         });
@@ -3829,7 +4092,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
 
     // Cancel means restore previous lorebook binding.
     if (popupResult !== POPUP_RESULT.AFFIRMATIVE) {
-        const restored = await restorePreviousLorebookBinding(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+        const restored = await restorePreviousLorebookBinding(context, previousSnapshot, effectiveCurrentSnapshot, latestCharacter);
         await refreshUiState(context);
         notifyWarning(i18nFormat('No replacement applied. Restored previous lorebook binding: ${0}', restored.previousBook || '(none)'));
         return;
@@ -3857,7 +4120,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
         notifyWarning(i18n('No approved diff to apply. Finalizing without additional changes.'));
     }
 
-    const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, currentCharacter);
+    const finalized = await finalizeLorebookSyncReplacement(context, previousSnapshot, effectiveCurrentSnapshot, latestCharacter);
     if (finalized.previousBook || finalized.targetBook) {
         notifySuccess(i18nFormat('Finalize lorebook replacement: ${0} -> ${1}', finalized.previousBook || '(none)', finalized.targetBook || '(none)'));
     }
@@ -3870,7 +4133,7 @@ async function primeActiveCharacterLorebookSnapshot(context) {
         const record = getActiveCharacterRecord(context);
         const snapshot = await captureCharacterLorebookSnapshot(context, record.character);
         if (snapshot.avatar) {
-            lorebookSnapshotCache.set(snapshot.avatar, clone(snapshot));
+            cacheLorebookSnapshot(snapshot);
         }
     } catch {
         // no active character, ignore
@@ -3883,28 +4146,101 @@ async function handleCharacterReplacedLorebookSync(context, event) {
         return;
     }
     const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
-    const currentCharacter = detail.character && typeof detail.character === 'object' ? detail.character : null;
+    const eventCharacter = detail.character && typeof detail.character === 'object' ? detail.character : null;
     const previousCharacter = detail.previousCharacter && typeof detail.previousCharacter === 'object' ? detail.previousCharacter : null;
-    const avatar = String(currentCharacter?.avatar || '').trim();
-    if (!currentCharacter || !avatar) {
+    const eventPreviousSnapshot = detail.previousLorebookSnapshot && typeof detail.previousLorebookSnapshot === 'object'
+        ? detail.previousLorebookSnapshot
+        : null;
+    const avatar = String(eventCharacter?.avatar || '').trim();
+    if (!eventCharacter || !previousCharacter || !avatar) {
         return;
     }
 
-    const previousSnapshot = previousCharacter
-        ? await captureCharacterLorebookSnapshot(context, previousCharacter)
-        : (lorebookSnapshotCache.get(avatar) || null);
-    const currentSnapshot = await captureCharacterLorebookSnapshot(context, currentCharacter);
-    lorebookSnapshotCache.set(avatar, clone(currentSnapshot));
+    const previousSnapshot = eventPreviousSnapshot
+        ? {
+            avatar: String(eventPreviousSnapshot.avatar || previousCharacter?.avatar || '').trim(),
+            characterName: String(eventPreviousSnapshot.characterName || previousCharacter?.name || '').trim(),
+            bookName: String(eventPreviousSnapshot.bookName || '').trim(),
+            entries: clone(eventPreviousSnapshot.entries && typeof eventPreviousSnapshot.entries === 'object' ? eventPreviousSnapshot.entries : {}) || {},
+            capturedAt: Number(eventPreviousSnapshot.capturedAt || Date.now()),
+        }
+        : await captureCharacterLorebookSnapshot(context, previousCharacter);
+    const eventSourceName = String(detail.source || '').trim();
+    const embeddedCurrentSnapshot = eventSourceName === 'replace_update'
+        ? captureEmbeddedLorebookSnapshot(eventCharacter)
+        : null;
+    const fetchedCurrentSnapshot = await captureCharacterLorebookSnapshot(context, eventCharacter);
+    const currentCandidates = [];
+    if (embeddedCurrentSnapshot) {
+        currentCandidates.push({
+            source: 'event_character_embedded',
+            snapshot: embeddedCurrentSnapshot,
+            diffCount: Number(previousSnapshot ? buildLorebookSyncPlan(previousSnapshot, embeddedCurrentSnapshot).diffItems.length : 0),
+        });
+    }
+    if (fetchedCurrentSnapshot) {
+        currentCandidates.push({
+            source: 'event_character_fetched',
+            snapshot: fetchedCurrentSnapshot,
+            diffCount: Number(previousSnapshot ? buildLorebookSyncPlan(previousSnapshot, fetchedCurrentSnapshot).diffItems.length : 0),
+        });
+    }
+    if (currentCandidates.length === 0) {
+        return;
+    }
+    currentCandidates.sort((a, b) => {
+        if (b.diffCount !== a.diffCount) {
+            return b.diffCount - a.diffCount;
+        }
+        if (a.source === b.source) {
+            return 0;
+        }
+        if (a.source === 'event_character_embedded') {
+            return -1;
+        }
+        if (b.source === 'event_character_embedded') {
+            return 1;
+        }
+        return 0;
+    });
+    const selectedCurrent = currentCandidates[0];
+    const effectiveCurrentSnapshot = selectedCurrent.snapshot;
+    const effectiveCurrentCharacter = eventCharacter;
+
+    logLorebookSyncDebug('replace-event-selection', {
+        avatar,
+        previousSource: eventPreviousSnapshot ? 'event_previous_lorebook_snapshot' : 'event_previous',
+        currentSource: selectedCurrent.source,
+        previousCandidates: {
+            previousFromEvent: summarizeLorebookSnapshotForDebug(previousSnapshot),
+            selected: summarizeLorebookSnapshotForDebug(previousSnapshot),
+        },
+        currentCandidates: {
+            embedded: summarizeLorebookSnapshotForDebug(embeddedCurrentSnapshot),
+            fetched: summarizeLorebookSnapshotForDebug(fetchedCurrentSnapshot),
+            scoring: currentCandidates.map(item => ({
+                source: item.source,
+                diffCount: item.diffCount,
+            })),
+            embeddedRawEntryCount: Array.isArray(eventCharacter?.data?.character_book?.entries)
+                ? eventCharacter.data.character_book.entries.length
+                : 0,
+            selected: summarizeLorebookSnapshotForDebug(effectiveCurrentSnapshot),
+        },
+    });
+
+    cacheLorebookSnapshot(effectiveCurrentSnapshot);
 
     if (!previousSnapshot) {
         return;
     }
-    const hasEmbeddedLorebook = Boolean(getEmbeddedLorebookImportPayload(currentCharacter)?.bookName);
-    if (!hasEmbeddedLorebook && !String(previousSnapshot.bookName || '').trim() && !String(currentSnapshot.bookName || '').trim()) {
+    const hasEmbeddedLorebook = Boolean(String(effectiveCurrentSnapshot?.bookName || '').trim());
+    if (!hasEmbeddedLorebook && !String(previousSnapshot.bookName || '').trim() && !String(effectiveCurrentSnapshot.bookName || '').trim()) {
         return;
     }
 
-    const plan = buildLorebookSyncPlan(previousSnapshot, currentSnapshot);
+    const plan = buildLorebookSyncPlan(previousSnapshot, effectiveCurrentSnapshot);
+    logLorebookSyncDebug('replace-event-plan', summarizeLorebookPlanForDebug(plan));
     if (!hasEmbeddedLorebook && plan.operations.length === 0) {
         return;
     }
@@ -3915,15 +4251,33 @@ async function handleCharacterReplacedLorebookSync(context, event) {
     }
     lorebookSyncDialogLocks.add(avatar);
     try {
-        await runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, currentCharacter);
+        await runLorebookSyncFlow(context, previousSnapshot, effectiveCurrentSnapshot, effectiveCurrentCharacter);
     } catch (error) {
         console.warn(`[${MODULE_NAME}] Lorebook sync flow failed`, error);
         notifyError(String(error?.message || error));
     } finally {
         lorebookSyncDialogLocks.delete(avatar);
-        const refreshedSnapshot = await captureCharacterLorebookSnapshot(context, currentCharacter);
+        let refreshedCharacter = effectiveCurrentCharacter;
+        try {
+            const fetched = await loadCharacterByAvatar(context, avatar);
+            if (fetched && typeof fetched === 'object') {
+                refreshedCharacter = fetched;
+            }
+            if (typeof context?.getOneCharacter === 'function') {
+                await context.getOneCharacter(avatar);
+                const latest = Array.isArray(context?.characters)
+                    ? context.characters.find(item => String(item?.avatar || '').trim() === avatar)
+                    : null;
+                if (latest && typeof latest === 'object') {
+                    refreshedCharacter = latest;
+                }
+            }
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to refresh replaced character after lorebook sync`, error);
+        }
+        const refreshedSnapshot = await captureCharacterLorebookSnapshot(context, refreshedCharacter);
         if (refreshedSnapshot.avatar) {
-            lorebookSnapshotCache.set(refreshedSnapshot.avatar, clone(refreshedSnapshot));
+            cacheLorebookSnapshot(refreshedSnapshot);
         }
     }
 }
@@ -3996,14 +4350,15 @@ async function applyCharacterFieldsOperation(context, record, operation) {
 }
 
 function applyLorebookEntryArgs(baseEntry, args, entryUid) {
+    const normalizeLineEndings = (value) => String(value ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     const entry = clone(baseEntry && typeof baseEntry === 'object' ? baseEntry : { uid: entryUid, ...clone(newWorldInfoEntryTemplate) });
     entry.uid = Number(entryUid);
 
     if (Object.hasOwn(args, 'comment')) {
-        entry.comment = String(args.comment ?? '');
+        entry.comment = normalizeLineEndings(args.comment ?? '');
     }
     if (Object.hasOwn(args, 'content')) {
-        entry.content = String(args.content ?? '');
+        entry.content = normalizeLineEndings(args.content ?? '');
     }
     if (Object.hasOwn(args, 'key_csv')) {
         entry.key = parseCsvList(args.key_csv);
