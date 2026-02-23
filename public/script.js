@@ -2459,9 +2459,31 @@ async function getChatBoundLorebookName(chatFile, groupId = null, { avatarUrl = 
     }
 }
 
+async function hasWorldInfoFile(lorebookName) {
+    const safeName = String(lorebookName || '').trim();
+    if (!safeName) {
+        return false;
+    }
+    try {
+        const response = await fetch('/api/worldinfo/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: safeName }),
+            cache: 'no-cache',
+        });
+        return response.ok;
+    } catch (error) {
+        console.warn('Failed to verify lorebook existence', error);
+        return false;
+    }
+}
+
 async function maybeDeleteChatBoundLorebook(chatFile, groupId = null, { avatarUrl = '', characterName = '' } = {}) {
     const lorebookName = await getChatBoundLorebookName(chatFile, groupId, { avatarUrl, characterName });
     if (!lorebookName) {
+        return { lorebookName: '', deleted: false };
+    }
+    if (!await hasWorldInfoFile(lorebookName)) {
         return { lorebookName: '', deleted: false };
     }
 
@@ -2497,6 +2519,9 @@ function getCharacterBoundImportedLorebookName(character) {
 async function maybeDeleteCharacterBoundImportedLorebook(character, { alreadyPromptedLorebooks = new Set() } = {}) {
     const lorebookName = getCharacterBoundImportedLorebookName(character);
     if (!lorebookName || alreadyPromptedLorebooks.has(lorebookName)) {
+        return { lorebookName: '', deleted: false };
+    }
+    if (!await hasWorldInfoFile(lorebookName)) {
         return { lorebookName: '', deleted: false };
     }
 
