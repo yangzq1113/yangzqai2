@@ -1819,7 +1819,7 @@ zai.post('/generate', async (request, response) => {
 
         const imageResponse = await fetch(url);
         if (!imageResponse.ok) {
-            console.warn('Z.AI image fetch returned an error.');
+            console.warn('Z.AI image fetch returned an error.', imageResponse.status, imageResponse.statusText);
             return response.sendStatus(500);
         }
 
