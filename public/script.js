@@ -294,6 +294,7 @@ import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
+import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 const lukerApi = {
@@ -3984,6 +3985,20 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
         });
     }
 
+    // Try to roughly detect experimental macro features to show the onboarding if needed.
+    // This does not have to be 100% accurate, only best effort what we can quickly check.
+    // Only do this if the warning wasn't shown yet, to prevent needless regex checks.
+    if (accountStorage.getItem('slash_command_experimental_engine_warning_shown') !== 'true') {
+        let feature = /** @type {string|null} */ (null);
+        if (/{{\s*if/.test(content)) feature = '{{if}} macro';
+        else if (/{{\s*\//.test(content)) feature = 'scoped macro';
+        else if (/{{\s*[!?~#/]/.test(content)) feature = 'macro flags';
+        else if (/{{\s*[.$]/.test(content)) feature = 'variable shorthands';
+        else if (/\{\{(?:(?!\}\}).)*\{\{(?=[\s\S]*?\}\}[\s\S]*?\}\})/.test(content)) feature = 'nested macro';
+
+        if (feature) void onboardingExperimentalMacroEngine(feature);
+    }
+
     const environment = {};
 
     if (typeof _original === 'string') {
@@ -4097,7 +4112,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
  * @param {string} [options.original] - The original message for {{original}} substitution.
  * @param {string} [options.groupOverride] - The group members list for {{group}} substitution.
  * @param {boolean} [options.replaceCharacterCard=true] - Whether to replace character card macros.
- * @param {Record<string,string|MacroHandler>} [options.dynamicMacros={}] - Additional environment variables as dynamic macros for substitution. Registered as macro functions.
+ * @param {Record<string, import('./scripts/macros/engine/MacroEnv.types.js').DynamicMacroValue>} [options.dynamicMacros={}] - Additional environment variables as dynamic macros for substitution. Registered as macro functions.
  * @param {(x: string) => string} [options.postProcessFn=(x) => x] - Post-processing function for each substituted macro.
  * @returns {string} The string with substituted parameters.
  */
