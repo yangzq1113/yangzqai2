@@ -970,7 +970,7 @@ async function onUpdateClick() {
  * @param {boolean} quiet If true, don't show a success message
  * @param {number?} timeout Timeout in milliseconds to wait for the update to complete. If null, no timeout is set.
  */
-async function updateExtension(extensionName, quiet, timeout = null) {
+async function updateExtension(extensionName, quiet, timeout = null, force = false) {
     try {
         const signal = timeout ? AbortSignal.timeout(timeout) : undefined;
         const response = await fetch('/api/extensions/update', {
@@ -980,11 +980,22 @@ async function updateExtension(extensionName, quiet, timeout = null) {
             body: JSON.stringify({
                 extensionName,
                 global: getExtensionType(extensionName) === 'global',
+                force: force === true,
             }),
         });
 
         if (!response.ok) {
             const text = await response.text();
+            if (response.status === 409 && !force && !quiet) {
+                const confirmForce = await callGenericPopup(
+                    t`Extension update conflict detected. Force update will discard local extension changes and reinstall from remote. Continue?`,
+                    POPUP_TYPE.CONFIRM,
+                );
+                if (confirmForce === POPUP_RESULT.AFFIRMATIVE) {
+                    await updateExtension(extensionName, quiet, timeout, true);
+                    return;
+                }
+            }
             toastr.error(text || response.statusText, t`Extension update failed`, { timeOut: 5000 });
             console.error('Extension update failed', response.status, response.statusText, text);
             return;
@@ -1001,7 +1012,11 @@ async function updateExtension(extensionName, quiet, timeout = null) {
                 toastr.success('Extension is already up to date');
             }
         } else {
-            toastr.success(t`Extension ${extensionName} updated to ${data.shortCommitHash}`, t`Reload the page to apply updates`);
+            if (data?.forced === true) {
+                toastr.success(t`Extension ${extensionName} force-updated to ${data.shortCommitHash}`, t`Reload the page to apply updates`);
+            } else {
+                toastr.success(t`Extension ${extensionName} updated to ${data.shortCommitHash}`, t`Reload the page to apply updates`);
+            }
         }
     } catch (error) {
         console.error('Extension update error:', error);

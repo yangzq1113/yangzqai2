@@ -352,6 +352,55 @@ async function updateWithIsomorphic(extensionPath) {
     return status;
 }
 
+async function forceUpdateWithIsomorphic(extensionPath) {
+    const remoteUrl = String(await getRemoteUrlWithIsomorphic(extensionPath) || '').trim();
+    if (!remoteUrl) {
+        throw createExtensionUpdateConflictError('Cannot determine extension remote URL.');
+    }
+
+    const currentBranch = String(await isomorphicGit.currentBranch({
+        fs,
+        dir: extensionPath,
+        fullname: false,
+    }).catch(() => '') || '').trim();
+
+    fs.rmSync(extensionPath, { recursive: true, force: true });
+
+    let resolvedCloneUrl = '';
+    let usedBranch = currentBranch;
+    try {
+        resolvedCloneUrl = await cloneWithIsomorphicRetry({
+            url: remoteUrl,
+            extensionPath,
+            branch: usedBranch || undefined,
+        });
+    } catch (error) {
+        if (!usedBranch) {
+            throw error;
+        }
+        usedBranch = '';
+        resolvedCloneUrl = await cloneWithIsomorphicRetry({
+            url: remoteUrl,
+            extensionPath,
+            branch: undefined,
+        });
+    }
+
+    const currentCommitHash = await isomorphicGit.resolveRef({
+        fs,
+        dir: extensionPath,
+        ref: 'HEAD',
+    }).catch(() => '');
+
+    return {
+        isUpToDate: false,
+        remoteUrl: resolvedCloneUrl || remoteUrl,
+        currentBranchName: usedBranch,
+        currentCommitHash,
+        forced: true,
+    };
+}
+
 async function listBranchesWithIsomorphic(extensionPath) {
     await isomorphicGit.fetch({
         fs,
@@ -585,7 +634,8 @@ router.post('/update', async (request, response) => {
     }
 
     try {
-        const { extensionName, global } = request.body;
+        const { extensionName, global, force } = request.body;
+        const forceUpdate = force === true;
 
         if (global && !request.user.profile.admin) {
             console.error(`User ${request.user.profile.handle} does not have permission to update global extensions.`);
@@ -597,6 +647,19 @@ router.post('/update', async (request, response) => {
 
         if (!fs.existsSync(extensionPath)) {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
+        }
+
+        if (forceUpdate) {
+            const result = await forceUpdateWithIsomorphic(extensionPath);
+            const shortCommitHash = result.currentCommitHash ? result.currentCommitHash.slice(0, 7) : '';
+            console.info(`Extension has been force-updated with isomorphic-git at ${extensionPath}`);
+            return response.send({
+                shortCommitHash,
+                extensionPath,
+                isUpToDate: false,
+                remoteUrl: result.remoteUrl,
+                forced: true,
+            });
         }
 
         try {
