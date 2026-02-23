@@ -115,6 +115,30 @@ function isUnprocessableHttpError(error) {
     return message.includes('422') || message.includes('unprocessable entity');
 }
 
+function createExtensionUpdateConflictError(message, code = 'UPDATE_CONFLICT') {
+    const error = new Error(String(message || 'Extension update conflict.'));
+    error.code = code;
+    return error;
+}
+
+function isExtensionUpdateConflictError(error) {
+    const code = String(error?.code || '').toUpperCase();
+    if ([
+        'UPDATE_CONFLICT',
+        'MERGENOTSUPPORTEDERROR',
+        'FASTFORWARDERROR',
+        'CONFLICT',
+    ].includes(code)) {
+        return true;
+    }
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('merge not supported')
+        || message.includes('merge conflict')
+        || message.includes('conflict')
+        || message.includes('non-fast-forward')
+        || message.includes('fast-forward');
+}
+
 function toRemoteRefName(branchName) {
     return `refs/remotes/origin/${branchName}`;
 }
@@ -212,7 +236,6 @@ async function checkIfRepoIsUpToDateWithIsomorphic(extensionPath) {
         remote: 'origin',
         ref: currentBranch,
         singleBranch: true,
-        depth: 1,
     });
 
     const currentCommitHash = await isomorphicGit.resolveRef({
@@ -232,18 +255,74 @@ async function checkIfRepoIsUpToDateWithIsomorphic(extensionPath) {
         remoteCommitHash = '';
     }
 
+    if (!remoteCommitHash || currentCommitHash === remoteCommitHash) {
+        return {
+            isUpToDate: true,
+            canFastForward: false,
+            hasDiverged: false,
+            remoteUrl,
+            currentBranchName: currentBranch,
+            currentCommitHash,
+            remoteCommitHash,
+        };
+    }
+
+    let localContainsRemote = false;
+    let remoteContainsLocal = false;
+    try {
+        localContainsRemote = await isomorphicGit.isDescendent({
+            fs,
+            dir: extensionPath,
+            oid: currentCommitHash,
+            ancestor: remoteCommitHash,
+        });
+    } catch {
+        localContainsRemote = false;
+    }
+    try {
+        remoteContainsLocal = await isomorphicGit.isDescendent({
+            fs,
+            dir: extensionPath,
+            oid: remoteCommitHash,
+            ancestor: currentCommitHash,
+        });
+    } catch {
+        remoteContainsLocal = false;
+    }
+
+    const canFastForward = remoteContainsLocal;
+    const hasDiverged = !localContainsRemote && !remoteContainsLocal;
+
     return {
-        isUpToDate: !remoteCommitHash || currentCommitHash === remoteCommitHash,
+        isUpToDate: localContainsRemote,
+        canFastForward,
+        hasDiverged,
         remoteUrl,
         currentBranchName: currentBranch,
         currentCommitHash,
+        remoteCommitHash,
     };
 }
 
 async function updateWithIsomorphic(extensionPath) {
+    const statusRows = await isomorphicGit.statusMatrix({
+        fs,
+        dir: extensionPath,
+    });
+    const dirtyTrackedCount = statusRows.filter(([, head, workdir, stage]) =>
+        Number(head) > 0 && (Number(workdir) !== Number(head) || Number(stage) !== Number(head))
+    ).length;
+    if (dirtyTrackedCount > 0) {
+        throw createExtensionUpdateConflictError(`Extension repository has ${dirtyTrackedCount} tracked local changes.`);
+    }
+
     const status = await checkIfRepoIsUpToDateWithIsomorphic(extensionPath);
 
-    if (status.currentBranchName && !status.isUpToDate) {
+    if (status.hasDiverged) {
+        throw createExtensionUpdateConflictError('Local extension branch has diverged from remote. Manual reset or reinstall is required.');
+    }
+
+    if (status.currentBranchName && !status.isUpToDate && status.canFastForward) {
         const author = await getIsomorphicGitAuthor(extensionPath);
         await isomorphicGit.pull({
             fs,
@@ -264,6 +343,8 @@ async function updateWithIsomorphic(extensionPath) {
         return {
             ...status,
             isUpToDate: false,
+            canFastForward: false,
+            hasDiverged: false,
             currentCommitHash,
         };
     }
@@ -558,6 +639,10 @@ router.post('/update', async (request, response) => {
             });
         }
     } catch (error) {
+        if (isExtensionUpdateConflictError(error)) {
+            const reason = String(error?.message || 'Local changes or branch divergence detected.');
+            return response.status(409).send(`Extension update conflict: ${reason} Reinstall or manually reset this extension, then retry.`);
+        }
         console.error('Updating extension failed', error);
         return response.status(500).send('Internal Server Error. Check the server logs for more details.');
     }
