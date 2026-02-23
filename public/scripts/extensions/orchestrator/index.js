@@ -4370,6 +4370,13 @@ function buildAiIterationPendingDiffState(session, pending) {
                 entries.push(item);
                 continue;
             }
+            const inUse = (workingProfile?.spec?.stages || []).some(stage =>
+                (stage?.nodes || []).some(node => String(node?.preset || '') === presetId));
+            if (inUse) {
+                item.summary = `Preset "${presetId}" removal skipped (preset is still used by nodes)`;
+                entries.push(item);
+                continue;
+            }
             const beforePreset = presets[presetId] && typeof presets[presetId] === 'object'
                 ? structuredClone(presets[presetId])
                 : null;
