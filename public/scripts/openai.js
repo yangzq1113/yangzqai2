@@ -3150,6 +3150,17 @@ export async function createGenerationParameters(settings, model, type, messages
         delete generate_data.frequency_penalty;
     }
 
+    // https://platform.moonshot.ai/docs/api/chat#public-service-address
+    if (settings.chat_completion_source === chat_completion_sources.MOONSHOT) {
+        // Kimi K2.5 uses constrained parameters and rejects some OpenAI-style controls.
+        if (/kimi-k2.5/.test(model)) {
+            delete generate_data.temperature;
+            delete generate_data.top_p;
+            delete generate_data.frequency_penalty;
+            delete generate_data.presence_penalty;
+        }
+    }
+
     // https://docs.nano-gpt.com/api-reference/endpoint/chat-completion#temperature-&-nucleus
     if (settings.chat_completion_source === chat_completion_sources.NANOGPT) {
         generate_data['top_k'] = Number(settings.top_k_openai);
