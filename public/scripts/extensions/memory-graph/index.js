@@ -4224,11 +4224,6 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
         );
     }
 
-    await runCompressionLoop(context, store, settings, {
-        compressionStats: options?.compressionStats,
-        maxSeq: extractionMaxSeq,
-        abortSignal: options?.abortSignal || null,
-    });
     return true;
 }
 
@@ -4348,6 +4343,13 @@ async function runExtractionForStore(context, store, {
         }
         extractedAny = true;
         store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(endFrame?.seq || 0));
+    }
+    if (extractedAny) {
+        await runCompressionLoop(context, store, settings, {
+            compressionStats,
+            maxSeq: latestSeq,
+            abortSignal: abortSignal || null,
+        });
     }
     store.appliedSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
     store.seqCounter = store.appliedSeqTo;
@@ -9343,18 +9345,10 @@ function bindUi() {
                 notifyError(i18n('No active chat selected.'));
                 return;
             }
-            const extractionEventRounds = getCompressionRoundsByType(store?.lastExtractionDebug?.compression, 'event');
-            const compressionStats = createCompressionStats();
-            const runtimeSettings = getEffectiveSettings(context, settings);
-            await runCompressionLoop(context, store, runtimeSettings, {
-                compressionStats,
-                abortSignal: rebuildAbortController.signal,
-            });
             await persistMemoryStoreByChatKey(context, getChatKey(context), store);
             refreshUiStats();
             notifySuccess(i18n('Memory graph rebuilt from current chat.'));
-            recordCompressionRound(compressionStats, 'event', extractionEventRounds);
-            notifyEventCompressionIfAny(compressionStats);
+            notifyEventCompressionIfAny(store?.lastExtractionDebug?.compression);
             updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
         } catch (error) {
             if (isAbortError(error, rebuildAbortController.signal)) {
