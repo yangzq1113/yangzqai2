@@ -3949,7 +3949,35 @@ function getNextSemanticRollupOrdinal(store, type, depth) {
     return nodes.length + 1;
 }
 
-async function compressSemanticHierarchical(context, store, settings, type, config, options = {}) {
+function buildCompressedRollupFields(spec, group, summaryText) {
+    const out = {
+        summary: normalizeText(summaryText),
+    };
+    const columns = Array.isArray(spec?.tableColumns)
+        ? spec.tableColumns.map(column => String(column || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+    for (const column of columns) {
+        if (column === 'summary') {
+            continue;
+        }
+        const values = [];
+        const seen = new Set();
+        for (const node of Array.isArray(group) ? group : []) {
+            const value = normalizeText(getTableCellValueFromNode(node, column));
+            if (!value || seen.has(value)) {
+                continue;
+            }
+            seen.add(value);
+            values.push(value);
+        }
+        if (values.length > 0) {
+            out[column] = values.join('; ');
+        }
+    }
+    return out;
+}
+
+async function compressSemanticHierarchical(context, store, settings, spec, type, config, options = {}) {
     let changed = false;
     let guard = 0;
     let compressedRounds = 0;
@@ -4007,7 +4035,7 @@ async function compressSemanticHierarchical(context, store, settings, type, conf
                 type: String(type || 'semantic'),
                 level: LEVEL.SEMANTIC,
                 title: `${String(config.label || type || 'Semantic')} Summary L${rollupDepth} #${rollupOrdinal}`,
-                fields: { summary },
+                fields: buildCompressedRollupFields(spec, group, summary),
                 archived: false,
                 semanticRollup: true,
                 semanticDepth: rollupDepth,
@@ -4049,7 +4077,7 @@ async function compressSemanticTypesIfNeeded(context, store, settings, options =
             continue;
         }
         if (config.mode === 'hierarchical') {
-            if (await compressSemanticHierarchical(context, store, settings, type, config, options)) {
+            if (await compressSemanticHierarchical(context, store, settings, spec, type, config, options)) {
                 changed = true;
             }
         }
