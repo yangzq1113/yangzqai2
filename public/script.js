@@ -283,7 +283,7 @@ import { extractReasoningFromData, extractReasoningSignatureFromData, initReason
 import { accountStorage } from './scripts/util/AccountStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
-import { clearItemizedPrompts, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts } from './scripts/itemized-prompts.js';
+import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
 import { event_types, eventSource } from './scripts/events.js';
 import { initAccessibility } from './scripts/a11y.js';
@@ -677,6 +677,37 @@ let immersiveModeUsesFullscreen = false;
 let androidFullscreenShimInstalled = false;
 let androidFullscreenElement = null;
 
+function setElementStylePriority(element, property, value, priority = '') {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+    if (value === null || value === undefined || value === '') {
+        element.style.removeProperty(property);
+        return;
+    }
+    element.style.setProperty(property, String(value), priority);
+}
+
+function applyImmersiveLayoutOverrides(enabled) {
+    if (!isRunningInLukerAndroidApp()) {
+        return;
+    }
+    const sheld = document.getElementById('sheld');
+    const chatContainer = document.getElementById('chat');
+    const shouldEnable = Boolean(enabled);
+    if (shouldEnable) {
+        setElementStylePriority(sheld, 'top', '0', 'important');
+        setElementStylePriority(sheld, 'height', 'calc(100dvh - 1px)', 'important');
+        setElementStylePriority(sheld, 'max-height', 'calc(100dvh - 1px)', 'important');
+        setElementStylePriority(chatContainer, 'max-height', 'calc(100dvh - var(--bottomFormBlockSize))', 'important');
+        return;
+    }
+    setElementStylePriority(sheld, 'top', '');
+    setElementStylePriority(sheld, 'height', '');
+    setElementStylePriority(sheld, 'max-height', '');
+    setElementStylePriority(chatContainer, 'max-height', '');
+}
+
 function isRunningInLukerAndroidApp() {
     return typeof window !== 'undefined'
         && typeof window.LukerAndroid === 'object';
@@ -914,6 +945,7 @@ async function setImmersiveMode(enabled, { useFullscreen = true } = {}) {
     setAndroidFullscreenState(shouldEnable, document.documentElement);
     document.body.classList.toggle('luker-immersive-mode', shouldEnable);
     syncAndroidImmersiveMode(shouldEnable);
+    applyImmersiveLayoutOverrides(shouldEnable);
     updateImmersiveModeUi();
 
     if (shouldEnable) {

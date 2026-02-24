@@ -74,6 +74,19 @@ export async function replaceItemizedPromptText(mesId, promptText) {
 }
 
 /**
+ * Deletes itemized prompt data for a specific message id from in-memory cache.
+ * The caller should persist using saveItemizedPrompts(chatId) at an appropriate time.
+ * @param {number} mesId Message ID to remove
+ */
+export function deleteItemizedPromptForMessage(mesId) {
+    const safeMesId = Number(mesId);
+    if (!Array.isArray(itemizedPrompts) || !Number.isInteger(safeMesId) || safeMesId < 0) {
+        return;
+    }
+    itemizedPrompts = itemizedPrompts.filter(item => Number(item?.mesId) !== safeMesId);
+}
+
+/**
  * Deletes the itemized prompts for a chat.
  * @param {string} chatId Chat ID to delete itemized prompts for
  */
