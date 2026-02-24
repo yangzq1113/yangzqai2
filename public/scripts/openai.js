@@ -26,6 +26,7 @@ import {
     name2,
     resultCheckStatus,
     saveSettingsDebounced,
+    requestAsyncDiffForNextSettingsSave,
     setOnlineStatus,
     startStatusLoading,
     substituteParams,
@@ -5112,6 +5113,7 @@ function onLogitBiasPresetChange() {
     saveSettingsDebounced();
 }
 
+
 function createNewLogitBiasEntry() {
     const entry = { id: uuidv4(), text: '', value: 0 };
     oai_settings.bias_presets[oai_settings.bias_preset_selected].push(entry);
@@ -5417,6 +5419,7 @@ async function onDeletePresetClick() {
         await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
     }
 
+    requestAsyncDiffForNextSettingsSave();
     saveSettingsDebounced();
 }
 

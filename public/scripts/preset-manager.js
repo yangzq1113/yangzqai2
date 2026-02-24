@@ -16,6 +16,7 @@ import {
     online_status,
     saveSettings,
     saveSettingsDebounced,
+    requestAsyncDiffForNextSettingsSave,
     this_chid,
 } from '../script.js';
 import { groups, selected_group } from './group-chats.js';
@@ -100,6 +101,13 @@ export function getPresetManager(apiId = '') {
  */
 function registerPresetManagers() {
     $('select[data-preset-manager-for]').each((_, e) => {
+        if (e instanceof HTMLSelectElement && !e.dataset.lukerAsyncDiffBound) {
+            e.dataset.lukerAsyncDiffBound = '1';
+            e.addEventListener('change', () => {
+                requestAsyncDiffForNextSettingsSave();
+            }, { capture: true });
+        }
+
         const forData = $(e).data('preset-manager-for');
         for (const apiId of forData.split(',')) {
             console.debug(`Registering preset manager for API: ${apiId}`);
@@ -107,6 +115,7 @@ function registerPresetManagers() {
         }
     });
 }
+
 
 class PresetManager {
     constructor(select, apiId) {
@@ -1153,6 +1162,7 @@ export async function initPresetManager() {
             toastr.warning(warningToast);
         }
 
+        requestAsyncDiffForNextSettingsSave();
         saveSettingsDebounced();
     });
 

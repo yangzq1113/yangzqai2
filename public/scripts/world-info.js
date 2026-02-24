@@ -1,6 +1,6 @@
 import { Fuse } from '../lib.js';
 
-import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, buildObjectPatchOperations } from '../script.js';
+import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, buildObjectPatchOperations, buildObjectPatchOperationsAsync, requestAsyncDiffForNextSettingsSave } from '../script.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
@@ -4546,7 +4546,7 @@ export function createWorldInfoEntry(_name, data) {
     return newEntry;
 }
 
-async function _save(name, data) {
+async function _save(name, data, options = {}) {
     // Prevent double saving if both immediate and debounced save are called
     cancelDebounce(saveWorldDebounced);
 
@@ -4555,7 +4555,9 @@ async function _save(name, data) {
     const canPatch = isPlainObject(previousSnapshot) && isPlainObject(data);
 
     if (canPatch) {
-        const operations = buildObjectPatchOperations(previousSnapshot, data, { maxOperations: 16000 });
+        const operations = options.asyncDiff
+            ? await buildObjectPatchOperationsAsync(previousSnapshot, data, { maxOperations: 16000 })
+            : buildObjectPatchOperations(previousSnapshot, data, { maxOperations: 16000 });
         if (operations.length === 0) {
             saved = true;
         } else {
@@ -4597,7 +4599,7 @@ async function _save(name, data) {
  * @param {boolean} [immediately=false] - Whether to save immediately or use debouncing
  * @return {Promise<void>} A promise that resolves when the world info is saved
  */
-export async function saveWorldInfo(name, data, immediately = false) {
+export async function saveWorldInfo(name, data, immediately = false, options = {}) {
     if (!name || !data) {
         return;
     }
@@ -4606,7 +4608,7 @@ export async function saveWorldInfo(name, data, immediately = false) {
     worldInfoCache.set(name, data);
 
     if (immediately) {
-        return await _save(name, data);
+        return await _save(name, data, options);
     }
 
     saveWorldDebounced(name, data);
@@ -4681,6 +4683,7 @@ export async function deleteWorldInfo(worldInfoName) {
     const existingWorldIndex = selected_world_info.findIndex((e) => e === worldInfoName);
     if (existingWorldIndex !== -1) {
         selected_world_info.splice(existingWorldIndex, 1);
+        requestAsyncDiffForNextSettingsSave();
         saveSettingsDebounced();
     }
 
@@ -4702,6 +4705,7 @@ export async function deleteWorldInfo(worldInfoName) {
             object.lorebook = '';
         }
         $('#persona_lore_button').toggleClass('world_set', false);
+        requestAsyncDiffForNextSettingsSave();
         saveSettingsDebounced();
     }
 
@@ -6315,7 +6319,7 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 
     const convertedBook = convertCharacterBook(characters[chid].data.character_book);
 
-    await saveWorldInfo(bookName, convertedBook, true);
+    await saveWorldInfo(bookName, convertedBook, true, { asyncDiff: true });
     await updateWorldInfoList();
     $('#character_world').val(bookName).trigger('change');
 

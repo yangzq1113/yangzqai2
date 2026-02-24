@@ -996,7 +996,7 @@ export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 /** @type {debounce_timeout} The debounce timeout used for printing. debounce_timeout.quick: 100 ms */
 export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 
-export const saveSettingsDebounced = debounce((loopCounter = 0) => saveSettings(loopCounter), DEFAULT_SAVE_EDIT_TIMEOUT);
+export const saveSettingsDebounced = debounce((loopCounter = 0, options = undefined) => saveSettings(loopCounter, options), DEFAULT_SAVE_EDIT_TIMEOUT);
 export const saveCharacterDebounced = debounce(() => $('#create_button').trigger('click'), DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
@@ -1434,6 +1434,9 @@ export let settings;
 let settingsSnapshotCache = null;
 let settingsSaveInFlight = null;
 let settingsSaveQueued = false;
+let settingsSaveQueuedOptions = null;
+let forceAsyncDiffForNextSettingsSave = false;
+let forceAsyncDiffForNextSettingsSaveTimer = null;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -8998,6 +9001,10 @@ function getChatMessageSnapshotKey(target = resolveChatStateTarget()) {
     return getChatMetadataSnapshotKey(target);
 }
 
+let objectPatchWorker = null;
+let objectPatchWorkerSequence = 0;
+const objectPatchWorkerPending = new Map();
+
 export function buildObjectPatchOperations(previousState, nextState, options = {}) {
     const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
         ? options.maxOperations
@@ -9014,7 +9021,126 @@ export function buildObjectPatchOperations(previousState, nextState, options = {
     return attachObjectPatchTests(previous, operations);
 }
 
+function cleanupObjectPatchWorker(error = null) {
+    if (objectPatchWorker) {
+        objectPatchWorker.terminate();
+        objectPatchWorker = null;
+    }
+
+    if (objectPatchWorkerPending.size === 0) {
+        return;
+    }
+
+    for (const [, request] of objectPatchWorkerPending) {
+        clearTimeout(request.timeoutId);
+        if (error) {
+            request.reject(error);
+        } else {
+            request.reject(new Error('Object patch worker terminated'));
+        }
+    }
+    objectPatchWorkerPending.clear();
+}
+
+function ensureObjectPatchWorker() {
+    if (typeof Worker === 'undefined') {
+        return null;
+    }
+
+    if (objectPatchWorker) {
+        return objectPatchWorker;
+    }
+
+    try {
+        objectPatchWorker = new Worker(new URL('./scripts/workers/object-patch-worker.js', import.meta.url), { type: 'module' });
+    } catch (error) {
+        console.warn('Failed to initialize object patch worker', error);
+        objectPatchWorker = null;
+        return null;
+    }
+
+    objectPatchWorker.addEventListener('message', (event) => {
+        const id = Number(event?.data?.id);
+        if (!Number.isInteger(id)) {
+            return;
+        }
+
+        const pending = objectPatchWorkerPending.get(id);
+        if (!pending) {
+            return;
+        }
+
+        clearTimeout(pending.timeoutId);
+        objectPatchWorkerPending.delete(id);
+
+        if (event.data?.ok) {
+            pending.resolve(event.data.operations || []);
+        } else {
+            pending.reject(new Error(String(event.data?.error || 'Object patch worker failed')));
+        }
+    });
+
+    objectPatchWorker.addEventListener('error', (event) => {
+        console.warn('Object patch worker crashed', event?.error || event);
+        cleanupObjectPatchWorker(event?.error || new Error('Object patch worker crashed'));
+    });
+
+    return objectPatchWorker;
+}
+
+async function buildObjectPatchOperationsWithWorker(previousState, nextState, options = {}) {
+    const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
+        ? options.maxOperations
+        : 2000;
+    const timeoutMs = Number.isInteger(options?.timeoutMs) && options.timeoutMs > 0
+        ? options.timeoutMs
+        : 15000;
+
+    const worker = ensureObjectPatchWorker();
+    if (!worker) {
+        return buildObjectPatchOperations(previousState, nextState, { maxOperations });
+    }
+
+    return await new Promise((resolve, reject) => {
+        const id = ++objectPatchWorkerSequence;
+        const timeoutId = setTimeout(() => {
+            objectPatchWorkerPending.delete(id);
+            reject(new Error('Object patch worker timeout'));
+        }, timeoutMs);
+
+        objectPatchWorkerPending.set(id, { resolve, reject, timeoutId });
+
+        try {
+            worker.postMessage({ id, previousState, nextState, maxOperations });
+        } catch (error) {
+            clearTimeout(timeoutId);
+            objectPatchWorkerPending.delete(id);
+            reject(error);
+        }
+    });
+}
+
+export async function buildObjectPatchOperationsAsync(previousState, nextState, options = {}) {
+    const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
+        ? options.maxOperations
+        : 2000;
+    const next = isPlainObject(nextState) ? nextState : null;
+    if (!next) {
+        return [];
+    }
+
+    const previous = isPlainObject(previousState) ? previousState : {};
+
+    try {
+        return await buildObjectPatchOperationsWithWorker(previous, next, options);
+    } catch (error) {
+        console.warn('Falling back to synchronous object patch diff', error);
+        return buildObjectPatchOperations(previous, next, { maxOperations });
+    }
+}
+
 function decodeJsonPointerSegment(segment) {
+
     return String(segment || '').replace(/~1/g, '/').replace(/~0/g, '~');
 }
 
@@ -10572,7 +10698,42 @@ function getSettingsSnapshot() {
     return null;
 }
 
+function mergeSettingsSaveOptions(baseOptions = null, overrideOptions = null) {
+    return {
+        asyncDiff: Boolean(baseOptions?.asyncDiff || overrideOptions?.asyncDiff),
+    };
+}
+
+function normalizeSettingsSaveOptions(options = null) {
+    const normalized = {
+        asyncDiff: Boolean(options?.asyncDiff || options?.diffMode === 'async'),
+    };
+
+    if (forceAsyncDiffForNextSettingsSave) {
+        normalized.asyncDiff = true;
+        forceAsyncDiffForNextSettingsSave = false;
+        if (forceAsyncDiffForNextSettingsSaveTimer) {
+            clearTimeout(forceAsyncDiffForNextSettingsSaveTimer);
+            forceAsyncDiffForNextSettingsSaveTimer = null;
+        }
+    }
+
+    return normalized;
+}
+
+export function requestAsyncDiffForNextSettingsSave() {
+    forceAsyncDiffForNextSettingsSave = true;
+    if (forceAsyncDiffForNextSettingsSaveTimer) {
+        clearTimeout(forceAsyncDiffForNextSettingsSaveTimer);
+    }
+    forceAsyncDiffForNextSettingsSaveTimer = setTimeout(() => {
+        forceAsyncDiffForNextSettingsSave = false;
+        forceAsyncDiffForNextSettingsSaveTimer = null;
+    }, 5000);
+}
+
 function buildSettingsPayload() {
+
     return normalizeJsonObject({
         firstRun: firstRun,
         accountStorage: accountStorage.getState(),
@@ -10602,7 +10763,7 @@ function buildSettingsPayload() {
 }
 
 //MARK: saveSettings()
-async function saveSettingsInternal(loopCounter = 0) {
+async function saveSettingsInternal(loopCounter = 0, options = {}) {
     if (!settingsReady) {
         console.warn('Settings not ready, scheduling another save');
         saveSettingsDebounced();
@@ -10613,7 +10774,7 @@ async function saveSettingsInternal(loopCounter = 0) {
     if (TempResponseLength.isCustomized()) {
         if (loopCounter < MAX_RETRIES) {
             console.warn('Response length is currently being overridden, scheduling another save');
-            saveSettingsDebounced(++loopCounter);
+            saveSettingsDebounced(++loopCounter, options);
             return;
         }
         console.error('Response length is currently being overridden, but the save loop has reached the maximum number of retries');
@@ -10627,7 +10788,9 @@ async function saveSettingsInternal(loopCounter = 0) {
         const previousSnapshot = getSettingsSnapshot();
 
         if (isPlainObject(previousSnapshot)) {
-            const operations = buildObjectPatchOperations(previousSnapshot, payload, { maxOperations: 4000 });
+            const operations = options.asyncDiff
+                ? await buildObjectPatchOperationsAsync(previousSnapshot, payload, { maxOperations: 4000 })
+                : buildObjectPatchOperations(previousSnapshot, payload, { maxOperations: 4000 });
             if (operations.length === 0) {
                 saved = true;
             } else {
@@ -10668,26 +10831,32 @@ async function saveSettingsInternal(loopCounter = 0) {
     }
 }
 
-export async function saveSettings(loopCounter = 0) {
+export async function saveSettings(loopCounter = 0, options = null) {
+    const normalizedOptions = normalizeSettingsSaveOptions(options);
+
     if (settingsSaveInFlight) {
         settingsSaveQueued = true;
+        settingsSaveQueuedOptions = mergeSettingsSaveOptions(settingsSaveQueuedOptions, normalizedOptions);
         return settingsSaveInFlight;
     }
 
     settingsSaveInFlight = (async () => {
         try {
-            await saveSettingsInternal(loopCounter);
+            await saveSettingsInternal(loopCounter, normalizedOptions);
         } finally {
             settingsSaveInFlight = null;
             if (settingsSaveQueued) {
+                const queuedOptions = settingsSaveQueuedOptions;
                 settingsSaveQueued = false;
-                await saveSettings(0);
+                settingsSaveQueuedOptions = null;
+                await saveSettings(0, queuedOptions);
             }
         }
     })();
 
     return settingsSaveInFlight;
 }
+
 
 /**
  * Sets the generation parameters from a preset object.
