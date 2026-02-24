@@ -34,10 +34,10 @@ const defaultNodeTypeSchema = [
         id: 'event',
         label: 'Event',
         tableName: 'event_table',
-        tableColumns: ['summary', 'status'],
+        tableColumns: ['summary', 'key_sentences'],
         columnHints: {
             summary: 'Concise event abstraction with causality and outcome.',
-            status: 'Event state such as resolved/ongoing/blocked.',
+            key_sentences: 'Key sentences in this event from characters involved in. Start with characters name and seperated by semicolons.',
         },
         requiredColumns: ['summary'],
         forceUpdate: true,
@@ -54,7 +54,7 @@ const defaultNodeTypeSchema = [
             fanIn: 3,
             maxDepth: 10,
             keepRecentLeaves: 6,
-            summarizeInstruction: 'Compress event nodes into high-value storyline milestones. Preserve causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit).',
+            summarizeInstruction: 'Compress event nodes into high-value storyline milestones. Preserve causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit). Hallucinate is not allowed. You shall only compress and summary instead of continuing any story.',
         },
     },
     {
