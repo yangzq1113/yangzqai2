@@ -54,7 +54,7 @@ const defaultNodeTypeSchema = [
             fanIn: 3,
             maxDepth: 10,
             keepRecentLeaves: 6,
-            summarizeInstruction: 'Compress event nodes into high-value storyline milestones. Preserve causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit). Hallucinate is not allowed. You shall only compress and summary instead of continuing any story.',
+            summarizeInstruction: 'Compress event nodes into high-value storyline milestones. Preserve causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit). Hallucinate is not allowed. You shall only compress and summary instead of continuing any story. Output key_sentences as a few core lines, each prefixed by character name and separated by semicolons.',
         },
     },
     {
@@ -1993,6 +1993,17 @@ function buildCompressionSummaryInstruction(baseInstruction) {
     ].join('\n');
 }
 
+function getCompressionColumnNames(spec) {
+    const columns = Array.isArray(spec?.tableColumns)
+        ? spec.tableColumns.map(column => String(column || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+    const deduped = Array.from(new Set(columns));
+    if (!deduped.includes('summary')) {
+        deduped.unshift('summary');
+    }
+    return deduped;
+}
+
 async function buildPresetAwareLLMMessages(
     context,
     settings,
@@ -2098,6 +2109,61 @@ async function summarizeTextWithLLM(context, settings, instruction, lines, abort
     } catch (error) {
         console.warn(`[${MODULE_NAME}] LLM summary failed`, error);
         return '';
+    }
+}
+
+async function summarizeRollupFieldsWithLLM(context, settings, spec, instruction, group, abortSignal = null) {
+    const columns = getCompressionColumnNames(spec);
+    const rows = (Array.isArray(group) ? group : []).map((node) => {
+        const row = {
+            title: String(node?.title || ''),
+            seq_to: String(node?.seqTo ?? ''),
+        };
+        for (const column of columns) {
+            row[column] = getTableCellValueFromNode(node, column);
+        }
+        return row;
+    });
+    if (rows.length === 0) {
+        return {};
+    }
+    const properties = {};
+    for (const column of columns) {
+        properties[column] = { type: 'string' };
+    }
+    const userPrompt = rows.map(row => JSON.stringify(row)).join('\n');
+    try {
+        const result = await runFunctionCallTask(context, settings, {
+            systemPrompt: [
+                instruction,
+                'Return only compressed rollup fields.',
+                'Keep each field concise and high-signal.',
+                'Do not continue story.',
+            ].join('\n'),
+            userPrompt,
+            apiPresetName: settings.extractApiPresetName || '',
+            promptPresetName: settings.extractPresetName || '',
+            functionName: 'luker_rpg_summary_fields',
+            functionDescription: 'Return compressed rollup fields for the higher-level memory node.',
+            parameters: {
+                type: 'object',
+                properties,
+                required: ['summary'],
+                additionalProperties: false,
+            },
+            abortSignal,
+        });
+        const out = {};
+        for (const column of columns) {
+            const normalized = normalizeText(result?.[column] ?? '');
+            if (normalized) {
+                out[column] = normalized;
+            }
+        }
+        return out;
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] LLM rollup fields failed`, error);
+        return {};
     }
 }
 
@@ -3949,34 +4015,6 @@ function getNextSemanticRollupOrdinal(store, type, depth) {
     return nodes.length + 1;
 }
 
-function buildCompressedRollupFields(spec, group, summaryText) {
-    const out = {
-        summary: normalizeText(summaryText),
-    };
-    const columns = Array.isArray(spec?.tableColumns)
-        ? spec.tableColumns.map(column => String(column || '').trim().toLowerCase()).filter(Boolean)
-        : [];
-    for (const column of columns) {
-        if (column === 'summary') {
-            continue;
-        }
-        const values = [];
-        const seen = new Set();
-        for (const node of Array.isArray(group) ? group : []) {
-            const value = normalizeText(getTableCellValueFromNode(node, column));
-            if (!value || seen.has(value)) {
-                continue;
-            }
-            seen.add(value);
-            values.push(value);
-        }
-        if (values.length > 0) {
-            out[column] = values.join('; ');
-        }
-    }
-    return out;
-}
-
 async function compressSemanticHierarchical(context, store, settings, spec, type, config, options = {}) {
     let changed = false;
     let guard = 0;
@@ -4018,14 +4056,27 @@ async function compressSemanticHierarchical(context, store, settings, spec, type
                 config.summarizeInstruction
                 || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
             );
-            const summary = await summarizeTextWithLLM(
+            const rollupFields = await summarizeRollupFieldsWithLLM(
                 context,
                 settings,
+                spec,
                 instruction,
-                lines,
+                group,
                 options?.abortSignal || null,
             );
-            if (!summary) {
+            if (!normalizeText(rollupFields?.summary || '')) {
+                const fallbackSummary = await summarizeTextWithLLM(
+                    context,
+                    settings,
+                    instruction,
+                    lines,
+                    options?.abortSignal || null,
+                );
+                if (fallbackSummary) {
+                    rollupFields.summary = fallbackSummary;
+                }
+            }
+            if (!normalizeText(rollupFields?.summary || '')) {
                 break;
             }
 
@@ -4035,7 +4086,7 @@ async function compressSemanticHierarchical(context, store, settings, spec, type
                 type: String(type || 'semantic'),
                 level: LEVEL.SEMANTIC,
                 title: `${String(config.label || type || 'Semantic')} Summary L${rollupDepth} #${rollupOrdinal}`,
-                fields: buildCompressedRollupFields(spec, group, summary),
+                fields: rollupFields,
                 archived: false,
                 semanticRollup: true,
                 semanticDepth: rollupDepth,
