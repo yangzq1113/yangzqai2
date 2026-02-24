@@ -545,6 +545,18 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
             t`Backup Requested`,
             { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
         );
+
+        const androidBridge = globalThis?.LukerAndroid;
+        if (androidBridge && typeof androidBridge.downloadFileFromUrl === 'function') {
+            const query = new URLSearchParams({
+                handle: String(handle),
+                selection: JSON.stringify(selection),
+            });
+            androidBridge.downloadFileFromUrl(`/api/users/backup?${query.toString()}`);
+            callback?.();
+            return;
+        }
+
         const response = await fetch('/api/users/backup', {
             method: 'POST',
             headers: getRequestHeaders(),

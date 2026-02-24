@@ -1275,7 +1275,7 @@ export async function createBackupArchive(handle, response, selectionInput = und
     // Log archive size when the source stream has been fully drained.
     // Do not force-close the HTTP response here; the pipe lifecycle handles it.
     archive.on('end', function () {
-        console.info('Archive wrote %d bytes', archive.pointer());
+        console.info(`Archive wrote ${archive.pointer()} bytes`);
     });
 
     const timestamp = generateTimestamp();

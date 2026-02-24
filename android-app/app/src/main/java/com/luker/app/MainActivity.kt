@@ -474,6 +474,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun downloadFileFromUrl(downloadUrl: String?) {
+            val url = downloadUrl?.trim().orEmpty()
+            if (url.isEmpty()) {
+                return
+            }
+            runOnUiThread {
+                enqueueDownload(url, null, null, null)
+            }
+        }
+
+        @JavascriptInterface
         fun notifyMessageFinished(rawTitle: String?, rawBody: String?) {
             runOnUiThread {
                 showMessageCompletionNotification(rawTitle, rawBody)
