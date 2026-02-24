@@ -445,6 +445,7 @@ function registerLocaleData() {
         'Fit View': '适配视图',
         'Add Edge': '新增边',
         'Edit Selected Edge': '编辑所选边',
+        'Delete Selected Node': '删除所选节点',
         'Delete Selected Edge': '删除所选边',
         'Advanced JSON View': '高级 JSON 查看',
         'Advanced JSON Edit': '高级 JSON 编辑',
@@ -500,6 +501,9 @@ function registerLocaleData() {
         'Delete edge #${0}: ${1} -> ${2} [${3}]?': '删除边 #${0}：${1} -> ${2} [${3}]？',
         'Deleted edge #${0}.': '已删除边 #${0}。',
         'Deleted selected edge.': '已删除所选边。',
+        'Delete node ${0}: ${1}? This will remove its subtree and related edges.': '删除节点 ${0}: ${1}？这会删除其子树和相关边。',
+        'Deleted node ${0}.': '已删除节点 ${0}。',
+        'Deleted selected node.': '已删除所选节点。',
         'Advanced: edit full memory graph JSON for current chat.': '高级：编辑当前聊天的完整记忆图 JSON。',
         'Apply Graph': '应用图',
         'Applied raw graph JSON edit.': '已应用原始图 JSON 编辑。',
@@ -696,6 +700,7 @@ function registerLocaleData() {
         'Fit View': '適配視圖',
         'Add Edge': '新增邊',
         'Edit Selected Edge': '編輯所選邊',
+        'Delete Selected Node': '刪除所選節點',
         'Delete Selected Edge': '刪除所選邊',
         'Advanced JSON View': '進階 JSON 檢視',
         'Advanced JSON Edit': '進階 JSON 編輯',
@@ -751,6 +756,9 @@ function registerLocaleData() {
         'Delete edge #${0}: ${1} -> ${2} [${3}]?': '刪除邊 #${0}：${1} -> ${2} [${3}]？',
         'Deleted edge #${0}.': '已刪除邊 #${0}。',
         'Deleted selected edge.': '已刪除所選邊。',
+        'Delete node ${0}: ${1}? This will remove its subtree and related edges.': '刪除節點 ${0}: ${1}？這會刪除其子樹與相關邊。',
+        'Deleted node ${0}.': '已刪除節點 ${0}。',
+        'Deleted selected node.': '已刪除所選節點。',
         'Advanced: edit full memory graph JSON for current chat.': '進階：編輯目前聊天的完整記憶圖 JSON。',
         'Apply Graph': '套用圖',
         'Applied raw graph JSON edit.': '已套用原始圖 JSON 編輯。',
@@ -6191,6 +6199,7 @@ function renderGraphInspectorHtml(store) {
     <div class="flex-container">
         <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('View'))}</div>
         <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('Form Edit'))}</div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-delete" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('Delete'))}</div>
     </div>
 </td>
 </tr>`).join('');
@@ -6216,6 +6225,7 @@ function renderGraphInspectorHtml(store) {
         <div class="menu_button luker-rpg-memory-graph-fit">${escapeHtml(i18n('Fit View'))}</div>
         <div class="menu_button luker-rpg-memory-edge-add">${escapeHtml(i18n('Add Edge'))}</div>
         <div class="menu_button luker-rpg-memory-edge-edit">${escapeHtml(i18n('Edit Selected Edge'))}</div>
+        <div class="menu_button luker-rpg-memory-node-delete">${escapeHtml(i18n('Delete Selected Node'))}</div>
         <div class="menu_button luker-rpg-memory-edge-delete">${escapeHtml(i18n('Delete Selected Edge'))}</div>
         <div class="menu_button luker-rpg-memory-graph-raw-view">${escapeHtml(i18n('Advanced JSON View'))}</div>
         <div class="menu_button luker-rpg-memory-graph-raw-edit">${escapeHtml(i18n('Advanced JSON Edit'))}</div>
@@ -6745,6 +6755,7 @@ ${renderNodeFormEditorHtml(node, latest, getSettings(), editorId)}
 <div class="luker-rpg-memory-graph-inline-actions">
     <div class="menu_button luker-rpg-memory-inline-node-apply">${escapeHtml(i18n('Apply Changes'))}</div>
     <div class="menu_button luker-rpg-memory-inline-node-view" data-node-id="${escapeHtml(selectedNodeId)}">${escapeHtml(i18n('View'))}</div>
+    <div class="menu_button luker-rpg-memory-inline-node-delete" data-node-id="${escapeHtml(selectedNodeId)}">${escapeHtml(i18n('Delete'))}</div>
 </div>
 </div>`);
             return;
@@ -7213,6 +7224,46 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         );
         await rerender();
     };
+    const deleteNodeById = async (nodeIdHint = '') => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const nodeId = String(nodeIdHint || selectedNodeId || '').trim();
+        if (!nodeId) {
+            notifyError(i18n('No node selected. Click a node in graph first.'));
+            return;
+        }
+        const node = latest.nodes?.[nodeId];
+        if (!node) {
+            notifyError(i18nFormat('Node not found: ${0}', nodeId));
+            return;
+        }
+        const confirm = await context.callGenericPopup(
+            i18nFormat(
+                'Delete node ${0}: ${1}? This will remove its subtree and related edges.',
+                nodeId,
+                String(node.title || ''),
+            ),
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: i18n('Delete'), cancelButton: i18n('Cancel') },
+        );
+        if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        dropNode(latest, nodeId, true);
+        await persistLatest(
+            latest,
+            i18nFormat('Deleted node ${0}.', nodeId),
+            i18n('Deleted selected node.'),
+        );
+        selectedNodeId = '';
+        if (!latest.edges?.[selectedEdgeIndex]) {
+            selectedEdgeIndex = -1;
+        }
+        await rerender();
+    };
 
     jQuery(document).off(namespace);
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-view`, async function () {
@@ -7275,6 +7326,14 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         } catch (error) {
             notifyError(i18nFormat('Node edit failed: ${0}', error?.message || error));
         }
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-node-delete`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || selectedNodeId || '').trim();
+        await deleteNodeById(nodeId);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-delete`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || selectedNodeId || '').trim();
+        await deleteNodeById(nodeId);
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-add`, async function () {
