@@ -30,14 +30,149 @@ Global object recommendation:
 - `formatPromptPresetEnvelope(envelope, options?)`
 - `buildPresetAwarePromptMessages(options)`
 - `simulateWorldInfoActivation(options?)`
-- `buildWorldInfoChatInput(options?)`
-- `buildWorldInfoGlobalScanData(options?)`
+- `buildWorldInfoChatInput(messages, includeNames?)`
+- `buildWorldInfoGlobalScanData(type, overrides?)`
+
+#### Detailed parameter reference
+
+Function signatures:
+
+```ts
+getActivePromptPresetEnvelope({
+  includeCharacterCard = true,
+  api = context.mainApi,
+  promptPresetName = '',          // alias of completionPresetName
+  completionPresetName = '',
+  contextPresetName = '',
+  instructPresetName = '',
+  syspromptPresetName = '',
+  reasoningPresetName = '',
+} = {})
+```
+
+- Returns a full envelope object containing:
+  - `presetRefs`
+  - `promptCore` (`completion/context/instruct/sysprompt/reasoning`)
+  - `promptLayout`
+  - `promptCatalog`
+  - optional `characterCard` (when `includeCharacterCard=true`)
+
+```ts
+getActivePromptLayout(options = {})
+```
+
+- `options` uses the same fields as `getActivePromptPresetEnvelope`.
+- Returns normalized prompt layout only (`envelope.promptLayout` normalized).
+
+```ts
+formatPromptPresetEnvelope(envelope?, { label = 'LUKER_PRESET_ENVELOPE' } = {})
+```
+
+- If `envelope` is omitted, Luker uses current active envelope.
+- Returns:
+  - `[[<label>]]`
+  - JSON string of the envelope
+
+```ts
+buildPresetAwarePromptMessages({
+  taskSystem = '',
+  taskUser = '',
+  messages = [],                  // [{ role, content }] preferred
+  envelope = null,                // optional prebuilt envelope
+  envelopeOptions = {},           // used when envelope is null
+  promptPresetName = '',          // completion preset shortcut
+  runtimeWorldInfo = null,        // optional WI override bundle
+} = {})
+```
+
+- `messages` replaces only chat-history content in preset layout.
+- `taskSystem` / `taskUser` are legacy compatibility fields and are only used when `messages` is empty.
+- `runtimeWorldInfo` supports:
+  - `worldInfoBefore: string`
+  - `worldInfoAfter: string`
+  - `worldInfoDepth: Array<{ depth: number, role: 'system'|'user'|'assistant'|number, entries: string[] }>`
+  - `outletEntries: object`
+  - `worldInfoExamples: any[]`
+- Throws when prompt layout cannot produce a valid plugin message sequence.
+
+```ts
+simulateWorldInfoActivation({
+  coreChat = [],                  // ChatMessage[] in chronological order
+  maxContext = undefined,         // default: current context size
+  dryRun = false,
+  type = 'normal',                // normal/continue/regenerate/swipe/...
+  chatForWI = undefined,          // optional prebuilt string[]
+  includeNames = true,
+  globalScanData = undefined,     // optional override object
+} = {})
+```
+
+- Returns WI resolution + normalized request inputs:
+  - `worldInfoString/worldInfoBefore/worldInfoAfter/worldInfoDepth/...`
+  - `chatForWI`
+  - `maxContext`
+  - `globalScanData`
+
+```ts
+buildWorldInfoChatInput(messages, includeNames = true)
+```
+
+- `messages` should be chronological and use chat shape (`{ name, mes, ... }`).
+- Returns reversed `string[]` for WI scanner.
+
+```ts
+buildWorldInfoGlobalScanData(type, overrides = {})
+```
+
+- `type` is generation trigger type.
+- Base payload fields:
+  - `personaDescription`
+  - `characterDescription`
+  - `characterPersonality`
+  - `characterDepthPrompt`
+  - `scenario`
+  - `creatorNotes`
+  - `trigger`
+- `overrides` is merged last and can replace any of the fields above.
 
 Behavior notes:
 
 - `buildPresetAwarePromptMessages(options)` preserves active preset content outside chat-history and only replaces chat-history with your supplied message list.
 - For popup/sidecar generation, run world-info simulation/finalization helpers before composing the final request body if you need the same world-info behavior as main chat generation.
 - If your plugin composes request messages after `GENERATION_WORLD_INFO_FINALIZED`, depth-based world-info injections are preserved in the final payload.
+
+#### Best practices
+
+- Prefer `messages` over legacy `taskSystem/taskUser` in new code.
+- For popup/sidecar generation, call `simulateWorldInfoActivation(...)` and pass its result into `runtimeWorldInfo` to keep WI behavior consistent with main generation.
+- Keep chat inputs chronological before calling `buildWorldInfoChatInput(...)`.
+- Use `envelopeOptions` / `promptPresetName` instead of manually reconstructing preset internals.
+
+#### Minimal popup chain example (recommended)
+
+```js
+const context = Luker.getContext();
+
+const wi = await context.simulateWorldInfoActivation({
+  coreChat: popupMessages, // [{ name, is_user, is_system, mes }]
+  type: 'normal',
+  includeNames: true,
+});
+
+const requestMessages = context.buildPresetAwarePromptMessages({
+  messages: popupMessages.map(m => ({
+    role: m.is_user ? 'user' : (m.is_system ? 'system' : 'assistant'),
+    content: m.mes,
+  })),
+  runtimeWorldInfo: {
+    worldInfoBefore: wi.worldInfoBefore,
+    worldInfoAfter: wi.worldInfoAfter,
+    worldInfoDepth: wi.worldInfoDepth,
+    outletEntries: wi.outletEntries,
+    worldInfoExamples: wi.worldInfoExamples,
+  },
+});
+```
 
 ### Lorebook/world info persistence
 
@@ -162,6 +297,21 @@ Luker context helpers auto-attach lightweight `test` guards on patch-first paths
 - Treat `409` as recoverable: refresh latest state/delta, rebuild operations, then retry.
 - `500` indicates server-side failure and should not be used as a normal patch-conflict response.
 - Prefer context helpers so guard/integrity behavior stays aligned with Luker internals.
+
+#### Low-level retry pattern (if you must call endpoints directly)
+
+```js
+async function patchWithRetry(buildRequestBody, fetchPatch, fetchLatest, maxRetries = 1) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const latest = await fetchLatest();
+    const body = buildRequestBody(latest);
+    const res = await fetchPatch(body);
+    if (res.ok) return true;
+    if (res.status !== 409) return false;
+  }
+  return false;
+}
+```
 
 ### Chat-completions request body
 
