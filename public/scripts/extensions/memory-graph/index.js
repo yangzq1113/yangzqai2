@@ -6321,9 +6321,17 @@ function getLastRecallCorePacketText(store) {
     if (!projection) {
         return '';
     }
-    const fromBlocks = normalizeMultilineText(projection?.blocks?.corePacket || '');
-    if (fromBlocks) {
-        return fromBlocks;
+    const corePacket = normalizeMultilineText(projection?.blocks?.corePacket || '');
+    const focusPacket = normalizeMultilineText(projection?.blocks?.focusPacket || '');
+    const sections = [];
+    if (corePacket) {
+        sections.push(`[CORE_PACKET]\n${corePacket}`);
+    }
+    if (focusPacket) {
+        sections.push(`[FOCUS_PACKET]\n${focusPacket}`);
+    }
+    if (sections.length > 0) {
+        return sections.join('\n\n');
     }
     return normalizeMultilineText(projection?.corePacket || '');
 }
