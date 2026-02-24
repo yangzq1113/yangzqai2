@@ -302,7 +302,6 @@ async function persistGeneratedReply(request, persistTarget, text, generationId 
             filePath: chatFilePath,
             messages: [message],
             chatMetadata: persistTarget.chat_metadata || {},
-            integritySlug: persistTarget.integrity,
             force: Boolean(persistTarget.force),
         });
         return true;
@@ -324,7 +323,6 @@ async function persistGeneratedReply(request, persistTarget, text, generationId 
             filePath: chatFilePath,
             messages: [message],
             chatMetadata: persistTarget.chat_metadata || {},
-            integritySlug: persistTarget.integrity,
             force: Boolean(persistTarget.force),
         });
         return true;
