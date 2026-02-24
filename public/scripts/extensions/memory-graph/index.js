@@ -65,7 +65,7 @@ const defaultNodeTypeSchema = [
         columnHints: {
             title: 'Stable thread name.',
             summary: 'Current progress and key open points.',
-            status: 'Thread state such as active/resolved/stalled.',
+            status: 'Thread lifecycle status. Use one of: active | blocked | resolved | dropped.',
         },
         requiredColumns: ['title'],
         forceUpdate: false,
@@ -82,6 +82,7 @@ const defaultNodeTypeSchema = [
             fanIn: 3,
             maxDepth: 8,
             keepRecentLeaves: 4,
+            rule: 'status in resolved,dropped',
             summarizeInstruction: 'Compress thread nodes into actionable quest/foreshadowing tracks. Preserve current status, blocker, and next likely progression. Keep each summary compact, target within 150 Chinese characters (soft limit).',
         },
     },
@@ -549,6 +550,9 @@ function registerLocaleData() {
         'Fan-In': '扇入',
         'Max Depth': '最大深度',
         'Keep Recent Leaves': '保留最近叶子',
+        'Compression Rule (optional)': '压缩规则（可选）',
+        'Filter nodes eligible for compression. One condition per line or use &&. Examples: status in resolved,dropped ; semantic_rollup=false': '过滤可参与压缩的节点。每行一条条件，或使用 && 连接。示例：status in resolved,dropped ; semantic_rollup=false',
+        'Invalid compression rule for type ${0}: ${1}': '类型 ${0} 的压缩规则无效：${1}',
         'Summarize Instruction': '摘要指令',
         'Duplicate Type': '复制类型',
         'Remove Type': '删除类型',
@@ -804,6 +808,9 @@ function registerLocaleData() {
         'Fan-In': '扇入',
         'Max Depth': '最大深度',
         'Keep Recent Leaves': '保留最近葉節點',
+        'Compression Rule (optional)': '壓縮規則（可選）',
+        'Filter nodes eligible for compression. One condition per line or use &&. Examples: status in resolved,dropped ; semantic_rollup=false': '過濾可參與壓縮的節點。每行一條條件，或使用 && 連接。示例：status in resolved,dropped ; semantic_rollup=false',
+        'Invalid compression rule for type ${0}: ${1}': '類型 ${0} 的壓縮規則無效：${1}',
         'Summarize Instruction': '摘要指令',
         'Duplicate Type': '複製類型',
         'Remove Type': '移除類型',
@@ -890,6 +897,7 @@ function normalizeNodeTypeSchema(schema) {
                 ? rawId !== 'event'
                 : Boolean(item.editable);
             const rawCompressionMode = String(item?.compression?.mode || '').trim().toLowerCase();
+            const defaultCompressionRule = rawId === 'thread' ? 'status in resolved,dropped' : '';
             const tableColumns = Array.isArray(item.tableColumns)
                 ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
                 : ['title'];
@@ -926,6 +934,7 @@ function normalizeNodeTypeSchema(schema) {
                     fanIn: Math.max(2, Number(item?.compression?.fanIn) || 3),
                     maxDepth: Math.max(1, Number(item?.compression?.maxDepth) || 6),
                     keepRecentLeaves: Math.max(0, Number(item?.compression?.keepRecentLeaves) || 0),
+                    rule: String(item?.compression?.rule ?? defaultCompressionRule).trim(),
                     summarizeInstruction: String(item?.compression?.summarizeInstruction || '').trim(),
                 },
             };
@@ -1839,6 +1848,7 @@ function getSemanticCompressionConfig(settings, type, context = null) {
         fanIn: Math.max(2, Number(raw.fanIn) || 3),
         maxDepth: Math.max(1, Number(raw.maxDepth) || 6),
         keepRecentLeaves: Math.max(0, Number(raw.keepRecentLeaves) || 0),
+        rule: String(raw.rule || '').trim(),
         summarizeInstruction: String(raw.summarizeInstruction || '').trim(),
         label: String(spec?.label || type || 'Semantic'),
     };
@@ -3991,6 +4001,143 @@ function collectSemanticRootsByDepth(store, type, depth, options = {}) {
         });
 }
 
+function normalizeCompressionRuleToken(raw) {
+    return String(raw || '')
+        .trim()
+        .replace(/^["'`]|["'`]$/g, '')
+        .trim()
+        .toLowerCase();
+}
+
+function parseCompressionRuleValues(rawValues) {
+    const source = String(rawValues || '').trim().replace(/^[\[(\{]\s*|\s*[\])\}]$/g, '');
+    return source
+        .split(/[|,]/g)
+        .map(item => normalizeCompressionRuleToken(item))
+        .filter(Boolean);
+}
+
+function parseCompressionRuleClause(rawClause) {
+    const text = String(rawClause || '').trim();
+    if (!text) {
+        return null;
+    }
+    const existsMatch = text.match(/^(?:has|exists)\s*\(\s*([a-zA-Z0-9_]+)\s*\)$/i);
+    if (existsMatch) {
+        return { field: String(existsMatch[1]).trim().toLowerCase(), op: 'exists', values: [] };
+    }
+    const emptyMatch = text.match(/^empty\s*\(\s*([a-zA-Z0-9_]+)\s*\)$/i);
+    if (emptyMatch) {
+        return { field: String(emptyMatch[1]).trim().toLowerCase(), op: 'empty', values: [] };
+    }
+    const compareMatch = text.match(/^([a-zA-Z0-9_]+)\s*(=|==|!=|in|not\s+in)\s*(.+)$/i);
+    if (!compareMatch) {
+        return { raw: text, invalid: true };
+    }
+    const field = String(compareMatch[1] || '').trim().toLowerCase();
+    const opRaw = String(compareMatch[2] || '').trim().toLowerCase();
+    const values = parseCompressionRuleValues(compareMatch[3]);
+    if (!field || values.length === 0) {
+        return { raw: text, invalid: true };
+    }
+    const op = opRaw === '=' || opRaw === '==' ? 'eq' : opRaw === '!=' ? 'neq' : opRaw.includes('not') ? 'not_in' : 'in';
+    return { field, op, values };
+}
+
+function getCompressionRuleFieldValue(node, field) {
+    const key = String(field || '').trim().toLowerCase();
+    if (!key) {
+        return '';
+    }
+    if (key === 'semantic_rollup' || key === 'rollup' || key === 'is_rollup') {
+        return String(Boolean(node?.semanticRollup)).toLowerCase();
+    }
+    if (key === 'semantic_depth' || key === 'depth') {
+        return String(Number.isFinite(Number(node?.semanticDepth)) ? Number(node.semanticDepth) : 0);
+    }
+    if (key === 'seq' || key === 'seq_to') {
+        return String(Number.isFinite(Number(node?.seqTo)) ? Number(node.seqTo) : '');
+    }
+    return normalizeCompressionRuleToken(getTableCellValueFromNode(node, key));
+}
+
+function buildCompressionRuleMatcher(ruleText) {
+    const text = String(ruleText || '').trim();
+    if (!text) {
+        return { enabled: false, valid: true, test: () => true, invalid: [] };
+    }
+    const rawClauses = text
+        .split(/\n|&&/g)
+        .map(clause => String(clause || '').trim())
+        .filter(Boolean);
+    if (rawClauses.length === 0) {
+        return { enabled: false, valid: true, test: () => true, invalid: [] };
+    }
+    const clauses = [];
+    const invalid = [];
+    for (const rawClause of rawClauses) {
+        const parsed = parseCompressionRuleClause(rawClause);
+        if (!parsed) {
+            continue;
+        }
+        if (parsed.invalid) {
+            invalid.push(String(parsed.raw || rawClause));
+            continue;
+        }
+        clauses.push(parsed);
+    }
+    if (invalid.length > 0 || clauses.length === 0) {
+        return { enabled: true, valid: false, test: () => false, invalid };
+    }
+    return {
+        enabled: true,
+        valid: true,
+        invalid: [],
+        test: (node) => {
+            for (const clause of clauses) {
+                const actual = getCompressionRuleFieldValue(node, clause.field);
+                if (clause.op === 'exists') {
+                    if (!actual) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'empty') {
+                    if (actual) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'eq') {
+                    if (actual !== clause.values[0]) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'neq') {
+                    if (actual === clause.values[0]) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'in') {
+                    if (!clause.values.includes(actual)) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'not_in') {
+                    if (clause.values.includes(actual)) {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+            return true;
+        },
+    };
+}
+
 function getNextSemanticRollupOrdinal(store, type, depth) {
     const targetDepth = Math.max(1, Math.floor(Number(depth || 0)));
     const nodes = getSemanticNodesForType(store, type)
@@ -4027,6 +4174,12 @@ async function compressSemanticHierarchical(context, store, settings, spec, type
         ? 2
         : Math.max(2, Number(config.threshold || 2));
     const fanIn = Math.max(2, Number(config.fanIn || 2));
+    const ruleMatcher = buildCompressionRuleMatcher(config.rule);
+    if (ruleMatcher.enabled && !ruleMatcher.valid) {
+        const invalidPart = ruleMatcher.invalid.length > 0 ? ruleMatcher.invalid.join(' | ') : String(config.rule || '');
+        console.warn(`[${MODULE_NAME}]`, i18nFormat('Invalid compression rule for type ${0}: ${1}', String(type || 'unknown'), invalidPart));
+        return false;
+    }
 
     for (let depth = 0; depth < Number(config.maxDepth || 1); depth++) {
         while (guard < 120 && compressedRounds < maxRoundsPerType) {
@@ -4035,6 +4188,9 @@ async function compressSemanticHierarchical(context, store, settings, spec, type
             }
             guard += 1;
             let candidates = collectSemanticRootsByDepth(store, type, depth, options);
+            if (ruleMatcher.enabled) {
+                candidates = candidates.filter(node => ruleMatcher.test(node));
+            }
             if (!forceMode && depth === 0 && Number(config.keepRecentLeaves || 0) > 0 && candidates.length > Number(config.keepRecentLeaves || 0)) {
                 candidates = candidates.slice(0, Math.max(0, candidates.length - Number(config.keepRecentLeaves || 0)));
             }
@@ -8365,6 +8521,7 @@ function renderNodeTypeSchemaCard(spec, index) {
     const fanIn = Number(spec?.compression?.fanIn || 3);
     const maxDepth = Number(spec?.compression?.maxDepth || 6);
     const keepRecentLeaves = Number(spec?.compression?.keepRecentLeaves || 0);
+    const compressionRule = String(spec?.compression?.rule || '');
     const summarizeInstruction = String(spec?.compression?.summarizeInstruction || '');
     const latestOnly = Boolean(spec?.latestOnly);
     const primaryKeyColumns = Array.isArray(spec?.primaryKeyColumns)
@@ -8448,6 +8605,9 @@ function renderNodeTypeSchemaCard(spec, index) {
             <input data-field="compression.keepRecentLeaves" class="text_pole" type="number" min="0" step="1" value="${keepRecentLeaves}" />
         </label>
     </div>
+    <label class="luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">${escapeHtml(i18n('Compression Rule (optional)'))}
+        <textarea data-field="compression.rule" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('Filter nodes eligible for compression. One condition per line or use &&. Examples: status in resolved,dropped ; semantic_rollup=false'))}">${escapeHtml(compressionRule)}</textarea>
+    </label>
     <label class="luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">${escapeHtml(i18n('Summarize Instruction'))}
         <textarea data-field="compression.summarizeInstruction" class="text_pole textarea_compact" rows="2">${escapeHtml(summarizeInstruction)}</textarea>
     </label>
@@ -8492,6 +8652,7 @@ function readSchemaCard(card) {
             fanIn: Math.max(2, Number(root.find('[data-field="compression.fanIn"]').val()) || 3),
             maxDepth: Math.max(1, Number(root.find('[data-field="compression.maxDepth"]').val()) || 6),
             keepRecentLeaves: Math.max(0, Number(root.find('[data-field="compression.keepRecentLeaves"]').val()) || 0),
+            rule: String(root.find('[data-field="compression.rule"]').val() || '').trim(),
             summarizeInstruction: String(root.find('[data-field="compression.summarizeInstruction"]').val() || '').trim(),
         },
     };
