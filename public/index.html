@@ -682,121 +682,129 @@
                                     <span data-i18n="Max prompt cost:">Max prompt cost:</span> <span id="chutes_max_prompt_cost" data-i18n="Unknown">Unknown</span>
                                 </div>
                                 <hr>
-                                <div class="range-block">
-                                    <label for="stream_toggle" title="Enable OpenAI completion streaming" data-i18n="[title]Enable OpenAI completion streaming" class="checkbox_label widthFreeExpand">
-                                        <input id="stream_toggle" type="checkbox" /><span data-i18n="Streaming">
-                                            Streaming</span>
-                                    </label>
-                                    <div class="toggle-description justifyLeft">
-                                        <span data-i18n="Display the response bit by bit as it is generated.">
-                                            Display the response bit by bit as it is generated.
-                                        </span><br>
-                                        <span data-i18n="When this is off, responses will be displayed all at once when they are complete.">
-                                            When this is off, responses will be displayed all at once when they are complete.
-                                        </span>
+                                <div class="inline-drawer m-t-1 wide100p">
+                                    <div class="inline-drawer-toggle inline-drawer-header">
+                                        <b data-i18n="Generation Parameters">Generation Parameters</b>
+                                        <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
                                     </div>
-                                </div>
-                                <div class="range-block" data-source="openai,claude,aimlapi,openrouter,ai21,makersuite,vertexai,mistralai,custom,cohere,perplexity,groq,siliconflow,electronhub,chutes,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,zai">
-                                    <div class="range-block-title" data-i18n="Temperature">
-                                        Temperature
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="temp_openai" name="volume" min="0" max="2.0" step="0.01">
+                                    <div class="inline-drawer-content" style="display: none;">
+                                        <div class="range-block">
+                                            <label for="stream_toggle" title="Enable OpenAI completion streaming" data-i18n="[title]Enable OpenAI completion streaming" class="checkbox_label widthFreeExpand">
+                                                <input id="stream_toggle" type="checkbox" /><span data-i18n="Streaming">
+                                                    Streaming</span>
+                                            </label>
+                                            <div class="toggle-description justifyLeft">
+                                                <span data-i18n="Display the response bit by bit as it is generated.">
+                                                    Display the response bit by bit as it is generated.
+                                                </span><br>
+                                                <span data-i18n="When this is off, responses will be displayed all at once when they are complete.">
+                                                    When this is off, responses will be displayed all at once when they are complete.
+                                                </span>
+                                            </div>
                                         </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="2.0" step="0.01" data-for="temp_openai" id="temp_counter_openai">
+                                        <div class="range-block" data-source="openai,claude,aimlapi,openrouter,ai21,makersuite,vertexai,mistralai,custom,cohere,perplexity,groq,siliconflow,electronhub,chutes,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,zai">
+                                            <div class="range-block-title" data-i18n="Temperature">
+                                                Temperature
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="temp_openai" name="volume" min="0" max="2.0" step="0.01">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="0" max="2.0" step="0.01" data-for="temp_openai" id="temp_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="openai,aimlapi,openrouter,custom,cohere,perplexity,groq,siliconflow,mistralai,electronhub,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,chutes">
-                                    <div class="range-block-title" data-i18n="Frequency Penalty">
-                                        Frequency Penalty
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="freq_pen_openai" name="volume" min="-2" max="2" step="0.01">
+                                        <div class="range-block" data-source="openai,aimlapi,openrouter,custom,cohere,perplexity,groq,siliconflow,mistralai,electronhub,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,chutes">
+                                            <div class="range-block-title" data-i18n="Frequency Penalty">
+                                                Frequency Penalty
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="freq_pen_openai" name="volume" min="-2" max="2" step="0.01">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="-2" max="2" step="0.01" data-for="freq_pen_openai" id="freq_pen_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="-2" max="2" step="0.01" data-for="freq_pen_openai" id="freq_pen_counter_openai">
+                                        <div class="range-block" data-source="openai,aimlapi,openrouter,custom,cohere,perplexity,groq,siliconflow,mistralai,electronhub,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,chutes">
+                                            <div class="range-block-title" data-i18n="Presence Penalty">
+                                                Presence Penalty
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="pres_pen_openai" name="volume" min="-2" max="2" step="0.01">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="-2" max="2" step="0.01" data-for="pres_pen_openai" id="pres_pen_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="openai,aimlapi,openrouter,custom,cohere,perplexity,groq,siliconflow,mistralai,electronhub,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,chutes">
-                                    <div class="range-block-title" data-i18n="Presence Penalty">
-                                        Presence Penalty
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="pres_pen_openai" name="volume" min="-2" max="2" step="0.01">
+                                        <div class="range-block" data-source="claude,aimlapi,openrouter,makersuite,vertexai,cohere,perplexity,electronhub,chutes,nanogpt">
+                                            <div class="range-block-title" data-i18n="Top K">
+                                                Top K
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="top_k_openai" name="volume" min="0" max="500" step="1">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="0" max="500" step="1" data-for="top_k_openai" id="top_k_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="-2" max="2" step="0.01" data-for="pres_pen_openai" id="pres_pen_counter_openai">
+                                        <div class="range-block" data-source="openai,claude,aimlapi,openrouter,ai21,makersuite,vertexai,mistralai,custom,cohere,perplexity,groq,siliconflow,electronhub,chutes,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,zai">
+                                            <div class="range-block-title" data-i18n="Top P">
+                                                Top P
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="top_p_openai" name="volume" min="0" max="1" step="0.01">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="0" max="1" step="0.01" data-for="top_p_openai" id="top_p_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="claude,aimlapi,openrouter,makersuite,vertexai,cohere,perplexity,electronhub,chutes,nanogpt">
-                                    <div class="range-block-title" data-i18n="Top K">
-                                        Top K
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="top_k_openai" name="volume" min="0" max="500" step="1">
+                                        <div class="range-block" data-source="openrouter,nanogpt,chutes">
+                                            <div class="range-block-title" data-i18n="Repetition Penalty">
+                                                Repetition Penalty
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="repetition_penalty_openai" name="volume" min="1" max="2" step="0.01">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="1" max="2" step="0.01" data-for="repetition_penalty_openai" id="repetition_penalty_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="500" step="1" data-for="top_k_openai" id="top_k_counter_openai">
+                                        <div class="range-block" data-source="openrouter,nanogpt,chutes">
+                                            <div class="range-block-title" data-i18n="Min P">
+                                                Min P
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="min_p_openai" name="volume" min="0" max="1" step="0.001">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="0" max="1" step="0.001" data-for="min_p_openai" id="min_p_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="openai,claude,aimlapi,openrouter,ai21,makersuite,vertexai,mistralai,custom,cohere,perplexity,groq,siliconflow,electronhub,chutes,nanogpt,deepseek,xai,pollinations,moonshot,fireworks,cometapi,azure_openai,zai">
-                                    <div class="range-block-title" data-i18n="Top P">
-                                        Top P
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="top_p_openai" name="volume" min="0" max="1" step="0.01">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="1" step="0.01" data-for="top_p_openai" id="top_p_counter_openai">
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="openrouter,nanogpt,chutes">
-                                    <div class="range-block-title" data-i18n="Repetition Penalty">
-                                        Repetition Penalty
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="repetition_penalty_openai" name="volume" min="1" max="2" step="0.01">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="1" max="2" step="0.01" data-for="repetition_penalty_openai" id="repetition_penalty_counter_openai">
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="openrouter,nanogpt,chutes">
-                                    <div class="range-block-title" data-i18n="Min P">
-                                        Min P
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="min_p_openai" name="volume" min="0" max="1" step="0.001">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="1" step="0.001" data-for="min_p_openai" id="min_p_counter_openai">
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="range-block" data-source="openrouter,nanogpt">
-                                    <div class="range-block-title" data-i18n="Top A">
-                                        Top A
-                                    </div>
-                                    <div class="range-block-range-and-counter">
-                                        <div class="range-block-range">
-                                            <input type="range" id="top_a_openai" name="volume" min="0" max="1" step="0.001">
-                                        </div>
-                                        <div class="range-block-counter">
-                                            <input type="number" min="0" max="1" step="0.001" data-for="top_a_openai" id="top_a_counter_openai">
+                                        <div class="range-block" data-source="openrouter,nanogpt">
+                                            <div class="range-block-title" data-i18n="Top A">
+                                                Top A
+                                            </div>
+                                            <div class="range-block-range-and-counter">
+                                                <div class="range-block-range">
+                                                    <input type="range" id="top_a_openai" name="volume" min="0" max="1" step="0.001">
+                                                </div>
+                                                <div class="range-block-counter">
+                                                    <input type="number" min="0" max="1" step="0.001" data-for="top_a_openai" id="top_a_counter_openai">
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
