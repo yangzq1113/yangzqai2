@@ -1043,6 +1043,12 @@
 
     "Generation Parameters": "生成参数",
 
+    "Prompt order updated.": "提示词顺序已更新。",
+
+    "Prompt removed from order.": "提示词已从顺序中移除。",
+
+    "Prompts removed from order.": "提示词已从顺序中移除。",
+
 
     "Novel API key": "Novel AI API 密钥",
 

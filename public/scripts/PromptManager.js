@@ -31,6 +31,7 @@ function debouncePromise(func, delay) {
 const DEFAULT_DEPTH = 4;
 const DEFAULT_ORDER = 100;
 const TOGGLE_UNDO_WINDOW_MS = 6000;
+const DETACH_UNDO_WINDOW_MS = 6000;
 
 /**
  * @enum {number}
@@ -385,6 +386,12 @@ class PromptManager {
         this.toggleUndoToast = null;
         this.toggleUndoToastMessage = null;
 
+        // Batched detach undo state
+        this.detachUndoBatch = null;
+        this.detachUndoTimer = null;
+        this.detachUndoToast = null;
+        this.detachUndoToastMessage = null;
+
         /** Dry-run for generate, must return a promise  */
         this.tryGenerate = async () => { };
 
@@ -517,8 +524,14 @@ class PromptManager {
             if (null === this.activeCharacter) return;
             const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
             const prompt = this.getPromptById(promptID);
-
-            this.detachPrompt(prompt, this.activeCharacter);
+            if (!prompt) {
+                return;
+            }
+            const detached = this.detachPrompt(prompt, this.activeCharacter);
+            if (!detached) {
+                return;
+            }
+            this.enqueueDetachUndo(promptID, detached.entry, detached.index);
             this.hidePopup();
             this.clearEditForm();
             this.render();
@@ -901,12 +914,19 @@ class PromptManager {
         if (typeof toastr !== 'undefined' && this.toggleUndoToast) {
             toastr.clear(this.toggleUndoToast);
         }
+        if (this.toggleUndoToast?.remove) {
+            this.toggleUndoToast.remove();
+        }
         this.toggleUndoToast = null;
         this.toggleUndoToastMessage = null;
     }
 
     formatToggleUndoMessage(changeCount) {
-        return t`Prompt order updated (${changeCount}).`;
+        const label = t`Prompt order updated.`;
+        if (changeCount <= 1) {
+            return label;
+        }
+        return `${label} (${changeCount})`;
     }
 
     syncToggleUndoToast() {
@@ -926,7 +946,7 @@ class PromptManager {
         }
 
         if (!this.toggleUndoToast) {
-            this.toggleUndoToast = toastr.info('', '', {
+            this.toggleUndoToast = toastr.info(' ', '', {
                 timeOut: 0,
                 extendedTimeOut: 0,
                 tapToDismiss: false,
@@ -935,8 +955,9 @@ class PromptManager {
             });
 
             const toastBody = this.toggleUndoToast ? this.toggleUndoToast.find('.toast-message') : null;
-            if (toastBody && toastBody.length > 0) {
-                toastBody.empty();
+            const toastTarget = toastBody && toastBody.length > 0 ? toastBody : this.toggleUndoToast;
+            if (toastTarget && toastTarget.length > 0) {
+                toastTarget.empty();
 
                 this.toggleUndoToastMessage = jQuery('<div class="prompt-manager-toggle-undo-text"></div>');
                 const undoButton = jQuery('<button type="button" class="menu_button menu_button_small prompt-manager-toggle-undo-button"></button>');
@@ -947,8 +968,8 @@ class PromptManager {
                     this.undoToggleBatch();
                 });
 
-                toastBody.append(this.toggleUndoToastMessage);
-                toastBody.append(undoButton);
+                toastTarget.append(this.toggleUndoToastMessage);
+                toastTarget.append(undoButton);
             }
         }
 
@@ -1019,6 +1040,147 @@ class PromptManager {
 
         this.toggleUndoBatch = null;
         this.clearToggleUndoToast();
+        this.render();
+        this.saveServiceSettings();
+    }
+
+    getDetachUndoCharacterTarget() {
+        if (this.activeCharacter) {
+            return { id: this.activeCharacter.id };
+        }
+        if (this.detachUndoBatch?.characterId !== undefined && this.detachUndoBatch?.characterId !== null) {
+            return { id: this.detachUndoBatch.characterId };
+        }
+        return null;
+    }
+
+    resetDetachUndoTimer() {
+        if (this.detachUndoTimer) {
+            clearTimeout(this.detachUndoTimer);
+        }
+        this.detachUndoTimer = setTimeout(() => {
+            this.clearDetachUndoToast();
+            this.detachUndoBatch = null;
+            this.detachUndoTimer = null;
+        }, DETACH_UNDO_WINDOW_MS);
+    }
+
+    clearDetachUndoToast() {
+        if (typeof toastr !== 'undefined' && this.detachUndoToast) {
+            toastr.clear(this.detachUndoToast);
+        }
+        if (this.detachUndoToast?.remove) {
+            this.detachUndoToast.remove();
+        }
+        this.detachUndoToast = null;
+        this.detachUndoToastMessage = null;
+    }
+
+    formatDetachUndoMessage(changeCount) {
+        if (changeCount <= 1) {
+            return t`Prompt removed from order.`;
+        }
+        return `${t`Prompts removed from order.`} (${changeCount})`;
+    }
+
+    syncDetachUndoToast() {
+        const changeCount = this.detachUndoBatch?.changes?.size ?? 0;
+        if (changeCount <= 0) {
+            this.clearDetachUndoToast();
+            return;
+        }
+
+        if (typeof toastr === 'undefined') {
+            return;
+        }
+
+        if (this.detachUndoToast && (!this.detachUndoToast.length || !document.body.contains(this.detachUndoToast[0]))) {
+            this.detachUndoToast = null;
+            this.detachUndoToastMessage = null;
+        }
+
+        if (!this.detachUndoToast) {
+            this.detachUndoToast = toastr.info(' ', '', {
+                timeOut: 0,
+                extendedTimeOut: 0,
+                tapToDismiss: false,
+                closeButton: true,
+                progressBar: false,
+            });
+
+            const toastBody = this.detachUndoToast ? this.detachUndoToast.find('.toast-message') : null;
+            const toastTarget = toastBody && toastBody.length > 0 ? toastBody : this.detachUndoToast;
+            if (toastTarget && toastTarget.length > 0) {
+                toastTarget.empty();
+
+                this.detachUndoToastMessage = jQuery('<div class="prompt-manager-toggle-undo-text"></div>');
+                const undoButton = jQuery('<button type="button" class="menu_button menu_button_small prompt-manager-toggle-undo-button"></button>');
+                undoButton.text(String(t`Undo`));
+                undoButton.on('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.undoDetachBatch();
+                });
+
+                toastTarget.append(this.detachUndoToastMessage);
+                toastTarget.append(undoButton);
+            }
+        }
+
+        if (this.detachUndoToastMessage && this.detachUndoToastMessage.length > 0) {
+            this.detachUndoToastMessage.text(this.formatDetachUndoMessage(changeCount));
+        }
+    }
+
+    enqueueDetachUndo(promptID, entry, index) {
+        const characterTarget = this.getDetachUndoCharacterTarget();
+        if (!characterTarget || !entry || !Number.isInteger(index)) {
+            return;
+        }
+
+        if (!this.detachUndoBatch || String(this.detachUndoBatch.characterId) !== String(characterTarget.id)) {
+            this.detachUndoBatch = {
+                characterId: characterTarget.id,
+                changes: new Map(),
+            };
+        }
+
+        this.detachUndoBatch.changes.set(promptID, {
+            index,
+            entry: structuredClone(entry),
+        });
+        this.syncDetachUndoToast();
+        this.resetDetachUndoTimer();
+    }
+
+    undoDetachBatch() {
+        if (!this.detachUndoBatch || !(this.detachUndoBatch.changes instanceof Map) || this.detachUndoBatch.changes.size === 0) {
+            this.clearDetachUndoToast();
+            return;
+        }
+
+        if (this.detachUndoTimer) {
+            clearTimeout(this.detachUndoTimer);
+            this.detachUndoTimer = null;
+        }
+
+        const targetCharacter = { id: this.detachUndoBatch.characterId };
+        const promptOrder = this.getPromptOrderForCharacter(targetCharacter);
+        const restoreOperations = Array.from(this.detachUndoBatch.changes.entries())
+            .map(([promptID, value]) => ({ promptID, ...value }))
+            .sort((a, b) => a.index - b.index);
+
+        for (const restore of restoreOperations) {
+            const existingIndex = promptOrder.findIndex(entry => entry.identifier === restore.promptID);
+            if (existingIndex !== -1) {
+                continue;
+            }
+            const safeIndex = Math.max(0, Math.min(restore.index, promptOrder.length));
+            promptOrder.splice(safeIndex, 0, structuredClone(restore.entry));
+        }
+
+        this.detachUndoBatch = null;
+        this.clearDetachUndoToast();
         this.render();
         this.saveServiceSettings();
     }
@@ -1163,8 +1325,12 @@ class PromptManager {
     detachPrompt(prompt, character) {
         const promptOrder = this.getPromptOrderForCharacter(character);
         const index = promptOrder.findIndex(entry => entry.identifier === prompt.identifier);
-        if (-1 === index) return;
-        promptOrder.splice(index, 1);
+        if (-1 === index) return null;
+        const [removedEntry] = promptOrder.splice(index, 1);
+        return {
+            index,
+            entry: structuredClone(removedEntry),
+        };
     }
 
     /**

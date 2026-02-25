@@ -884,6 +884,12 @@
 
     "Generation Parameters": "生成參數",
 
+    "Prompt order updated.": "提示詞順序已更新。",
+
+    "Prompt removed from order.": "提示詞已從順序中移除。",
+
+    "Prompts removed from order.": "提示詞已從順序中移除。",
+
 
     "Novel API key": "NovelAI API 金鑰",
 
