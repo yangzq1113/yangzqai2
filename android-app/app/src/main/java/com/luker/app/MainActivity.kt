@@ -629,9 +629,10 @@ class MainActivity : AppCompatActivity() {
 
         val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
         val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-        val navBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+        val navBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
         val imeOverlapBottom = if (imeVisible) {
-            (imeBottom - navBottom).coerceAtLeast(0)
+            val overlap = (imeBottom - navBottom).coerceAtLeast(0)
+            if (overlap == 0 && imeBottom > 0) imeBottom else overlap
         } else {
             0
         }
