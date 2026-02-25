@@ -5050,20 +5050,26 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
         const data = await savePresetSettings.json();
 
         if (Object.keys(openai_setting_names).includes(data.name)) {
-            oai_settings.preset_settings_openai = data.name;
             const value = openai_setting_names[data.name];
             Object.assign(openai_settings[value], presetBody);
-            $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
-            if (triggerUi) $('#settings_preset_openai').trigger('change');
+            if (triggerUi) {
+                oai_settings.preset_settings_openai = data.name;
+                $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
+                $('#settings_preset_openai').trigger('change');
+            }
         }
         else {
             openai_settings.push(presetBody);
             openai_setting_names[data.name] = openai_settings.length - 1;
             const option = document.createElement('option');
-            option.selected = true;
             option.value = String(openai_settings.length - 1);
             option.innerText = data.name;
-            if (triggerUi) $('#settings_preset_openai').append(option).trigger('change');
+            if (triggerUi) {
+                option.selected = true;
+                $('#settings_preset_openai').append(option).trigger('change');
+            } else {
+                $('#settings_preset_openai').append(option);
+            }
         }
     } else {
         toastr.error(t`Failed to save preset`);
@@ -5447,11 +5453,12 @@ async function onLogitBiasPresetDeleteClick() {
 }
 
 function getComparableOpenAIPresetBody(presetBody, fallbackSettings = oai_settings) {
+    const excludedKeys = new Set(['extensions']);
     const comparable = {};
     const normalizedPresetBody = presetBody && typeof presetBody === 'object' ? presetBody : {};
 
     for (const [presetKey, [, settingKey, , isConnection]] of Object.entries(settingsToUpdate)) {
-        if (isConnection) {
+        if (isConnection || excludedKeys.has(presetKey)) {
             continue;
         }
 
@@ -5463,6 +5470,144 @@ function getComparableOpenAIPresetBody(presetBody, fallbackSettings = oai_settin
     }
 
     return comparable;
+}
+
+function canonicalizeComparableOpenAIPresetValue(value) {
+    if (Array.isArray(value)) {
+        return value.map(canonicalizeComparableOpenAIPresetValue);
+    }
+    if (value && typeof value === 'object' && value.constructor === Object) {
+        const canonical = {};
+        for (const key of Object.keys(value).sort()) {
+            canonical[key] = canonicalizeComparableOpenAIPresetValue(value[key]);
+        }
+        return canonical;
+    }
+    return value;
+}
+
+function normalizePromptEntryForUnsavedCheck(prompt, index) {
+    const source = prompt && typeof prompt === 'object' ? prompt : {};
+    const normalizedIdentifier = String(source.identifier ?? '').trim();
+
+    const normalizeNumber = (value, fallback) => {
+        const numericValue = Number(value);
+        return Number.isFinite(numericValue) ? numericValue : fallback;
+    };
+
+    const normalizedTriggers = Array.isArray(source.injection_trigger)
+        ? Array.from(new Set(source.injection_trigger.map(trigger => String(trigger))))
+            .sort((a, b) => a.localeCompare(b))
+        : [];
+
+    return {
+        identifier: normalizedIdentifier,
+        name: String(source.name ?? ''),
+        role: String(source.role ?? ''),
+        content: String(source.content ?? ''),
+        system_prompt: Boolean(source.system_prompt),
+        marker: Boolean(source.marker),
+        injection_position: normalizeNumber(source.injection_position, 0),
+        injection_depth: normalizeNumber(source.injection_depth, 4),
+        injection_order: normalizeNumber(source.injection_order, 100),
+        injection_trigger: normalizedTriggers,
+        forbid_overrides: Boolean(source.forbid_overrides),
+        plugin_extra: Boolean(source.plugin_extra),
+        extension: Boolean(source.extension),
+        _index: index,
+    };
+}
+
+function normalizePromptsForUnsavedCheck(prompts) {
+    if (!Array.isArray(prompts)) {
+        return [];
+    }
+
+    return prompts
+        .map((prompt, index) => normalizePromptEntryForUnsavedCheck(prompt, index))
+        .filter(prompt => prompt.identifier.length > 0)
+        .sort((a, b) => {
+            const byIdentifier = a.identifier.localeCompare(b.identifier);
+            if (byIdentifier !== 0) {
+                return byIdentifier;
+            }
+            return a._index - b._index;
+        })
+        .map(({ _index, ...prompt }) => prompt);
+}
+
+function normalizePromptOrderForUnsavedCheck(promptOrder) {
+    if (!Array.isArray(promptOrder)) {
+        return [];
+    }
+
+    return promptOrder
+        .map((entry, index) => {
+            const source = entry && typeof entry === 'object' ? entry : {};
+            const characterId = String(source.character_id ?? '').trim();
+            const normalizedOrder = Array.isArray(source.order)
+                ? source.order
+                    .map(item => ({
+                        identifier: String(item?.identifier ?? '').trim(),
+                        enabled: Boolean(item?.enabled),
+                    }))
+                    .filter(item => item.identifier.length > 0)
+                : [];
+
+            return {
+                character_id: characterId,
+                order: normalizedOrder,
+                _index: index,
+            };
+        })
+        .filter(entry => entry.character_id.length > 0)
+        .sort((a, b) => {
+            const byCharacter = a.character_id.localeCompare(b.character_id);
+            if (byCharacter !== 0) {
+                return byCharacter;
+            }
+            return a._index - b._index;
+        })
+        .map(({ _index, ...entry }) => entry);
+}
+
+function normalizeComparableOpenAIPresetBodyTypes(body) {
+    const normalized = body && typeof body === 'object' ? structuredClone(body) : {};
+
+    for (const [presetKey, [, settingKey, isCheckbox]] of Object.entries(settingsToUpdate)) {
+        if (!(presetKey in normalized)) {
+            continue;
+        }
+
+        const value = normalized[presetKey];
+        if (presetKey === 'prompts') {
+            normalized[presetKey] = normalizePromptsForUnsavedCheck(value);
+            continue;
+        }
+        if (presetKey === 'prompt_order') {
+            normalized[presetKey] = normalizePromptOrderForUnsavedCheck(value);
+            continue;
+        }
+        if (isCheckbox) {
+            normalized[presetKey] = Boolean(value);
+            continue;
+        }
+
+        const currentValue = oai_settings?.[settingKey];
+        if (typeof currentValue === 'number') {
+            const numericValue = Number(value);
+            if (Number.isFinite(numericValue)) {
+                normalized[presetKey] = numericValue;
+            }
+            continue;
+        }
+
+        if (typeof currentValue === 'string' && value !== null && value !== undefined && typeof value !== 'string') {
+            normalized[presetKey] = String(value);
+        }
+    }
+
+    return normalized;
 }
 
 function hasUnsavedOpenAIPresetChanges(presetName) {
@@ -5481,19 +5626,21 @@ function hasUnsavedOpenAIPresetChanges(presetName) {
         return false;
     }
 
-    const currentPresetBody = getChatCompletionPreset(oai_settings);
+    const currentPresetBody = getComparableOpenAIPresetBody(getChatCompletionPreset(oai_settings));
     const savedComparableBody = getComparableOpenAIPresetBody(savedPresetBody);
-    return JSON.stringify(currentPresetBody) !== JSON.stringify(savedComparableBody);
+    const canonicalCurrent = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(currentPresetBody));
+    const canonicalSaved = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(savedComparableBody));
+    return JSON.stringify(canonicalCurrent) !== JSON.stringify(canonicalSaved);
 }
 
 async function confirmOpenAIPresetSwitch(presetNameBefore) {
     const popupResult = await callGenericPopup(
-        t`You have unsaved changes in preset '${presetNameBefore}'.`,
+        `${t`You have unsaved changes in the current preset.`}\n${String(presetNameBefore || '')}`,
         POPUP_TYPE.CONFIRM,
         '',
         {
-            okButton: t`Save and switch`,
-            cancelButton: t`Discard and switch`,
+            okButton: t`Save and switch preset`,
+            cancelButton: t`Discard and switch preset`,
             customButtons: [{ text: t`Cancel`, result: POPUP_RESULT.CANCELLED, appendAtEnd: true }],
         },
     );

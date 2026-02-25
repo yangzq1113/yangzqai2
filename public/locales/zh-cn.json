@@ -1035,6 +1035,14 @@
 
     "Cancel": "取消",
 
+    "You have unsaved changes in the current preset.": "当前预设有未保存的更改。",
+
+    "Save and switch preset": "保存并切换预设",
+
+    "Discard and switch preset": "放弃并切换预设",
+
+    "Generation Parameters": "生成参数",
+
 
     "Novel API key": "Novel AI API 密钥",
 

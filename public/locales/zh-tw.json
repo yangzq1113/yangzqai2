@@ -876,6 +876,14 @@
 
     "Cancel": "關閉",
 
+    "You have unsaved changes in the current preset.": "目前預設有尚未儲存的變更。",
+
+    "Save and switch preset": "儲存並切換預設",
+
+    "Discard and switch preset": "放棄並切換預設",
+
+    "Generation Parameters": "生成參數",
+
 
     "Novel API key": "NovelAI API 金鑰",
 
