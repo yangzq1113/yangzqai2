@@ -187,6 +187,7 @@ const characterBoundPresetState = {
     runtimePresetName: '',
     runtimePresetBody: null,
 };
+let lastOpenAIPresetSelectValue = '';
 
 export const chat_completion_sources = {
     OPENAI: 'openai',
@@ -4518,6 +4519,7 @@ function loadOpenAISettings(data, settings) {
     oai_settings.custom_models_by_source = normalizeCustomModelsBySource(oai_settings.custom_models_by_source);
 
     $(`#settings_preset_openai option[value="${openai_setting_names[oai_settings.preset_settings_openai]}"]`).prop('selected', true);
+    lastOpenAIPresetSelectValue = String($('#settings_preset_openai').val() ?? '');
     updateCharacterBoundPresetBadge(false);
     $('#openai_external_category').toggle(oai_settings.show_external_models);
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
@@ -5444,12 +5446,97 @@ async function onLogitBiasPresetDeleteClick() {
     saveSettingsDebounced();
 }
 
+function getComparableOpenAIPresetBody(presetBody, fallbackSettings = oai_settings) {
+    const comparable = {};
+    const normalizedPresetBody = presetBody && typeof presetBody === 'object' ? presetBody : {};
+
+    for (const [presetKey, [, settingKey, , isConnection]] of Object.entries(settingsToUpdate)) {
+        if (isConnection) {
+            continue;
+        }
+
+        if (normalizedPresetBody[presetKey] !== undefined) {
+            comparable[presetKey] = structuredClone(normalizedPresetBody[presetKey]);
+        } else {
+            comparable[presetKey] = structuredClone(fallbackSettings?.[settingKey]);
+        }
+    }
+
+    return comparable;
+}
+
+function hasUnsavedOpenAIPresetChanges(presetName) {
+    const normalizedName = String(presetName || '').trim();
+    if (!normalizedName) {
+        return false;
+    }
+
+    const presetIndex = openai_setting_names?.[normalizedName];
+    if (!Number.isInteger(presetIndex)) {
+        return false;
+    }
+
+    const savedPresetBody = openai_settings?.[presetIndex];
+    if (!savedPresetBody || typeof savedPresetBody !== 'object') {
+        return false;
+    }
+
+    const currentPresetBody = getChatCompletionPreset(oai_settings);
+    const savedComparableBody = getComparableOpenAIPresetBody(savedPresetBody);
+    return JSON.stringify(currentPresetBody) !== JSON.stringify(savedComparableBody);
+}
+
+async function confirmOpenAIPresetSwitch(presetNameBefore) {
+    const popupResult = await callGenericPopup(
+        t`You have unsaved changes in preset '${presetNameBefore}'.`,
+        POPUP_TYPE.CONFIRM,
+        '',
+        {
+            okButton: t`Save and switch`,
+            cancelButton: t`Discard and switch`,
+            customButtons: [{ text: t`Cancel`, result: POPUP_RESULT.CANCELLED, appendAtEnd: true }],
+        },
+    );
+
+    if (popupResult === POPUP_RESULT.CANCELLED || popupResult === null) {
+        return false;
+    }
+
+    if (popupResult === POPUP_RESULT.AFFIRMATIVE) {
+        await saveOpenAIPreset(presetNameBefore, oai_settings, false);
+    }
+
+    return true;
+}
+
 // Load OpenAI preset settings
-function onSettingsPresetChange() {
+async function onSettingsPresetChange(event) {
     const presetNameBefore = oai_settings.preset_settings_openai;
+    const previousSelectValue = lastOpenAIPresetSelectValue;
+    const currentSelectValue = String($('#settings_preset_openai').val() ?? '');
+    const wasCharacterBoundPreset = previousSelectValue === characterBoundPresetState.runtimeOptionValue;
     const selectedOption = $('#settings_preset_openai').find(':selected');
     const usingCharacterBoundPreset = selectedOption.attr('data-luker-char-bound') === '1';
     const presetName = selectedOption.text();
+
+    if (Boolean(event?.originalEvent) && !wasCharacterBoundPreset && !usingCharacterBoundPreset && presetNameBefore && presetName !== presetNameBefore && hasUnsavedOpenAIPresetChanges(presetNameBefore)) {
+        try {
+            const shouldSwitch = await confirmOpenAIPresetSwitch(presetNameBefore);
+            if (!shouldSwitch) {
+                if (previousSelectValue) {
+                    $('#settings_preset_openai').val(previousSelectValue);
+                }
+                return;
+            }
+        } catch (error) {
+            console.error('Failed to resolve unsaved preset switch confirmation', error);
+            if (previousSelectValue) {
+                $('#settings_preset_openai').val(previousSelectValue);
+            }
+            return;
+        }
+    }
+
     if (!usingCharacterBoundPreset) {
         oai_settings.preset_settings_openai = presetName;
     }
@@ -5459,6 +5546,7 @@ function onSettingsPresetChange() {
     updateCharacterBoundPresetBadge(usingCharacterBoundPreset);
 
     if (!preset || typeof preset !== 'object') {
+        lastOpenAIPresetSelectValue = currentSelectValue;
         return;
     }
 
@@ -5468,14 +5556,16 @@ function onSettingsPresetChange() {
     const updateCheckbox = (selector, value) => $(selector).prop('checked', value).trigger('input', { source: 'preset' });
 
     // Allow subscribers to alter the preset before applying deltas
-    eventSource.emit(event_types.OAI_PRESET_CHANGED_BEFORE, {
-        preset: preset,
-        presetName: presetName,
-        settingsToUpdate: settingsToUpdate,
-        settings: oai_settings,
-        savePreset: saveOpenAIPreset,
-        presetNameBefore: presetNameBefore,
-    }).finally(async () => {
+    try {
+        await eventSource.emit(event_types.OAI_PRESET_CHANGED_BEFORE, {
+            preset: preset,
+            presetName: presetName,
+            settingsToUpdate: settingsToUpdate,
+            settings: oai_settings,
+            savePreset: saveOpenAIPreset,
+            presetNameBefore: presetNameBefore,
+        });
+    } finally {
         for (const [key, [selector, setting, isCheckbox, isConnection]] of Object.entries(settingsToUpdate)) {
             if (isConnection) {
                 continue;
@@ -5502,7 +5592,9 @@ function onSettingsPresetChange() {
         saveSettingsDebounced();
         await eventSource.emit(event_types.OAI_PRESET_CHANGED_AFTER);
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'openai', name: presetName });
-    });
+    }
+
+    lastOpenAIPresetSelectValue = String($('#settings_preset_openai').val() ?? currentSelectValue);
 }
 
 function getMaxContextOpenAI(value) {
