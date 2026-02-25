@@ -58,35 +58,6 @@ const defaultNodeTypeSchema = [
         },
     },
     {
-        id: 'thread',
-        label: 'Thread',
-        tableName: 'thread_table',
-        tableColumns: ['title', 'summary', 'status'],
-        columnHints: {
-            title: 'Stable thread name.',
-            summary: 'Current progress and key open points.',
-            status: 'Thread lifecycle status. Must be explicit: active (ongoing), blocked (explicit blocker), resolved (goal/clue completed), dropped (abandoned/invalidated). Never keep active by default when evidence shows closure.',
-        },
-        requiredColumns: ['title'],
-        forceUpdate: false,
-        editable: true,
-        level: LEVEL.SEMANTIC,
-        extractHint: 'Unresolved clues, foreshadowing, quests, promises, and long-term hooks. Also capture lifecycle transitions: resolve completed goals, mark blocked on explicit blockers, mark dropped when abandoned/invalidated.',
-        keywords: ['quest', 'clue', 'mystery', 'promise', 'goal', 'thread'],
-        alwaysInject: false,
-        latestOnly: false,
-        primaryKeyColumns: [],
-        compression: {
-            mode: 'hierarchical',
-            threshold: 8,
-            fanIn: 3,
-            maxDepth: 8,
-            keepRecentLeaves: 4,
-            rule: 'status in resolved,dropped',
-            summarizeInstruction: 'Compress thread nodes into actionable quest/foreshadowing tracks. Preserve current status, blocker, and next likely progression. Keep each summary compact, target within 150 Chinese characters (soft limit).',
-        },
-    },
-    {
         id: 'character_sheet',
         label: 'Character Sheet',
         tableName: 'character_table',
@@ -210,7 +181,7 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
     'Before selecting, extract the key information needs of this turn from context: who/where/what is active, what must stay continuous, and what unknowns matter now.',
     'Do not rely on keywords only. Use semantic intent and causal continuity.',
     'Select nodes that maximize practical value for the immediate next reply.',
-    'Keep storyline continuity first, then add essential support nodes (character/location/rule/thread) only when they materially improve correctness.',
+    'Keep storyline continuity first, then add essential support nodes (character/location/rule) only when they materially improve correctness.',
     'Apply layered relevance in final ranking: direct > indirect > background-potential.',
     'Output selected_node_ids in priority order (highest value first).',
     'Prefer a compact set (typically 3-8 when available) instead of selecting everything.',
@@ -231,17 +202,16 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     '<thought>',
     '[0] Batch scope and chronology: this batch covered seq range, what changed vs previous memory.',
     '[1] Event decision (event/event_table): create or skip, and why.',
-    '[2] Thread decision (thread/thread_table): create/edit/delete/skip with evidence. For each touched thread, explicitly decide status transition (active | blocked | resolved | dropped) and why.',
-    '[3] Character decision (character_sheet/character_table): create/edit/delete/skip with evidence.',
-    '[4] Location decision (location_state/location_table): create/edit/delete/skip with evidence.',
-    '[5] Rule decision (rule_constraint/rule_table): create/edit/delete/skip with evidence.',
-    '[6] Link plan: exact relation edges to add (from -> relation -> target), locator method per edge (target_node_id vs target_ref), or explicit no-link reason.',
-    '[7] Planned tool calls: full call list in execution order (done last), including ref declarations before any link that depends on them.',
+    '[2] Character decision (character_sheet/character_table): create/edit/delete/skip with evidence.',
+    '[3] Location decision (location_state/location_table): create/edit/delete/skip with evidence.',
+    '[4] Rule decision (rule_constraint/rule_table): create/edit/delete/skip with evidence.',
+    '[5] Link plan: exact relation edges to add (from -> relation -> target), locator method per edge (target_node_id vs target_ref), or explicit no-link reason.',
+    '[6] Planned tool calls: full call list in execution order (done last), including ref declarations before any link that depends on them.',
     '</thought>',
     'If <thought> misses any required section above, treat your own response as invalid and regenerate fully.',
     'Thought depth rule: each section must include (a) decision, (b) evidence seq(s), (c) field-level update plan.',
     'Thought anti-lazy rule: no one-line vague claims like "no update needed" without evidence.',
-    'If the active schema contains additional custom types, append extra per-type analysis after section [5].',
+    'If the active schema contains additional custom types, append extra per-type analysis after section [4].',
     'For each type, explicitly check whether optional columns can be updated from evidence in this batch.',
     'Tool set is dynamic. Semantic types expose create/edit/delete tools as needed; some types can be create-only. Treat tool descriptions as the source of truth.',
     'Call type tools to emit concrete updates, then call luker_rpg_extract_done as the final call.',
@@ -266,29 +236,22 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Grounding rule: do not hallucinate. Every field should be inferable from the batch or stable continuity.',
     'Coverage rule: avoid event-only outputs when other schema types have clear evidence; update them in the same batch.',
     'State quality rule: keep state/status fields updated when progression changes (e.g. ongoing/resolved/blocked).',
-    'Thread lifecycle hard rule: never keep thread status as active by default.',
-    'Thread lifecycle hard rule: when evidence shows completion/payoff/closure, emit thread edit with status=resolved.',
-    'Thread lifecycle hard rule: when evidence shows explicit obstruction/stall, emit thread edit with status=blocked.',
-    'Thread lifecycle hard rule: when evidence shows abandonment/invalidation/retcon, emit thread edit with status=dropped.',
-    'Thread lifecycle hard rule: when progression resumes from blocked state, emit thread edit and set status back to active.',
-    'Thread summary rule: when status changes, update summary to include concrete outcome/blocker and remaining hooks.',
-    'Thread coverage rule: if this batch contains quest/clue/promise progression, you MUST emit at least one thread create/edit call.',
     'Editability rule: only types listed in graph_data.editable_type_ids may use edit/delete tools. For non-editable types, use create tools only.',
     'Event strict policy: each extraction batch may create AT MOST ONE event node.',
     'If multiple sub-events happened in one batch, merge them into one coherent event summary instead of creating multiple event rows.',
     'If no meaningful event progression occurred, do not fabricate an event; explain the skip clearly in section [1].',
-    'Relation modeling rule: encode cross-node relations (who/where/thread linkage) via links, not by stuffing relation lists into node row columns.',
+    'Relation modeling rule: encode cross-node relations (who/where linkage) via links, not by stuffing relation lists into node row columns.',
     'Never store relationship linkage text inside node fields when links can represent it.',
-    'Link quality rule: include links for involved entities/locations/threads when evidence exists.',
-    'Event linking priority: when an event clearly involves participants/locations/threads, include links for those relations.',
+    'Link quality rule: include links for involved entities/locations when evidence exists.',
+    'Event linking priority: when an event clearly involves participants/locations, include links for those relations.',
     'If relation-worthy nodes are updated but links are missing, your response is incomplete.',
-    'If you decide not to add links in this batch, explain why in <thought> section [6] with explicit evidence.',
+    'If you decide not to add links in this batch, explain why in <thought> section [5] with explicit evidence.',
     'Link locator rule: use target_ref (same-batch temporary reference) or target_node_id (existing node id). Do not use title/type matching.',
     'Link locator decision policy: if target already exists in graph_data.nodes, use target_node_id.',
     'Link locator decision policy: if target will be created in this batch, assign ref in its create call and use target_ref.',
     'Link locator decision policy: if you cannot locate by node_id and target is missing, create target first (with ref), then link by target_ref.',
     'Never skip a grounded relation only because locator is missing; create/ref it first, then link.',
-    'In <thought> section [6], for each planned edge, explicitly state locator choice and why (existing node_id vs same-batch ref).',
+    'In <thought> section [5], for each planned edge, explicitly state locator choice and why (existing node_id vs same-batch ref).',
     'Create-time linking rule: if a node needs links now, include links in that create call instead of deferring.',
     'Post-update linking rule: when only relations change, use luker_rpg_extract_link_upsert.',
     'For each create call, you may set optional ref to name this new node for later same-batch links.',
@@ -300,7 +263,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'If information is large, split into multiple focused create/edit operations instead of one oversized summary.',
     'For non-event types, summary is optional unless schema requires it.',
     'Title policy: non-event nodes should use short stable human-readable titles.',
-    'Reuse the exact same title for the same ongoing entity/thread/location to keep updates merged.',
+    'Reuse the exact same title for the same ongoing entity/location to keep updates merged.',
     'Type-specific titles: when a type does not define title column in tool schema, omit title.',
     'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one complete <thought>...</thought>; (2) extraction function calls only.',
     'Do not output any narrative/body text, markdown, code fences, comments, or XML blocks except <thought>.',
@@ -886,6 +849,9 @@ function normalizeNodeTypeSchema(schema) {
         .filter(item => item && typeof item === 'object')
         .map((item, index) => {
             const rawId = String(item.id || `custom_${index + 1}`).trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_');
+            if (rawId === 'thread') {
+                return null;
+            }
             const defaultRequired = rawId === 'event' ? ['summary'] : [];
             const requiredColumns = Array.isArray(item.requiredColumns)
                 ? item.requiredColumns.map(x => String(x || '').trim()).filter(Boolean)
@@ -904,7 +870,7 @@ function normalizeNodeTypeSchema(schema) {
                 ? rawId !== 'event'
                 : Boolean(item.editable);
             const rawCompressionMode = String(item?.compression?.mode || '').trim().toLowerCase();
-            const defaultCompressionRule = rawId === 'thread' ? 'status in resolved,dropped' : '';
+            const defaultCompressionRule = '';
             const tableColumns = Array.isArray(item.tableColumns)
                 ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
                 : ['title'];
@@ -946,7 +912,7 @@ function normalizeNodeTypeSchema(schema) {
                 },
             };
         })
-        .filter(item => item.id);
+        .filter(item => item && item.id);
 
     const deduped = [];
     const seenIds = new Set();
@@ -1480,6 +1446,10 @@ function normalizeStoreForRuntime(store) {
             }
             const nodeId = String(id || '').trim();
             if (!nodeId) {
+                continue;
+            }
+            const nodeType = String(rawNode.type || 'semantic').trim().toLowerCase();
+            if (nodeType === 'thread') {
                 continue;
             }
             const level = String(rawNode.level || LEVEL.SEMANTIC).trim();
@@ -6790,7 +6760,7 @@ function buildGraphCytoscapeElements(store) {
         timelineIndexByNodeId.set(String(node.id || ''), index);
     });
 
-    const preferredTypeOrder = ['event', 'thread', 'character_sheet', 'location_state', 'rule_constraint'];
+    const preferredTypeOrder = ['event', 'character_sheet', 'location_state', 'rule_constraint'];
     const typeRank = new Map(preferredTypeOrder.map((type, index) => [type, index]));
     const types = [...new Set(scopedNodeList.map(node => String(node.type || 'unknown').trim() || 'unknown'))]
         .sort((a, b) => {
