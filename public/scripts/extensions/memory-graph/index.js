@@ -2073,6 +2073,8 @@ function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
         worldInfoDepth: Array.isArray(source.worldInfoDepth) ? source.worldInfoDepth : [],
         outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
         worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
+        anBefore: Array.isArray(source.anBefore) ? source.anBefore : [],
+        anAfter: Array.isArray(source.anAfter) ? source.anAfter : [],
     };
 }
 
@@ -2082,6 +2084,9 @@ function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
         return true;
     }
     if (normalized.worldInfoDepth.length > 0 || normalized.worldInfoExamples.length > 0) {
+        return true;
+    }
+    if (normalized.anBefore.length > 0 || normalized.anAfter.length > 0) {
         return true;
     }
     return Object.keys(normalized.outletEntries).length > 0;
@@ -2094,6 +2099,8 @@ function buildRuntimeWorldInfoFromPayload(payload = null) {
         worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
         outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
         worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
+        anBefore: Array.isArray(payload?.anBefore) ? payload.anBefore : [],
+        anAfter: Array.isArray(payload?.anAfter) ? payload.anAfter : [],
     });
     return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
 }

@@ -111,11 +111,11 @@ import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
 import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
-import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, reloadEditor, saveWorldInfo, updateWorldInfoList } from './world-info.js';
+import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, reloadEditor, saveWorldInfo, updateWorldInfoList, wi_anchor_position } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
 import { ConnectionManagerRequestService } from './extensions/shared.js';
 import { updateReasoningUI, parseReasoningFromString, getReasoningTemplateByName } from './reasoning.js';
-import { IGNORE_SYMBOL } from './constants.js';
+import { IGNORE_SYMBOL, inject_ids } from './constants.js';
 import { macros } from './macros/macro-system.js';
 
 function safeClone(value, fallback = {}) {
@@ -575,7 +575,123 @@ function resolvePluginPromptOrderEntries(completionCore, { preferredCharacterIds
     return grouped[0].order;
 }
 
-function resolvePluginMarkerPromptContent(promptIdentifier, envelope) {
+function normalizeRuntimeWorldInfoExamples(rawExamples) {
+    if (!Array.isArray(rawExamples)) {
+        return [];
+    }
+    const normalized = [];
+    for (const item of rawExamples) {
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+        const content = String(item.content ?? '').trim();
+        if (!content) {
+            continue;
+        }
+        let position = Number(wi_anchor_position.after);
+        const numericPosition = Number(item.position);
+        if (Number.isFinite(numericPosition)) {
+            if (numericPosition === Number(wi_anchor_position.before)) {
+                position = Number(wi_anchor_position.before);
+            } else if (numericPosition === Number(wi_anchor_position.after)) {
+                position = Number(wi_anchor_position.after);
+            }
+        } else {
+            const textPosition = String(item.position || '').trim().toLowerCase();
+            if (textPosition === 'before') {
+                position = Number(wi_anchor_position.before);
+            } else if (textPosition === 'after') {
+                position = Number(wi_anchor_position.after);
+            }
+        }
+        normalized.push({ position, content });
+    }
+    return normalized;
+}
+
+function normalizeRuntimeWorldInfoNoteEntries(rawEntries) {
+    if (!Array.isArray(rawEntries)) {
+        return [];
+    }
+    return rawEntries
+        .map(entry => String(entry ?? '').trim())
+        .filter(Boolean);
+}
+
+function normalizeRuntimeWorldInfoOutlets(rawOutlets) {
+    if (!rawOutlets || typeof rawOutlets !== 'object') {
+        return {};
+    }
+    const normalized = {};
+    for (const [key, value] of Object.entries(rawOutlets)) {
+        const outletName = String(key || '').trim();
+        if (!outletName) {
+            continue;
+        }
+        const entries = Array.isArray(value)
+            ? value.map(entry => String(entry ?? '').trim()).filter(Boolean)
+            : [];
+        if (entries.length > 0) {
+            normalized[outletName] = entries;
+        }
+    }
+    return normalized;
+}
+
+function composeDialogueExamplesWithWorldInfo(baseExamples = '', worldInfoExamples = []) {
+    const before = [];
+    const after = [];
+    for (const example of worldInfoExamples) {
+        if (!example || typeof example !== 'object') {
+            continue;
+        }
+        const content = String(example.content ?? '').trim();
+        if (!content) {
+            continue;
+        }
+        if (Number(example.position) === Number(wi_anchor_position.before)) {
+            before.push(content);
+        } else {
+            after.push(content);
+        }
+    }
+    return [before.join('\n').trim(), String(baseExamples || '').trim(), after.join('\n').trim()]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+}
+
+function composeAuthorsNoteWithWorldInfo(authorsNote = '', anBefore = [], anAfter = []) {
+    const before = normalizeRuntimeWorldInfoNoteEntries(anBefore);
+    const after = normalizeRuntimeWorldInfoNoteEntries(anAfter);
+    const note = String(authorsNote || '').trim();
+    return [...before, note, ...after]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+}
+
+function resolveRuntimeWorldInfoOutletPromptContent(identifier, outletEntries = {}) {
+    const promptIdentifier = String(identifier || '').trim();
+    if (!promptIdentifier || !outletEntries || typeof outletEntries !== 'object') {
+        return '';
+    }
+    for (const [outletName, entries] of Object.entries(outletEntries)) {
+        const generatedIdentifier = String(inject_ids.CUSTOM_WI_OUTLET(outletName) || '').replace(/\W/g, '_');
+        if (generatedIdentifier !== promptIdentifier) {
+            continue;
+        }
+        const content = Array.isArray(entries)
+            ? entries.map(entry => String(entry ?? '').trim()).filter(Boolean).join('\n').trim()
+            : '';
+        if (content) {
+            return content;
+        }
+    }
+    return '';
+}
+
+function resolvePluginMarkerPromptContent(promptIdentifier, envelope, runtimeWorldInfo = null) {
     const marker = String(promptIdentifier || '').trim();
     switch (marker) {
         case 'charDescription':
@@ -587,7 +703,10 @@ function resolvePluginMarkerPromptContent(promptIdentifier, envelope) {
         case 'personaDescription':
             return String(envelope?.characterCard?.persona || '').trim();
         case 'dialogueExamples':
-            return String(envelope?.characterCard?.mesExamples || '').trim();
+            return composeDialogueExamplesWithWorldInfo(
+                String(envelope?.characterCard?.mesExamples || ''),
+                Array.isArray(runtimeWorldInfo?.worldInfoExamples) ? runtimeWorldInfo.worldInfoExamples : [],
+            );
         default:
             return '';
     }
@@ -674,8 +793,10 @@ function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
         worldInfoBefore: String(source.worldInfoBefore || ''),
         worldInfoAfter: String(source.worldInfoAfter || ''),
         worldInfoDepth: normalizeRuntimeWorldInfoDepth(source.worldInfoDepth),
-        outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
-        worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
+        outletEntries: normalizeRuntimeWorldInfoOutlets(source.outletEntries),
+        worldInfoExamples: normalizeRuntimeWorldInfoExamples(source.worldInfoExamples),
+        anBefore: normalizeRuntimeWorldInfoNoteEntries(source.anBefore),
+        anAfter: normalizeRuntimeWorldInfoNoteEntries(source.anAfter),
     };
 }
 
@@ -902,6 +1023,8 @@ async function resolveWorldInfoForMessages(messages = [], {
             worldInfoDepth: Array.isArray(resolution?.worldInfoDepth) ? resolution.worldInfoDepth : [],
             outletEntries: resolution?.outletEntries && typeof resolution.outletEntries === 'object' ? resolution.outletEntries : {},
             worldInfoExamples: Array.isArray(resolution?.worldInfoExamples) ? resolution.worldInfoExamples : [],
+            anBefore: Array.isArray(resolution?.anBefore) ? resolution.anBefore : [],
+            anAfter: Array.isArray(resolution?.anAfter) ? resolution.anAfter : [],
         });
     } catch (error) {
         console.warn('[LUKER] resolveWorldInfoForMessages failed', error);
@@ -972,9 +1095,21 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
 
         let content = '';
         if (prompt.marker === true) {
-            content = resolvePluginMarkerPromptContent(identifier, envelope);
+            content = resolvePluginMarkerPromptContent(identifier, envelope, runtimePromptFields);
         } else {
             content = String(substituteParams(prompt.content || '')).trim();
+        }
+
+        if (identifier === 'authorsNote') {
+            content = composeAuthorsNoteWithWorldInfo(
+                content,
+                runtimePromptFields.anBefore,
+                runtimePromptFields.anAfter,
+            );
+        }
+
+        if (!content) {
+            content = resolveRuntimeWorldInfoOutletPromptContent(identifier, runtimePromptFields.outletEntries);
         }
 
         if (!content) {
