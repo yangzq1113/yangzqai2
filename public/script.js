@@ -257,7 +257,7 @@ import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_set
 import { hideLoader, showLoader } from './scripts/loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
-import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
+import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, hideChatMessageRange, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, isAdmin, setUserControls } from './scripts/user.js';
@@ -14333,147 +14333,817 @@ jQuery(async function () {
     });
 
 
-    async function openCurrentChatSearchPopup() {
-        if (chatElement.children('.mes').length === 0) {
-            toastr.info(t`No messages in current chat.`);
+    const currentChatToolsPanel = $('#current_chat_tools_panel');
+    const currentChatToolsQuery = $('#current_chat_tools_query');
+    const currentChatToolsStatus = $('#current_chat_tools_status');
+    const currentChatToolsPrev = $('#current_chat_tools_prev');
+    const currentChatToolsNext = $('#current_chat_tools_next');
+    const currentChatToolsClose = $('#current_chat_tools_close');
+    const currentChatToolsHide = $('#current_chat_tools_hide');
+    const currentChatToolsUnhide = $('#current_chat_tools_unhide');
+    const currentChatToolsDelete = $('#current_chat_tools_delete');
+    const currentChatToolsDeleteMode = $('#current_chat_tools_delete_mode');
+    const currentChatToolsSelectAll = $('#current_chat_tools_select_all');
+    const currentChatToolsSelectInvert = $('#current_chat_tools_select_invert');
+    const currentChatToolsSelectClear = $('#current_chat_tools_select_clear');
+    const currentChatToolsInsertRole = $('#current_chat_tools_insert_role');
+    const currentChatToolsInsertText = $('#current_chat_tools_insert_text');
+    const currentChatToolsInsertAt = $('#current_chat_tools_insert_at');
+    const currentChatToolsInsertBefore = $('#current_chat_tools_insert_before');
+    const currentChatToolsInsertAfter = $('#current_chat_tools_insert_after');
+    const currentChatToolsList = $('#current_chat_tools_list');
+
+    /** @type {JQuery<HTMLElement>[]} */
+    let currentChatToolsMatches = [];
+    let currentChatToolsMatchIndex = -1;
+    let currentChatToolsLastQuery = '';
+    /** @type {Set<number>} */
+    const currentChatToolsSelectedIds = new Set();
+    const CURRENT_CHAT_TOOLS_PREVIEW_MAX_CHARS = 120;
+
+    function isCurrentChatToolsOpen() {
+        return !currentChatToolsPanel.hasClass('displayNone');
+    }
+
+    function setCurrentChatToolsStatus(text) {
+        currentChatToolsStatus.text(text);
+    }
+
+    function clearCurrentChatToolsHighlight() {
+        chatElement.children('.mes.chat_tools_match_active, .mes.chat_tools_match_found')
+            .removeClass('chat_tools_match_active chat_tools_match_found');
+    }
+
+    function clearCurrentChatToolsInlineHighlights(scope = chatElement) {
+        scope.find('mark.chat_tools_inline_mark').each((_, markElement) => {
+            const mark = markElement;
+            const parent = mark.parentNode;
+            if (!parent) {
+                return;
+            }
+            parent.replaceChild(document.createTextNode(mark.textContent || ''), mark);
+            parent.normalize();
+        });
+    }
+
+    function escapeCurrentChatToolsRegex(value) {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function applyCurrentChatToolsInlineHighlights() {
+        clearCurrentChatToolsInlineHighlights();
+
+        const query = String(currentChatToolsQuery.val() ?? '').trim();
+        if (!query) {
             return;
         }
 
-        const template = $(`
-            <div class="chat_search_popup flex-container flexFlowColumn flexNoGap">
-                <label class="marginBot5">${t`Search current chat`}</label>
-                <input type="search" class="text_pole chat_search_query marginBot10" placeholder="${t`Search...`}" autocomplete="off" />
-                <div class="text_muted chat_search_status marginBot10">${t`Enter keyword to search messages in this chat.`}</div>
-                <div class="flex-container justifyCenter alignItemsCenter flexGap10">
-                    <button type="button" class="menu_button chat_search_prev">${t`Previous match`}</button>
-                    <button type="button" class="menu_button chat_search_next">${t`Next match`}</button>
-                </div>
-            </div>
-        `);
+        const regex = new RegExp(escapeCurrentChatToolsRegex(query), 'gi');
+        const blockedTags = new Set(['MARK', 'CODE', 'PRE', 'SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT']);
 
-        const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
-            okButton: t`Close`,
-            onOpen: (popupInstance) => {
-                const popupRoot = $(popupInstance.dlg);
-                const queryInput = popupRoot.find('.chat_search_query');
-                const statusElement = popupRoot.find('.chat_search_status');
-                const previousButton = popupRoot.find('.chat_search_prev');
-                const nextButton = popupRoot.find('.chat_search_next');
-
-                /** @type {JQuery<HTMLElement>[]} */
-                let matches = [];
-                let currentMatchIndex = -1;
-                let lastSearchedQuery = '';
-
-                const setStatus = (text) => statusElement.text(text);
-                const updateButtonState = () => {
-                    const hasMatches = matches.length > 0;
-                    previousButton.prop('disabled', !hasMatches).toggleClass('disabled', !hasMatches);
-                    nextButton.prop('disabled', !hasMatches).toggleClass('disabled', !hasMatches);
-                };
-
-                const collectMatches = (query) => {
-                    const normalizedQuery = query.toLocaleLowerCase();
-                    /** @type {JQuery<HTMLElement>[]} */
-                    const found = [];
-                    chatElement.children('.mes').each((_, messageElement) => {
-                        const message = $(messageElement);
-                        const searchableText = [
-                            String(message.find('.name_text').first().text() || ''),
-                            String(message.find('.mes_text').text() || ''),
-                            String(message.find('.mes_reasoning').text() || ''),
-                        ].join('\n').toLocaleLowerCase();
-
-                        if (searchableText.includes(normalizedQuery)) {
-                            found.push(message);
-                        }
-                    });
-                    return found;
-                };
-
-                const focusMatchAt = (index) => {
-                    if (!matches.length) {
-                        return;
+        const highlightElement = (element) => {
+            const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+                acceptNode(textNode) {
+                    const parent = textNode.parentElement;
+                    const text = textNode.nodeValue || '';
+                    if (!parent || !text.trim()) {
+                        return NodeFilter.FILTER_REJECT;
                     }
-
-                    currentMatchIndex = ((index % matches.length) + matches.length) % matches.length;
-                    const currentMatch = matches[currentMatchIndex];
-                    currentMatch[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    flashHighlight(currentMatch, 1500);
-                    setStatus(`${t`Match`} ${currentMatchIndex + 1} / ${matches.length}`);
-                };
-
-                const refreshMatches = () => {
-                    const query = String(queryInput.val() ?? '').trim();
-                    if (!query) {
-                        matches = [];
-                        currentMatchIndex = -1;
-                        lastSearchedQuery = '';
-                        setStatus(t`Enter keyword to search messages in this chat.`);
-                        updateButtonState();
-                        return;
+                    if (blockedTags.has(parent.tagName)) {
+                        return NodeFilter.FILTER_REJECT;
                     }
+                    return regex.test(text) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+                },
+            });
 
-                    if (query !== lastSearchedQuery) {
-                        matches = collectMatches(query);
-                        currentMatchIndex = -1;
-                        lastSearchedQuery = query;
+            /** @type {Text[]} */
+            const nodes = [];
+            let node = walker.nextNode();
+            while (node) {
+                nodes.push(/** @type {Text} */ (node));
+                node = walker.nextNode();
+            }
+
+            for (const textNode of nodes) {
+                const source = textNode.nodeValue || '';
+                regex.lastIndex = 0;
+                if (!regex.test(source)) {
+                    continue;
+                }
+
+                const fragment = document.createDocumentFragment();
+                let lastIndex = 0;
+                regex.lastIndex = 0;
+
+                source.replace(regex, (match, offset) => {
+                    const index = Number(offset);
+                    if (index > lastIndex) {
+                        fragment.appendChild(document.createTextNode(source.slice(lastIndex, index)));
                     }
-
-                    if (matches.length === 0) {
-                        setStatus(t`No messages matched.`);
-                        updateButtonState();
-                        return;
-                    }
-
-                    updateButtonState();
-                    focusMatchAt(currentMatchIndex >= 0 ? currentMatchIndex : 0);
-                };
-
-                previousButton.on('click', (event) => {
-                    event.preventDefault();
-                    if (!matches.length) {
-                        return;
-                    }
-                    focusMatchAt(currentMatchIndex - 1);
+                    const mark = document.createElement('mark');
+                    mark.className = 'chat_tools_inline_mark';
+                    mark.textContent = match;
+                    fragment.appendChild(mark);
+                    lastIndex = index + match.length;
+                    return match;
                 });
 
-                nextButton.on('click', (event) => {
-                    event.preventDefault();
-                    if (!matches.length) {
-                        return;
-                    }
-                    focusMatchAt(currentMatchIndex + 1);
-                });
+                if (lastIndex < source.length) {
+                    fragment.appendChild(document.createTextNode(source.slice(lastIndex)));
+                }
 
-                queryInput.on('input', () => {
-                    lastSearchedQuery = '';
-                    refreshMatches();
-                });
+                textNode.parentNode?.replaceChild(fragment, textNode);
+            }
+        };
 
-                queryInput.on('keydown', (event) => {
-                    if (event.key !== 'Enter') {
-                        return;
-                    }
-                    event.preventDefault();
-                    const query = String(queryInput.val() ?? '').trim();
-                    if (!query) {
-                        return;
-                    }
-                    if (!matches.length || query !== lastSearchedQuery) {
-                        refreshMatches();
-                        return;
-                    }
-                    focusMatchAt(currentMatchIndex + 1);
-                });
+        for (const message of currentChatToolsMatches) {
+            message.find('.mes_text, .mes_reasoning').each((_, element) => highlightElement(element));
+        }
+    }
 
-                updateButtonState();
-                queryInput.trigger('focus');
-            },
+    function applyCurrentChatToolsMatchHighlights() {
+        chatElement.children('.mes.chat_tools_match_found').removeClass('chat_tools_match_found');
+        for (const message of currentChatToolsMatches) {
+            message.addClass('chat_tools_match_found');
+        }
+    }
+
+    function scrollCurrentChatToolsMessageIntoView(messageElement) {
+        const container = chatElement?.[0];
+        const target = messageElement?.[0];
+        if (!container || !target) {
+            return;
+        }
+
+        const containerRect = container.getBoundingClientRect();
+        const targetRect = target.getBoundingClientRect();
+        const currentScrollTop = container.scrollTop;
+        const targetCenter = (targetRect.top - containerRect.top) + (targetRect.height / 2);
+        const desiredScrollTop = currentScrollTop + targetCenter - (container.clientHeight / 2);
+        const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        const nextScrollTop = Math.max(0, Math.min(maxScrollTop, desiredScrollTop));
+
+        chatElement.stop(true).animate({ scrollTop: nextScrollTop }, 140);
+    }
+
+    function getCurrentChatToolsMessageId() {
+        if (currentChatToolsMatchIndex < 0 || currentChatToolsMatchIndex >= currentChatToolsMatches.length) {
+            return null;
+        }
+        const messageId = Number(currentChatToolsMatches[currentChatToolsMatchIndex].attr('mesid'));
+        return Number.isInteger(messageId) ? messageId : null;
+    }
+
+    function getCurrentChatToolsVisibleMessageIds() {
+        return currentChatToolsMatches
+            .map(message => Number(message.attr('mesid')))
+            .filter(messageId => Number.isInteger(messageId));
+    }
+
+    function sanitizeCurrentChatToolsSelections() {
+        for (const messageId of Array.from(currentChatToolsSelectedIds)) {
+            if (!Number.isInteger(messageId) || messageId < 0 || messageId >= chat.length) {
+                currentChatToolsSelectedIds.delete(messageId);
+            }
+        }
+    }
+
+    function getCurrentChatToolsSelectedMessageIds({ fallbackToActive = false } = {}) {
+        sanitizeCurrentChatToolsSelections();
+        const ids = Array.from(currentChatToolsSelectedIds)
+            .filter(messageId => Number.isInteger(messageId) && messageId >= 0 && messageId < chat.length)
+            .sort((a, b) => a - b);
+
+        if (ids.length > 0 || !fallbackToActive) {
+            return ids;
+        }
+
+        const activeId = getCurrentChatToolsMessageId();
+        return activeId === null ? [] : [activeId];
+    }
+
+    function getCurrentChatToolsRoleLabel(message) {
+        if (!message) {
+            return t`Unknown`;
+        }
+        if (message.is_system || message.extra?.type === system_message_types.NARRATOR) {
+            return t`System`;
+        }
+        return message.is_user ? t`User` : t`Assistant`;
+    }
+
+    function getCurrentChatToolsMessagePreview(message) {
+        const raw = String(message?.extra?.display_text ?? message?.mes ?? '');
+        return raw.replace(/\s+/g, ' ').trim();
+    }
+
+    function truncateCurrentChatToolsPreview(text, maxChars = CURRENT_CHAT_TOOLS_PREVIEW_MAX_CHARS) {
+        if (!text || text.length <= maxChars) {
+            return text;
+        }
+        return `${text.slice(0, maxChars)}...`;
+    }
+
+    function appendCurrentChatToolsHighlightedText(target, text, query) {
+        target.empty();
+        if (!text) {
+            return;
+        }
+
+        const normalizedQuery = String(query ?? '').trim();
+        if (!normalizedQuery) {
+            target.text(text);
+            return;
+        }
+
+        const source = text;
+        const sourceLower = source.toLocaleLowerCase();
+        const queryLower = normalizedQuery.toLocaleLowerCase();
+        if (!queryLower) {
+            target.text(source);
+            return;
+        }
+
+        let cursor = 0;
+        while (cursor < source.length) {
+            const hitIndex = sourceLower.indexOf(queryLower, cursor);
+            if (hitIndex < 0) {
+                target.append(document.createTextNode(source.slice(cursor)));
+                break;
+            }
+
+            if (hitIndex > cursor) {
+                target.append(document.createTextNode(source.slice(cursor, hitIndex)));
+            }
+
+            const mark = $('<mark class="chat_tools_match_mark"></mark>');
+            mark.text(source.slice(hitIndex, hitIndex + normalizedQuery.length));
+            target.append(mark);
+            cursor = hitIndex + normalizedQuery.length;
+        }
+    }
+
+    function getCurrentChatToolsInsertAt() {
+        const raw = String(currentChatToolsInsertAt.val() ?? '').trim();
+        if (!raw) {
+            return null;
+        }
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 0 || parsed > chat.length) {
+            return Number.NaN;
+        }
+        return parsed;
+    }
+
+    function updateCurrentChatToolsStatus() {
+        const query = String(currentChatToolsQuery.val() ?? '').trim();
+        const selectedCount = getCurrentChatToolsSelectedMessageIds().length;
+        const totalCount = currentChatToolsMatches.length;
+
+        if (totalCount === 0) {
+            if (!query && chat.length === 0) {
+                setCurrentChatToolsStatus(t`No messages in current chat.`);
+                return;
+            }
+            setCurrentChatToolsStatus(t`No messages matched.`);
+            return;
+        }
+
+        const currentIndex = Math.max(0, currentChatToolsMatchIndex) + 1;
+        const status = selectedCount > 0
+            ? `${t`Match`} ${currentIndex} / ${totalCount} · ${t`Selected`} ${selectedCount}`
+            : `${t`Match`} ${currentIndex} / ${totalCount}`;
+        setCurrentChatToolsStatus(status);
+    }
+
+    function toggleCurrentChatToolsButton(button, disabled) {
+        button.toggleClass('disabled', disabled);
+        button.attr('aria-disabled', String(disabled));
+    }
+
+    function updateCurrentChatToolsButtons() {
+        const hasMatches = currentChatToolsMatches.length > 0;
+        const hasSelectedOrActive = getCurrentChatToolsSelectedMessageIds({ fallbackToActive: true }).length > 0;
+        const hasInsertText = String(currentChatToolsInsertText.val() ?? '').trim().length > 0;
+        const explicitInsertAt = getCurrentChatToolsInsertAt();
+        const hasValidExplicitInsertAt = explicitInsertAt === null || Number.isFinite(explicitInsertAt);
+        const hasAnchorForInsert = getCurrentChatToolsMessageId() !== null || getCurrentChatToolsSelectedMessageIds().length > 0 || chat.length === 0;
+        const canInsert = hasInsertText && hasValidExplicitInsertAt && (explicitInsertAt !== null || hasAnchorForInsert);
+
+        toggleCurrentChatToolsButton(currentChatToolsPrev, !hasMatches);
+        toggleCurrentChatToolsButton(currentChatToolsNext, !hasMatches);
+        toggleCurrentChatToolsButton(currentChatToolsSelectAll, !hasMatches);
+        toggleCurrentChatToolsButton(currentChatToolsSelectInvert, !hasMatches);
+        toggleCurrentChatToolsButton(currentChatToolsSelectClear, getCurrentChatToolsSelectedMessageIds().length === 0);
+        toggleCurrentChatToolsButton(currentChatToolsHide, !hasSelectedOrActive);
+        toggleCurrentChatToolsButton(currentChatToolsUnhide, !hasSelectedOrActive);
+        toggleCurrentChatToolsButton(currentChatToolsDelete, !hasSelectedOrActive);
+        toggleCurrentChatToolsButton(currentChatToolsInsertBefore, !canInsert);
+        toggleCurrentChatToolsButton(currentChatToolsInsertAfter, !canInsert);
+    }
+
+    function collectCurrentChatMatches(query) {
+        const normalizedQuery = String(query ?? '').trim().toLocaleLowerCase();
+        /** @type {JQuery<HTMLElement>[]} */
+        const found = [];
+
+        chatElement.children('.mes').each((_, messageElement) => {
+            const message = $(messageElement);
+            if (!normalizedQuery) {
+                found.push(message);
+                return;
+            }
+
+            const searchableText = [
+                String(message.find('.name_text').first().text() || ''),
+                String(message.find('.mes_text').text() || ''),
+                String(message.find('.mes_reasoning').text() || ''),
+            ].join('\n').toLocaleLowerCase();
+
+            if (searchableText.includes(normalizedQuery)) {
+                found.push(message);
+            }
         });
 
-        await popup.show();
+        return found;
     }
+
+    function renderCurrentChatToolsList() {
+        currentChatToolsList.empty();
+
+        if (!currentChatToolsMatches.length) {
+            return;
+        }
+
+        const activeMessageId = getCurrentChatToolsMessageId();
+        const currentQuery = String(currentChatToolsQuery.val() ?? '').trim();
+        for (const messageElement of currentChatToolsMatches) {
+            const messageId = Number(messageElement.attr('mesid'));
+            if (!Number.isInteger(messageId)) {
+                continue;
+            }
+
+            const message = chat[messageId];
+            const selected = currentChatToolsSelectedIds.has(messageId);
+            const active = messageId === activeMessageId;
+            const hidden = Boolean(message?.extra?.[IGNORE_SYMBOL]);
+
+            const row = $('<div class="current_chat_tools_list_item"></div>');
+            row.attr('data-mesid', String(messageId));
+            if (selected) {
+                row.addClass('selected');
+            }
+            if (active) {
+                row.addClass('active');
+            }
+
+            const checkbox = $('<input type="checkbox" class="chat_tools_select_box">');
+            checkbox.prop('checked', selected);
+
+            const body = $('<div class="flex-container flexFlowColumn flex1"></div>');
+            const meta = $('<div class="current_chat_tools_list_meta"></div>');
+            meta.append($('<span></span>').text(`#${messageId + 1}`));
+            meta.append($('<span></span>').text(getCurrentChatToolsRoleLabel(message)));
+            if (hidden) {
+                meta.append($('<span class="text_muted"></span>').text(t`Hidden from AI`));
+            }
+
+            const previewText = getCurrentChatToolsMessagePreview(message);
+            const preview = $('<div class="current_chat_tools_list_preview"></div>');
+            const previewDisplayText = truncateCurrentChatToolsPreview(previewText || t`(empty)`);
+            appendCurrentChatToolsHighlightedText(preview, previewDisplayText, currentQuery);
+            if (previewText) {
+                preview.attr('title', previewText);
+            }
+
+            body.append(meta);
+            body.append(preview);
+            row.append(checkbox);
+            row.append(body);
+            currentChatToolsList.append(row);
+        }
+    }
+
+    function setCurrentChatToolsActiveMatch(index, { scroll = true, flash = false } = {}) {
+        if (!currentChatToolsMatches.length) {
+            currentChatToolsMatchIndex = -1;
+            clearCurrentChatToolsHighlight();
+            renderCurrentChatToolsList();
+            updateCurrentChatToolsStatus();
+            updateCurrentChatToolsButtons();
+            return;
+        }
+
+        currentChatToolsMatchIndex = ((index % currentChatToolsMatches.length) + currentChatToolsMatches.length) % currentChatToolsMatches.length;
+        const currentMatch = currentChatToolsMatches[currentChatToolsMatchIndex];
+        const activeMessageId = getCurrentChatToolsMessageId();
+
+        clearCurrentChatToolsHighlight();
+        applyCurrentChatToolsMatchHighlights();
+        applyCurrentChatToolsInlineHighlights();
+        if (activeMessageId !== null) {
+            const activeMessage = chatElement.find(`.mes[mesid="${activeMessageId}"]`).first();
+            activeMessage.addClass('chat_tools_match_active');
+            if (flash) {
+                flashHighlight(activeMessage, 1000);
+            }
+        }
+
+        if (scroll) {
+            scrollCurrentChatToolsMessageIntoView(currentMatch);
+        }
+
+        renderCurrentChatToolsList();
+        updateCurrentChatToolsStatus();
+        updateCurrentChatToolsButtons();
+    }
+
+    function refreshCurrentChatMatches({ recollect = false, scroll = false, flash = false } = {}) {
+        const query = String(currentChatToolsQuery.val() ?? '').trim();
+        const previousActiveId = getCurrentChatToolsMessageId();
+
+        if (recollect || query !== currentChatToolsLastQuery) {
+            currentChatToolsMatches = collectCurrentChatMatches(query);
+            currentChatToolsLastQuery = query;
+
+            if (previousActiveId !== null) {
+                const index = currentChatToolsMatches.findIndex(message => Number(message.attr('mesid')) === previousActiveId);
+                currentChatToolsMatchIndex = index >= 0 ? index : 0;
+            }
+        }
+
+        if (!currentChatToolsMatches.length) {
+            currentChatToolsMatchIndex = -1;
+            clearCurrentChatToolsHighlight();
+            clearCurrentChatToolsInlineHighlights();
+            renderCurrentChatToolsList();
+            updateCurrentChatToolsStatus();
+            updateCurrentChatToolsButtons();
+            return;
+        }
+
+        if (currentChatToolsMatchIndex < 0 || currentChatToolsMatchIndex >= currentChatToolsMatches.length) {
+            currentChatToolsMatchIndex = 0;
+        }
+
+        setCurrentChatToolsActiveMatch(currentChatToolsMatchIndex, { scroll, flash });
+    }
+
+    function openCurrentChatToolsPanel() {
+        currentChatToolsPanel.removeClass('displayNone');
+        currentChatToolsQuery.trigger('focus');
+        refreshCurrentChatMatches({ recollect: true, scroll: false });
+    }
+
+    function closeCurrentChatToolsPanel() {
+        currentChatToolsPanel.addClass('displayNone');
+        clearCurrentChatToolsHighlight();
+        clearCurrentChatToolsInlineHighlights();
+    }
+
+    function toggleCurrentChatToolsPanel() {
+        if (isCurrentChatToolsOpen()) {
+            closeCurrentChatToolsPanel();
+            return;
+        }
+        openCurrentChatToolsPanel();
+    }
+
+    function toMessageRanges(messageIds) {
+        if (!messageIds.length) {
+            return [];
+        }
+
+        const sortedIds = Array.from(new Set(messageIds)).sort((a, b) => a - b);
+        const ranges = [];
+        let start = sortedIds[0];
+        let end = sortedIds[0];
+
+        for (let i = 1; i < sortedIds.length; i++) {
+            const messageId = sortedIds[i];
+            if (messageId === end + 1) {
+                end = messageId;
+                continue;
+            }
+            ranges.push([start, end]);
+            start = messageId;
+            end = messageId;
+        }
+        ranges.push([start, end]);
+        return ranges;
+    }
+
+    async function applyActionToCurrentSelection(action) {
+        const messageIds = getCurrentChatToolsSelectedMessageIds({ fallbackToActive: true });
+        if (!messageIds.length) {
+            toastr.info(t`No messages matched.`);
+            return;
+        }
+
+        if (action === 'hide' || action === 'unhide') {
+            const unhide = action === 'unhide';
+            for (const [start, end] of toMessageRanges(messageIds)) {
+                await hideChatMessageRange(start, end, unhide);
+            }
+        } else if (action === 'delete') {
+            if (power_user.confirm_message_delete) {
+                const confirmed = await callGenericPopup(t`Are you sure you want to delete selected messages?`, POPUP_TYPE.CONFIRM);
+                if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
+                    return;
+                }
+            }
+
+            for (const messageId of [...messageIds].sort((a, b) => b - a)) {
+                await deleteMessage(messageId, undefined, false);
+            }
+        }
+
+        currentChatToolsSelectedIds.clear();
+        currentChatToolsLastQuery = '';
+        refreshCurrentChatMatches({ recollect: true, scroll: false });
+    }
+
+    function createCurrentChatToolsInsertedMessage(role, text) {
+        const baseMessage = {
+            send_date: getMessageTimeStamp(),
+            mes: text,
+            extra: {},
+        };
+
+        if (role === 'user') {
+            return {
+                ...baseMessage,
+                name: name1,
+                is_user: true,
+                is_system: false,
+            };
+        }
+
+        if (role === 'system') {
+            return {
+                ...baseMessage,
+                name: systemUserName,
+                is_user: false,
+                is_system: true,
+                force_avatar: system_avatar,
+                extra: {
+                    type: system_message_types.GENERIC,
+                },
+            };
+        }
+
+        return {
+            ...baseMessage,
+            name: name2,
+            is_user: false,
+            is_system: false,
+        };
+    }
+
+    function resolveInsertAnchorId(direction) {
+        const selectedMessageIds = getCurrentChatToolsSelectedMessageIds();
+        if (selectedMessageIds.length === 1) {
+            return selectedMessageIds[0];
+        }
+        if (selectedMessageIds.length > 1) {
+            return direction === 'before' ? selectedMessageIds[0] : selectedMessageIds[selectedMessageIds.length - 1];
+        }
+        return getCurrentChatToolsMessageId();
+    }
+
+    async function insertCurrentChatMessage(direction) {
+        const text = String(currentChatToolsInsertText.val() ?? '').trim();
+        if (!text) {
+            toastr.warning(t`Message text cannot be empty.`);
+            return;
+        }
+
+        const role = String(currentChatToolsInsertRole.val() ?? 'assistant');
+        const explicitInsertAt = getCurrentChatToolsInsertAt();
+        let insertAt = 0;
+
+        if (Number.isNaN(explicitInsertAt)) {
+            toastr.warning(t`Insert position is invalid.`);
+            return;
+        }
+
+        if (Number.isFinite(explicitInsertAt)) {
+            const bounded = Math.max(0, Math.min(chat.length, explicitInsertAt));
+            insertAt = direction === 'before'
+                ? bounded
+                : Math.min(chat.length, bounded + 1);
+        } else {
+            const anchorId = resolveInsertAnchorId(direction);
+            insertAt = anchorId === null
+                ? (direction === 'before' ? 0 : chat.length)
+                : (direction === 'before' ? anchorId : anchorId + 1);
+        }
+
+        const message = createCurrentChatToolsInsertedMessage(role, text);
+        chat.splice(insertAt, 0, message);
+        chat_metadata['tainted'] = true;
+
+        const patched = await patchChatMessages([{ op: 'add', path: `/${insertAt}`, value: message }]);
+        if (!patched) {
+            saveChatDebounced();
+        }
+
+        await reloadCurrentChat();
+
+        currentChatToolsSelectedIds.clear();
+        currentChatToolsSelectedIds.add(insertAt);
+        currentChatToolsLastQuery = '';
+        currentChatToolsInsertText.val('');
+        refreshCurrentChatMatches({ recollect: true, scroll: true, flash: true });
+    }
+
+    currentChatToolsQuery.on('input', () => {
+        currentChatToolsLastQuery = '';
+        refreshCurrentChatMatches({ recollect: true, scroll: false });
+    });
+
+    currentChatToolsQuery.on('keydown', (event) => {
+        if (event.key !== 'Enter') {
+            return;
+        }
+        event.preventDefault();
+        if (currentChatToolsMatches.length === 0) {
+            refreshCurrentChatMatches({ recollect: true, scroll: true });
+            return;
+        }
+        setCurrentChatToolsActiveMatch(currentChatToolsMatchIndex + 1, { scroll: true, flash: true });
+    });
+
+    currentChatToolsInsertText.on('input', () => {
+        updateCurrentChatToolsButtons();
+    });
+
+    currentChatToolsInsertAt.on('input', () => {
+        updateCurrentChatToolsButtons();
+    });
+
+    currentChatToolsPrev.on('click', (event) => {
+        event.preventDefault();
+        if (currentChatToolsPrev.hasClass('disabled')) {
+            return;
+        }
+        setCurrentChatToolsActiveMatch(currentChatToolsMatchIndex - 1, { scroll: true, flash: true });
+    });
+
+    currentChatToolsNext.on('click', (event) => {
+        event.preventDefault();
+        if (currentChatToolsNext.hasClass('disabled')) {
+            return;
+        }
+        setCurrentChatToolsActiveMatch(currentChatToolsMatchIndex + 1, { scroll: true, flash: true });
+    });
+
+    currentChatToolsClose.on('click', (event) => {
+        event.preventDefault();
+        closeCurrentChatToolsPanel();
+    });
+
+    currentChatToolsSelectAll.on('click', (event) => {
+        event.preventDefault();
+        if (currentChatToolsSelectAll.hasClass('disabled')) {
+            return;
+        }
+        for (const messageId of getCurrentChatToolsVisibleMessageIds()) {
+            currentChatToolsSelectedIds.add(messageId);
+        }
+        renderCurrentChatToolsList();
+        updateCurrentChatToolsStatus();
+        updateCurrentChatToolsButtons();
+    });
+
+    currentChatToolsSelectInvert.on('click', (event) => {
+        event.preventDefault();
+        if (currentChatToolsSelectInvert.hasClass('disabled')) {
+            return;
+        }
+        for (const messageId of getCurrentChatToolsVisibleMessageIds()) {
+            if (currentChatToolsSelectedIds.has(messageId)) {
+                currentChatToolsSelectedIds.delete(messageId);
+            } else {
+                currentChatToolsSelectedIds.add(messageId);
+            }
+        }
+        renderCurrentChatToolsList();
+        updateCurrentChatToolsStatus();
+        updateCurrentChatToolsButtons();
+    });
+
+    currentChatToolsSelectClear.on('click', (event) => {
+        event.preventDefault();
+        if (currentChatToolsSelectClear.hasClass('disabled')) {
+            return;
+        }
+        currentChatToolsSelectedIds.clear();
+        renderCurrentChatToolsList();
+        updateCurrentChatToolsStatus();
+        updateCurrentChatToolsButtons();
+    });
+
+    currentChatToolsHide.on('click', async (event) => {
+        event.preventDefault();
+        if (currentChatToolsHide.hasClass('disabled')) {
+            return;
+        }
+        await applyActionToCurrentSelection('hide');
+    });
+
+    currentChatToolsUnhide.on('click', async (event) => {
+        event.preventDefault();
+        if (currentChatToolsUnhide.hasClass('disabled')) {
+            return;
+        }
+        await applyActionToCurrentSelection('unhide');
+    });
+
+    currentChatToolsDelete.on('click', async (event) => {
+        event.preventDefault();
+        if (currentChatToolsDelete.hasClass('disabled')) {
+            return;
+        }
+        await applyActionToCurrentSelection('delete');
+    });
+
+    currentChatToolsDeleteMode.on('click', (event) => {
+        event.preventDefault();
+        setTimeout(() => openMessageDelete(false), animation_duration);
+    });
+
+    currentChatToolsInsertBefore.on('click', async (event) => {
+        event.preventDefault();
+        if (currentChatToolsInsertBefore.hasClass('disabled')) {
+            return;
+        }
+        await insertCurrentChatMessage('before');
+    });
+
+    currentChatToolsInsertAfter.on('click', async (event) => {
+        event.preventDefault();
+        if (currentChatToolsInsertAfter.hasClass('disabled')) {
+            return;
+        }
+        await insertCurrentChatMessage('after');
+    });
+
+    currentChatToolsList.on('click', '.current_chat_tools_list_item', (event) => {
+        const row = $(event.currentTarget);
+        const messageId = Number(row.attr('data-mesid'));
+        if (!Number.isInteger(messageId)) {
+            return;
+        }
+
+        const index = currentChatToolsMatches.findIndex(message => Number(message.attr('mesid')) === messageId);
+        if (index >= 0) {
+            currentChatToolsInsertAt.val(String(messageId));
+            setCurrentChatToolsActiveMatch(index, { scroll: true, flash: true });
+        }
+    });
+
+    currentChatToolsList.on('click', '.chat_tools_select_box', (event) => {
+        event.stopPropagation();
+    });
+
+    currentChatToolsList.on('change', '.chat_tools_select_box', (event) => {
+        event.stopPropagation();
+        const checkbox = $(event.currentTarget);
+        const row = checkbox.closest('.current_chat_tools_list_item');
+        const messageId = Number(row.attr('data-mesid'));
+        if (!Number.isInteger(messageId)) {
+            return;
+        }
+
+        if (checkbox.prop('checked')) {
+            currentChatToolsSelectedIds.add(messageId);
+        } else {
+            currentChatToolsSelectedIds.delete(messageId);
+        }
+
+        renderCurrentChatToolsList();
+        updateCurrentChatToolsStatus();
+        updateCurrentChatToolsButtons();
+    });
+
+    const refreshCurrentChatToolsOnUpdate = () => {
+        if (!isCurrentChatToolsOpen()) {
+            return;
+        }
+        currentChatToolsLastQuery = '';
+        refreshCurrentChatMatches({ recollect: true, scroll: false });
+    };
+
+    eventSource.on(event_types.MESSAGE_SENT, refreshCurrentChatToolsOnUpdate);
+    eventSource.on(event_types.MESSAGE_RECEIVED, refreshCurrentChatToolsOnUpdate);
+    eventSource.on(event_types.MESSAGE_UPDATED, refreshCurrentChatToolsOnUpdate);
+    eventSource.on(event_types.MESSAGE_EDITED, refreshCurrentChatToolsOnUpdate);
+    eventSource.on(event_types.MESSAGE_DELETED, refreshCurrentChatToolsOnUpdate);
+    eventSource.on(event_types.CHAT_CHANGED, refreshCurrentChatToolsOnUpdate);
+    eventSource.on(event_types.CHAT_LOADED, refreshCurrentChatToolsOnUpdate);
+
+    updateCurrentChatToolsButtons();
 
     const button = $('#options_button');
     const menu = $('#options');
@@ -14612,7 +15282,7 @@ jQuery(async function () {
         }
 
         else if (id == 'option_search_chat') {
-            await openCurrentChatSearchPopup();
+            toggleCurrentChatToolsPanel();
         }
 
         else if (id == 'option_close_chat') {

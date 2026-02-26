@@ -7960,6 +7960,74 @@
         <div id="chat">
         </div>
         <div id="form_sheld">
+            <div id="current_chat_tools_panel" class="displayNone">
+                <div class="flex-container flexWrap alignItemsCenter flexGap5">
+                    <input type="search" id="current_chat_tools_query" class="text_pole flex1" data-i18n="[placeholder]Search..." placeholder="Search..." autocomplete="off">
+                    <div id="current_chat_tools_prev" class="menu_button menu_button_icon chat_tools_button" title="Previous match" data-i18n="[title]Previous match">
+                        <i class="fa-solid fa-chevron-up"></i>
+                        <span data-i18n="Previous match">Previous match</span>
+                    </div>
+                    <div id="current_chat_tools_next" class="menu_button menu_button_icon chat_tools_button" title="Next match" data-i18n="[title]Next match">
+                        <i class="fa-solid fa-chevron-down"></i>
+                        <span data-i18n="Next match">Next match</span>
+                    </div>
+                    <div id="current_chat_tools_close" class="menu_button menu_button_icon chat_tools_button" title="Close" data-i18n="[title]Close">
+                        <i class="fa-solid fa-xmark"></i>
+                        <span data-i18n="Close">Close</span>
+                    </div>
+                </div>
+                <div class="flex-container flexWrap alignItemsCenter flexGap5 marginTop5">
+                    <div id="current_chat_tools_select_all" class="menu_button menu_button_icon chat_tools_button" title="Select all" data-i18n="[title]Select all">
+                        <i class="fa-solid fa-check-double"></i>
+                        <span data-i18n="Select all">Select all</span>
+                    </div>
+                    <div id="current_chat_tools_select_invert" class="menu_button menu_button_icon chat_tools_button" title="Invert selection" data-i18n="[title]Invert selection">
+                        <i class="fa-solid fa-shuffle"></i>
+                        <span data-i18n="Invert selection">Invert selection</span>
+                    </div>
+                    <div id="current_chat_tools_select_clear" class="menu_button menu_button_icon chat_tools_button" title="Clear selection" data-i18n="[title]Clear selection">
+                        <i class="fa-solid fa-eraser"></i>
+                        <span data-i18n="Clear selection">Clear selection</span>
+                    </div>
+                </div>
+                <div class="flex-container flexWrap alignItemsCenter flexGap5 marginTop5">
+                    <div id="current_chat_tools_hide" class="menu_button menu_button_icon chat_tools_button" title="Hide message from AI context" data-i18n="[title]Hide message from AI context">
+                        <i class="fa-solid fa-eye-slash"></i>
+                        <span data-i18n="Hide message">Hide message</span>
+                    </div>
+                    <div id="current_chat_tools_unhide" class="menu_button menu_button_icon chat_tools_button" title="Show message to AI context" data-i18n="[title]Show message to AI context">
+                        <i class="fa-solid fa-eye"></i>
+                        <span data-i18n="Unhide message">Unhide message</span>
+                    </div>
+                    <div id="current_chat_tools_delete" class="menu_button menu_button_icon chat_tools_button" title="Delete message" data-i18n="[title]Delete message">
+                        <i class="fa-solid fa-trash-can"></i>
+                        <span data-i18n="Delete message">Delete message</span>
+                    </div>
+                    <div id="current_chat_tools_delete_mode" class="menu_button menu_button_icon chat_tools_button" title="Delete mode" data-i18n="[title]Delete mode">
+                        <i class="fa-solid fa-list-check"></i>
+                        <span data-i18n="Delete mode">Delete mode</span>
+                    </div>
+                </div>
+                <div class="flex-container flexWrap alignItemsCenter flexGap5 marginTop5">
+                    <select id="current_chat_tools_insert_role" class="text_pole">
+                        <option value="assistant" data-i18n="Assistant">Assistant</option>
+                        <option value="user" data-i18n="User">User</option>
+                        <option value="system" data-i18n="System">System</option>
+                    </select>
+                    <input type="text" id="current_chat_tools_insert_text" class="text_pole flex1" data-i18n="[placeholder]Message text..." placeholder="Message text..." autocomplete="off">
+                    <input type="number" id="current_chat_tools_insert_at" class="text_pole" data-i18n="[placeholder]Insert at #" placeholder="Insert at #" min="0" step="1">
+                    <div id="current_chat_tools_insert_before" class="menu_button menu_button_icon chat_tools_button" title="Insert above" data-i18n="[title]Insert above">
+                        <i class="fa-solid fa-arrow-up"></i>
+                        <span data-i18n="Insert above">Insert above</span>
+                    </div>
+                    <div id="current_chat_tools_insert_after" class="menu_button menu_button_icon chat_tools_button" title="Insert below" data-i18n="[title]Insert below">
+                        <i class="fa-solid fa-arrow-down"></i>
+                        <span data-i18n="Insert below">Insert below</span>
+                    </div>
+                </div>
+                <div id="current_chat_tools_status" class="text_muted marginTop5" data-i18n="Enter keyword to search messages in this chat.">Enter keyword to search messages in this chat.</div>
+                <div id="current_chat_tools_list" class="marginTop5"></div>
+            </div>
             <div id="dialogue_del_mes">
                 <div id="dialogue_del_mes_ok" data-i18n="Delete" class="menu_button">Delete</div>
                 <div id="dialogue_del_mes_cancel" data-i18n="Cancel" class="menu_button">Cancel</div>
@@ -8058,7 +8126,7 @@
             </a>
             <a id="option_search_chat">
                 <i class="fa-lg fa-solid fa-magnifying-glass"></i>
-                <span data-i18n="Search current chat">Search current chat</span>
+                <span data-i18n="Current chat tools">Current chat tools</span>
             </a>
             <a id="option_regenerate">
                 <i class="fa-lg fa-solid fa-repeat"></i>

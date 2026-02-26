@@ -4268,6 +4268,9 @@
     "Delete messages": "删除消息",
 
 
+    "Current chat tools": "当前聊天工具",
+
+
     "Search current chat": "搜索当前聊天",
 
 
@@ -4287,6 +4290,63 @@
 
 
     "Match": "匹配",
+
+
+    "Hide message": "隐藏消息",
+
+
+    "Unhide message": "取消隐藏消息",
+
+
+    "Delete mode": "删除模式",
+
+
+    "Hide message from AI context": "从 AI 上下文隐藏消息",
+
+
+    "Show message to AI context": "将消息显示给 AI 上下文",
+
+
+    "Delete message": "删除消息",
+
+
+    "Select all": "全选",
+
+
+    "Invert selection": "反选",
+
+
+    "Clear selection": "清空选择",
+
+
+    "Insert above": "在上方插入",
+
+
+    "Insert below": "在下方插入",
+
+
+    "Message text...": "消息文本...",
+
+
+    "Insert at #": "插入到楼层 #",
+
+
+    "Selected": "已选择",
+
+
+    "Hidden from AI": "对 AI 隐藏",
+
+
+    "(empty)": "（空）",
+
+
+    "Are you sure you want to delete selected messages?": "确认删除已选择的消息吗？",
+
+
+    "Message text cannot be empty.": "消息文本不能为空。",
+
+
+    "Insert position is invalid.": "插入楼层无效。",
 
 
     "extension_install_1": "若想从此页安装扩展程序，你需要提前安装",

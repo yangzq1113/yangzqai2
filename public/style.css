@@ -881,6 +881,119 @@ body .panelControlBar {
     z-index: 30;
 }
 
+#current_chat_tools_panel {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 1px;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px 10px 0 0;
+    background-color: var(--SmartThemeBlurTintColor);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+    white-space: normal;
+}
+
+#current_chat_tools_query {
+    min-width: 220px;
+}
+
+#current_chat_tools_insert_role {
+    min-width: 120px;
+}
+
+#current_chat_tools_insert_at {
+    width: 110px;
+}
+
+#current_chat_tools_panel .chat_tools_button.menu_button {
+    width: fit-content;
+    white-space: nowrap;
+    margin: 0;
+}
+
+#current_chat_tools_panel .chat_tools_button.menu_button.disabled {
+    pointer-events: none;
+}
+
+#current_chat_tools_list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.current_chat_tools_list_item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background-color: var(--SmartThemeChatTintColor);
+    padding: 6px 8px;
+    white-space: normal;
+    cursor: pointer;
+}
+
+.current_chat_tools_list_item.selected {
+    border-color: var(--SmartThemeQuoteColor);
+    background-color: var(--SmartThemeBlurTintColor);
+}
+
+.current_chat_tools_list_item.active {
+    outline: 1px solid var(--SmartThemeQuoteColor);
+}
+
+.current_chat_tools_list_meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: calc(var(--mainFontSize) * 0.86);
+    opacity: 0.9;
+}
+
+.current_chat_tools_list_preview {
+    font-size: calc(var(--mainFontSize) * 0.92);
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#chat .mes.chat_tools_match_active {
+    outline: none !important;
+    box-shadow: none !important;
+    background-color: rgba(225, 138, 36, 0.14) !important;
+}
+
+#chat .mes.chat_tools_match_active .mes_block {
+    border-left: 3px solid var(--SmartThemeQuoteColor) !important;
+}
+
+#chat .mes.chat_tools_match_found .mes_block {
+    box-shadow: none;
+}
+
+#chat .mes.chat_tools_match_found {
+    background-color: rgba(225, 138, 36, 0.06);
+}
+
+#current_chat_tools_list mark.chat_tools_match_mark {
+    background: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBodyColor);
+    border-radius: 3px;
+    padding: 0 2px;
+}
+
+#chat mark.chat_tools_inline_mark {
+    background: rgba(225, 138, 36, 0.45);
+    color: inherit;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
 /* special case for desktop Safari to allow #sheld resizing */
 @media only screen and (min-width: 1024px) and (-webkit-min-device-pixel-ratio: 2) and (pointer: fine) {
     #form_sheld {
