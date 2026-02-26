@@ -14333,6 +14333,148 @@ jQuery(async function () {
     });
 
 
+    async function openCurrentChatSearchPopup() {
+        if (chatElement.children('.mes').length === 0) {
+            toastr.info(t`No messages in current chat.`);
+            return;
+        }
+
+        const template = $(`
+            <div class="chat_search_popup flex-container flexFlowColumn flexNoGap">
+                <label class="marginBot5">${t`Search current chat`}</label>
+                <input type="search" class="text_pole chat_search_query marginBot10" placeholder="${t`Search...`}" autocomplete="off" />
+                <div class="text_muted chat_search_status marginBot10">${t`Enter keyword to search messages in this chat.`}</div>
+                <div class="flex-container justifyCenter alignItemsCenter flexGap10">
+                    <button type="button" class="menu_button chat_search_prev">${t`Previous match`}</button>
+                    <button type="button" class="menu_button chat_search_next">${t`Next match`}</button>
+                </div>
+            </div>
+        `);
+
+        const popup = new Popup(template, POPUP_TYPE.TEXT, '', {
+            okButton: t`Close`,
+            onOpen: (popupInstance) => {
+                const popupRoot = $(popupInstance.dlg);
+                const queryInput = popupRoot.find('.chat_search_query');
+                const statusElement = popupRoot.find('.chat_search_status');
+                const previousButton = popupRoot.find('.chat_search_prev');
+                const nextButton = popupRoot.find('.chat_search_next');
+
+                /** @type {JQuery<HTMLElement>[]} */
+                let matches = [];
+                let currentMatchIndex = -1;
+                let lastSearchedQuery = '';
+
+                const setStatus = (text) => statusElement.text(text);
+                const updateButtonState = () => {
+                    const hasMatches = matches.length > 0;
+                    previousButton.prop('disabled', !hasMatches).toggleClass('disabled', !hasMatches);
+                    nextButton.prop('disabled', !hasMatches).toggleClass('disabled', !hasMatches);
+                };
+
+                const collectMatches = (query) => {
+                    const normalizedQuery = query.toLocaleLowerCase();
+                    /** @type {JQuery<HTMLElement>[]} */
+                    const found = [];
+                    chatElement.children('.mes').each((_, messageElement) => {
+                        const message = $(messageElement);
+                        const searchableText = [
+                            String(message.find('.name_text').first().text() || ''),
+                            String(message.find('.mes_text').text() || ''),
+                            String(message.find('.mes_reasoning').text() || ''),
+                        ].join('\n').toLocaleLowerCase();
+
+                        if (searchableText.includes(normalizedQuery)) {
+                            found.push(message);
+                        }
+                    });
+                    return found;
+                };
+
+                const focusMatchAt = (index) => {
+                    if (!matches.length) {
+                        return;
+                    }
+
+                    currentMatchIndex = ((index % matches.length) + matches.length) % matches.length;
+                    const currentMatch = matches[currentMatchIndex];
+                    currentMatch[0]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    flashHighlight(currentMatch, 1500);
+                    setStatus(`${t`Match`} ${currentMatchIndex + 1} / ${matches.length}`);
+                };
+
+                const refreshMatches = () => {
+                    const query = String(queryInput.val() ?? '').trim();
+                    if (!query) {
+                        matches = [];
+                        currentMatchIndex = -1;
+                        lastSearchedQuery = '';
+                        setStatus(t`Enter keyword to search messages in this chat.`);
+                        updateButtonState();
+                        return;
+                    }
+
+                    if (query !== lastSearchedQuery) {
+                        matches = collectMatches(query);
+                        currentMatchIndex = -1;
+                        lastSearchedQuery = query;
+                    }
+
+                    if (matches.length === 0) {
+                        setStatus(t`No messages matched.`);
+                        updateButtonState();
+                        return;
+                    }
+
+                    updateButtonState();
+                    focusMatchAt(currentMatchIndex >= 0 ? currentMatchIndex : 0);
+                };
+
+                previousButton.on('click', (event) => {
+                    event.preventDefault();
+                    if (!matches.length) {
+                        return;
+                    }
+                    focusMatchAt(currentMatchIndex - 1);
+                });
+
+                nextButton.on('click', (event) => {
+                    event.preventDefault();
+                    if (!matches.length) {
+                        return;
+                    }
+                    focusMatchAt(currentMatchIndex + 1);
+                });
+
+                queryInput.on('input', () => {
+                    lastSearchedQuery = '';
+                    refreshMatches();
+                });
+
+                queryInput.on('keydown', (event) => {
+                    if (event.key !== 'Enter') {
+                        return;
+                    }
+                    event.preventDefault();
+                    const query = String(queryInput.val() ?? '').trim();
+                    if (!query) {
+                        return;
+                    }
+                    if (!matches.length || query !== lastSearchedQuery) {
+                        refreshMatches();
+                        return;
+                    }
+                    focusMatchAt(currentMatchIndex + 1);
+                });
+
+                updateButtonState();
+                queryInput.trigger('focus');
+            },
+        });
+
+        await popup.show();
+    }
+
     const button = $('#options_button');
     const menu = $('#options');
     let isOptionsMenuVisible = false;
@@ -14467,6 +14609,10 @@ jQuery(async function () {
 
         else if (id == 'option_delete_mes') {
             setTimeout(() => openMessageDelete(fromSlashCommand), animation_duration);
+        }
+
+        else if (id == 'option_search_chat') {
+            await openCurrentChatSearchPopup();
         }
 
         else if (id == 'option_close_chat') {

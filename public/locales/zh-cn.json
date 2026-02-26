@@ -4264,10 +4264,31 @@
 
     "Manage chat files": "管理聊天文件",
 
-
+
     "Delete messages": "删除消息",
 
-
+
+    "Search current chat": "搜索当前聊天",
+
+
+    "Enter keyword to search messages in this chat.": "输入关键词以搜索当前聊天消息。",
+
+
+    "Previous match": "上一个匹配",
+
+
+    "Next match": "下一个匹配",
+
+
+    "No messages in current chat.": "当前聊天没有消息。",
+
+
+    "No messages matched.": "未找到匹配消息。",
+
+
+    "Match": "匹配",
+
+
     "extension_install_1": "若想从此页安装扩展程序，你需要提前安装",
 
 
