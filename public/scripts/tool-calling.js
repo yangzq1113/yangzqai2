@@ -193,9 +193,6 @@ class ToolDefinition {
                 description: this.#description,
                 parameters: this.#parameters,
             },
-            toString: function () {
-                return `<div><b>${this.function.name}</b></div><div><small>${this.function.description}</small></div><pre class="justifyLeft wordBreakAll"><code class="flex padding5">${JSON.stringify(this.function.parameters, null, 2)}</code></pre><hr>`;
-            },
         };
     }
 
@@ -245,6 +242,23 @@ export class ToolManager {
     static #tools = new Map();
 
     static #INPUT_DELTA_KEY = '__input_json_delta';
+
+    /**
+     * Format an OpenAI-style tool object for popup/html display.
+     * @param {ToolDefinitionOpenAI} toolOpenAI
+     * @returns {string}
+     */
+    static formatToolOpenAIHtml(toolOpenAI) {
+        const fn = toolOpenAI?.function && typeof toolOpenAI.function === 'object'
+            ? toolOpenAI.function
+            : {};
+        const name = String(fn.name || '');
+        const description = String(fn.description || '');
+        const parameters = fn.parameters && typeof fn.parameters === 'object'
+            ? fn.parameters
+            : {};
+        return `<div><b>${name}</b></div><div><small>${description}</small></div><pre class="justifyLeft wordBreakAll"><code class="flex padding5">${JSON.stringify(parameters, null, 2)}</code></pre><hr>`;
+    }
 
     /**
      * The maximum number of times to recurse when parsing tool calls.
@@ -922,7 +936,12 @@ export class ToolManager {
             callback: async (args) => {
                 /** @type {any} */
                 const returnType = String(args?.return ?? 'popup-html').trim().toLowerCase();
-                const objectToStringFunc = (tools) => Array.isArray(tools) ? tools.map(x => x.toString()).join('\n\n') : tools.toString();
+                const objectToStringFunc = (tools) => {
+                    if (Array.isArray(tools)) {
+                        return tools.map((tool) => ToolManager.formatToolOpenAIHtml(tool)).join('\n\n');
+                    }
+                    return ToolManager.formatToolOpenAIHtml(tools);
+                };
                 const tools = ToolManager.tools.map(tool => tool.toFunctionOpenAI());
                 return await slashCommandReturnHelper.doReturn(returnType ?? 'popup-html', tools ?? [], { objectToStringFunc });
             },
