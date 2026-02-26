@@ -16161,12 +16161,47 @@ jQuery(async function () {
         $('#char-management-dropdown').prop('selectedIndex', 0);
     });
 
-    $(window).on('beforeunload', () => {
+    function shouldWarnBeforeUnload() {
+        const mode = String(power_user.before_unload_guard_mode || 'smart').trim().toLowerCase();
+        if (mode === 'off') {
+            return false;
+        }
+        if (mode === 'always') {
+            return true;
+        }
+
+        // Smart mode: only warn when there's obvious risk of data loss.
+        if (is_send_press || streamingProcessor) {
+            return true;
+        }
+        if (this_edit_mes_id >= 0) {
+            return true;
+        }
+        if (String($('#send_textarea').val() ?? '').trim().length > 0) {
+            return true;
+        }
+        return false;
+    }
+
+    $(window).on('beforeunload', (event) => {
         cancelTtsPlay();
         if (streamingProcessor) {
             console.log('Page reloaded. Aborting streaming...');
             streamingProcessor.onStopStreaming();
         }
+
+        if (!shouldWarnBeforeUnload()) {
+            return;
+        }
+
+        const nativeEvent = event?.originalEvent ?? event;
+        if (nativeEvent) {
+            nativeEvent.returnValue = '';
+        }
+        if (typeof event?.preventDefault === 'function') {
+            event.preventDefault();
+        }
+        return '';
     });
 
 

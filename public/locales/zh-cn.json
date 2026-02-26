@@ -2684,7 +2684,16 @@
 
     "Confirm message deletion": "删除消息前确认",
 
-
+
+    "Warn before closing/reloading this page.": "关闭或刷新页面前提示确认。",
+
+
+    "Leave-page confirmation": "离开页面确认",
+
+
+    "Only when risky": "仅在有风险时",
+
+
     "Auto-fix Markdown": "自动修复 Markdown",
 
 

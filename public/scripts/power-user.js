@@ -124,6 +124,20 @@ const messageNotificationDetailModes = {
     CONTENT: 'content',
 };
 
+const beforeUnloadGuardModes = {
+    OFF: 'off',
+    SMART: 'smart',
+    ALWAYS: 'always',
+};
+
+function normalizeBeforeUnloadGuardMode(value) {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (normalized === beforeUnloadGuardModes.OFF || normalized === beforeUnloadGuardModes.ALWAYS) {
+        return normalized;
+    }
+    return beforeUnloadGuardModes.SMART;
+}
+
 export const power_user = {
     charListGrid: false,
     tokenizer: tokenizers.BEST_MATCH,
@@ -159,6 +173,7 @@ export const power_user = {
     play_sound_unfocused: true,
     message_complete_notification: false,
     message_complete_notification_detail_mode: messageNotificationDetailModes.CONTENT,
+    before_unload_guard_mode: beforeUnloadGuardModes.SMART,
     auto_save_msg_edits: false,
     confirm_message_delete: true,
 
@@ -1839,6 +1854,7 @@ export async function loadPowerUserSettings(settings, data) {
         Object.assign(power_user, settings.power_user);
     }
     power_user.message_complete_notification_detail_mode = normalizeMessageNotificationDetailMode(power_user.message_complete_notification_detail_mode);
+    power_user.before_unload_guard_mode = normalizeBeforeUnloadGuardMode(power_user.before_unload_guard_mode);
 
     if (power_user.stscript === undefined) {
         power_user.stscript = defaultStscript;
@@ -1958,6 +1974,7 @@ export async function loadPowerUserSettings(settings, data) {
     $(`#tokenizer option[value="${power_user.tokenizer}"]`).prop('selected', true);
     $(`#send_on_enter option[value=${power_user.send_on_enter}]`).prop('selected', true);
     $('#confirm_message_delete').prop('checked', power_user.confirm_message_delete !== undefined ? !!power_user.confirm_message_delete : true);
+    $('#before_unload_guard_mode').val(power_user.before_unload_guard_mode);
     $('#spoiler_free_mode').prop('checked', power_user.spoiler_free_mode);
     $('#collapse-newlines-checkbox').prop('checked', power_user.collapse_newlines);
     $('#always-force-name2-checkbox').prop('checked', power_user.always_force_name2);
@@ -4082,6 +4099,12 @@ jQuery(() => {
 
     $('#confirm_message_delete').on('input', function () {
         power_user.confirm_message_delete = !!$(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    $('#before_unload_guard_mode').on('input', function () {
+        power_user.before_unload_guard_mode = normalizeBeforeUnloadGuardMode(String($(this).val()));
+        $(this).val(power_user.before_unload_guard_mode);
         saveSettingsDebounced();
     });
 
