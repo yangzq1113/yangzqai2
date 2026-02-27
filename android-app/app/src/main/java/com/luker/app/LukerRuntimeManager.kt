@@ -148,11 +148,13 @@ object LukerRuntimeManager {
 
     private fun prepareRuntime(context: Context): RuntimePaths {
         val runtimeRoot = File(context.filesDir, RUNTIME_DIR_NAME)
-        val dataRoot = File(context.filesDir, PERSISTENT_DATA_DIR_NAME)
+        val dataRoot = getPreferredDataRoot(context)
+        val internalDataRoot = File(context.filesDir, PERSISTENT_DATA_DIR_NAME)
         val persistRoot = File(dataRoot, RUNTIME_PERSIST_DIR_NAME)
         val markerFile = File(runtimeRoot, RUNTIME_MARKER)
         val legacyDataRoot = File(runtimeRoot, "data")
-        migrateLegacyDataRoot(legacyDataRoot, dataRoot)
+        migrateLegacyDataRoot(legacyDataRoot, internalDataRoot)
+        migrateInternalDataRootToPreferred(internalDataRoot, dataRoot)
         if (!dataRoot.exists()) {
             dataRoot.mkdirs()
         }
@@ -174,6 +176,45 @@ object LukerRuntimeManager {
         }
 
         return RuntimePaths(runtimeRoot = runtimeRoot, dataRoot = dataRoot)
+    }
+
+    private fun getPreferredDataRoot(context: Context): File {
+        val externalBase = context.getExternalFilesDir(null)
+        if (externalBase != null) {
+            return File(externalBase, PERSISTENT_DATA_DIR_NAME)
+        }
+
+        Log.w(TAG, "External app files directory is unavailable. Falling back to internal data root.")
+        return File(context.filesDir, PERSISTENT_DATA_DIR_NAME)
+    }
+
+    private fun migrateInternalDataRootToPreferred(internalDataRoot: File, preferredDataRoot: File) {
+        if (internalDataRoot.absolutePath == preferredDataRoot.absolutePath) {
+            return
+        }
+        if (!internalDataRoot.exists()) {
+            return
+        }
+        if (preferredDataRoot.exists()) {
+            val existing = preferredDataRoot.listFiles()
+            if (existing != null && existing.isNotEmpty()) {
+                return
+            }
+        }
+
+        runCatching {
+            preferredDataRoot.parentFile?.mkdirs()
+            if (internalDataRoot.renameTo(preferredDataRoot)) {
+                Log.i(TAG, "Migrated user data root to external app directory: ${preferredDataRoot.absolutePath}")
+                return
+            }
+
+            internalDataRoot.copyRecursively(preferredDataRoot, overwrite = false)
+            internalDataRoot.deleteRecursively()
+            Log.i(TAG, "Copied user data root to external app directory: ${preferredDataRoot.absolutePath}")
+        }.onFailure { t ->
+            Log.e(TAG, "Failed to migrate internal data root to preferred directory", t)
+        }
     }
 
     private fun persistRuntimeArtifacts(runtimeRoot: File, persistRoot: File) {
@@ -323,7 +364,7 @@ object LukerRuntimeManager {
 
     fun collectDiagnostics(context: Context, maxTailChars: Int = 6000): String {
         val dir = runtimeDir ?: File(context.filesDir, RUNTIME_DIR_NAME)
-        val dataRoot = dataRootDir ?: File(context.filesDir, PERSISTENT_DATA_DIR_NAME)
+        val dataRoot = dataRootDir ?: getPreferredDataRoot(context)
         val marker = File(dir, RUNTIME_MARKER)
         val bootstrap = File(dir, "bootstrap.js")
         val logFile = File(dir, BOOTSTRAP_LOG_FILE)
