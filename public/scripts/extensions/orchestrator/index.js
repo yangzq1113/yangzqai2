@@ -869,10 +869,24 @@ function buildLastUserAnchorFromMessages(messages) {
         return null;
     }
     const text = String(message.mes ?? '');
+    const playableFloor = messages
+        .slice(0, index + 1)
+        .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0);
     return {
         floor: index + 1,
+        playableFloor,
         hash: String(getStringHash(text)),
     };
+}
+
+function buildLastUserAnchor(context, payloadMessages) {
+    const contextMessages = Array.isArray(context?.chat) ? context.chat : [];
+    const contextAnchor = buildLastUserAnchorFromMessages(contextMessages);
+    if (contextAnchor) {
+        return contextAnchor;
+    }
+
+    return buildLastUserAnchorFromMessages(payloadMessages);
 }
 
 function canReuseLatestOrchestrationSnapshot(chatKey, anchor) {
@@ -885,7 +899,14 @@ function canReuseLatestOrchestrationSnapshot(chatKey, anchor) {
     if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
         return false;
     }
-    return Number(latestOrchestrationSnapshot.anchorFloor) === Number(anchor.floor)
+    const storedFloor = Number(latestOrchestrationSnapshot.anchorFloor);
+    const incomingFloor = Number(anchor.floor);
+    const storedPlayableFloor = Number(latestOrchestrationSnapshot.anchorPlayableFloor);
+    const incomingPlayableFloor = Number(anchor.playableFloor);
+    const floorMatched = Number.isFinite(storedPlayableFloor) && Number.isFinite(incomingPlayableFloor)
+        ? storedPlayableFloor === incomingPlayableFloor
+        : storedFloor === incomingFloor;
+    return floorMatched
         && String(latestOrchestrationSnapshot.anchorHash || '') === String(anchor.hash || '');
 }
 
@@ -1959,7 +1980,7 @@ async function onWorldInfoFinalized(payload) {
         }
         const generationType = String(payload?.type || '').trim().toLowerCase();
         const chatKey = getChatKey(context);
-        const anchor = buildLastUserAnchorFromMessages(messages);
+        const anchor = buildLastUserAnchor(context, messages);
         if (ORCH_REUSE_GENERATION_TYPES.has(generationType) && canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
@@ -1992,6 +2013,7 @@ async function onWorldInfoFinalized(payload) {
         latestOrchestrationSnapshot = {
             chatKey,
             anchorFloor: Number(anchor?.floor || 0),
+            anchorPlayableFloor: Number(anchor?.playableFloor || 0),
             anchorHash: String(anchor?.hash || ''),
             capsuleText,
             updatedAt: new Date().toISOString(),
@@ -2027,8 +2049,37 @@ async function onWorldInfoFinalized(payload) {
     }
 }
 
-function onMessageDeleted() {
+function onMessageDeleted(_chatLength, details) {
     const context = getContext();
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        clearCapsulePrompt(context);
+        return;
+    }
+
+    const chatKey = getChatKey(context);
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+        clearCapsulePrompt(context);
+        return;
+    }
+
+    const anchorPlayableFloor = Number(latestOrchestrationSnapshot.anchorPlayableFloor);
+    const deletedFrom = Number(details?.deletedPlayableSeqFrom);
+    const deletedTo = Number(details?.deletedPlayableSeqTo);
+
+    // Regenerate/swipe-style tail deletion removes only assistant content after last user.
+    // Keep snapshot in that case so reuse can still hit on the next generation.
+    const deletedStrictlyAfterAnchor = Number.isFinite(anchorPlayableFloor)
+        && anchorPlayableFloor > 0
+        && Number.isFinite(deletedFrom)
+        && Number.isFinite(deletedTo)
+        && deletedFrom > anchorPlayableFloor
+        && deletedTo > anchorPlayableFloor;
+
+    if (deletedStrictlyAfterAnchor) {
+        clearCapsulePrompt(context);
+        return;
+    }
+
     clearCapsulePrompt(context);
     clearLastOrchestrationSnapshot(context);
 }
