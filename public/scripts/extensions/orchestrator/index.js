@@ -12,13 +12,7 @@ const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
-const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints.';
-const ORCH_RUNTIME_THOUGHT_CONTRACT = [
-    'Output contract (strict):',
-    '- First output exactly one <thought>...</thought> block with your reasoning chain.',
-    '- Then output function-call payload only.',
-    '- Do not output narrative/body text outside <thought>.',
-].join('\n');
+const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints. Before function-call output, provide one concise <thought>...</thought> that reflects your role-specific reasoning.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     'Previous orchestration capsule:',
     '{{previous_orchestration}}',
@@ -69,8 +63,9 @@ function getDefaultAiSuggestSystemPrompt() {
     return [
         'You design RP multi-agent orchestration profiles for a specific character card.',
         'Use tool calls only. Do not return plain JSON text.',
-        'Before any tool calls, output exactly one <thought>...</thought> block with a clear reasoning chain.',
-        'After the <thought> block, output tool calls only.',
+        'For each generated node preset, explicitly define whether <thought> is required based on that node\'s responsibility.',
+        'Reasoning-heavy nodes (e.g. distiller/planner/critic/synthesizer) should require one concise <thought> before tool calls.',
+        'Constraint-only or lookup-only nodes may keep <thought> minimal, but the policy must be explicit in prompt text.',
         'Call multiple functions in one response to build the profile incrementally.',
         'Keep stages concise, operational, and easy to run in a single request turn.',
         'Only the LAST stage outputs are injected into the final generation context.',
@@ -129,31 +124,31 @@ const defaultSpec = {
 
 const defaultPresets = {
     distiller: {
-        systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn.',
+        systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Previous orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
     },
     lorebook_reader: {
-        systemPrompt: 'You are a lorebook compliance reader. Extract only active hard constraints from world-info, especially explicit banned wording/style requirements.',
+        systemPrompt: 'You are a lorebook compliance reader. Extract only active hard constraints from world-info, especially explicit banned wording/style requirements. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     anti_data_guard: {
-        systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions.',
+        systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     planner: {
-        systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan.',
+        systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
-        systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting.',
+        systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     recall_relevance: {
-        systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn.',
+        systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     synthesizer: {
-        systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation.',
+        systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
     },
 };
@@ -1255,7 +1250,7 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
         : '';
     return [
         'Plain-text function-call mode is enabled.',
-        'You must output exactly one <thought>...</thought> block before the final JSON payload.',
+        'Follow thought policy defined by current prompts (for example, output <thought>...</thought> before tool payload if required).',
         'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
         requiredLine,
         `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
@@ -1697,7 +1692,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         distiller: distillerOutput,
         previous_orchestration: previousOrchestration,
     });
-    const userPrompt = `${baseUserPrompt}\n\n${ORCH_RUNTIME_THOUGHT_CONTRACT}`.trim();
+    const userPrompt = baseUserPrompt;
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
     const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
@@ -2953,8 +2948,9 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
     const suggestSystemPromptBase = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
     const suggestSystemPrompt = [
         suggestSystemPromptBase,
-        'Hard output rule: output exactly one <thought>...</thought> block before any tool calls.',
-        'After <thought>, output tool calls only (no extra narrative/body text).',
+        'Hard output rule: follow each node prompt\'s explicit thought policy.',
+        'Reasoning-heavy node prompts should explicitly require one <thought>...</thought> before tool calls.',
+        'Do not add extra narrative/body text outside the required output contract.',
         'Runtime hard contract (must follow): return COMPLETE tool calls in one response; never return only one tool call.',
         'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
         'luker_orch_finalize_profile must be last.',
