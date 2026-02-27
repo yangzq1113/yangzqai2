@@ -13,6 +13,12 @@ const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints.';
+const ORCH_RUNTIME_THOUGHT_CONTRACT = [
+    'Output contract (strict):',
+    '- First output exactly one <thought>...</thought> block with your reasoning chain.',
+    '- Then output function-call payload only.',
+    '- Do not output narrative/body text outside <thought>.',
+].join('\n');
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     'Previous orchestration capsule:',
     '{{previous_orchestration}}',
@@ -63,6 +69,8 @@ function getDefaultAiSuggestSystemPrompt() {
     return [
         'You design RP multi-agent orchestration profiles for a specific character card.',
         'Use tool calls only. Do not return plain JSON text.',
+        'Before any tool calls, output exactly one <thought>...</thought> block with a clear reasoning chain.',
+        'After the <thought> block, output tool calls only.',
         'Call multiple functions in one response to build the profile incrementally.',
         'Keep stages concise, operational, and easy to run in a single request turn.',
         'Only the LAST stage outputs are injected into the final generation context.',
@@ -1247,7 +1255,7 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
         : '';
     return [
         'Plain-text function-call mode is enabled.',
-        'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
+        'You must output exactly one <thought>...</thought> block before the final JSON payload.',
         'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
         requiredLine,
         `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
@@ -1682,13 +1690,14 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         '</distiller_output>',
     ].join('\n');
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
-    const userPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
+    const baseUserPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
         recent_chat: recent,
         last_user: String(lastUser?.mes || ''),
         previous_outputs: previousOutputs,
         distiller: distillerOutput,
         previous_orchestration: previousOrchestration,
     });
+    const userPrompt = `${baseUserPrompt}\n\n${ORCH_RUNTIME_THOUGHT_CONTRACT}`.trim();
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
     const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
@@ -2944,6 +2953,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
     const suggestSystemPromptBase = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
     const suggestSystemPrompt = [
         suggestSystemPromptBase,
+        'Hard output rule: output exactly one <thought>...</thought> block before any tool calls.',
+        'After <thought>, output tool calls only (no extra narrative/body text).',
         'Runtime hard contract (must follow): return COMPLETE tool calls in one response; never return only one tool call.',
         'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
         'luker_orch_finalize_profile must be last.',
