@@ -22,6 +22,7 @@ object LukerRuntimeManager {
     private const val RUNTIME_MARKER = ".runtime-version"
     private const val RUNTIME_DIR_NAME = "luker-runtime"
     private const val PERSISTENT_DATA_DIR_NAME = "luker-data"
+    private const val CONFIG_FILE_NAME = "config.yaml"
     private const val RUNTIME_PERSIST_DIR_NAME = "_runtime-persist"
     private const val NODE_SCRIPT_PATH = "nodejs-project/bootstrap.js"
     private const val NODE_PROJECT_ASSET_PATH = "luker"
@@ -29,7 +30,6 @@ object LukerRuntimeManager {
     private val RUNTIME_PERSIST_RELATIVE_PATHS = listOf(
         "plugins",
         "public/scripts/extensions/third-party",
-        "config.yaml",
         "whitelist.txt",
     )
 
@@ -108,6 +108,8 @@ object LukerRuntimeManager {
                     selectedPort.toString(),
                     "--dataRoot",
                     paths.dataRoot.absolutePath,
+                    "--configPath",
+                    File(paths.dataRoot, CONFIG_FILE_NAME).absolutePath,
                 )
                 val exitCode = startNodeWithArguments(args)
                 if (exitCode != 0) {
@@ -158,6 +160,7 @@ object LukerRuntimeManager {
         if (!dataRoot.exists()) {
             dataRoot.mkdirs()
         }
+        migrateRuntimeConfigToDataRoot(runtimeRoot, persistRoot, dataRoot)
 
         val markerValue = buildRuntimeMarker(context)
         val needsRefresh = !runtimeRoot.exists() || !markerFile.exists() || markerFile.readText() != markerValue
@@ -176,6 +179,29 @@ object LukerRuntimeManager {
         }
 
         return RuntimePaths(runtimeRoot = runtimeRoot, dataRoot = dataRoot)
+    }
+
+    private fun migrateRuntimeConfigToDataRoot(runtimeRoot: File, persistRoot: File, dataRoot: File) {
+        val targetConfig = File(dataRoot, CONFIG_FILE_NAME)
+        if (targetConfig.exists()) {
+            return
+        }
+
+        val runtimeConfig = File(runtimeRoot, CONFIG_FILE_NAME)
+        val persistedConfig = File(persistRoot, CONFIG_FILE_NAME)
+        val sourceConfig = when {
+            runtimeConfig.exists() -> runtimeConfig
+            persistedConfig.exists() -> persistedConfig
+            else -> null
+        } ?: return
+
+        runCatching {
+            targetConfig.parentFile?.mkdirs()
+            sourceConfig.copyTo(targetConfig, overwrite = false)
+            Log.i(TAG, "Migrated runtime config to data root: ${targetConfig.absolutePath}")
+        }.onFailure { t ->
+            Log.e(TAG, "Failed to migrate runtime config to data root", t)
+        }
     }
 
     private fun getPreferredDataRoot(context: Context): File {
