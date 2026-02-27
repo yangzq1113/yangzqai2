@@ -27,9 +27,10 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     '- Distill the immediate narrative state and user intent.',
     '- Provide concrete directives for next reply drafting.',
     '- List key risks to avoid (OOC, continuity breaks, data-like language).',
-    '- If useful, provide a patch_last_user candidate.',
     '',
-    'Return function-call fields only. Keep summary/directives/risks/tags as plain text.',
+    'Return function-call fields only.',
+    'Put final injected guidance in field `text` (string).',
+    'The `text` content is injected directly as-is.',
 ].join('\n');
 const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_orchestration'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
@@ -66,9 +67,9 @@ function getDefaultAiSuggestSystemPrompt() {
         'Keep stages concise, operational, and easy to run in a single request turn.',
         'Only the LAST stage outputs are injected into the final generation context.',
         'Design a clear pipeline: state distillation -> parallel reasoning/critique -> final synthesis.',
-        'Node outputs are returned via function fields. Do NOT embed JSON blobs inside summary.',
-        'For last-stage nodes, use plain structured fields (summary, directives, risks, tags, patch_last_user).',
-        'Runtime will assemble the final injected YAML from those structured fields.',
+        'Non-final stage nodes should return structured tool-call fields for machine processing.',
+        'Last-stage nodes must return function-call payload with a single field `text`.',
+        'Runtime injects the `text` content directly as-is (no YAML wrapping).',
         'Do NOT hardcode any fixed narrator persona/identity/roleplay character in system prompts.',
         'Do NOT mirror long single-prompt identity blocks; focus on process quality and constraints.',
         'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
@@ -139,7 +140,7 @@ const defaultPresets = {
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
     },
 };
 
@@ -237,11 +238,6 @@ function registerLocaleData() {
         'Latest Orchestration Result': '最近编排效果',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
         'Updated At': '更新时间',
-        'Trigger': '触发方式',
-        'Layer': '层级',
-        'Profile Source': '配置来源',
-        'Profile Key': '配置键',
-        'Capsule': '胶囊内容',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '当前迭代来源：${0}',
         'Conversation': '对话',
@@ -421,11 +417,6 @@ function registerLocaleData() {
         'Latest Orchestration Result': '最近編排效果',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
         'Updated At': '更新時間',
-        'Trigger': '觸發方式',
-        'Layer': '層級',
-        'Profile Source': '設定來源',
-        'Profile Key': '設定鍵',
-        'Capsule': '膠囊內容',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '目前迭代來源：${0}',
         'Conversation': '對話',
@@ -706,31 +697,22 @@ function clearCapsulePrompt(context) {
     );
 }
 
-function buildLastOrchestrationEntry(capsuleText, payload, profile) {
-    const capsule = String(capsuleText || '').trim();
-    if (!capsule) {
+function getLatestOrchestrationEntry(context) {
+    const chatKey = getChatKey(context);
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        return null;
+    }
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return null;
+    }
+    const injectedText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
+    if (!injectedText) {
         return null;
     }
     return {
-        updatedAt: new Date().toISOString(),
-        trigger: String(payload?.type || 'normal'),
-        layer: getTargetAssistantLayer(payload),
-        profileSource: String(profile?.source || 'global'),
-        profileKey: String(profile?.key || 'global'),
-        capsule,
+        updatedAt: String(latestOrchestrationSnapshot.updatedAt || '').trim(),
+        injectedText,
     };
-}
-
-function getLatestOrchestrationEntry(context) {
-    const chatKey = getChatKey(context);
-    const entry = latestOrchestrationSnapshot
-        && typeof latestOrchestrationSnapshot === 'object'
-        && String(latestOrchestrationSnapshot.chatKey || '') === String(chatKey || '')
-        && latestOrchestrationSnapshot.entry
-        && typeof latestOrchestrationSnapshot.entry === 'object'
-        ? latestOrchestrationSnapshot.entry
-        : null;
-    return entry && typeof entry === 'object' ? entry : null;
 }
 
 function clearLastOrchestrationSnapshot(context) {
@@ -753,17 +735,20 @@ function getTargetAssistantLayer(payload) {
 }
 
 function getPreviousOrchestrationCapsuleText(context, payload) {
-    const entry = getLatestOrchestrationEntry(context);
-    if (!entry || typeof entry !== 'object') {
+    const chatKey = getChatKey(context);
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        return '';
+    }
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
         return '';
     }
     const currentTargetLayer = getTargetAssistantLayer(payload);
     const expectedPreviousLayer = Math.max(currentTargetLayer - 1, 0);
-    const storedLayer = Number(entry.layer || 0);
+    const storedLayer = Number(latestOrchestrationSnapshot.targetLayer || 0);
     if (expectedPreviousLayer <= 0 || storedLayer !== expectedPreviousLayer) {
         return '';
     }
-    return String(entry.capsule || '').trim();
+    return String(latestOrchestrationSnapshot.capsuleText || '').trim();
 }
 
 function renderLastOrchestrationResultHtml(context) {
@@ -773,23 +758,12 @@ function renderLastOrchestrationResultHtml(context) {
     }
 
     const updatedAt = String(entry.updatedAt || '').trim() || i18n('Not set');
-    const trigger = String(entry.trigger || '').trim() || i18n('Not set');
-    const layer = Number.isFinite(Number(entry.layer)) ? String(Math.max(0, Math.floor(Number(entry.layer)))) : i18n('Not set');
-    const profileSource = String(entry.profileSource || '').trim() || i18n('Not set');
-    const profileKey = String(entry.profileKey || '').trim() || i18n('Not set');
-    const capsule = String(entry.capsule || '').trim();
+    const injectedText = String(entry.injectedText || '').trim();
 
     return `
 <div class="luker_orch_last_run_popup">
-    <div class="luker_orch_last_run_meta">
-        <div><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
-        <div><b>${escapeHtml(i18n('Trigger'))}</b>：${escapeHtml(trigger)}</div>
-        <div><b>${escapeHtml(i18n('Layer'))}</b>：${escapeHtml(layer)}</div>
-        <div><b>${escapeHtml(i18n('Profile Source'))}</b>：${escapeHtml(profileSource)}</div>
-        <div><b>${escapeHtml(i18n('Profile Key'))}</b>：${escapeHtml(profileKey)}</div>
-    </div>
-    <div class="luker_orch_last_run_capsule_title">${escapeHtml(i18n('Capsule'))}</div>
-    <pre class="luker_orch_last_run_capsule">${escapeHtml(capsule || i18n('Not set'))}</pre>
+    <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
+    <pre class="luker_orch_last_run_capsule">${escapeHtml(injectedText || i18n('Not set'))}</pre>
 </div>`;
 }
 
@@ -1678,7 +1652,8 @@ function buildRuntimeWorldInfoFromPayload(payload = null) {
     return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
 }
 
-async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null) {
+async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
+    const isFinalStage = Boolean(options?.isFinalStage);
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
@@ -1734,6 +1709,29 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         },
     );
 
+    if (isFinalStage) {
+        const finalOutput = await requestToolCallWithRetry(settings, promptMessages, {
+            functionName: 'luker_orch_final_guidance',
+            functionDescription: 'Final orchestration guidance to inject into generation context.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    text: { type: 'string' },
+                },
+                required: ['text'],
+                additionalProperties: false,
+            },
+            llmPresetName,
+            apiSettingsOverride,
+            abortSignal,
+        });
+        const finalText = String(finalOutput?.text ?? '');
+        if (!finalText.trim()) {
+            throw new Error(`Node '${nodeSpec.id}' returned empty final guidance text.`);
+        }
+        return finalText;
+    }
+
     const nodeOutputSchema = {
         type: 'object',
         properties: {
@@ -1747,7 +1745,6 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
                 type: 'array',
                 items: { type: 'string' },
             },
-            patch_last_user: { type: 'string' },
             tags: {
                 type: 'array',
                 items: { type: 'string' },
@@ -1771,9 +1768,9 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
 }
 
-async function executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null) {
+async function executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null, options = {}) {
     const preset = presets[nodeSpec.preset] || {};
-    return await runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal);
+    return await runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal, options);
 }
 
 async function runOrchestration(context, payload, messages, profile) {
@@ -1788,6 +1785,7 @@ async function runOrchestration(context, payload, messages, profile) {
             throw new DOMException('Orchestration aborted.', 'AbortError');
         }
         const mode = String(stage?.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
+        const isFinalStage = Number(stageOutputs.length) === Number(stages.length - 1);
         const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
         const nodeOutputs = [];
 
@@ -1796,7 +1794,9 @@ async function runOrchestration(context, payload, messages, profile) {
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 return {
                     node: nodeSpec.id,
-                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
+                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal, {
+                        isFinalStage,
+                    }),
                 };
             }));
             nodeOutputs.push(...outputs);
@@ -1805,7 +1805,9 @@ async function runOrchestration(context, payload, messages, profile) {
                 const nodeSpec = normalizeNodeSpec(rawNode);
                 nodeOutputs.push({
                     node: nodeSpec.id,
-                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal),
+                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal, {
+                        isFinalStage,
+                    }),
                 });
             }
         }
@@ -1835,63 +1837,14 @@ function compactStageOutputs(stageOutputs) {
     }));
 }
 
-function tryParseJsonObject(value) {
-    if (typeof value !== 'string') {
-        return null;
+function normalizeNodeOutputForSnapshot(output) {
+    if (typeof output === 'string') {
+        return output;
     }
-    const text = value.trim();
-    if (!text || (!text.startsWith('{') && !text.startsWith('['))) {
-        return null;
+    if (output && typeof output === 'object') {
+        return structuredClone(output);
     }
-    try {
-        const parsed = JSON.parse(text);
-        return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch {
-        return null;
-    }
-}
-
-function normalizeNodeOutputForCapsule(output) {
-    const normalized = output && typeof output === 'object'
-        ? structuredClone(output)
-        : { value: output };
-
-    if (typeof normalized.summary !== 'string') {
-        return normalized;
-    }
-    const parsed = tryParseJsonObject(normalized.summary);
-    if (!parsed || Array.isArray(parsed)) {
-        return normalized;
-    }
-
-    if ((!Array.isArray(normalized.directives) || normalized.directives.length === 0) && Array.isArray(parsed.directives)) {
-        normalized.directives = parsed.directives;
-    }
-    if ((!Array.isArray(normalized.risks) || normalized.risks.length === 0) && Array.isArray(parsed.risks)) {
-        normalized.risks = parsed.risks;
-    }
-    if ((!Array.isArray(normalized.tags) || normalized.tags.length === 0) && Array.isArray(parsed.tags)) {
-        normalized.tags = parsed.tags;
-    }
-    if (!normalized.patch_last_user && typeof parsed.patch_last_user === 'string') {
-        normalized.patch_last_user = parsed.patch_last_user;
-    }
-    if (!normalized.xml_guidance && typeof parsed.xml_guidance === 'string') {
-        normalized.xml_guidance = parsed.xml_guidance;
-    }
-    normalized.summary = typeof parsed.summary === 'string' ? parsed.summary : '';
-
-    const extras = {};
-    for (const [key, value] of Object.entries(parsed)) {
-        if (['summary', 'directives', 'risks', 'tags', 'patch_last_user', 'xml_guidance'].includes(key)) {
-            continue;
-        }
-        extras[key] = value;
-    }
-    if (Object.keys(extras).length > 0) {
-        normalized.__summary_object = extras;
-    }
-    return normalized;
+    return output;
 }
 
 function getFinalStageSnapshot(stageOutputs) {
@@ -1909,129 +1862,39 @@ function getFinalStageSnapshot(stageOutputs) {
         nodes: last.nodes
             .map(node => ({
                 node: String(node?.node || ''),
-                output: normalizeNodeOutputForCapsule(node?.output),
+                output: normalizeNodeOutputForSnapshot(node?.output),
             }))
             .filter(node => node.node),
     };
 }
 
-function yamlInlineScalar(value) {
-    const text = String(value ?? '');
-    if (!text) {
-        return "''";
+function extractNodeInjectionText(nodeOutput) {
+    if (typeof nodeOutput === 'string') {
+        const text = String(nodeOutput);
+        return text.trim() ? text : '';
     }
-    if (/^[A-Za-z0-9._-]+$/.test(text)) {
-        return text;
-    }
-    return JSON.stringify(text);
+    return '';
 }
 
-function pushYamlBlock(lines, indent, key, value) {
-    const text = String(value ?? '').trim();
-    if (!text) {
-        return;
-    }
-    lines.push(`${indent}${key}: |-`);
-    for (const line of text.split('\n')) {
-        lines.push(`${indent}  ${line}`);
-    }
-}
-
-function pushYamlList(lines, indent, key, items) {
-    if (!Array.isArray(items)) {
-        return;
-    }
-    const normalized = items
-        .map(item => String(item ?? '').trim())
-        .filter(Boolean);
-    if (normalized.length === 0) {
-        return;
-    }
-    lines.push(`${indent}${key}:`);
-    for (const item of normalized) {
-        lines.push(`${indent}  - ${yamlInlineScalar(item)}`);
-    }
-}
-
-function formatNodeOutputAsYaml(nodeOutput, nodeId) {
-    const output = normalizeNodeOutputForCapsule(nodeOutput);
-    const lines = [];
-    lines.push(`      - id: ${yamlInlineScalar(nodeId)}`);
-    pushYamlBlock(lines, '        ', 'summary', output.summary);
-    pushYamlList(lines, '        ', 'directives', output.directives);
-    pushYamlList(lines, '        ', 'risks', output.risks);
-    pushYamlList(lines, '        ', 'tags', output.tags);
-    pushYamlBlock(lines, '        ', 'patch_last_user', output.patch_last_user);
-
-    const extraPayload = {};
-    for (const [key, value] of Object.entries(output)) {
-        if ([
-            'summary',
-            'directives',
-            'risks',
-            'tags',
-            'patch_last_user',
-            'xml_guidance',
-            '__summary_object',
-        ].includes(key)) {
-            continue;
-        }
-        extraPayload[key] = value;
-    }
-    if (output.__summary_object && typeof output.__summary_object === 'object') {
-        for (const [key, value] of Object.entries(output.__summary_object)) {
-            if (!(key in extraPayload)) {
-                extraPayload[key] = value;
-            }
-        }
-    }
-    if (Object.keys(extraPayload).length > 0) {
-        pushYamlBlock(lines, '        ', 'structured_notes_json', JSON.stringify(extraPayload, null, 2));
-    }
-    const xmlGuidance = String(output.xml_guidance || '').trim();
-    if (xmlGuidance) {
-        pushYamlBlock(lines, '        ', 'model_hint', xmlGuidance);
-    }
-    return lines.join('\n');
-}
-
-function buildCapsuleText(capsule, settings) {
-    const lines = [];
-    const customInstruction = String(settings?.capsuleCustomInstruction || '').trim();
-    if (customInstruction) {
-        lines.push(customInstruction);
-    }
-    lines.push('luker_orchestration:');
-    lines.push(`  phase: ${yamlInlineScalar(capsule.phase)}`);
-    lines.push(`  trigger: ${yamlInlineScalar(capsule.trigger)}`);
-    lines.push('  guidance_policy: "Use this as high-priority planning context for the next roleplay reply."');
-    if (capsule.final_stage) {
-        lines.push('  final_stage:');
-        lines.push(`    id: ${yamlInlineScalar(capsule.final_stage.id)}`);
-        lines.push(`    mode: ${yamlInlineScalar(capsule.final_stage.mode)}`);
-        lines.push('    agents:');
-        for (const node of capsule.final_stage.nodes || []) {
-            lines.push(formatNodeOutputAsYaml(node.output, node.node));
-        }
-    } else {
-        lines.push('  final_stage:');
-        lines.push('    id: \'\'');
-        lines.push('    mode: serial');
-        lines.push('    agents: []');
-    }
-    return lines.join('\n').trim();
-}
-
-function buildCapsule(payload, stageOutputs, options = {}) {
+function buildCapsule(stageOutputs) {
     const finalStage = getFinalStageSnapshot(stageOutputs);
-    const capsule = {
-        phase: options.phase || 'final',
-        trigger: payload?.type || 'normal',
-        final_stage: finalStage,
-    };
-
     const settings = extension_settings[MODULE_NAME];
-    return buildCapsuleText(capsule, settings);
+    const customInstruction = String(settings?.capsuleCustomInstruction || '').trim();
+    const finalTexts = Array.isArray(finalStage?.nodes)
+        ? finalStage.nodes
+            .map(node => extractNodeInjectionText(node?.output))
+            .filter(Boolean)
+        : [];
+    const body = finalTexts.length <= 1
+        ? (finalTexts[0] || '')
+        : finalTexts.join('\n\n');
+    if (!body) {
+        return '';
+    }
+    if (!customInstruction) {
+        return body;
+    }
+    return `${customInstruction}\n\n${body}`;
 }
 
 function injectCapsule(context, text) {
@@ -2091,14 +1954,11 @@ async function onWorldInfoFinalized(payload) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
                 injectCapsule(context, capsuleText);
-                const entry = buildLastOrchestrationEntry(capsuleText, payload, {
-                    source: String(latestOrchestrationSnapshot.profileSource || 'global'),
-                    key: String(latestOrchestrationSnapshot.profileKey || 'global'),
-                });
                 latestOrchestrationSnapshot = {
                     ...latestOrchestrationSnapshot,
                     chatKey,
-                    entry: entry && typeof entry === 'object' ? entry : latestOrchestrationSnapshot.entry,
+                    updatedAt: new Date().toISOString(),
+                    targetLayer: getTargetAssistantLayer(payload),
                 };
                 updateUiStatus(i18n('Orchestrator completed.'));
                 clearRunInfoToast();
@@ -2117,19 +1977,15 @@ async function onWorldInfoFinalized(payload) {
 
         const finalRun = await runOrchestration(context, orchestrationPayload, messages, profile);
 
-        const capsuleText = buildCapsule(payload, finalRun.stageOutputs || [], {
-            phase: 'final',
-        });
+        const capsuleText = buildCapsule(finalRun.stageOutputs || []);
         injectCapsule(context, capsuleText);
-        const entry = buildLastOrchestrationEntry(capsuleText, payload, profile);
         latestOrchestrationSnapshot = {
             chatKey,
             anchorFloor: Number(anchor?.floor || 0),
             anchorHash: String(anchor?.hash || ''),
             capsuleText,
-            profileSource: String(profile?.source || 'global'),
-            profileKey: String(profile?.key || 'global'),
-            entry: entry && typeof entry === 'object' ? entry : null,
+            updatedAt: new Date().toISOString(),
+            targetLayer: getTargetAssistantLayer(payload),
         };
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
@@ -3088,7 +2944,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         `Must include dedicated required node ids: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
-        'When deviating, explicitly optimize for this character card while preserving hard gates and final YAML guidance contract.',
+        'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
     ].join('\n');
     const suggestUserPrompt = buildAiSuggestInputXml({
         character: characterCard,
@@ -3103,8 +2959,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         injectionContract: {
             injected_stage: 'only_last_stage',
             expected_last_stage_mode: 'serial_single_synthesizer_preferred',
-            expected_guidance_format: 'runtime_assembled_yaml_from_structured_fields',
-            no_json_in_summary: true,
+            expected_guidance_format: 'function_call_text_direct_injection',
+            no_json_or_markup_in_final_output: true,
         },
         mandatoryQualityAxes: ORCH_AI_QUALITY_AXES,
         qualityGateContract: {
@@ -3140,7 +2996,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 allow_stage_refactor: true,
                 allow_node_role_innovation: true,
                 must_preserve_hard_gates: true,
-                must_preserve_final_yaml_contract: true,
+                must_preserve_final_plain_text_contract: true,
                 card_specific_optimization_required: true,
             },
         },
