@@ -141,8 +141,10 @@
             <label><input type="checkbox" id="oauthDiscordRequireGuild" /> Require membership in target server</label>
             <input id="oauthDiscordClientId" class="text_pole" type="text" placeholder="Discord Client ID" />
             <input id="oauthDiscordClientSecret" class="text_pole" type="password" placeholder="Discord Client Secret" />
+            <textarea id="oauthDiscordScopes" class="text_pole" rows="2" placeholder="Extra OAuth scopes (optional, comma/space/new line separated; identify is always included)"></textarea>
             <textarea id="oauthDiscordAllowedGuilds" class="text_pole" rows="2" placeholder="Allowed server IDs (comma or new line separated)"></textarea>
             <textarea id="oauthDiscordRequiredRoles" class="text_pole" rows="2" placeholder="Required role IDs (optional, comma or new line separated)"></textarea>
+            <small>When "Require membership in target server" is enabled, required Discord scopes for server checks are added automatically.</small>
         </div>
 
         <div class="flex-container">

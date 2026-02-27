@@ -251,18 +251,26 @@ router.get('/oauth/start/:provider', async (request, response) => {
         }
 
         const authUrl = new URL('https://discord.com/api/oauth2/authorize');
-        const scopes = ['identify', 'email'];
-        if (providerSettings.requireGuildMembership || (providerSettings.allowedGuildIds || []).length > 0) {
-            scopes.push('guilds');
+        const configuredScopes = Array.isArray(providerSettings.scopes) ? providerSettings.scopes : [];
+        const scopes = new Set(['identify']);
+        for (const scope of configuredScopes) {
+            const normalizedScope = String(scope || '').trim().toLowerCase();
+            if (normalizedScope && normalizedScope !== 'identify') {
+                scopes.add(normalizedScope);
+            }
         }
-        if ((providerSettings.requiredRoleIds || []).length > 0) {
-            scopes.push('guilds.members.read');
+
+        if (providerSettings.requireGuildMembership) {
+            scopes.add('guilds');
+            if ((providerSettings.requiredRoleIds || []).length > 0) {
+                scopes.add('guilds.members.read');
+            }
         }
 
         authUrl.searchParams.set('response_type', 'code');
         authUrl.searchParams.set('client_id', providerSettings.clientId);
         authUrl.searchParams.set('redirect_uri', callbackUri);
-        authUrl.searchParams.set('scope', Array.from(new Set(scopes)).join(' '));
+        authUrl.searchParams.set('scope', Array.from(scopes).join(' '));
         authUrl.searchParams.set('state', state);
         return response.redirect(authUrl.toString());
     } catch (error) {

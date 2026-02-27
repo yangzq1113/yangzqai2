@@ -27,6 +27,7 @@ const DEFAULT_ADMIN_SETTINGS = Object.freeze({
             requireGuildMembership: false,
             allowedGuildIds: [],
             requiredRoleIds: [],
+            scopes: ['email'],
         },
     },
 });
@@ -78,6 +79,36 @@ function normalizeIdList(value) {
     return out;
 }
 
+function normalizeScopeList(value) {
+    const rawList = Array.isArray(value)
+        ? value
+        : String(value || '')
+            .split(/[\s,\n,]/g)
+            .map(x => x.trim());
+
+    const out = [];
+    const seen = new Set();
+    for (const item of rawList) {
+        const scope = String(item || '').trim().toLowerCase();
+        if (!scope) {
+            continue;
+        }
+
+        if (!/^[a-z0-9._:-]+$/i.test(scope)) {
+            continue;
+        }
+
+        if (seen.has(scope)) {
+            continue;
+        }
+
+        seen.add(scope);
+        out.push(scope);
+    }
+
+    return out;
+}
+
 /**
  * Normalizes and sanitizes admin settings.
  * @param {any} rawSettings Raw settings from storage or request body
@@ -86,6 +117,13 @@ function normalizeIdList(value) {
 export function sanitizeAdminSettings(rawSettings) {
     const defaults = cloneDefaultSettings();
     const source = rawSettings && typeof rawSettings === 'object' ? rawSettings : {};
+    const discordSource = source?.oauth?.discord && typeof source.oauth.discord === 'object'
+        ? source.oauth.discord
+        : {};
+    const hasExplicitDiscordScopes = Object.prototype.hasOwnProperty.call(discordSource, 'scopes');
+    const discordScopesSource = hasExplicitDiscordScopes
+        ? discordSource.scopes
+        : defaults.oauth.discord.scopes;
 
     const settings = {
         storage: {
@@ -106,6 +144,7 @@ export function sanitizeAdminSettings(rawSettings) {
                 requireGuildMembership: Boolean(source?.oauth?.discord?.requireGuildMembership),
                 allowedGuildIds: normalizeIdList(source?.oauth?.discord?.allowedGuildIds),
                 requiredRoleIds: normalizeIdList(source?.oauth?.discord?.requiredRoleIds),
+                scopes: normalizeScopeList(discordScopesSource),
             },
         },
     };

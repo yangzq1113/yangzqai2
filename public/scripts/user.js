@@ -1674,6 +1674,11 @@ async function openAdminPanel() {
         .map(x => x.trim())
         .filter(Boolean);
 
+    const parseScopeList = (text) => String(text || '')
+        .split(/[\s,\n,]/g)
+        .map(x => x.trim().toLowerCase())
+        .filter(Boolean);
+
     function populateAuthSettingsForm(settings) {
         if (!settings) {
             return;
@@ -1693,6 +1698,7 @@ async function openAdminPanel() {
         template.find('#oauthDiscordClientSecret').val(settings?.oauth?.discord?.clientSecret || '');
         template.find('#oauthDiscordAllowedGuilds').val((settings?.oauth?.discord?.allowedGuildIds || []).join('\n'));
         template.find('#oauthDiscordRequiredRoles').val((settings?.oauth?.discord?.requiredRoleIds || []).join('\n'));
+        template.find('#oauthDiscordScopes').val((settings?.oauth?.discord?.scopes || []).join('\n'));
     }
 
     function collectAuthSettingsForm() {
@@ -1720,6 +1726,7 @@ async function openAdminPanel() {
                     clientSecret: String(template.find('#oauthDiscordClientSecret').val() || '').trim(),
                     allowedGuildIds: parseIdList(template.find('#oauthDiscordAllowedGuilds').val()),
                     requiredRoleIds: parseIdList(template.find('#oauthDiscordRequiredRoles').val()),
+                    scopes: parseScopeList(template.find('#oauthDiscordScopes').val()),
                 },
             },
         };
