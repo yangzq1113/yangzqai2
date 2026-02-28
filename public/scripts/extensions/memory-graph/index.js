@@ -9096,10 +9096,26 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         context.POPUP_TYPE.TEXT,
         '',
         {
+            okButton: i18n('Cancel'),
+            cancelButton: false,
             wide: true,
             large: false,
             allowVerticalScrolling: true,
-            onOpen: () => {
+            onOpen: (popup) => {
+                const popupRoot = getPopupRoot();
+                const controls = popup?.buttonControls instanceof HTMLElement ? popup.buttonControls : null;
+                if (controls) {
+                    const okButton = popup?.okButton instanceof HTMLElement ? popup.okButton : null;
+                    const saveGlobalButton = popupRoot.find(`#${popupId}_advanced_save_global`).get(0);
+                    const saveCharacterButton = popupRoot.find(`#${popupId}_advanced_save_character`).get(0);
+                    for (const button of [saveGlobalButton, saveCharacterButton]) {
+                        if (!(button instanceof HTMLElement)) {
+                            continue;
+                        }
+                        button.classList.add('popup-button-custom');
+                        controls.insertBefore(button, okButton);
+                    }
+                }
                 setPopupScopeUi(getAdvancedScopeInfo(context, settings));
             },
         },
