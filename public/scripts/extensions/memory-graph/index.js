@@ -317,7 +317,7 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回提示词预设（参数+提示词，留空=当前）',
         'Extract API preset (Connection profile, empty = current)': '生成图 API 预设（连接配置，留空=当前）',
         'Extract preset (params + prompt, empty = current)': '生成图提示词预设（参数+提示词，留空=当前）',
-        'Project recall output to chat lorebook (rescan WI after inject)': '将召回结果投影到聊天 Lorebook（注入后重扫世界书）',
+        'Project recall output to chat lorebook': '将召回结果投影到聊天世界书',
         'Exclude latest N assistant turns from memory injection': '记忆注入时排除最近 N 条 Assistant 回复',
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '生成图时参考最近 Assistant 回复条数',
@@ -575,7 +575,7 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回提示詞預設（參數+提示詞，留空=目前）',
         'Extract API preset (Connection profile, empty = current)': '生成圖 API 預設（連線設定，留空=目前）',
         'Extract preset (params + prompt, empty = current)': '生成圖提示詞預設（參數+提示詞，留空=目前）',
-        'Project recall output to chat lorebook (rescan WI after inject)': '將召回結果投影到聊天 Lorebook（注入後重掃世界書）',
+        'Project recall output to chat lorebook': '將召回結果投影到聊天世界書',
         'Exclude latest N assistant turns from memory injection': '記憶注入時排除最近 N 條 Assistant 回覆',
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '生成圖時參考最近 Assistant 回覆條數',
@@ -9877,7 +9877,7 @@ function ensureUi() {
             <select id="luker_rpg_memory_extract_api_preset" class="text_pole"></select>
             <label for="luker_rpg_memory_extract_preset">${escapeHtml(i18n('Extract preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_preset" class="text_pole"></select>
-            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook (rescan WI after inject)'))}</label>
+            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook'))}</label>
 
             <div class="flex-container">
                 <label style="flex:1">${escapeHtml(i18n('Update every N assistant turns'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
