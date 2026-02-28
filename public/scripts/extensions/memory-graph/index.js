@@ -322,7 +322,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '生成图时参考最近 Assistant 回复条数',
         'Recall query recent assistant turns': '召回查询使用最近 Assistant 回复条数',
-        'Visible assistant turns for generation (0 = disabled)': '创作 LLM 仅可见最近 N 条 Assistant 回复（0=不裁剪）',
+        'Visible recent message layers for generation (0 = disabled)': '创作 LLM 仅可见最近 N 条消息（0=不裁剪）',
         'Extract batch assistant turns': '每次生成图处理的 Assistant 回复条数',
         'Tool-call retries': '工具调用重试次数',
         'Plain-text function-call mode': '纯文本函数调用模式',
@@ -580,7 +580,7 @@ function registerLocaleData() {
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '生成圖時參考最近 Assistant 回覆條數',
         'Recall query recent assistant turns': '召回查詢使用最近 Assistant 回覆條數',
-        'Visible assistant turns for generation (0 = disabled)': '創作 LLM 僅可見最近 N 條 Assistant 回覆（0=不裁切）',
+        'Visible recent message layers for generation (0 = disabled)': '創作 LLM 僅可見最近 N 條訊息（0=不裁切）',
         'Extract batch assistant turns': '每次生成圖處理的 Assistant 回覆條數',
         'Tool-call retries': '工具呼叫重試次數',
         'Plain-text function-call mode': '純文字函式呼叫模式',
@@ -5520,16 +5520,22 @@ function getRecentMessagesByAssistantTurns(messages, keepAssistantTurns) {
     return source.slice(startIndex);
 }
 
-function keepRecentCoreMessagesByAssistantTurns(coreChat, keepAssistantTurns) {
-    return getRecentMessagesByAssistantTurns(coreChat, keepAssistantTurns).map(message => ({ ...message }));
-}
-
-function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
-    if (!payload || typeof payload !== 'object' || !Array.isArray(payload.coreChat)) {
+function applyGenerationVisibleHistoryWindow(settings, {
+    generationType = '',
+    dryRun = false,
+    beforeCount = 0,
+    trace = null,
+} = {}) {
+    const normalizedType = String(generationType || '').trim().toLowerCase();
+    if (dryRun || normalizedType === 'quiet') {
         clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (!settings?.enabled) {
+        clearGenerationVisibleHistoryRegexState();
+        return false;
+    }
+    if (!RECALL_ALLOWED_GENERATION_TYPES.has(normalizedType)) {
         clearGenerationVisibleHistoryRegexState();
         return false;
     }
@@ -5538,25 +5544,20 @@ function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
         clearGenerationVisibleHistoryRegexState();
         return false;
     }
-    const beforeCount = payload.coreChat.length;
-    const recentCoreMessages = keepRecentCoreMessagesByAssistantTurns(payload.coreChat, windowSize);
-    const afterCount = recentCoreMessages.length;
-    if (afterCount >= beforeCount) {
-        clearGenerationVisibleHistoryRegexState();
-        return false;
-    }
-    const minDepth = Math.max(0, afterCount);
+    const normalizedBeforeCount = Math.max(0, Number(beforeCount) || 0);
+    const afterCount = normalizedBeforeCount > 0 ? Math.min(normalizedBeforeCount, windowSize) : windowSize;
+    const minDepth = Math.max(0, windowSize);
     generationVisibleHistoryRegexState.enabled = true;
     generationVisibleHistoryRegexState.minDepth = minDepth;
     generationVisibleHistoryRegexState.keepAssistantTurns = windowSize;
-    generationVisibleHistoryRegexState.beforeCount = beforeCount;
+    generationVisibleHistoryRegexState.beforeCount = normalizedBeforeCount;
     generationVisibleHistoryRegexState.afterCount = afterCount;
     notifyRuntimeRegexScriptsChanged();
     if (Array.isArray(trace)) {
         trace.push({
             step: 'apply_generation_history_window',
-            keep_assistant_turns: windowSize,
-            before_count: beforeCount,
+            keep_recent_messages: windowSize,
+            before_count: normalizedBeforeCount,
             after_count: afterCount,
             mode: 'runtime_regex_prompt_only',
             min_depth: minDepth,
@@ -6215,7 +6216,11 @@ async function injectMemoryPrompts(context, payload) {
 
     // Independent from recall/lorebook projection:
     // publish prompt-only runtime regex to limit visible history for creation LLM.
-    applyGenerationVisibleHistoryWindow(payload, settings);
+    applyGenerationVisibleHistoryWindow(settings, {
+        generationType,
+        dryRun: isDryRun,
+        beforeCount: Array.isArray(payload?.coreChat) ? payload.coreChat.length : 0,
+    });
 
     if (!settings.enabled) {
         await clearRuntimeLorebookProjection(context, settings);
@@ -9054,7 +9059,7 @@ function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
     <label>${escapeHtml(i18n('Recall query recent assistant turns'))}
         <input id="${popupId}_recall_query_messages" class="text_pole" type="number" min="1" max="64" step="1" value="${Math.max(1, Math.min(64, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages)))}" />
     </label>
-    <label>${escapeHtml(i18n('Visible assistant turns for generation (0 = disabled)'))}
+    <label>${escapeHtml(i18n('Visible recent message layers for generation (0 = disabled)'))}
         <input id="${popupId}_llm_visible_recent_messages" class="text_pole" type="number" min="0" max="200" step="1" value="${Math.max(0, Math.min(200, Number(settings.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))}" />
     </label>
     <label>${escapeHtml(i18n('Extract batch assistant turns'))}
@@ -9994,6 +9999,28 @@ jQuery(() => {
     registerRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID, getGenerationVisibleHistoryRuntimeRegexScripts);
     saveSettingsDebounced();
     ensureUi();
+
+    const generationStartedEvent = context.eventTypes.GENERATION_STARTED;
+    if (generationStartedEvent) {
+        context.eventSource.on(generationStartedEvent, () => {
+            clearGenerationVisibleHistoryRegexState();
+        });
+    }
+    const generationAfterCommandsEvent = context.eventTypes.GENERATION_AFTER_COMMANDS;
+    if (generationAfterCommandsEvent) {
+        context.eventSource.on(generationAfterCommandsEvent, (type, _params, dryRun) => {
+            const runtimeContext = getContext();
+            const settings = getEffectiveSettings(runtimeContext, getSettings());
+            const visibleMessages = Array.isArray(runtimeContext?.chat)
+                ? runtimeContext.chat.filter(message => message && !message.is_system).length
+                : 0;
+            applyGenerationVisibleHistoryWindow(settings, {
+                generationType: type,
+                dryRun: dryRun === true,
+                beforeCount: visibleMessages,
+            });
+        });
+    }
 
     const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
     if (wiAfterEvent) {
