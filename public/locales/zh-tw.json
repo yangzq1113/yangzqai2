@@ -3829,6 +3829,8 @@
 
     "Image Generation": "圖片生成設定",
 
+    "Abort": "中斷",
+
 
     "sd_refine_mode": "允許在傳送至生成 API 前，手動編輯提示詞字串",
 

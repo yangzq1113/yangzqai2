@@ -68,10 +68,11 @@ export { MODULE_NAME };
 const MODULE_NAME = 'sd';
 // This is a 1x1 transparent PNG
 const PNG_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-const CUSTOM_STOP_EVENT = 'sd_stop_generation';
 let activeGenerations = 0;
 /** @type {JQuery<HTMLElement>|null} */
 let generationToast = null;
+/** @type {AbortController[]} */
+const generationAbortControllers = [];
 const sources = {
     extras: 'extras',
     horde: 'horde',
@@ -2859,7 +2860,11 @@ function ensureSelectionExists(setting, selector) {
 function updateGenerationIndicator() {
     if (activeGenerations > 0) {
         const countText = activeGenerations > 1 ? ` (${activeGenerations})` : '';
-        const toastText = `<i class="fa-solid fa-spinner fa-spin"></i> ${t`Generating image`}${countText}...`;
+        const toastText = `
+<div class="sd_generation_toast_content">
+    <span class="sd_generation_toast_status"><i class="fa-solid fa-spinner fa-spin"></i> ${t`Generating image`}${countText}...</span>
+    <button type="button" class="menu_button sd_generation_abort_btn">${t`Abort`}</button>
+</div>`;
 
         if (!generationToast) {
             generationToast = toastr.info(
@@ -2868,19 +2873,27 @@ function updateGenerationIndicator() {
                 {
                     timeOut: 0,
                     extendedTimeOut: 0,
-                    tapToDismiss: true,
+                    tapToDismiss: false,
                     escapeHtml: false,
                     onHidden: () => {
                         generationToast = null;
                     },
                 },
             );
-        } else if (activeGenerations > 1) {
+        } else {
             const toastMessage = $(generationToast).find('.toast-message');
             if (toastMessage.length) {
                 toastMessage.html(toastText);
             }
         }
+
+        $(generationToast)
+            .off('click.sdAbortCurrent', '.sd_generation_abort_btn')
+            .on('click.sdAbortCurrent', '.sd_generation_abort_btn', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                abortOneActiveGeneration('Aborted by user');
+            });
     } else if (generationToast) {
         toastr.clear(generationToast);
         generationToast = null;
@@ -2895,6 +2908,33 @@ function startGenerationTracking() {
 function endGenerationTracking() {
     activeGenerations = Math.max(0, activeGenerations - 1);
     updateGenerationIndicator();
+}
+
+function registerAbortController(controller) {
+    if (!(controller instanceof AbortController)) {
+        return;
+    }
+
+    generationAbortControllers.push(controller);
+}
+
+function unregisterAbortController(controller) {
+    const index = generationAbortControllers.lastIndexOf(controller);
+    if (index !== -1) {
+        generationAbortControllers.splice(index, 1);
+    }
+}
+
+function abortOneActiveGeneration(reason = 'Aborted by user') {
+    for (let i = generationAbortControllers.length - 1; i >= 0; i -= 1) {
+        const controller = generationAbortControllers[i];
+        if (!controller?.signal?.aborted) {
+            controller.abort(reason);
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -2956,7 +2996,6 @@ async function generatePicture(initiator, args, trigger, message, callback) {
     const stopButton = document.getElementById('sd_stop_gen');
     let negativePromptPrefix = args?.negative || '';
     let imagePath = '';
-
     const stopListener = () => abortController.abort('Aborted by user');
 
     try {
@@ -2971,9 +3010,9 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         await eventSource.emit(event_types.SD_PROMPT_PROCESSING, eventData);
         prompt = eventData.prompt; // Allow extensions to modify the prompt
 
+        registerAbortController(abortController);
         startGenerationTracking();
         $(stopButton).show();
-        eventSource.once(CUSTOM_STOP_EVENT, stopListener);
 
         if (typeof args?._abortController?.addEventListener === 'function') {
             args._abortController.addEventListener('abort', stopListener);
@@ -2999,7 +3038,10 @@ async function generatePicture(initiator, args, trigger, message, callback) {
     finally {
         $(stopButton).hide();
         restoreOriginalDimensions(dimensions);
-        eventSource.removeListener(CUSTOM_STOP_EVENT, stopListener);
+        if (typeof args?._abortController?.removeEventListener === 'function') {
+            args._abortController.removeEventListener('abort', stopListener);
+        }
+        unregisterAbortController(abortController);
         endGenerationTracking();
     }
 
@@ -4911,7 +4953,7 @@ async function addSDGenButtons() {
 
     const stopGenButton = $('#sd_stop_gen');
     stopGenButton.hide();
-    stopGenButton.on('click', () => eventSource.emit(CUSTOM_STOP_EVENT));
+    stopGenButton.on('click', () => abortOneActiveGeneration('Aborted by user'));
 }
 
 function isValidState() {
@@ -5111,7 +5153,6 @@ async function writePromptFields(characterId) {
  */
 async function generateMediaSwipe(mediaAttachment, message, onStart, onComplete, abortController = new AbortController()) {
     const stopButton = document.getElementById('sd_stop_gen');
-    const stopListener = () => abortController.abort('Aborted by user');
     const generationType = mediaAttachment.generation_type ?? message?.extra?.generationType ?? generationMode.FREE;
     const dimensions = setTypeSpecificDimensions(generationType);
     extension_settings.sd.original_seed = extension_settings.sd.seed;
@@ -5125,8 +5166,8 @@ async function generateMediaSwipe(mediaAttachment, message, onStart, onComplete,
     };
 
     try {
+        registerAbortController(abortController);
         $(stopButton).show();
-        eventSource.once(CUSTOM_STOP_EVENT, stopListener);
         const callback = (_a, _b, _c, _d, _e, _f, format) => { result.type = isVideo(format) ? MEDIA_TYPE.VIDEO : MEDIA_TYPE.IMAGE; };
         const savedPrompt = mediaAttachment.title ?? message.extra.title ?? '';
         const prompt = await refinePrompt(savedPrompt, false);
@@ -5146,7 +5187,7 @@ async function generateMediaSwipe(mediaAttachment, message, onStart, onComplete,
     } finally {
         onComplete();
         $(stopButton).hide();
-        eventSource.removeListener(CUSTOM_STOP_EVENT, stopListener);
+        unregisterAbortController(abortController);
         restoreOriginalDimensions(dimensions);
         extension_settings.sd.seed = extension_settings.sd.original_seed;
         delete extension_settings.sd.original_seed;

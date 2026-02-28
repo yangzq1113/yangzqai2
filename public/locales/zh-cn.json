@@ -5350,6 +5350,8 @@
 
     "Image Generation": "图像生成",
 
+    "Abort": "中断",
+
 
     "sd_refine_mode": "允许在将提示词发送到生成 API 之前手动编辑提示词",
 
