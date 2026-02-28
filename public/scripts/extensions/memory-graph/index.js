@@ -845,13 +845,12 @@ function getGenerationVisibleHistoryRuntimeRegexScripts() {
         return [];
     }
     const suffix = visibleLayers > 0 ? ` (${visibleLayers})` : '';
-    const replaceString = Boolean(settings?.enabled) ? '' : '$&';
 
     return [{
         id: GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID,
         scriptName: `Memory Graph Visible Message Window${suffix}`,
         findRegex: '/[\\s\\S]*/g',
-        replaceString,
+        replaceString: '',
         trimStrings: [],
         placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
         disabled: false,
