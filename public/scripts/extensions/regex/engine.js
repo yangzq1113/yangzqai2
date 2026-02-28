@@ -35,18 +35,31 @@ export const SCRIPT_TYPE_UNKNOWN = -1;
 const DEFAULT_GET_REGEX_SCRIPTS_OPTIONS = Object.freeze({ allowedOnly: false });
 const warnedInvalidPlacementScripts = new Set();
 let shownInvalidPlacementToast = false;
-/** @type {Map<string, (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined>} */
+/**
+ * @typedef {object} RuntimeRegexProviderOptions
+ * @property {boolean} [reloadOnChange=false] Request chat reload when provider is registered/unregistered.
+ */
+
+/** @type {Map<string, { provider: (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined, reloadOnChange: boolean }>} */
 const runtimeRegexProviders = new Map();
 export const REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT = 'luker:regex-runtime-scripts-changed';
 
-export function notifyRuntimeRegexScriptsChanged() {
+/**
+ * @param {{ requestReload?: boolean }} [options]
+ * @returns {void}
+ */
+export function notifyRuntimeRegexScriptsChanged(options = {}) {
     if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') {
         return;
     }
     if (typeof CustomEvent === 'undefined') {
         return;
     }
-    window.dispatchEvent(new CustomEvent(REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT));
+    window.dispatchEvent(new CustomEvent(REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT, {
+        detail: {
+            requestReload: Boolean(options?.requestReload),
+        },
+    }));
 }
 
 /**
@@ -131,9 +144,10 @@ export class RegexProvider {
  *
  * @param {string} owner Unique owner id, usually plugin/module name
  * @param {(options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined} provider Script provider callback
+ * @param {RuntimeRegexProviderOptions} [options] Provider options
  * @returns {void}
  */
-export function registerRegexProvider(owner, provider) {
+export function registerRegexProvider(owner, provider, options = {}) {
     const ownerId = String(owner || '').trim();
     if (!ownerId) {
         console.warn('registerRegexProvider: owner is empty');
@@ -143,8 +157,9 @@ export function registerRegexProvider(owner, provider) {
         console.warn(`registerRegexProvider: provider for "${ownerId}" is not a function`);
         return;
     }
-    runtimeRegexProviders.set(ownerId, provider);
-    notifyRuntimeRegexScriptsChanged();
+    const reloadOnChange = Boolean(options?.reloadOnChange);
+    runtimeRegexProviders.set(ownerId, { provider, reloadOnChange });
+    notifyRuntimeRegexScriptsChanged({ requestReload: reloadOnChange });
 }
 
 /**
@@ -158,8 +173,10 @@ export function unregisterRegexProvider(owner) {
     if (!ownerId) {
         return;
     }
+    const runtimeProvider = runtimeRegexProviders.get(ownerId);
+    const requestReload = Boolean(runtimeProvider?.reloadOnChange);
     runtimeRegexProviders.delete(ownerId);
-    notifyRuntimeRegexScriptsChanged();
+    notifyRuntimeRegexScriptsChanged({ requestReload });
 }
 
 /**
@@ -171,8 +188,9 @@ export function unregisterRegexProvider(owner) {
  */
 function collectRuntimeRegexScripts(options = DEFAULT_GET_REGEX_SCRIPTS_OPTIONS) {
     const scripts = [];
-    for (const [owner, provider] of runtimeRegexProviders.entries()) {
+    for (const [owner, runtimeProvider] of runtimeRegexProviders.entries()) {
         try {
+            const provider = runtimeProvider?.provider;
             const value = provider?.(options);
             if (!Array.isArray(value)) {
                 continue;

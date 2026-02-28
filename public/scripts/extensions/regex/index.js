@@ -709,6 +709,16 @@ async function loadRegexScripts() {
             const readonlyId = `runtime_${sanitizeFileName(runtimeOwner || 'plugin')}_${sanitizeFileName(String(script.id || index || uuidv4()))}`;
             scriptHtml.attr('id', readonlyId);
             scriptHtml.attr('data-readonly', 'true');
+            const viewButton = scriptHtml.find('.edit_existing_regex');
+            viewButton.attr('title', String(t`Regex Editor`));
+            viewButton.attr('data-i18n', '[title]Regex Editor');
+            viewButton.find('i').removeClass('fa-pencil').addClass('fa-eye');
+            viewButton.on('click', async function () {
+                await onReadonlyRegexViewOpenClick(script, displayName);
+            });
+            scriptHtml.find('.regex_script_name').on('click', async function () {
+                await onReadonlyRegexViewOpenClick(script, displayName);
+            });
             $(container).append(scriptHtml);
             return;
         }
@@ -817,6 +827,48 @@ async function loadRegexScripts() {
     setMoveButtonsVisibility();
 }
 
+function fillRegexEditorFields(editorHtml, script) {
+    if (!script?.scriptName) {
+        return false;
+    }
+    editorHtml.find('.regex_script_name').val(script.scriptName);
+    editorHtml.find('.find_regex').val(script.findRegex || '');
+    editorHtml.find('.regex_replace_string').val(script.replaceString || '');
+    editorHtml.find('.regex_trim_strings').val(script.trimStrings?.join('\n') || []);
+    editorHtml.find('input[name="disabled"]').prop('checked', script.disabled ?? false);
+    editorHtml.find('input[name="only_format_display"]').prop('checked', script.markdownOnly ?? false);
+    editorHtml.find('input[name="only_format_prompt"]').prop('checked', script.promptOnly ?? false);
+    editorHtml.find('input[name="run_on_edit"]').prop('checked', script.runOnEdit ?? false);
+    editorHtml.find('select[name="substitute_regex"]').val(script.substituteRegex ?? substitute_find_regex.NONE);
+    editorHtml.find('input[name="min_depth"]').val(script.minDepth ?? '');
+    editorHtml.find('input[name="max_depth"]').val(script.maxDepth ?? '');
+
+    const existingPlacement = Array.isArray(script.placement) ? script.placement : [];
+    existingPlacement.forEach((element) => {
+        editorHtml
+            .find(`input[name="replace_position"][value="${element}"]`)
+            .prop('checked', true);
+    });
+    return true;
+}
+
+async function onReadonlyRegexViewOpenClick(script, displayName = '') {
+    const editorHtml = $(await renderExtensionTemplateAsync('regex', 'editor'));
+    if (!fillRegexEditorFields(editorHtml, script)) {
+        toastr.error('This script doesn\'t have a name! Please delete it.');
+        return;
+    }
+    editorHtml.find('#regex_test_mode_toggle').remove();
+    editorHtml.find('#regex_test_mode').remove();
+    editorHtml.find('input, textarea, select').prop('disabled', true);
+    await callGenericPopup(
+        editorHtml,
+        POPUP_TYPE.TEXT,
+        displayName || String(script?.scriptName || ''),
+        { okButton: t`Close`, wide: true, large: true, allowVerticalScrolling: true },
+    );
+}
+
 /**
  * Opens the regex editor.
  * @param {string|boolean} existingId Existing ID
@@ -833,30 +885,10 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
         existingScriptIndex = array.findIndex((script) => script.id === existingId);
         if (existingScriptIndex !== -1) {
             const existingScript = array[existingScriptIndex];
-            if (existingScript.scriptName) {
-                editorHtml.find('.regex_script_name').val(existingScript.scriptName);
-            } else {
+            if (!fillRegexEditorFields(editorHtml, existingScript)) {
                 toastr.error('This script doesn\'t have a name! Please delete it.');
                 return;
             }
-
-            editorHtml.find('.find_regex').val(existingScript.findRegex || '');
-            editorHtml.find('.regex_replace_string').val(existingScript.replaceString || '');
-            editorHtml.find('.regex_trim_strings').val(existingScript.trimStrings?.join('\n') || []);
-            editorHtml.find('input[name="disabled"]').prop('checked', existingScript.disabled ?? false);
-            editorHtml.find('input[name="only_format_display"]').prop('checked', existingScript.markdownOnly ?? false);
-            editorHtml.find('input[name="only_format_prompt"]').prop('checked', existingScript.promptOnly ?? false);
-            editorHtml.find('input[name="run_on_edit"]').prop('checked', existingScript.runOnEdit ?? false);
-            editorHtml.find('select[name="substitute_regex"]').val(existingScript.substituteRegex ?? substitute_find_regex.NONE);
-            editorHtml.find('input[name="min_depth"]').val(existingScript.minDepth ?? '');
-            editorHtml.find('input[name="max_depth"]').val(existingScript.maxDepth ?? '');
-
-            const existingPlacement = Array.isArray(existingScript.placement) ? existingScript.placement : [];
-            existingPlacement.forEach((element) => {
-                editorHtml
-                    .find(`input[name="replace_position"][value="${element}"]`)
-                    .prop('checked', true);
-            });
         }
     } else {
         editorHtml
@@ -2073,8 +2105,12 @@ jQuery(async () => {
         void requestRegexChatReload();
     });
 
-    window.addEventListener(REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT, () => {
+    window.addEventListener(REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT, (event) => {
         void loadRegexScripts();
+        const requestReload = Boolean(event?.detail?.requestReload);
+        if (requestReload) {
+            void requestRegexChatReload();
+        }
     });
     await loadRegexScripts();
     // @ts-ignore
