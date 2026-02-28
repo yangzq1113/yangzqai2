@@ -174,6 +174,131 @@ const requestMessages = context.buildPresetAwarePromptMessages({
 });
 ```
 
+### Regex runtime API (plugin-side)
+
+For plugin-owned temporary regex rules, use the regex runtime provider API instead of writing into global/scoped/preset regex storage.
+
+Module path:
+
+```js
+import {
+  registerRegexProvider,
+  unregisterRegexProvider,
+  notifyRuntimeRegexScriptsChanged,
+  regex_placement,
+  substitute_find_regex,
+} from '../regex/engine.js';
+```
+
+Function signatures:
+
+```ts
+registerRegexProvider(
+  owner: string,
+  provider: (options?: { allowedOnly?: boolean }) => RegexScript[] | null | undefined,
+  options?: { reloadOnChange?: boolean }   // default: false
+): void
+```
+
+- Registers an in-memory provider keyed by `owner`.
+- Re-registering with the same `owner` replaces the previous provider.
+- Runtime scripts are never persisted to settings/character/preset files.
+- `reloadOnChange=true` dispatches a runtime event requesting chat reload.
+
+```ts
+unregisterRegexProvider(owner: string): void
+```
+
+- Removes the provider by `owner`.
+- If the removed provider was registered with `reloadOnChange=true`, unregister also requests a reload via runtime event.
+
+```ts
+notifyRuntimeRegexScriptsChanged({ requestReload?: boolean } = {}): void
+```
+
+- Triggers `luker:regex-runtime-scripts-changed`.
+- Use this when provider output depends on mutable plugin settings/state and the provider function itself does not change.
+- Set `requestReload=true` only when your regex changes require immediate chat re-render.
+
+```ts
+getRegexScripts({ allowedOnly = false } = {}): RegexScript[]
+getRuntimeRegexScripts({ allowedOnly = false } = {}): RegexScript[]
+runRegexScript(script: RegexScript, raw: string, { characterOverride? } = {}): string
+```
+
+- `getRegexScripts(...)` returns persisted scripts + runtime provider scripts.
+- `getRuntimeRegexScripts(...)` returns runtime provider scripts only (read-only/debug use).
+- `runRegexScript(...)` executes one script against a string without mutating storage.
+
+`RegexScript` fields (runtime provider output) follow `RegexScriptData` shape. Required/important fields:
+
+- `scriptName: string` (required, non-empty)
+- `findRegex: string` (e.g. `'/[\\s\\S]*/g'`)
+- `replaceString: string`
+- `placement: number[]` (use `regex_placement` enum)
+- `disabled: boolean`
+- Optional controls: `promptOnly`, `markdownOnly`, `runOnEdit`, `substituteRegex`, `trimStrings`, `minDepth`, `maxDepth`
+
+Enums:
+
+```ts
+regex_placement = {
+  MD_DISPLAY: 0,   // deprecated
+  USER_INPUT: 1,
+  AI_OUTPUT: 2,
+  SLASH_COMMAND: 3,
+  WORLD_INFO: 5,
+  REASONING: 6,
+}
+
+substitute_find_regex = {
+  NONE: 0,
+  RAW: 1,
+  ESCAPED: 2,
+}
+```
+
+Minimal provider example:
+
+```js
+const OWNER = 'my-plugin:visible-window';
+
+function buildRuntimeRegexScripts() {
+  const n = Number(extension_settings.my_plugin?.visibleAssistantTurns ?? 0);
+  if (n <= 0) return [];
+  return [{
+    id: `${OWNER}:mask`,
+    scriptName: `My Plugin Visible Window (${n})`,
+    findRegex: '/[\\s\\S]*/g',
+    replaceString: '',
+    trimStrings: [],
+    placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
+    disabled: false,
+    markdownOnly: false,
+    promptOnly: true,
+    runOnEdit: false,
+    substituteRegex: substitute_find_regex.NONE,
+    minDepth: n,
+    maxDepth: 999999,
+  }];
+}
+
+registerRegexProvider(OWNER, () => buildRuntimeRegexScripts(), { reloadOnChange: false });
+
+// Later, when plugin settings changed:
+notifyRuntimeRegexScriptsChanged({ requestReload: false });
+
+// On plugin teardown:
+unregisterRegexProvider(OWNER);
+```
+
+Best practices:
+
+- Keep provider pure and deterministic from current plugin state.
+- Use stable `owner` IDs and stable `scriptName` values.
+- Prefer `reloadOnChange=false` unless UI rendering must update immediately.
+- Prefer runtime providers for plugin-temporary behavior; use persisted regex storage only for user-managed rules.
+
 ### Lorebook/world info persistence
 
 - `loadWorldInfo(name)`
