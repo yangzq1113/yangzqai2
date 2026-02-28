@@ -9015,6 +9015,9 @@ async function openAdvancedSettingsPopup(context, settings, root) {
     const namespace = `.lukerAdvancedPopup_${popupId}`;
     const selector = `#${popupId}`;
     const getPopupRoot = () => jQuery(selector);
+    const getSaveGlobalButton = () => jQuery(`#${popupId}_advanced_save_global`);
+    const getSaveCharacterButton = () => jQuery(`#${popupId}_advanced_save_character`);
+    const getClearCharacterOverrideButton = () => jQuery(`#${popupId}_advanced_clear_character_override`);
     const applyValuesToPopup = (popupRoot, source) => {
         if (!popupRoot?.length) {
             return;
@@ -9041,10 +9044,10 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             ? i18nFormat('Advanced scope: character override (${0})', nextScopeInfo.characterName || nextScopeInfo.avatar || i18n('(unset)'))
             : i18n('Advanced scope: global');
         popupRoot.find(`#${popupId}_advanced_scope`).text(scopeText);
-        popupRoot.find(`#${popupId}_advanced_save_character`)
+        getSaveCharacterButton()
             .toggle(hasAvatar)
             .prop('disabled', !hasAvatar);
-        popupRoot.find(`#${popupId}_advanced_clear_character_override`)
+        getClearCharacterOverrideButton()
             .toggle(hasAvatar)
             .prop('disabled', !hasOverride);
     };
@@ -9102,12 +9105,11 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             large: false,
             allowVerticalScrolling: true,
             onOpen: (popup) => {
-                const popupRoot = getPopupRoot();
                 const controls = popup?.buttonControls instanceof HTMLElement ? popup.buttonControls : null;
                 if (controls) {
                     const okButton = popup?.okButton instanceof HTMLElement ? popup.okButton : null;
-                    const saveGlobalButton = popupRoot.find(`#${popupId}_advanced_save_global`).get(0);
-                    const saveCharacterButton = popupRoot.find(`#${popupId}_advanced_save_character`).get(0);
+                    const saveGlobalButton = getSaveGlobalButton().get(0);
+                    const saveCharacterButton = getSaveCharacterButton().get(0);
                     for (const button of [saveGlobalButton, saveCharacterButton]) {
                         if (!(button instanceof HTMLElement)) {
                             continue;
@@ -9138,7 +9140,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         applyValuesToPopup(getPopupRoot(), defaultSettings);
         notifySuccess(i18n('Advanced settings reset to defaults in editor.'));
     });
-    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_advanced_save_global`, async function () {
+    jQuery(document).on(`click${namespace}`, `#${popupId}_advanced_save_global`, async function () {
         const values = readAdvancedValues();
         if (!values) {
             notifyError(i18n('Failed to read advanced settings.'));
@@ -9153,7 +9155,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         notifySuccess(i18n('Advanced settings saved to global settings.'));
         updateUiStatus(i18n('Advanced settings saved to global settings.'));
     });
-    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_advanced_save_character`, async function () {
+    jQuery(document).on(`click${namespace}`, `#${popupId}_advanced_save_character`, async function () {
         const nextScopeInfo = getAdvancedScopeInfo(context, settings);
         if (!nextScopeInfo.hasAvatar) {
             notifyError(i18n('No active character selected.'));
