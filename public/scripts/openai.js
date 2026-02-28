@@ -4470,8 +4470,7 @@ function loadOpenAISettings(data, settings) {
     openai_settings = data.openai_settings;
     openai_settings.forEach(function (item, i) {
         const parsed = JSON.parse(item);
-        // Presets remain strictly generation-focused: strip connection fields from legacy files.
-        openai_settings[i] = stripOpenAIConnectionFieldsFromPreset(parsed);
+        openai_settings[i] = structuredClone(parsed);
     });
 
     $('#settings_preset_openai').empty();
@@ -5018,9 +5017,6 @@ async function getStatusOpen() {
 export function getChatCompletionPreset(settings = oai_settings) {
     const presetBody = {};
     for (const [presetKey, [, settingsKey]] of Object.entries(settingsToUpdate)) {
-        if (isOpenAIConnectionPresetField(presetKey)) {
-            continue;
-        }
         presetBody[presetKey] = settings[settingsKey];
     }
     return structuredClone(presetBody);
@@ -5228,10 +5224,6 @@ async function onPresetImportFileChange(e) {
         toastr.error(t`Invalid file`);
         return;
     }
-    // Legacy compatibility: imported OpenAI presets may contain connection fields.
-    // Keep chat-completion presets generation-only.
-    presetBody = stripOpenAIConnectionFieldsFromPreset(presetBody);
-
     const fields = sensitiveFields.filter(field => presetBody[field]).map(field => `<b>${field}</b>`);
     const shouldConfirm = fields.length > 0;
 
@@ -5302,9 +5294,7 @@ async function onExportPresetClick() {
         return;
     }
 
-    const preset = stripOpenAIConnectionFieldsFromPreset(
-        structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]),
-    );
+    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
 
     const fieldValues = sensitiveFields.filter(field => preset[field]).map(field => `<b>${field}</b>: <code>${preset[field]}</code>`);
     if (fieldValues.length > 0) {
@@ -5713,8 +5703,24 @@ async function onSettingsPresetChange(event) {
             presetNameBefore: presetNameBefore,
         });
     } finally {
+        let connectionChanged = false;
         for (const [key, [selector, setting, isCheckbox, isConnection]] of Object.entries(settingsToUpdate)) {
             if (isConnection) {
+                if (preset[key] !== undefined) {
+                    const nextValue = preset[key];
+                    oai_settings[setting] = nextValue;
+                    if (selector && selector !== '#NULL_SELECTOR') {
+                        const $element = $(selector);
+                        if ($element.length > 0) {
+                            if (isCheckbox) {
+                                $element.prop('checked', Boolean(nextValue));
+                            } else {
+                                $element.val(nextValue);
+                            }
+                        }
+                    }
+                    connectionChanged = true;
+                }
                 continue;
             }
 
@@ -5732,6 +5738,12 @@ async function onSettingsPresetChange(event) {
                 }
                 oai_settings[setting] = preset[key];
             }
+        }
+
+        if (connectionChanged) {
+            syncProxyPresetSelectionByConnection();
+            $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
+            reconnectOpenAi();
         }
 
         $('#openai_logit_bias_preset').trigger('change');
@@ -7056,6 +7068,38 @@ export function isReasoningSignatureSupported(settings = oai_settings) {
 /**
  * Proxy stuff
  */
+function syncProxyPresetSelectionByConnection() {
+    const currentUrl = String(oai_settings.reverse_proxy || '');
+    const currentPassword = String(oai_settings.proxy_password || '');
+    const matched = proxies.find((preset) => String(preset?.url || '') === currentUrl && String(preset?.password || '') === currentPassword);
+
+    if (matched) {
+        selected_proxy = matched;
+        $('#openai_proxy_preset').val(matched.name);
+        $('#openai_reverse_proxy_name').val(matched.name);
+        return;
+    }
+
+    if (!currentUrl && !currentPassword) {
+        const nonePreset = proxies.find((preset) => String(preset?.name || '') === 'None');
+        if (nonePreset) {
+            selected_proxy = nonePreset;
+            $('#openai_proxy_preset').val(nonePreset.name);
+            $('#openai_reverse_proxy_name').val(nonePreset.name);
+        } else {
+            selected_proxy = { name: 'None', url: '', password: '' };
+            $('#openai_proxy_preset').val('');
+            $('#openai_reverse_proxy_name').val(selected_proxy.name);
+        }
+        return;
+    }
+
+    // Keep arbitrary proxy values even if they don't match a named preset.
+    selected_proxy = { name: '', url: currentUrl, password: currentPassword };
+    $('#openai_proxy_preset').val('');
+    $('#openai_reverse_proxy_name').val('');
+}
+
 export function loadProxyPresets(settings) {
     let proxyPresets = settings.proxies;
     selected_proxy = settings.selected_proxy || selected_proxy;
