@@ -7,7 +7,7 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate } from '../../world-info.js';
-import { registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
+import { notifyRuntimeRegexScriptsChanged, registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 
 const MODULE_NAME = 'memory_graph';
@@ -846,11 +846,17 @@ const generationVisibleHistoryRegexState = {
 };
 
 function clearGenerationVisibleHistoryRegexState() {
+    const wasEnabled = generationVisibleHistoryRegexState.enabled;
+    const hadMinDepth = Number.isFinite(Number(generationVisibleHistoryRegexState.minDepth));
+    const hadWindow = Number(generationVisibleHistoryRegexState.keepAssistantTurns || 0) > 0;
     generationVisibleHistoryRegexState.enabled = false;
     generationVisibleHistoryRegexState.minDepth = null;
     generationVisibleHistoryRegexState.keepAssistantTurns = 0;
     generationVisibleHistoryRegexState.beforeCount = 0;
     generationVisibleHistoryRegexState.afterCount = 0;
+    if (wasEnabled || hadMinDepth || hadWindow) {
+        notifyRuntimeRegexScriptsChanged();
+    }
 }
 
 function getGenerationVisibleHistoryRuntimeRegexScripts() {
@@ -5545,6 +5551,7 @@ function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
     generationVisibleHistoryRegexState.keepAssistantTurns = windowSize;
     generationVisibleHistoryRegexState.beforeCount = beforeCount;
     generationVisibleHistoryRegexState.afterCount = afterCount;
+    notifyRuntimeRegexScriptsChanged();
     if (Array.isArray(trace)) {
         trace.push({
             step: 'apply_generation_history_window',
@@ -9198,6 +9205,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         }
         const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, getAdvancedScopeInfo(context, settings).settings);
         await persistAdvancedToGlobal(settings, nextAdvancedSettings);
+        clearGenerationVisibleHistoryRegexState();
         const nextScopeInfo = getAdvancedScopeInfo(context, settings);
         setPopupScopeUi(nextScopeInfo);
         syncRootScopeUi();
@@ -9221,6 +9229,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             notifyError(i18n('Failed to persist character advanced override.'));
             return;
         }
+        clearGenerationVisibleHistoryRegexState();
         const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
         setPopupScopeUi(refreshedScopeInfo);
         syncRootScopeUi();
@@ -9238,6 +9247,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             notifyError(i18n('Failed to clear character advanced override.'));
             return;
         }
+        clearGenerationVisibleHistoryRegexState();
         const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
         applyValuesToPopup(getPopupRoot(), refreshedScopeInfo.settings);
         setPopupScopeUi(refreshedScopeInfo);

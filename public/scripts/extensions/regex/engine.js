@@ -37,6 +37,17 @@ const warnedInvalidPlacementScripts = new Set();
 let shownInvalidPlacementToast = false;
 /** @type {Map<string, (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined>} */
 const runtimeRegexProviders = new Map();
+export const REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT = 'luker:regex-runtime-scripts-changed';
+
+export function notifyRuntimeRegexScriptsChanged() {
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') {
+        return;
+    }
+    if (typeof CustomEvent === 'undefined') {
+        return;
+    }
+    window.dispatchEvent(new CustomEvent(REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT));
+}
 
 /**
  * Warns once per broken script when placement is not a valid array.
@@ -133,6 +144,7 @@ export function registerRegexProvider(owner, provider) {
         return;
     }
     runtimeRegexProviders.set(ownerId, provider);
+    notifyRuntimeRegexScriptsChanged();
 }
 
 /**
@@ -147,6 +159,7 @@ export function unregisterRegexProvider(owner) {
         return;
     }
     runtimeRegexProviders.delete(ownerId);
+    notifyRuntimeRegexScriptsChanged();
 }
 
 /**
