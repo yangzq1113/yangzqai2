@@ -7,6 +7,7 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate } from '../../world-info.js';
+import { registerRegexProvider, regex_placement, substitute_find_regex, unregisterRegexProvider } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 
 const MODULE_NAME = 'memory_graph';
@@ -19,6 +20,8 @@ const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenera
 const RECALL_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
 const CHARACTER_ADVANCED_OVERRIDE_KEY = 'advancedOverride';
+const GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID = `${MODULE_NAME}_generation_visible_history`;
+const GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID = `${MODULE_NAME}_generation_visible_history_runtime_script`;
 
 const LEVEL = {
     SEMANTIC: 'semantic',
@@ -834,6 +837,46 @@ let activeExtractionAbortController = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 let latestRecallSnapshot = null;
+const generationVisibleHistoryRegexState = {
+    enabled: false,
+    minDepth: null,
+    keepAssistantTurns: 0,
+    beforeCount: 0,
+    afterCount: 0,
+};
+
+function clearGenerationVisibleHistoryRegexState() {
+    generationVisibleHistoryRegexState.enabled = false;
+    generationVisibleHistoryRegexState.minDepth = null;
+    generationVisibleHistoryRegexState.keepAssistantTurns = 0;
+    generationVisibleHistoryRegexState.beforeCount = 0;
+    generationVisibleHistoryRegexState.afterCount = 0;
+}
+
+function getGenerationVisibleHistoryRuntimeRegexScripts() {
+    if (!generationVisibleHistoryRegexState.enabled) {
+        return [];
+    }
+    const minDepth = Number(generationVisibleHistoryRegexState.minDepth);
+    if (!Number.isFinite(minDepth) || minDepth < 0) {
+        return [];
+    }
+    return [{
+        id: GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID,
+        scriptName: 'Memory Graph Visible Assistant Window',
+        findRegex: '/[\\s\\S]*/g',
+        replaceString: '',
+        trimStrings: [],
+        placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
+        disabled: false,
+        markdownOnly: false,
+        promptOnly: true,
+        runOnEdit: false,
+        substituteRegex: substitute_find_regex.NONE,
+        minDepth,
+        maxDepth: null,
+    }];
+}
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -5476,23 +5519,39 @@ function keepRecentCoreMessagesByAssistantTurns(coreChat, keepAssistantTurns) {
 
 function applyGenerationVisibleHistoryWindow(payload, settings, trace = null) {
     if (!payload || typeof payload !== 'object' || !Array.isArray(payload.coreChat)) {
+        clearGenerationVisibleHistoryRegexState();
+        return false;
+    }
+    if (!settings?.enabled) {
+        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     const windowSize = Math.max(0, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)));
     if (windowSize <= 0) {
+        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     const beforeCount = payload.coreChat.length;
-    payload.coreChat = keepRecentCoreMessagesByAssistantTurns(payload.coreChat, windowSize);
-    if (payload.coreChat.length >= beforeCount) {
+    const recentCoreMessages = keepRecentCoreMessagesByAssistantTurns(payload.coreChat, windowSize);
+    const afterCount = recentCoreMessages.length;
+    if (afterCount >= beforeCount) {
+        clearGenerationVisibleHistoryRegexState();
         return false;
     }
+    const minDepth = Math.max(0, afterCount);
+    generationVisibleHistoryRegexState.enabled = true;
+    generationVisibleHistoryRegexState.minDepth = minDepth;
+    generationVisibleHistoryRegexState.keepAssistantTurns = windowSize;
+    generationVisibleHistoryRegexState.beforeCount = beforeCount;
+    generationVisibleHistoryRegexState.afterCount = afterCount;
     if (Array.isArray(trace)) {
         trace.push({
             step: 'apply_generation_history_window',
             keep_assistant_turns: windowSize,
             before_count: beforeCount,
-            after_count: payload.coreChat.length,
+            after_count: afterCount,
+            mode: 'runtime_regex_prompt_only',
+            min_depth: minDepth,
         });
     }
     return true;
@@ -6129,24 +6188,26 @@ async function injectMemoryPrompts(context, payload) {
     const generationType = String(payload?.type || '').trim().toLowerCase();
     const isDryRun = payload?.dryRun === true;
     if (isDryRun || generationType === 'quiet') {
+        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (!RECALL_ALLOWED_GENERATION_TYPES.has(generationType)) {
+        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (!Array.isArray(payload?.coreChat)) {
+        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        clearGenerationVisibleHistoryRegexState();
         updateUiStatus(i18n('Generation aborted. Skipped memory recall.'));
         return false;
     }
 
     // Independent from recall/lorebook projection:
-    // trim visible chat history for creation LLM whenever memory plugin is enabled.
-    if (settings.enabled) {
-        applyGenerationVisibleHistoryWindow(payload, settings);
-    }
+    // publish prompt-only runtime regex to limit visible history for creation LLM.
+    applyGenerationVisibleHistoryWindow(payload, settings);
 
     if (!settings.enabled) {
         await clearRuntimeLorebookProjection(context, settings);
@@ -9919,6 +9980,8 @@ jQuery(() => {
     const context = getContext();
     registerLocaleData();
     ensureSettings();
+    unregisterRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID);
+    registerRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID, getGenerationVisibleHistoryRuntimeRegexScripts);
     saveSettingsDebounced();
     ensureUi();
 
@@ -9939,6 +10002,7 @@ jQuery(() => {
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
         }
+        clearGenerationVisibleHistoryRegexState();
     };
     if (context.eventTypes.GENERATION_ENDED) {
         context.eventSource.on(context.eventTypes.GENERATION_ENDED, async () => {
