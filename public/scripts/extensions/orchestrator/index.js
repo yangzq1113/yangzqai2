@@ -162,6 +162,7 @@ const defaultSettings = {
     llmNodePresetName: '',
     plainTextFunctionCallMode: false,
     toolCallRetryMax: 2,
+    agentTimeoutSeconds: 0,
     maxRecentMessages: 14,
     capsuleInjectPosition: extension_prompt_types.IN_CHAT,
     capsuleInjectDepth: 1,
@@ -201,6 +202,7 @@ function registerLocaleData() {
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '确认重置 AI 生成提示词为默认值？这会覆盖当前内容。',
         'Recent assistant turns for orchestration (N)': '编排阶段可见最近 N 条 Assistant 回复',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
+        'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
         'Capsule injection position': '胶囊注入位置',
         'In-Chat': '聊天内',
         'In-Prompt (system block)': '提示词内（系统块）',
@@ -381,6 +383,7 @@ function registerLocaleData() {
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '確認重置 AI 生成提示詞為預設值？這會覆蓋目前內容。',
         'Recent assistant turns for orchestration (N)': '編排階段可見最近 N 條 Assistant 回覆',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
+        'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
         'Capsule injection position': '膠囊注入位置',
         'In-Chat': '聊天內',
         'In-Prompt (system block)': '提示詞內（系統區塊）',
@@ -689,6 +692,10 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].toolCallRetryMax = Math.max(
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
+    );
+    extension_settings[MODULE_NAME].agentTimeoutSeconds = Math.max(
+        0,
+        Math.min(3600, Math.floor(Number(extension_settings[MODULE_NAME].agentTimeoutSeconds) || 0)),
     );
     if (!extension_settings[MODULE_NAME].chatOverrides || typeof extension_settings[MODULE_NAME].chatOverrides !== 'object') {
         extension_settings[MODULE_NAME].chatOverrides = {};
@@ -1354,6 +1361,40 @@ function linkAbortSignals(...signals) {
     };
 }
 
+function getAgentTimeoutMs(settings) {
+    const seconds = Math.max(0, Math.min(3600, Math.floor(Number(settings?.agentTimeoutSeconds) || 0)));
+    return seconds > 0 ? seconds * 1000 : 0;
+}
+
+function createAttemptAbortController(baseAbortSignal = null, timeoutMs = 0) {
+    const timeoutController = new AbortController();
+    let didTimeout = false;
+    let timeoutId = null;
+
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timeoutId = setTimeout(() => {
+            didTimeout = true;
+            if (!timeoutController.signal.aborted) {
+                timeoutController.abort();
+            }
+        }, timeoutMs);
+    }
+
+    const linked = linkAbortSignals(baseAbortSignal, timeoutController.signal);
+
+    return {
+        signal: linked.signal,
+        didTimeout: () => didTimeout,
+        cleanup: () => {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            linked.cleanup();
+        },
+    };
+}
+
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
@@ -1368,6 +1409,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     }
 
     const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const timeoutMs = getAgentTimeoutMs(settings);
     const tools = [{
         type: 'function',
         function: {
@@ -1390,6 +1432,10 @@ async function requestToolCallWithRetry(settings, promptMessages, {
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
+        const attemptController = createAttemptAbortController(
+            isAbortSignalLike(abortSignal) ? abortSignal : null,
+            timeoutMs,
+        );
         try {
             const requestOptions = {
                 tools: usePlainTextCalls ? [] : tools,
@@ -1399,7 +1445,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
             };
-            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, attemptController.signal, {
                 ...requestOptions,
             });
             if (usePlainTextCalls) {
@@ -1412,14 +1458,21 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             }
             return extractFunctionCallArguments(responseData, fnName);
         } catch (error) {
-            if (isAbortError(error, abortSignal)) {
+            const timedOut = attemptController.didTimeout();
+            const sourceAborted = isAbortError(error, abortSignal);
+            if (sourceAborted && !timedOut) {
                 throw error;
             }
-            lastError = error;
+            const effectiveError = timedOut
+                ? Object.assign(new Error(`Agent call '${fnName}' timed out after ${Math.floor(timeoutMs / 1000)}s.`), { name: 'TimeoutError' })
+                : error;
+            lastError = effectiveError;
             if (attempt >= retries) {
-                throw error;
+                throw effectiveError;
             }
-            console.warn(`[${MODULE_NAME}] Tool call '${fnName}' failed. Retrying (${attempt + 1}/${retries})...`, error);
+            console.warn(`[${MODULE_NAME}] Tool call '${fnName}' failed. Retrying (${attempt + 1}/${retries})...`, effectiveError);
+        } finally {
+            attemptController.cleanup();
         }
     }
 
@@ -1444,6 +1497,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
+    const timeoutMs = getAgentTimeoutMs(settings);
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const requestMessages = usePlainTextCalls
         ? mergeUserAddendumIntoPromptMessages(
@@ -1453,6 +1507,10 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         : promptMessages;
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
+        const attemptController = createAttemptAbortController(
+            isAbortSignalLike(abortSignal) ? abortSignal : null,
+            timeoutMs,
+        );
         try {
             const requestOptions = {
                 tools: usePlainTextCalls ? [] : tools,
@@ -1462,7 +1520,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
             };
-            const responseData = await sendOpenAIRequest('quiet', requestMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', requestMessages, attemptController.signal, {
                 ...requestOptions,
             });
             if (usePlainTextCalls) {
@@ -1518,14 +1576,21 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             }
             return calls;
         } catch (error) {
-            if (isAbortError(error, abortSignal)) {
+            const timedOut = attemptController.didTimeout();
+            const sourceAborted = isAbortError(error, abortSignal);
+            if (sourceAborted && !timedOut) {
                 throw error;
             }
-            lastError = error;
+            const effectiveError = timedOut
+                ? Object.assign(new Error(`Multi tool call request timed out after ${Math.floor(timeoutMs / 1000)}s.`), { name: 'TimeoutError' })
+                : error;
+            lastError = effectiveError;
             if (attempt >= retries) {
-                throw error;
+                throw effectiveError;
             }
-            console.warn(`[${MODULE_NAME}] Multi tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
+            console.warn(`[${MODULE_NAME}] Multi tool call request failed. Retrying (${attempt + 1}/${retries})...`, effectiveError);
+        } finally {
+            attemptController.cleanup();
         }
     }
     throw lastError || new Error('Multi tool call request failed.');
@@ -5250,6 +5315,7 @@ function bindUi() {
     root.find('#luker_orch_ai_suggest_system_prompt').val(String(settings.aiSuggestSystemPrompt || ''));
     root.find('#luker_orch_max_recent_messages').val(String(settings.maxRecentMessages || 14));
     root.find('#luker_orch_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
+    root.find('#luker_orch_agent_timeout').val(String(settings.agentTimeoutSeconds ?? 0));
     root.find('#luker_orch_capsule_position').val(String(Number(settings.capsuleInjectPosition)));
     root.find('#luker_orch_capsule_depth').val(String(Number(settings.capsuleInjectDepth || 0)));
     root.find('#luker_orch_capsule_role').val(String(Number(settings.capsuleInjectRole)));
@@ -5328,6 +5394,11 @@ function bindUi() {
 
     root.on('change.lukerOrch', '#luker_orch_tool_retries', function () {
         settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(jQuery(this).val()) || 0)));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_agent_timeout', function () {
+        settings.agentTimeoutSeconds = Math.max(0, Math.min(3600, Math.floor(Number(jQuery(this).val()) || 0)));
         saveSettingsDebounced();
     });
 
@@ -6360,6 +6431,8 @@ function ensureUi() {
             <input id="luker_orch_max_recent_messages" class="text_pole" type="number" min="1" max="80" step="1" />
             <label for="luker_orch_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
+            <label for="luker_orch_agent_timeout">${escapeHtml(i18n('Per-agent timeout seconds (0 = disabled)'))}</label>
+            <input id="luker_orch_agent_timeout" class="text_pole" type="number" min="0" max="3600" step="1" />
             <label for="luker_orch_capsule_position">${escapeHtml(i18n('Capsule injection position'))}</label>
             <select id="luker_orch_capsule_position" class="text_pole">
                 <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
