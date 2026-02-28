@@ -4311,7 +4311,18 @@ function buildAiIterationSystemPrompt(settings) {
     ].join('\n');
 }
 
-function buildAiIterationUserPrompt(session, userInputText) {
+function getGlobalIterationBaselineProfile(settings) {
+    return {
+        spec: sanitizeSpec(settings?.orchestrationSpec),
+        presets: sanitizePresetMap(settings?.presets),
+    };
+}
+
+function buildAiIterationUserPrompt(session, userInputText, {
+    globalProfile = null,
+    sourceScope = '',
+    sourceName = '',
+} = {}) {
     const recentConversation = (Array.isArray(session?.messages) ? session.messages : [])
         .map(item => `${String(item?.role || 'assistant').toUpperCase()}: ${String(item?.content || '')}`)
         .join('\n\n');
@@ -4319,13 +4330,27 @@ function buildAiIterationUserPrompt(session, userInputText) {
         spec: session?.workingProfile?.spec || { stages: [] },
         presets: session?.workingProfile?.presets || {},
     });
+    const globalProfileText = JSON.stringify({
+        spec: globalProfile?.spec || { stages: [] },
+        presets: globalProfile?.presets || {},
+    });
     const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
     return [
         '<iteration_input>',
         '  <session_guide>',
         '    You are in a multi-turn orchestration iteration session.',
         '    Apply focused edits through tools only. Keep edits minimal and high-impact.',
+        '    If source_scope is character, treat global_profile_baseline as canonical reference and keep character edits as targeted overrides.',
         '  </session_guide>',
+        '  <source_scope>',
+        `    ${String(sourceScope || session?.sourceScope || 'global')}`,
+        '  </source_scope>',
+        '  <source_name>',
+        `    ${String(sourceName || session?.sourceName || '')}`,
+        '  </source_name>',
+        '  <global_profile_baseline>',
+        `    ${globalProfileText}`,
+        '  </global_profile_baseline>',
         '  <working_profile>',
         `    ${workingProfileText}`,
         '  </working_profile>',
@@ -4778,12 +4803,17 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
     const apiSettingsOverride = aiSuggestProfileResolution.apiSettingsOverride;
     const tools = buildAiIterationToolSet();
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
+    const globalBaseline = getGlobalIterationBaselineProfile(settings);
 
     const promptMessages = await buildPresetAwareMessages(
         context,
         settings,
         buildAiIterationSystemPrompt(settings),
-        buildAiIterationUserPrompt(session, text),
+        buildAiIterationUserPrompt(session, text, {
+            globalProfile: globalBaseline,
+            sourceScope: String(session?.sourceScope || ''),
+            sourceName: String(session?.sourceName || ''),
+        }),
         {
             api,
             promptPresetName: suggestPresetName,
