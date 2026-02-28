@@ -8,7 +8,7 @@ import { commonEnumProviders, enumIcons } from '../../slash-commands/SlashComman
 import { SlashCommandEnumValue, enumTypes } from '../../slash-commands/SlashCommandEnumValue.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { download, equalsIgnoreCaseAndAccents, escapeHtml, getFileText, getSortableDelay, isFalseBoolean, isTrueBoolean, regexFromString, setInfoBlock, uuidv4 } from '../../utils.js';
-import { allowPresetScripts, allowScopedScripts, disallowPresetScripts, disallowScopedScripts, getCurrentPresetAPI, getCurrentPresetName, getRegexScripts, getScriptsByType, isPresetScriptsAllowed, isScopedScriptsAllowed, regex_placement, RegexProvider, runRegexScript, saveScriptsByType, SCRIPT_TYPE_UNKNOWN, SCRIPT_TYPES, substitute_find_regex } from './engine.js';
+import { allowPresetScripts, allowScopedScripts, disallowPresetScripts, disallowScopedScripts, getCurrentPresetAPI, getCurrentPresetName, getRegexScripts, getRuntimeRegexScripts, getScriptsByType, isPresetScriptsAllowed, isScopedScriptsAllowed, regex_placement, RegexProvider, runRegexScript, saveScriptsByType, SCRIPT_TYPE_UNKNOWN, SCRIPT_TYPES, substitute_find_regex } from './engine.js';
 import { t } from '../../i18n.js';
 import { accountStorage } from '../../util/AccountStorage.js';
 import { getPresetManager } from '../../preset-manager.js';
@@ -676,6 +676,7 @@ async function loadRegexScripts() {
     $('#saved_regex_scripts').empty();
     $('#saved_scoped_scripts').empty();
     $('#saved_preset_scripts').empty();
+    $('#saved_plugin_scripts').empty();
     setToggleAllIcon(false);
 
     const scriptTemplate = $(await renderExtensionTemplateAsync('regex', 'scriptTemplate'));
@@ -687,7 +688,7 @@ async function loadRegexScripts() {
      * @param {SCRIPT_TYPES} scriptType Type of the script
      * @param {number} index Index of the script in the array
      */
-    function renderScript(container, script, scriptType, index) {
+    function renderScript(container, script, scriptType, index, { readOnly = false } = {}) {
         // Have to clone here
         const scriptHtml = scriptTemplate.clone();
         const save = () => saveRegexScript(script, index, scriptType);
@@ -697,12 +698,25 @@ async function loadRegexScripts() {
         }
 
         scriptHtml.attr('id', script.id);
-        scriptHtml.find('.regex_script_name').text(script.scriptName).attr('title', script.scriptName);
-        scriptHtml.find('.disable_regex').prop('checked', script.disabled ?? false)
-            .on('input', async function () {
-                script.disabled = !!$(this).prop('checked');
-                await save();
-            });
+        const runtimeOwner = String(script.__runtime_owner || '').trim();
+        const displayName = readOnly && runtimeOwner
+            ? `${script.scriptName} (${runtimeOwner})`
+            : script.scriptName;
+        scriptHtml.find('.regex_script_name').text(displayName).attr('title', displayName);
+        scriptHtml.find('.disable_regex').prop('checked', script.disabled ?? false);
+
+        if (readOnly) {
+            const readonlyId = `runtime_${sanitizeFileName(runtimeOwner || 'plugin')}_${sanitizeFileName(String(script.id || index || uuidv4()))}`;
+            scriptHtml.attr('id', readonlyId);
+            scriptHtml.attr('data-readonly', 'true');
+            $(container).append(scriptHtml);
+            return;
+        }
+
+        scriptHtml.find('.disable_regex').on('input', async function () {
+            script.disabled = !!$(this).prop('checked');
+            await save();
+        });
         scriptHtml.find('.regex-toggle-on').on('click', function () {
             scriptHtml.find('.disable_regex').prop('checked', true).trigger('input');
         });
@@ -795,6 +809,7 @@ async function loadRegexScripts() {
     getScriptsByType(SCRIPT_TYPES.GLOBAL).forEach((script, index) => renderScript('#saved_regex_scripts', script, SCRIPT_TYPES.GLOBAL, index));
     getScriptsByType(SCRIPT_TYPES.SCOPED).forEach((script, index) => renderScript('#saved_scoped_scripts', script, SCRIPT_TYPES.SCOPED, index));
     getScriptsByType(SCRIPT_TYPES.PRESET).forEach((script, index) => renderScript('#saved_preset_scripts', script, SCRIPT_TYPES.PRESET, index));
+    getRuntimeRegexScripts().forEach((script, index) => renderScript('#saved_plugin_scripts', script, SCRIPT_TYPE_UNKNOWN, index, { readOnly: true }));
 
     $('#regex_scoped_toggle').prop('checked', isScopedScriptsAllowed(characters?.[this_chid]));
     $('#regex_preset_toggle').prop('checked', isPresetScriptsAllowed(getCurrentPresetAPI(), getCurrentPresetName()));
@@ -1119,6 +1134,7 @@ function populateDebuggerRuleList(container) {
     const globalScripts = [];
     const scopedScripts = [];
     const presetScripts = [];
+    const pluginScripts = [];
 
     allScripts.forEach(script => {
         const scriptCopy = structuredClone(script); // Use structuredClone for deep copy
@@ -1134,10 +1150,14 @@ function populateDebuggerRuleList(container) {
             // @ts-ignore
             scriptCopy.type = SCRIPT_TYPES.PRESET;
             presetScripts.push(scriptCopy);
+        } else if (script.__runtime_owner) {
+            // @ts-ignore
+            scriptCopy.type = SCRIPT_TYPE_UNKNOWN;
+            pluginScripts.push(scriptCopy);
         }
     });
 
-    container.data('allScripts', [...globalScripts, ...presetScripts, ...scopedScripts]);
+    container.data('allScripts', [...globalScripts, ...presetScripts, ...scopedScripts, ...pluginScripts]);
 
     const renderRule = (script) => {
         if (!script.id) script.id = uuidv4();
@@ -1156,6 +1176,7 @@ function populateDebuggerRuleList(container) {
                     [SCRIPT_TYPES.SCOPED]: t`Scoped`,
                     [SCRIPT_TYPES.GLOBAL]: t`Global`,
                     [SCRIPT_TYPES.PRESET]: t`Preset`,
+                    [SCRIPT_TYPE_UNKNOWN]: t`Plugin`,
                 }[script.type],
             );
         ruleElement.find('.rule-enabled').prop('checked', !script.disabled);
@@ -1209,6 +1230,13 @@ function populateDebuggerRuleList(container) {
         scopedScripts.forEach(script => scopedList.append(renderRule(script)));
         rulesContainer.append(scopedList);
     }
+
+    if (pluginScripts.length > 0) {
+        rulesContainer.append('<div class="list-header regex-debugger-list-header">' + t`Plugin Rules` + '</div>');
+        const pluginList = $('<ul id="regex_debugger_rules_plugin" class="sortable-list"></ul>');
+        pluginScripts.forEach(script => pluginList.append(renderRule(script)));
+        rulesContainer.append(pluginList);
+    }
 }
 
 /**
@@ -1236,6 +1264,7 @@ async function onRegexDebuggerOpenClick() {
             ...$('#regex_debugger_rules_global').find('li.regex-debugger-rule').map((i, el) => $(el).data('id')).get(),
             ...$('#regex_debugger_rules_scoped').find('li.regex-debugger-rule').map((i, el) => $(el).data('id')).get(),
             ...$('#regex_debugger_rules_preset').find('li.regex-debugger-rule').map((i, el) => $(el).data('id')).get(),
+            ...$('#regex_debugger_rules_plugin').find('li.regex-debugger-rule').map((i, el) => $(el).data('id')).get(),
         ];
 
         const rawInput = String($('#regex_debugger_raw_input').val());
@@ -1310,7 +1339,7 @@ async function onRegexDebuggerOpenClick() {
     });
 
     debuggerHtml.find('#regex_debugger_save_order').on('click', async function () {
-        const allKnownScripts = getRegexScripts();
+        const allKnownScripts = getEditableRegexScripts();
         const newGlobalScripts = $('#regex_debugger_rules_global').children('li').map((_, el) => allKnownScripts.find(s => s.id === $(el).data('id'))).get().filter(Boolean);
         const newScopedScripts = $('#regex_debugger_rules_scoped').children('li').map((_, el) => allKnownScripts.find(s => s.id === $(el).data('id'))).get().filter(Boolean);
         const newPresetScripts = $('#regex_debugger_rules_preset').children('li').map((_, el) => allKnownScripts.find(s => s.id === $(el).data('id'))).get().filter(Boolean);
@@ -1508,7 +1537,7 @@ async function toggleRegexCallback(args, scriptName) {
         isFalseBoolean(args?.state) ? 'disable' :
             'toggle';
 
-    const scripts = getRegexScripts();
+    const scripts = getEditableRegexScripts();
     const script = scripts.find(s => equalsIgnoreCaseAndAccents(s.scriptName, scriptName));
 
     if (!script) {
@@ -1629,8 +1658,16 @@ function getScriptType(script) {
     return SCRIPT_TYPE_UNKNOWN;
 }
 
+function getEditableRegexScripts() {
+    return [
+        ...getScriptsByType(SCRIPT_TYPES.GLOBAL),
+        ...getScriptsByType(SCRIPT_TYPES.SCOPED),
+        ...getScriptsByType(SCRIPT_TYPES.PRESET),
+    ];
+}
+
 function getSelectedScripts() {
-    const scripts = getRegexScripts();
+    const scripts = getEditableRegexScripts();
     const selector = '#regex_container .regex-script-label:has(.regex_bulk_checkbox:checked)';
     const selectedIds = Array.from(document.querySelectorAll(selector))
         .map(e => e.getAttribute('id'))
@@ -2083,6 +2120,21 @@ jQuery(async () => {
     const localEnumProviders = {
         regexScripts: () =>
             getRegexScripts().map(script => {
+                const isPluginScript = Boolean(script?.__runtime_owner);
+                const type = getScriptType(script);
+                const decorators = isPluginScript
+                    ? { typename: t`Plugin`, color: enumTypes.variable, icon: 'P' }
+                    : getScriptDecorators(type);
+                const { typename, color, icon } = decorators;
+                return new SlashCommandEnumValue(
+                    script.scriptName,
+                    `${enumIcons.getStateIcon(!script.disabled)} [${typename}] ${script.findRegex}`,
+                    color,
+                    icon,
+                );
+            }),
+        editableRegexScripts: () =>
+            getEditableRegexScripts().map(script => {
                 const type = getScriptType(script);
                 const { typename, color, icon } = getScriptDecorators(type);
                 return new SlashCommandEnumValue(
@@ -2104,7 +2156,7 @@ jQuery(async () => {
                 description: 'script name',
                 typeList: [ARGUMENT_TYPE.STRING],
                 isRequired: true,
-                enumProvider: localEnumProviders.regexScripts,
+                enumProvider: localEnumProviders.editableRegexScripts,
             }),
         ],
         unnamedArgumentList: [

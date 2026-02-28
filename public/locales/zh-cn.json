@@ -5116,10 +5116,19 @@
 
     "ext_regex_global_scripts_desc": "影响所有角色，保存在本地设定中",
 
-
+
     "No scripts found": "没有找到脚本",
 
-
+
+    "Plugin Scripts": "插件正则脚本",
+
+
+    "Read-only regex rules registered by plugins/scripts at runtime.": "由插件/脚本在运行时注册的只读正则规则。",
+
+
+    "No plugin scripts found": "没有找到插件脚本",
+
+
     "ext_regex_scoped_scripts": "局部正则脚本",
 
 
@@ -5302,7 +5311,13 @@
 
     "ext_regex_delete_script": "删除脚本",
 
-
+
+    "Plugin": "插件",
+
+
+    "Plugin Rules": "插件规则",
+
+
     "This preset has embedded regex script(s).": "此预设包含内置正则脚本。",
 
 

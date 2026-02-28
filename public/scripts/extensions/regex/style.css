@@ -36,6 +36,25 @@
     display: none;
 }
 
+#plugin_scripts_block .regex-script-label {
+    background-color: color-mix(in srgb, var(--black50a) 55%, transparent);
+}
+
+#plugin_scripts_block .regex-script-label .regex_bulk_checkbox,
+#plugin_scripts_block .regex-script-label .drag-handle,
+#plugin_scripts_block .regex-script-label .regex_script_expand,
+#plugin_scripts_block .regex-script-label .edit_existing_regex,
+#plugin_scripts_block .regex-script-label .delete_regex,
+#plugin_scripts_block .regex-script-label .disable_regex,
+#plugin_scripts_block .regex-script-label .regex-toggle-on,
+#plugin_scripts_block .regex-script-label .regex-toggle-off,
+#plugin_scripts_block .regex-script-label .move_to_global,
+#plugin_scripts_block .regex-script-label .move_to_preset,
+#plugin_scripts_block .regex-script-label .move_to_scoped,
+#plugin_scripts_block .regex-script-label .export_regex {
+    display: none !important;
+}
+
 #scoped_scripts_block:not(:has(#regex_scoped_toggle:checked)),
 #preset_scripts_block:not(:has(#regex_preset_toggle:checked)) {
     opacity: 0.5;

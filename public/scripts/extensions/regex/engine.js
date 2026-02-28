@@ -35,6 +35,8 @@ export const SCRIPT_TYPE_UNKNOWN = -1;
 const DEFAULT_GET_REGEX_SCRIPTS_OPTIONS = Object.freeze({ allowedOnly: false });
 const warnedInvalidPlacementScripts = new Set();
 let shownInvalidPlacementToast = false;
+/** @type {Map<string, (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined>} */
+const runtimeRegexProviders = new Map();
 
 /**
  * Warns once per broken script when placement is not a valid array.
@@ -112,13 +114,96 @@ export class RegexProvider {
 }
 
 /**
+ * Registers an in-memory runtime regex provider.
+ * Providers are evaluated on each getRegexScripts() call and are never persisted.
+ * Each returned script must include a non-empty `scriptName`.
+ *
+ * @param {string} owner Unique owner id, usually plugin/module name
+ * @param {(options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined} provider Script provider callback
+ * @returns {void}
+ */
+export function registerRegexProvider(owner, provider) {
+    const ownerId = String(owner || '').trim();
+    if (!ownerId) {
+        console.warn('registerRegexProvider: owner is empty');
+        return;
+    }
+    if (typeof provider !== 'function') {
+        console.warn(`registerRegexProvider: provider for "${ownerId}" is not a function`);
+        return;
+    }
+    runtimeRegexProviders.set(ownerId, provider);
+}
+
+/**
+ * Unregisters an in-memory runtime regex provider.
+ *
+ * @param {string} owner Owner id used during registration
+ * @returns {void}
+ */
+export function unregisterRegexProvider(owner) {
+    const ownerId = String(owner || '').trim();
+    if (!ownerId) {
+        return;
+    }
+    runtimeRegexProviders.delete(ownerId);
+}
+
+/**
+ * Collects all runtime regex scripts from registered providers.
+ * Runtime scripts are shallow-cloned to avoid mutating provider-owned objects.
+ *
+ * @param {GetRegexScriptsOptions} options Options for retrieving scripts
+ * @returns {RegexScript[]}
+ */
+function collectRuntimeRegexScripts(options = DEFAULT_GET_REGEX_SCRIPTS_OPTIONS) {
+    const scripts = [];
+    for (const [owner, provider] of runtimeRegexProviders.entries()) {
+        try {
+            const value = provider?.(options);
+            if (!Array.isArray(value)) {
+                continue;
+            }
+            for (const script of value) {
+                if (!script || typeof script !== 'object') {
+                    continue;
+                }
+                const scriptName = String(script.scriptName || '').trim();
+                if (!scriptName) {
+                    console.warn(`collectRuntimeRegexScripts: provider "${owner}" returned a script without scriptName; skipped.`);
+                    continue;
+                }
+                scripts.push({ ...script, scriptName, __runtime_owner: owner });
+            }
+        } catch (error) {
+            console.error(`collectRuntimeRegexScripts: provider "${owner}" failed`, error);
+        }
+    }
+    return scripts;
+}
+
+/**
+ * Returns runtime regex scripts provided by plugins/scripts.
+ * This is for read-only UI/debug display and should not be used for persistence writes.
+ *
+ * @param {GetRegexScriptsOptions} options Options for retrieving scripts
+ * @returns {RegexScript[]}
+ */
+export function getRuntimeRegexScripts(options = DEFAULT_GET_REGEX_SCRIPTS_OPTIONS) {
+    return collectRuntimeRegexScripts(options);
+}
+
+/**
  * Retrieves the list of regex scripts by combining the scripts from the extension settings and the character data
  *
  * @param {GetRegexScriptsOptions} options Options for retrieving the regex scripts
  * @returns {RegexScript[]} An array of regex scripts, where each script is an object containing the necessary information.
  */
 export function getRegexScripts(options = DEFAULT_GET_REGEX_SCRIPTS_OPTIONS) {
-    return [...Object.values(SCRIPT_TYPES).flatMap(type => getScriptsByType(type, options))];
+    return [
+        ...Object.values(SCRIPT_TYPES).flatMap(type => getScriptsByType(type, options)),
+        ...collectRuntimeRegexScripts(options),
+    ];
 }
 
 /**

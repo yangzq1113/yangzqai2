@@ -3688,7 +3688,16 @@
 
     "ext_regex_global_scripts_desc": "適用於所有角色，資料將儲存到本機。",
 
-
+
+    "Plugin Scripts": "插件正規腳本",
+
+
+    "Read-only regex rules registered by plugins/scripts at runtime.": "由插件/腳本在執行期間註冊的唯讀正規規則。",
+
+
+    "No plugin scripts found": "未找到插件腳本",
+
+
     "ext_regex_scoped_scripts": "區域腳本",
 
 
@@ -3802,7 +3811,13 @@
 
     "ext_regex_delete_script": "刪除腳本",
 
-
+
+    "Plugin": "插件",
+
+
+    "Plugin Rules": "插件規則",
+
+
     "Trigger Stable Diffusion": "觸發 Stable Diffusion",
 
 
