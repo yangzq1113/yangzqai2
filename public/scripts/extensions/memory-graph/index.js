@@ -837,50 +837,29 @@ let activeExtractionAbortController = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 let latestRecallSnapshot = null;
-const generationVisibleHistoryRegexState = {
-    enabled: false,
-    minDepth: null,
-    keepAssistantTurns: 0,
-    beforeCount: 0,
-    afterCount: 0,
-};
-
-function clearGenerationVisibleHistoryRegexState() {
-    const wasEnabled = generationVisibleHistoryRegexState.enabled;
-    const hadMinDepth = Number.isFinite(Number(generationVisibleHistoryRegexState.minDepth));
-    const hadWindow = Number(generationVisibleHistoryRegexState.keepAssistantTurns || 0) > 0;
-    generationVisibleHistoryRegexState.enabled = false;
-    generationVisibleHistoryRegexState.minDepth = null;
-    generationVisibleHistoryRegexState.keepAssistantTurns = 0;
-    generationVisibleHistoryRegexState.beforeCount = 0;
-    generationVisibleHistoryRegexState.afterCount = 0;
-    if (wasEnabled || hadMinDepth || hadWindow) {
-        notifyRuntimeRegexScriptsChanged();
-    }
-}
-
 function getGenerationVisibleHistoryRuntimeRegexScripts() {
-    const minDepthRaw = Number(generationVisibleHistoryRegexState.minDepth);
-    const isActive = generationVisibleHistoryRegexState.enabled
-        && Number.isFinite(minDepthRaw)
-        && minDepthRaw >= 0;
-    const minDepth = isActive ? Math.max(0, Math.floor(minDepthRaw)) : 0;
-    const keepAssistantTurns = Math.max(0, Math.floor(Number(generationVisibleHistoryRegexState.keepAssistantTurns || 0)));
-    const suffix = keepAssistantTurns > 0 ? ` (${keepAssistantTurns})` : '';
+    const context = getContext();
+    const settings = getEffectiveSettings(context, getSettings());
+    const visibleLayers = Math.max(0, Math.min(200, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages))));
+    if (visibleLayers <= 0) {
+        return [];
+    }
+    const suffix = visibleLayers > 0 ? ` (${visibleLayers})` : '';
+    const replaceString = Boolean(settings?.enabled) ? '' : '$&';
 
     return [{
         id: GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID,
-        scriptName: `Memory Graph Visible Assistant Window${suffix}`,
+        scriptName: `Memory Graph Visible Message Window${suffix}`,
         findRegex: '/[\\s\\S]*/g',
-        replaceString: '',
+        replaceString,
         trimStrings: [],
         placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
-        disabled: !isActive,
+        disabled: false,
         markdownOnly: false,
         promptOnly: true,
         runOnEdit: false,
         substituteRegex: substitute_find_regex.NONE,
-        minDepth,
+        minDepth: visibleLayers,
         maxDepth: null,
     }];
 }
@@ -5520,52 +5499,6 @@ function getRecentMessagesByAssistantTurns(messages, keepAssistantTurns) {
     return source.slice(startIndex);
 }
 
-function applyGenerationVisibleHistoryWindow(settings, {
-    generationType = '',
-    dryRun = false,
-    beforeCount = 0,
-    trace = null,
-} = {}) {
-    const normalizedType = String(generationType || '').trim().toLowerCase();
-    if (dryRun || normalizedType === 'quiet') {
-        clearGenerationVisibleHistoryRegexState();
-        return false;
-    }
-    if (!settings?.enabled) {
-        clearGenerationVisibleHistoryRegexState();
-        return false;
-    }
-    if (!RECALL_ALLOWED_GENERATION_TYPES.has(normalizedType)) {
-        clearGenerationVisibleHistoryRegexState();
-        return false;
-    }
-    const windowSize = Math.max(0, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)));
-    if (windowSize <= 0) {
-        clearGenerationVisibleHistoryRegexState();
-        return false;
-    }
-    const normalizedBeforeCount = Math.max(0, Number(beforeCount) || 0);
-    const afterCount = normalizedBeforeCount > 0 ? Math.min(normalizedBeforeCount, windowSize) : windowSize;
-    const minDepth = Math.max(0, windowSize);
-    generationVisibleHistoryRegexState.enabled = true;
-    generationVisibleHistoryRegexState.minDepth = minDepth;
-    generationVisibleHistoryRegexState.keepAssistantTurns = windowSize;
-    generationVisibleHistoryRegexState.beforeCount = normalizedBeforeCount;
-    generationVisibleHistoryRegexState.afterCount = afterCount;
-    notifyRuntimeRegexScriptsChanged();
-    if (Array.isArray(trace)) {
-        trace.push({
-            step: 'apply_generation_history_window',
-            keep_recent_messages: windowSize,
-            before_count: normalizedBeforeCount,
-            after_count: afterCount,
-            mode: 'runtime_regex_prompt_only',
-            min_depth: minDepth,
-        });
-    }
-    return true;
-}
-
 function isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages) {
     const windowSize = Math.max(0, Number(excludeMessages || 0));
     if (windowSize <= 0 || latestSeqIndex < 0 || !node) {
@@ -6197,30 +6130,18 @@ async function injectMemoryPrompts(context, payload) {
     const generationType = String(payload?.type || '').trim().toLowerCase();
     const isDryRun = payload?.dryRun === true;
     if (isDryRun || generationType === 'quiet') {
-        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (!RECALL_ALLOWED_GENERATION_TYPES.has(generationType)) {
-        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (!Array.isArray(payload?.coreChat)) {
-        clearGenerationVisibleHistoryRegexState();
         return false;
     }
     if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
-        clearGenerationVisibleHistoryRegexState();
         updateUiStatus(i18n('Generation aborted. Skipped memory recall.'));
         return false;
     }
-
-    // Independent from recall/lorebook projection:
-    // publish prompt-only runtime regex to limit visible history for creation LLM.
-    applyGenerationVisibleHistoryWindow(settings, {
-        generationType,
-        dryRun: isDryRun,
-        beforeCount: Array.isArray(payload?.coreChat) ? payload.coreChat.length : 0,
-    });
 
     if (!settings.enabled) {
         await clearRuntimeLorebookProjection(context, settings);
@@ -9210,7 +9131,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         }
         const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, getAdvancedScopeInfo(context, settings).settings);
         await persistAdvancedToGlobal(settings, nextAdvancedSettings);
-        clearGenerationVisibleHistoryRegexState();
+        notifyRuntimeRegexScriptsChanged();
         const nextScopeInfo = getAdvancedScopeInfo(context, settings);
         setPopupScopeUi(nextScopeInfo);
         syncRootScopeUi();
@@ -9234,7 +9155,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             notifyError(i18n('Failed to persist character advanced override.'));
             return;
         }
-        clearGenerationVisibleHistoryRegexState();
+        notifyRuntimeRegexScriptsChanged();
         const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
         setPopupScopeUi(refreshedScopeInfo);
         syncRootScopeUi();
@@ -9252,7 +9173,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             notifyError(i18n('Failed to clear character advanced override.'));
             return;
         }
-        clearGenerationVisibleHistoryRegexState();
+        notifyRuntimeRegexScriptsChanged();
         const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
         applyValuesToPopup(getPopupRoot(), refreshedScopeInfo.settings);
         setPopupScopeUi(refreshedScopeInfo);
@@ -10000,28 +9921,6 @@ jQuery(() => {
     saveSettingsDebounced();
     ensureUi();
 
-    const generationStartedEvent = context.eventTypes.GENERATION_STARTED;
-    if (generationStartedEvent) {
-        context.eventSource.on(generationStartedEvent, () => {
-            clearGenerationVisibleHistoryRegexState();
-        });
-    }
-    const generationAfterCommandsEvent = context.eventTypes.GENERATION_AFTER_COMMANDS;
-    if (generationAfterCommandsEvent) {
-        context.eventSource.on(generationAfterCommandsEvent, (type, _params, dryRun) => {
-            const runtimeContext = getContext();
-            const settings = getEffectiveSettings(runtimeContext, getSettings());
-            const visibleMessages = Array.isArray(runtimeContext?.chat)
-                ? runtimeContext.chat.filter(message => message && !message.is_system).length
-                : 0;
-            applyGenerationVisibleHistoryWindow(settings, {
-                generationType: type,
-                dryRun: dryRun === true,
-                beforeCount: visibleMessages,
-            });
-        });
-    }
-
     const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
     if (wiAfterEvent) {
         context.eventSource.on(wiAfterEvent, async (payload) => {
@@ -10039,7 +9938,6 @@ jQuery(() => {
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
         }
-        clearGenerationVisibleHistoryRegexState();
     };
     if (context.eventTypes.GENERATION_ENDED) {
         context.eventSource.on(context.eventTypes.GENERATION_ENDED, async () => {
