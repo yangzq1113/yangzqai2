@@ -7,7 +7,7 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate } from '../../world-info.js';
-import { registerRegexProvider, regex_placement, substitute_find_regex, unregisterRegexProvider } from '../regex/engine.js';
+import { registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 
 const MODULE_NAME = 'memory_graph';
@@ -854,21 +854,22 @@ function clearGenerationVisibleHistoryRegexState() {
 }
 
 function getGenerationVisibleHistoryRuntimeRegexScripts() {
-    if (!generationVisibleHistoryRegexState.enabled) {
-        return [];
-    }
-    const minDepth = Number(generationVisibleHistoryRegexState.minDepth);
-    if (!Number.isFinite(minDepth) || minDepth < 0) {
-        return [];
-    }
+    const minDepthRaw = Number(generationVisibleHistoryRegexState.minDepth);
+    const isActive = generationVisibleHistoryRegexState.enabled
+        && Number.isFinite(minDepthRaw)
+        && minDepthRaw >= 0;
+    const minDepth = isActive ? Math.max(0, Math.floor(minDepthRaw)) : 0;
+    const keepAssistantTurns = Math.max(0, Math.floor(Number(generationVisibleHistoryRegexState.keepAssistantTurns || 0)));
+    const suffix = keepAssistantTurns > 0 ? ` (${keepAssistantTurns})` : '';
+
     return [{
         id: GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID,
-        scriptName: 'Memory Graph Visible Assistant Window',
+        scriptName: `Memory Graph Visible Assistant Window${suffix}`,
         findRegex: '/[\\s\\S]*/g',
         replaceString: '',
         trimStrings: [],
         placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
-        disabled: false,
+        disabled: !isActive,
         markdownOnly: false,
         promptOnly: true,
         runOnEdit: false,
@@ -9980,7 +9981,6 @@ jQuery(() => {
     const context = getContext();
     registerLocaleData();
     ensureSettings();
-    unregisterRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID);
     registerRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID, getGenerationVisibleHistoryRuntimeRegexScripts);
     saveSettingsDebounced();
     ensureUi();
