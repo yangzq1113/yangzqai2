@@ -478,6 +478,7 @@ class RegexPresetManager {
 const presetManager = new RegexPresetManager();
 let pendingRegexChatReload = false;
 let regexReloadOnSettingsCloseBound = false;
+let regexScriptsRenderRequestId = 0;
 
 function isRegexSettingsPanelOpen() {
     return jQuery('#rm_extensions_block').hasClass('openDrawer');
@@ -673,13 +674,17 @@ async function moveRegexScript(script, toType, fromType = null, saveSettings = t
 }
 
 async function loadRegexScripts() {
+    const requestId = ++regexScriptsRenderRequestId;
+    const scriptTemplate = $(await renderExtensionTemplateAsync('regex', 'scriptTemplate'));
+    if (requestId !== regexScriptsRenderRequestId) {
+        return;
+    }
+
     $('#saved_regex_scripts').empty();
     $('#saved_scoped_scripts').empty();
     $('#saved_preset_scripts').empty();
     $('#saved_plugin_scripts').empty();
     setToggleAllIcon(false);
-
-    const scriptTemplate = $(await renderExtensionTemplateAsync('regex', 'scriptTemplate'));
 
     /**
      * Renders a script to the UI.
