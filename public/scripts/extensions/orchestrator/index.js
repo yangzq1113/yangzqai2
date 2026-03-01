@@ -2966,8 +2966,17 @@ function chooseProfileScopeByConfirm(context, confirmKey) {
 }
 
 function isPresetUsed(editor, presetId) {
-    const stages = editor?.spec?.stages || [];
-    return stages.some(stage => (stage.nodes || []).some(node => String(node.preset || '') === String(presetId || '')));
+    return isPresetReferencedInSpec(editor?.spec, presetId);
+}
+
+function isPresetReferencedInSpec(spec, presetId) {
+    const targetPresetId = String(presetId || '').trim();
+    if (!targetPresetId) {
+        return false;
+    }
+    const stages = Array.isArray(spec?.stages) ? spec.stages : [];
+    return stages.some(stage =>
+        (stage?.nodes || []).some(node => String(node?.preset || '') === targetPresetId));
 }
 
 function buildAiProfileFromToolCalls(toolCalls) {
@@ -4043,6 +4052,7 @@ function buildAiIterationPendingDiffState(session, pending) {
     const workingProfile = structuredClone(session?.workingProfile || { spec: { stages: [] }, presets: {} });
     const stages = Array.isArray(workingProfile?.spec?.stages) ? workingProfile.spec.stages : [];
     const presets = (workingProfile?.presets && typeof workingProfile.presets === 'object') ? workingProfile.presets : {};
+    const pendingPresetRemovalEntries = new Map();
 
     for (const call of Array.isArray(pending?.toolCalls) ? pending.toolCalls : []) {
         const name = String(call?.name || '').trim();
@@ -4196,6 +4206,16 @@ function buildAiIterationPendingDiffState(session, pending) {
                 entries.push(item);
                 continue;
             }
+            const queuedRemovalEntries = pendingPresetRemovalEntries.get(presetId) || [];
+            for (const queuedItem of queuedRemovalEntries) {
+                queuedItem.summary = `Preset "${presetId}" removal skipped (overridden by later preset update)`;
+                queuedItem.fields = [{
+                    label: 'result',
+                    before: '',
+                    after: 'unchanged',
+                }];
+            }
+            pendingPresetRemovalEntries.delete(presetId);
             const beforePreset = presets[presetId] && typeof presets[presetId] === 'object'
                 ? structuredClone(presets[presetId])
                 : null;
@@ -4226,25 +4246,16 @@ function buildAiIterationPendingDiffState(session, pending) {
                 entries.push(item);
                 continue;
             }
-            const inUse = (workingProfile?.spec?.stages || []).some(stage =>
-                (stage?.nodes || []).some(node => String(node?.preset || '') === presetId));
-            if (inUse) {
-                item.summary = `Preset "${presetId}" removal skipped (preset is still used by nodes)`;
-                entries.push(item);
-                continue;
-            }
-            const beforePreset = presets[presetId] && typeof presets[presetId] === 'object'
-                ? structuredClone(presets[presetId])
-                : null;
-            if (beforePreset) {
-                delete presets[presetId];
-            }
-            item.summary = `Preset "${presetId}" ${beforePreset ? 'removed' : 'remove skipped'}`;
+            item.summary = `Preset "${presetId}" removal requested`;
             item.fields.push({
                 label: 'result',
-                before: beforePreset ? 'exists' : '',
-                after: beforePreset ? '' : 'unchanged',
+                before: '',
+                after: 'pending',
             });
+            if (!pendingPresetRemovalEntries.has(presetId)) {
+                pendingPresetRemovalEntries.set(presetId, []);
+            }
+            pendingPresetRemovalEntries.get(presetId).push(item);
             entries.push(item);
             continue;
         }
@@ -4284,6 +4295,34 @@ function buildAiIterationPendingDiffState(session, pending) {
 
         item.summary = name || 'Unknown operation';
         entries.push(item);
+    }
+
+    for (const [presetId, queuedEntries] of pendingPresetRemovalEntries.entries()) {
+        const presetExists = Boolean(presets[presetId] && typeof presets[presetId] === 'object');
+        const inUse = isPresetReferencedInSpec(workingProfile?.spec, presetId);
+        let summary = '';
+        let before = '';
+        let after = '';
+        if (!presetExists) {
+            summary = `Preset "${presetId}" remove skipped`;
+            after = 'unchanged';
+        } else if (inUse) {
+            summary = `Preset "${presetId}" removal skipped (preset is still used by nodes)`;
+            before = 'exists';
+            after = 'unchanged';
+        } else {
+            delete presets[presetId];
+            summary = `Preset "${presetId}" removed`;
+            before = 'exists';
+        }
+        for (const queuedItem of queuedEntries) {
+            queuedItem.summary = summary;
+            queuedItem.fields = [{
+                label: 'result',
+                before,
+                after,
+            }];
+        }
     }
 
     return {
@@ -4702,6 +4741,7 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
     let continueRequested = false;
     let changed = false;
     const allowedPresetFallback = Object.keys(session?.workingProfile?.presets || {})[0] || 'distiller';
+    const pendingPresetRemovalActions = new Map();
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
         const name = String(call?.name || '').trim();
         const args = call?.args && typeof call.args === 'object' ? call.args : {};
@@ -4796,6 +4836,13 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
                 actions.push('Skipped preset update: missing preset_id.');
                 continue;
             }
+            const queuedRemovalActionIndexes = pendingPresetRemovalActions.get(presetId) || [];
+            for (const actionIndex of queuedRemovalActionIndexes) {
+                if (Number.isInteger(actionIndex) && actionIndex >= 0 && actionIndex < actions.length) {
+                    actions[actionIndex] = `Skipped preset removal: "${presetId}" overridden by later preset update.`;
+                }
+            }
+            pendingPresetRemovalActions.delete(presetId);
             session.workingProfile.presets[presetId] = {
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: String(args.userPromptTemplate || '').trim(),
@@ -4806,19 +4853,15 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
         }
         if (name === 'luker_orch_remove_preset') {
             const presetId = sanitizeIdentifierToken(args.preset_id, '');
-            if (!presetId || !session.workingProfile.presets[presetId]) {
+            if (!presetId) {
                 actions.push(`Skipped preset removal: "${presetId}" not found.`);
                 continue;
             }
-            const inUse = (session?.workingProfile?.spec?.stages || []).some(stage =>
-                (stage?.nodes || []).some(node => String(node?.preset || '') === presetId));
-            if (inUse) {
-                actions.push(`Skipped preset removal: "${presetId}" is still used by nodes.`);
-                continue;
+            if (!pendingPresetRemovalActions.has(presetId)) {
+                pendingPresetRemovalActions.set(presetId, []);
             }
-            delete session.workingProfile.presets[presetId];
-            actions.push(`Preset "${presetId}" removed.`);
-            changed = true;
+            actions.push(`Preset "${presetId}" removal requested.`);
+            pendingPresetRemovalActions.get(presetId).push(actions.length - 1);
             continue;
         }
         if (name === 'luker_orch_simulate') {
@@ -4843,6 +4886,26 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             continue;
         }
         actions.push(`Ignored unknown action: ${name}`);
+    }
+
+    for (const [presetId, actionIndexes] of pendingPresetRemovalActions.entries()) {
+        const presetExists = Boolean(session?.workingProfile?.presets?.[presetId]);
+        const inUse = isPresetReferencedInSpec(session?.workingProfile?.spec, presetId);
+        let message = '';
+        if (!presetExists) {
+            message = `Skipped preset removal: "${presetId}" not found.`;
+        } else if (inUse) {
+            message = `Skipped preset removal: "${presetId}" is still used by nodes.`;
+        } else {
+            delete session.workingProfile.presets[presetId];
+            message = `Preset "${presetId}" removed.`;
+            changed = true;
+        }
+        for (const actionIndex of actionIndexes) {
+            if (Number.isInteger(actionIndex) && actionIndex >= 0 && actionIndex < actions.length) {
+                actions[actionIndex] = message;
+            }
+        }
     }
 
     session.workingProfile.spec = sanitizeSpec(session.workingProfile.spec);
