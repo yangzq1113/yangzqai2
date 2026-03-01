@@ -1402,6 +1402,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     llmPresetName = '',
     apiSettingsOverride = null,
     abortSignal = null,
+    applyAgentTimeout = true,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
@@ -1409,7 +1410,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     }
 
     const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
-    const timeoutMs = getAgentTimeoutMs(settings);
+    const timeoutMs = applyAgentTimeout ? getAgentTimeoutMs(settings) : 0;
     const tools = [{
         type: 'function',
         function: {
@@ -1488,6 +1489,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     abortSignal = null,
     includeAssistantText = false,
     allowNoToolCalls = false,
+    applyAgentTimeout = true,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
@@ -1497,7 +1499,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
-    const timeoutMs = getAgentTimeoutMs(settings);
+    const timeoutMs = applyAgentTimeout ? getAgentTimeoutMs(settings) : 0;
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const requestMessages = usePlainTextCalls
         ? mergeUserAddendumIntoPromptMessages(
@@ -3284,6 +3286,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 apiSettingsOverride,
                 retriesOverride: 0,
                 abortSignal,
+                applyAgentTimeout: false,
             });
         } catch (error) {
             if (isAbortError(error, abortSignal)) {
@@ -4893,6 +4896,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         abortSignal,
         includeAssistantText: true,
         allowNoToolCalls: true,
+        applyAgentTimeout: false,
     });
     const toolCalls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
     const assistantText = stripIterationThoughtForDisplay(detailed?.assistantText || '');
