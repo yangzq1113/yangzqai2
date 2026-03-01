@@ -1327,6 +1327,17 @@ function isAbortError(error, abortSignal = null) {
     return message.includes('aborted') || message.includes('abort');
 }
 
+function isNoToolCallExtractionError(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    if (!message) {
+        return false;
+    }
+    return message.includes('did not return any tool call')
+        || message.includes('none matched expected function names')
+        || message.includes('returned empty text response')
+        || message.includes('did not contain parseable function calls json');
+}
+
 function linkAbortSignals(...signals) {
     const validSignals = signals.filter(isAbortSignalLike);
     if (validSignals.length === 0) {
@@ -1531,7 +1542,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 try {
                     calls = extractAllFunctionCallsFromText(responseData, allowedNames);
                 } catch (error) {
-                    if (allowNoToolCalls && rawContent) {
+                    if (allowNoToolCalls && rawContent && isNoToolCallExtractionError(error)) {
                         if (includeAssistantText) {
                             return {
                                 toolCalls: [],
@@ -1557,7 +1568,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             try {
                 calls = extractAllFunctionCalls(responseData, allowedNames);
             } catch (error) {
-                if (allowNoToolCalls && assistantText) {
+                if (allowNoToolCalls && assistantText && isNoToolCallExtractionError(error)) {
                     if (includeAssistantText) {
                         return {
                             toolCalls: [],
