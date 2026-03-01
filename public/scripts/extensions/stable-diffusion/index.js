@@ -73,6 +73,8 @@ let activeGenerations = 0;
 let generationToast = null;
 /** @type {AbortController[]} */
 const generationAbortControllers = [];
+const trackedGenerationControllers = new WeakSet();
+const earlyEndedGenerationControllers = new WeakSet();
 const sources = {
     extras: 'extras',
     horde: 'horde',
@@ -2910,6 +2912,19 @@ function endGenerationTracking() {
     updateGenerationIndicator();
 }
 
+function endGenerationTrackingEarly(controller) {
+    if (!(controller instanceof AbortController)) {
+        return;
+    }
+
+    if (!trackedGenerationControllers.has(controller) || earlyEndedGenerationControllers.has(controller)) {
+        return;
+    }
+
+    earlyEndedGenerationControllers.add(controller);
+    endGenerationTracking();
+}
+
 function registerAbortController(controller) {
     if (!(controller instanceof AbortController)) {
         return;
@@ -2926,12 +2941,26 @@ function unregisterAbortController(controller) {
 }
 
 function abortOneActiveGeneration(reason = 'Aborted by user') {
-    for (let i = generationAbortControllers.length - 1; i >= 0; i -= 1) {
-        const controller = generationAbortControllers[i];
-        if (!controller?.signal?.aborted) {
-            controller.abort(reason);
-            return true;
+    const tryAbort = (trackedOnly) => {
+        for (let i = generationAbortControllers.length - 1; i >= 0; i -= 1) {
+            const controller = generationAbortControllers[i];
+            if (!controller?.signal?.aborted) {
+                if (trackedOnly && !trackedGenerationControllers.has(controller)) {
+                    continue;
+                }
+                endGenerationTrackingEarly(controller);
+                controller.abort(reason);
+                return true;
+            }
         }
+        return false;
+    };
+
+    if (tryAbort(true)) {
+        return true;
+    }
+    if (tryAbort(false)) {
+        return true;
     }
 
     return false;
@@ -3012,6 +3041,8 @@ async function generatePicture(initiator, args, trigger, message, callback) {
 
         registerAbortController(abortController);
         startGenerationTracking();
+        trackedGenerationControllers.add(abortController);
+        abortController.signal.addEventListener('abort', () => endGenerationTrackingEarly(abortController), { once: true });
         $(stopButton).show();
 
         if (typeof args?._abortController?.addEventListener === 'function') {
@@ -3042,7 +3073,14 @@ async function generatePicture(initiator, args, trigger, message, callback) {
             args._abortController.removeEventListener('abort', stopListener);
         }
         unregisterAbortController(abortController);
-        endGenerationTracking();
+        if (trackedGenerationControllers.has(abortController)) {
+            trackedGenerationControllers.delete(abortController);
+            if (earlyEndedGenerationControllers.has(abortController)) {
+                earlyEndedGenerationControllers.delete(abortController);
+            } else {
+                endGenerationTracking();
+            }
+        }
     }
 
     return imagePath;
