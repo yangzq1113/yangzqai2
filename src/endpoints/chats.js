@@ -795,6 +795,107 @@ function getLastChatMessage(filePath) {
 }
 
 /**
+ * Returns true when a value looks like a chat message object.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isChatMessageLike(value) {
+    return _.isObjectLike(value)
+        && typeof value.mes === 'string'
+        && typeof value.is_user === 'boolean'
+        && typeof value.is_system === 'boolean';
+}
+
+/**
+ * Decodes a single JSON Pointer segment.
+ * @param {string} segment
+ * @returns {string}
+ */
+function decodeJsonPointerSegment(segment) {
+    return String(segment || '').replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+/**
+ * Parses top-level array index from a JSON Patch path.
+ * Accepts only `/<index>` message-level paths.
+ * @param {unknown} path
+ * @returns {number|null}
+ */
+function getTopLevelMessageIndex(path) {
+    if (typeof path !== 'string' || !path.startsWith('/')) {
+        return null;
+    }
+
+    const rawSegments = path.split('/');
+    if (rawSegments.length !== 2) {
+        return null;
+    }
+
+    const decoded = decodeJsonPointerSegment(rawSegments[1]);
+    if (!decoded || decoded === '-') {
+        return null;
+    }
+
+    const index = Number(decoded);
+    if (!Number.isInteger(index) || index < 0) {
+        return null;
+    }
+
+    return index;
+}
+
+/**
+ * Rewrites duplicate top-level `add` message operations to idempotent `test` operations.
+ * This prevents duplicate message insertion under race/retry scenarios.
+ * @param {object[]} currentMessages
+ * @param {object[]} operations
+ * @returns {object[]}
+ */
+function buildIdempotentMessagePatchOperations(currentMessages, operations) {
+    const sourceMessages = Array.isArray(currentMessages) ? _.cloneDeep(currentMessages) : [];
+    const normalizedOperations = Array.isArray(operations)
+        ? operations.filter(op => _.isObjectLike(op))
+        : [];
+
+    /** @type {object[]} */
+    const rewritten = [];
+    let workingMessages = sourceMessages;
+
+    for (const operation of normalizedOperations) {
+        let nextOperation = operation;
+        const opName = String(operation?.op || '').trim().toLowerCase();
+        const index = getTopLevelMessageIndex(operation?.path);
+
+        if (opName === 'add'
+            && Number.isInteger(index)
+            && index >= 0
+            && index < workingMessages.length
+            && isChatMessageLike(operation?.value)
+            && isChatMessageLike(workingMessages[index])
+            && _.isEqual(workingMessages[index], operation.value)) {
+            nextOperation = {
+                op: 'test',
+                path: `/${index}`,
+                value: _.cloneDeep(workingMessages[index]),
+            };
+        }
+
+        rewritten.push(nextOperation);
+
+        try {
+            const patchResult = applyJsonPatch(workingMessages, [nextOperation], true, false);
+            if (Array.isArray(patchResult?.newDocument)) {
+                workingMessages = patchResult.newDocument;
+            }
+        } catch {
+            // Keep operation list intact; validation/conflict handling happens later.
+        }
+    }
+
+    return rewritten;
+}
+
+/**
  * Appends messages to an existing chat file, or creates a new chat file with header.
  * This path intentionally skips backup snapshots to keep append operations fast.
  * @param {object} args Append options.
@@ -834,6 +935,11 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
     const lastStoredMessage = getLastChatMessage(filePath);
     const lastGenerationId = String(lastStoredMessage?.extra?.luker_generation_id || '');
     while (dedupedMessages.length > 0) {
+        if (isChatMessageLike(lastStoredMessage) && isChatMessageLike(dedupedMessages[0]) && _.isEqual(lastStoredMessage, dedupedMessages[0])) {
+            dedupedMessages.shift();
+            continue;
+        }
+
         const incomingGenerationId = String(dedupedMessages[0]?.extra?.luker_generation_id || '');
         if (!lastGenerationId || !incomingGenerationId || incomingGenerationId !== lastGenerationId) {
             break;
@@ -898,7 +1004,8 @@ export async function patchChatMessagesInFile({ filePath, operations, chatMetada
     }
 
     const currentMessages = chatData.slice(1);
-    const patchResult = applyJsonPatch(currentMessages, normalizedOperations, true, false);
+    const idempotentOperations = buildIdempotentMessagePatchOperations(currentMessages, normalizedOperations);
+    const patchResult = applyJsonPatch(currentMessages, idempotentOperations, true, false);
     const patchedMessages = patchResult.newDocument;
     if (!Array.isArray(patchedMessages)) {
         throw new Error('Message patch must produce an array root.');
@@ -912,7 +1019,7 @@ export async function patchChatMessagesInFile({ filePath, operations, chatMetada
     writeChatSyncState(filePath, { integrity: nextIntegrity, updated_at: Date.now() });
 
     return {
-        applied: normalizedOperations.length,
+        applied: idempotentOperations.length,
         total_messages: patchedMessages.length,
         integrity: nextIntegrity,
     };
