@@ -41,9 +41,169 @@ import {
     textgenerationwebui_presets,
 } from './textgen-settings.js';
 import { download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
-import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
+import {
+    PRESET_LINKED_LOREBOOK_KEY,
+    createPresetLinkedLorebookPayload,
+    getPresetLinkedLorebookFromExtensions,
+    importPresetLinkedLorebookPayload,
+    loadWorldInfo,
+    maybeDeleteLinkedLorebookForPresetDeletion,
+    updateWorldInfoList,
+    world_names,
+} from './world-info.js';
 
 const presetManagers = {};
+const PRESET_LOREBOOK_BINDABLE_APIS = new Set(['kobold', 'novel', 'openai', 'textgenerationwebui']);
+
+function shouldShowPresetLinkedLorebookButton(apiId) {
+    return PRESET_LOREBOOK_BINDABLE_APIS.has(String(apiId || '').trim());
+}
+
+function ensurePresetLinkedLorebookButton(apiId) {
+    if (!shouldShowPresetLinkedLorebookButton(apiId)) {
+        return;
+    }
+
+    if ($(`[data-preset-manager-linked-lorebook="${apiId}"]`).length) {
+        return;
+    }
+
+    const $anchor = $(`[data-preset-manager-restore="${apiId}"], [data-preset-manager-new="${apiId}"], [data-preset-manager-update="${apiId}"]`).last();
+    if (!$anchor.length) {
+        return;
+    }
+
+    const title = t`Manage linked World/Lorebook`;
+    const tagName = String($anchor.prop('tagName') || '').toUpperCase();
+    let $button;
+
+    if (tagName === 'I') {
+        $button = $('<i />')
+            .addClass('menu_button fa-solid fa-link')
+            .attr('title', title);
+    } else {
+        $button = $('<div />')
+            .addClass('menu_button menu_button_icon')
+            .attr('title', title)
+            .append($('<i />').addClass('fa-solid fa-link'));
+        if ($anchor.hasClass('margin0')) {
+            $button.addClass('margin0');
+        }
+    }
+
+    $button
+        .attr('data-i18n', '[title]Manage linked World/Lorebook')
+        .attr('data-preset-manager-linked-lorebook', apiId);
+    $anchor.after($button);
+}
+
+async function promptLorebookNameToBind(worldNames, defaultName = '') {
+    const names = Array.isArray(worldNames) ? worldNames : [];
+    if (!names.length) {
+        return '';
+    }
+
+    const selectedName = names.includes(defaultName) ? defaultName : names[0];
+    const $container = $('<div class="flex-container flexFlowColumn gap8"></div>');
+    const $label = $('<div></div>').text(t`Select a World/Lorebook to link with this preset.`);
+    const $select = $('<select class="text_pole width100p"></select>');
+    for (const name of names) {
+        const $option = $('<option></option>').val(name).text(name);
+        if (name === selectedName) {
+            $option.prop('selected', true);
+        }
+        $select.append($option);
+    }
+    $container.append($label, $select);
+
+    const popup = new Popup($container, POPUP_TYPE.CONFIRM, '', {
+        okButton: t`Link`,
+        cancelButton: t`Cancel`,
+        leftAlign: true,
+    });
+    const result = await popup.show();
+    if (result !== POPUP_RESULT.AFFIRMATIVE) {
+        return '';
+    }
+
+    return String($select.val() || '').trim();
+}
+
+async function managePresetLinkedLorebook(apiId) {
+    const presetManager = getPresetManager(apiId);
+    if (!presetManager) {
+        console.warn(`Preset Manager not found for API: ${apiId}`);
+        return;
+    }
+
+    const presetName = String(presetManager.getSelectedPresetName() || '').trim();
+    if (!presetName) {
+        toastr.warning(t`No preset selected.`);
+        return;
+    }
+
+    const extensions = ensurePlainObject(presetManager.readPresetExtensionField({ name: presetName, path: '' }) || {});
+    const payload = getPresetLinkedLorebookFromExtensions(extensions);
+
+    if (payload) {
+        const header = t`This preset has a linked World/Lorebook.`;
+        const body = `${t`Preset`}: <code>${presetName}</code><br>${t`Linked World/Lorebook`}: <code>${payload.name}</code><br><br>${t`Import and activate it now?`}`;
+        const shouldImport = await Popup.show.confirm(header, body, {
+            okButton: t`Import`,
+            cancelButton: t`Skip`,
+        });
+        if (shouldImport === POPUP_RESULT.AFFIRMATIVE) {
+            const imported = await importPresetLinkedLorebookPayload(payload);
+            if (imported) {
+                toastr.success(t`Imported and activated linked World/Lorebook from preset.`);
+            } else {
+                toastr.error(t`Failed to import linked World/Lorebook from preset.`);
+            }
+            return;
+        }
+
+        const shouldUnlink = await Popup.show.confirm(
+            t`Unlink linked World/Lorebook?`,
+            `${t`Preset`}: <code>${presetName}</code><br>${t`Linked World/Lorebook`}: <code>${payload.name}</code>`,
+            {
+                okButton: t`Unlink`,
+                cancelButton: t`Keep`,
+            },
+        );
+        if (shouldUnlink !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        const nextExtensions = structuredClone(extensions);
+        delete nextExtensions[PRESET_LINKED_LOREBOOK_KEY];
+        await presetManager.writePresetExtensionField({ name: presetName, path: '', value: nextExtensions });
+        toastr.success(t`Linked World/Lorebook removed from preset.`);
+        return;
+    }
+
+    await updateWorldInfoList();
+    const worldNames = Array.isArray(world_names) ? [...world_names] : [];
+    if (!worldNames.length) {
+        toastr.info(t`No World/Lorebook available to link.`);
+        return;
+    }
+
+    const worldName = await promptLorebookNameToBind(worldNames, worldNames[0]);
+    if (!worldName) {
+        return;
+    }
+
+    const data = await loadWorldInfo(worldName);
+    if (!data) {
+        toastr.error(t`Failed to load the selected World/Lorebook.`);
+        return;
+    }
+
+    const nextExtensions = structuredClone(extensions);
+    nextExtensions[PRESET_LINKED_LOREBOOK_KEY] = createPresetLinkedLorebookPayload(worldName, data);
+    await presetManager.writePresetExtensionField({ name: presetName, path: '', value: nextExtensions });
+    toastr.success(t`Linked World/Lorebook saved to the current preset.`);
+}
 
 /**
  * Automatically select a preset for current API based on character or group name.
@@ -113,6 +273,7 @@ function registerPresetManagers() {
         for (const apiId of forData.split(',')) {
             console.debug(`Registering preset manager for API: ${apiId}`);
             presetManagers[apiId] = new PresetManager($(e), apiId);
+            ensurePresetLinkedLorebookButton(apiId);
         }
     });
 }
@@ -1108,6 +1269,11 @@ export async function initPresetManager() {
     $(document).on('click', '[data-preset-manager-import]', async function () {
         const apiId = $(this).data('preset-manager-import');
         $(`[data-preset-manager-file="${apiId}"]`).trigger('click');
+    });
+
+    $(document).on('click', '[data-preset-manager-linked-lorebook]', async function () {
+        const apiId = $(this).data('preset-manager-linked-lorebook');
+        await managePresetLinkedLorebook(apiId);
     });
 
     $(document).on('change', '[data-preset-manager-file]', async function (e) {

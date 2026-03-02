@@ -6289,7 +6289,7 @@ function normalizePresetLinkedLorebookPayload(payload) {
     };
 }
 
-function createPresetLinkedLorebookPayload(name, data) {
+export function createPresetLinkedLorebookPayload(name, data) {
     return {
         version: 1,
         name: String(name || '').trim(),
@@ -6320,7 +6320,7 @@ function activateLinkedLorebookForPreset(worldName) {
     saveSettingsDebounced();
 }
 
-async function importPresetLinkedLorebookPayload(payload) {
+export async function importPresetLinkedLorebookPayload(payload) {
     const normalized = normalizePresetLinkedLorebookPayload(payload);
     if (!normalized) {
         return false;
@@ -6345,54 +6345,6 @@ async function readCurrentPresetLinkedLorebook({ apiId = '', presetName = '' } =
 
     const raw = manager.readPresetExtensionField({ name, path: PRESET_LINKED_LOREBOOK_KEY });
     return normalizePresetLinkedLorebookPayload(raw);
-}
-
-async function bindSelectedLorebookToCurrentPreset() {
-    const selectedIndex = String($('#world_editor_select').find(':selected').val());
-    if (selectedIndex === '') {
-        toastr.warning(t`Select a World/Lorebook first.`);
-        return;
-    }
-
-    const worldName = world_names[Number(selectedIndex)];
-    if (!worldName) {
-        toastr.warning(t`Select a World/Lorebook first.`);
-        return;
-    }
-
-    const data = await loadWorldInfo(worldName);
-    if (!data) {
-        toastr.error(t`Failed to load the selected World/Lorebook.`);
-        return;
-    }
-
-    const manager = await getPresetManagerForApi();
-    if (!manager) {
-        toastr.error(t`Preset Manager is not available for the current API.`);
-        return;
-    }
-
-    await manager.writePresetExtensionField({
-        path: PRESET_LINKED_LOREBOOK_KEY,
-        value: createPresetLinkedLorebookPayload(worldName, data),
-    });
-    toastr.success(t`Linked World/Lorebook saved to the current preset.`);
-}
-
-async function importLinkedLorebookFromCurrentPreset() {
-    const payload = await readCurrentPresetLinkedLorebook();
-    if (!payload) {
-        toastr.info(t`Current preset has no linked World/Lorebook.`);
-        return;
-    }
-
-    const imported = await importPresetLinkedLorebookPayload(payload);
-    if (!imported) {
-        toastr.error(t`Failed to import linked World/Lorebook from preset.`);
-        return;
-    }
-
-    toastr.success(t`Imported and activated linked World/Lorebook from preset.`);
 }
 
 async function checkPresetLinkedLorebookOnPresetChange({ apiId = '', name = '' } = {}) {
@@ -6980,14 +6932,6 @@ export function initWorldInfo() {
         if (finalName) {
             await createNewWorldInfo(finalName, { interactive: true });
         }
-    });
-
-    $('#world_preset_bind').on('click', async () => {
-        await bindSelectedLorebookToCurrentPreset();
-    });
-
-    $('#world_preset_import').on('click', async () => {
-        await importLinkedLorebookFromCurrentPreset();
     });
 
     $('#world_editor_select').on('change', async () => {
