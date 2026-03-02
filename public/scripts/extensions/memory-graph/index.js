@@ -6040,6 +6040,30 @@ function normalizeMutationMeta(rawMeta = null) {
     };
 }
 
+function findAssistantSeqFromPlayableSeq(context, playableSeqFrom) {
+    const targetPlayableSeq = Math.max(1, Math.floor(Number(playableSeqFrom || 0)));
+    if (!Number.isFinite(targetPlayableSeq) || targetPlayableSeq <= 0) {
+        return null;
+    }
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    let playableSeq = 0;
+    let assistantSeq = 0;
+    for (const message of source) {
+        if (!message || message.is_system) {
+            continue;
+        }
+        playableSeq += 1;
+        if (message.is_user) {
+            continue;
+        }
+        assistantSeq += 1;
+        if (playableSeq >= targetPlayableSeq) {
+            return assistantSeq;
+        }
+    }
+    return null;
+}
+
 function truncateStoreFromSeq(store, fromSeq) {
     const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
     if (!store || typeof store !== 'object' || !Number.isFinite(startSeq) || startSeq <= 0) {
@@ -9978,8 +10002,23 @@ jQuery(() => {
             if (!store) {
                 return;
             }
+            latestRecallSnapshot = null;
+            if (extractionTimers.has(chatKey)) {
+                clearTimeout(extractionTimers.get(chatKey));
+                extractionTimers.delete(chatKey);
+            }
+            if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+                activeExtractionAbortController.abort();
+            }
             const meta = normalizeMutationMeta(mutationMeta);
-            const fromSeq = Number(meta?.deletedAssistantSeqFrom || 0);
+            let fromSeq = Number(meta?.deletedAssistantSeqFrom || 0);
+            if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
+                const playableFromSeq = Number(meta?.deletedPlayableSeqFrom || 0);
+                const derivedAssistantSeq = findAssistantSeqFromPlayableSeq(runtimeContext, playableFromSeq);
+                if (Number.isFinite(Number(derivedAssistantSeq)) && Number(derivedAssistantSeq) > 0) {
+                    fromSeq = Number(derivedAssistantSeq);
+                }
+            }
             if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
                 alignStoreCoverageToChat(store, runtimeContext);
                 await persistMemoryStoreByChatKey(runtimeContext, chatKey, store);
