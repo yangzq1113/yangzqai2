@@ -148,17 +148,27 @@ async function managePresetLinkedLorebook(apiId) {
     if (payload) {
         const header = t`This preset has a linked World/Lorebook.`;
         const body = `${t`Preset`}: <code>${presetName}</code><br>${t`Linked World/Lorebook`}: <code>${payload.name}</code><br><br>${t`Import and activate it now?`}`;
-        const shouldImport = await Popup.show.confirm(header, body, {
+        const action = await Popup.show.confirm(header, body, {
             okButton: t`Import`,
-            cancelButton: t`Skip`,
+            cancelButton: t`Close`,
+            customButtons: [
+                {
+                    text: t`Unlink`,
+                    result: POPUP_RESULT.CUSTOM1,
+                },
+            ],
         });
-        if (shouldImport === POPUP_RESULT.AFFIRMATIVE) {
+        if (action === POPUP_RESULT.AFFIRMATIVE) {
             const imported = await importPresetLinkedLorebookPayload(payload);
             if (imported) {
                 toastr.success(t`Imported and activated linked World/Lorebook from preset.`);
             } else {
                 toastr.error(t`Failed to import linked World/Lorebook from preset.`);
             }
+            return;
+        }
+
+        if (action !== POPUP_RESULT.CUSTOM1) {
             return;
         }
 

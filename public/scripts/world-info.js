@@ -1448,6 +1448,10 @@ export function setWorldInfoSettings(settings, data) {
         await checkPresetLinkedLorebookOnPresetChange({ apiId, name });
     });
 
+    eventSource.on(event_types.PRESET_DELETED, ({ apiId, name } = {}) => {
+        clearPresetLinkedLorebookPromptState({ apiId, name });
+    });
+
     // Add slash commands
     registerWorldInfoSlashCommands();
 }
@@ -6301,6 +6305,26 @@ function getPresetLinkedLorebookPromptKey(apiId, presetName, payload) {
     const worldName = String(payload?.name || '').trim();
     const worldHash = String(getStringHash(JSON.stringify(payload?.data || {})));
     return `AlertPresetLorebook_${String(apiId || '').trim()}_${String(presetName || '').trim()}_${worldName}_${worldHash}`;
+}
+
+function getPresetLinkedLorebookPromptKeyPrefix(apiId, presetName) {
+    return `AlertPresetLorebook_${String(apiId || '').trim()}_${String(presetName || '').trim()}_`;
+}
+
+function clearPresetLinkedLorebookPromptState({ apiId = '', name = '' } = {}) {
+    const prefix = getPresetLinkedLorebookPromptKeyPrefix(apiId, name);
+    for (const key of [...presetLinkedLorebookPromptedKeys]) {
+        if (key.startsWith(prefix)) {
+            presetLinkedLorebookPromptedKeys.delete(key);
+        }
+    }
+
+    const storageState = accountStorage.getState();
+    for (const key of Object.keys(storageState)) {
+        if (key.startsWith(prefix)) {
+            accountStorage.removeItem(key);
+        }
+    }
 }
 
 async function getPresetManagerForApi(apiId = '') {
