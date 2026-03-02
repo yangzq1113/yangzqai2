@@ -1312,6 +1312,22 @@ function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = 
     ].filter(Boolean).join('\n');
 }
 
+function buildStrictThoughtAndFunctionOnlyAddendum({ plainTextMode = false, requiredFunctionName = '' } = {}) {
+    const requiredName = String(requiredFunctionName || '').trim();
+    return [
+        'HIGHEST PRIORITY OUTPUT CONTRACT:',
+        'You must return EXACTLY two parts in this order:',
+        '1) one <thought>...</thought> block.',
+        plainTextMode
+            ? '2) exactly one JSON object for function calls: {"tool_calls":[...]}'
+            : '2) function calls only (tool-calls channel).',
+        requiredName ? `Required function name: ${requiredName}.` : '',
+        'Do NOT output any other text or blocks.',
+        'Forbidden: narrative/body text, <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, markdown, code fences, comments, duplicate JSON payloads.',
+        'After function calls, stop immediately.',
+    ].filter(Boolean).join('\n');
+}
+
 function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText) {
     const messages = Array.isArray(promptMessages)
         ? promptMessages.map(message => ({ ...message }))
@@ -1462,12 +1478,20 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         function: { name: fnName },
     };
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const requestMessages = usePlainTextCalls
-        ? mergeUserAddendumIntoPromptMessages(
-            promptMessages,
+    let requestMessages = promptMessages;
+    if (usePlainTextCalls) {
+        requestMessages = mergeUserAddendumIntoPromptMessages(
+            requestMessages,
             buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
-        )
-        : promptMessages;
+        );
+    }
+    requestMessages = mergeUserAddendumIntoPromptMessages(
+        requestMessages,
+        buildStrictThoughtAndFunctionOnlyAddendum({
+            plainTextMode: usePlainTextCalls,
+            requiredFunctionName: fnName,
+        }),
+    );
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1539,12 +1563,19 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const timeoutMs = applyAgentTimeout ? getAgentTimeoutMs(settings) : 0;
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const requestMessages = usePlainTextCalls
-        ? mergeUserAddendumIntoPromptMessages(
-            promptMessages,
+    let requestMessages = promptMessages;
+    if (usePlainTextCalls) {
+        requestMessages = mergeUserAddendumIntoPromptMessages(
+            requestMessages,
             buildPlainTextToolProtocolMessage(tools),
-        )
-        : promptMessages;
+        );
+    }
+    requestMessages = mergeUserAddendumIntoPromptMessages(
+        requestMessages,
+        buildStrictThoughtAndFunctionOnlyAddendum({
+            plainTextMode: usePlainTextCalls,
+        }),
+    );
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         const attemptController = createAttemptAbortController(
