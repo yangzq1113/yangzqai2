@@ -68,7 +68,7 @@ function ensurePresetLinkedLorebookButton(apiId) {
         return;
     }
 
-    const $anchor = $(`[data-preset-manager-restore="${apiId}"], [data-preset-manager-new="${apiId}"], [data-preset-manager-update="${apiId}"]`).last();
+    const $anchor = $(`[data-preset-manager-restore="${apiId}"], [data-preset-manager-new="${apiId}"], [data-preset-manager-update="${apiId}"], [data-preset-manager-rename="${apiId}"]`).last();
     if (!$anchor.length) {
         return;
     }
