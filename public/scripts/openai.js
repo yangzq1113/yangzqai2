@@ -337,19 +337,6 @@ export const ZAI_ENDPOINT = {
     CODING: 'coding',
 };
 
-const sensitiveFields = [
-    'reverse_proxy',
-    'proxy_password',
-    'custom_url',
-    'custom_include_body',
-    'custom_exclude_body',
-    'custom_include_headers',
-    'vertexai_region',
-    'vertexai_express_project_id',
-    'azure_base_url',
-    'azure_deployment_name',
-];
-
 /**
  * preset_name -> [selector, setting_name, is_checkbox, is_connection]
  * @type {Record<string, [string, string, boolean, boolean]>}
@@ -5245,28 +5232,7 @@ async function onPresetImportFileChange(e) {
         return;
     }
 
-    for (const key of connectionProfileOnlyPresetKeys) {
-        delete presetBody[key];
-    }
-    const fields = sensitiveFields.filter(field => presetBody[field]).map(field => `<b>${field}</b>`);
-    const shouldConfirm = fields.length > 0;
-
-    if (shouldConfirm) {
-        const textHeader = 'The imported preset contains proxy and/or custom endpoint settings.';
-        const textMessage = fields.join('<br>');
-        const cancelButton = { text: 'Cancel import', result: POPUP_RESULT.CANCELLED, appendAtEnd: true };
-        const popupOptions = { customButtons: [cancelButton], okButton: 'Remove them', cancelButton: 'Import as-is' };
-        const popupResult = await Popup.show.confirm(textHeader, textMessage, popupOptions);
-
-        if (popupResult === POPUP_RESULT.CANCELLED) {
-            console.log('Import cancelled by user');
-            return;
-        }
-
-        if (popupResult === POPUP_RESULT.AFFIRMATIVE) {
-            sensitiveFields.forEach(field => delete presetBody[field]);
-        }
-    }
+    presetBody = stripOpenAIConnectionFieldsFromPreset(presetBody);
 
     if (name in openai_setting_names) {
         const confirm = await callGenericPopup('Preset name already exists. Overwrite?', POPUP_TYPE.CONFIRM);
@@ -5318,40 +5284,7 @@ async function onExportPresetClick() {
         return;
     }
 
-    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
-    for (const key of connectionProfileOnlyPresetKeys) {
-        delete preset[key];
-    }
-
-    const fieldValues = sensitiveFields.filter(field => preset[field]).map(field => `<b>${field}</b>: <code>${preset[field]}</code>`);
-    if (fieldValues.length > 0) {
-        const textHeader = t`Your preset contains proxy and/or custom endpoint settings.`;
-        const textMessage = '<div>' + t`Do you want to remove these fields before exporting?` + `</div><br>${DOMPurify.sanitize(fieldValues.join('<br>'))}`;
-        const cancelButton = { text: 'Cancel', result: POPUP_RESULT.CANCELLED, appendAtEnd: true };
-        const popupOptions = { customButtons: [cancelButton] };
-        const popupResult = await Popup.show.confirm(textHeader, textMessage, popupOptions);
-
-        if (popupResult === POPUP_RESULT.CANCELLED) {
-            console.log('Export cancelled by user');
-            return;
-        }
-
-        if (popupResult === POPUP_RESULT.AFFIRMATIVE) {
-            sensitiveFields.forEach(field => delete preset[field]);
-        }
-    }
-
-    const exportConnectionTemplate = $(await renderTemplateAsync('exportPreset'));
-    await new Popup(exportConnectionTemplate, POPUP_TYPE.TEXT).show();
-
-    const removeConnectionData = exportConnectionTemplate.find('input[name="export_connection_data"]:checked').val() === 'false';
-    if (removeConnectionData) {
-        for (const [, [, settingName, , isConnection]] of Object.entries(settingsToUpdate)) {
-            if (isConnection) {
-                delete preset[settingName];
-            }
-        }
-    }
+    const preset = stripOpenAIConnectionFieldsFromPreset(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
 
     await eventSource.emit(event_types.OAI_PRESET_EXPORT_READY, preset);
     const presetJsonString = JSON.stringify(preset, null, 4);
