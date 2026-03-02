@@ -6363,8 +6363,6 @@ async function checkPresetLinkedLorebookOnPresetChange({ apiId = '', name = '' }
     if (presetLinkedLorebookPromptedKeys.has(promptKey) || accountStorage.getItem(promptKey)) {
         return;
     }
-    presetLinkedLorebookPromptedKeys.add(promptKey);
-    accountStorage.setItem(promptKey, 'true');
 
     const header = t`This preset has an embedded World/Lorebook.`;
     const body = `${t`Import and activate it now?`}<br><code>${escapeHtmlText(payload.name)}</code>`;
@@ -6375,6 +6373,8 @@ async function checkPresetLinkedLorebookOnPresetChange({ apiId = '', name = '' }
 
     const imported = await importPresetLinkedLorebookPayload(payload);
     if (imported) {
+        presetLinkedLorebookPromptedKeys.add(promptKey);
+        accountStorage.setItem(promptKey, 'true');
         toastr.success(t`Imported and activated linked World/Lorebook from preset.`);
     } else {
         toastr.error(t`Failed to import linked World/Lorebook from preset.`);
