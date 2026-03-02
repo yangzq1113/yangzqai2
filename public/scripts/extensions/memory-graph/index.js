@@ -2019,6 +2019,33 @@ function getCompressionColumnNames(spec) {
     return deduped;
 }
 
+function normalizeWorldInfoResolverMessages(messages = []) {
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+
+    return messages.map((message) => {
+        if (!message || typeof message !== 'object') {
+            return message;
+        }
+        const next = { ...message };
+        const rawRole = String(next.role || '').trim().toLowerCase();
+        if (rawRole === 'system' || rawRole === 'user' || rawRole === 'assistant') {
+            next.role = rawRole;
+        } else if (next.is_system) {
+            next.role = 'system';
+        } else if (next.is_user) {
+            next.role = 'user';
+        } else {
+            next.role = 'assistant';
+        }
+        if (next.content === undefined && Object.hasOwn(next, 'mes')) {
+            next.content = String(next.mes ?? '');
+        }
+        return next;
+    });
+}
+
 async function buildPresetAwareLLMMessages(
     context,
     settings,
@@ -2041,8 +2068,9 @@ async function buildPresetAwareLLMMessages(
     let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
         ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
         : null;
-    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && Array.isArray(worldInfoMessages)) {
-        resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
+    const resolverMessages = normalizeWorldInfoResolverMessages(worldInfoMessages);
+    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
+        resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(resolverMessages, {
             type: String(worldInfoType || 'quiet'),
             fallbackToCurrentChat: false,
         });
