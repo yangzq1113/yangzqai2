@@ -28,6 +28,9 @@ const DEFAULT_SETTINGS = {
 const ALLOW_EMPTY = [
     'stop-strings',
     'start-reply-with',
+    'custom-include-body',
+    'custom-exclude-body',
+    'custom-include-headers',
 ];
 
 const CC_COMMANDS = [
@@ -41,6 +44,9 @@ const CC_COMMANDS = [
     'start-reply-with',
     'reasoning-template',
     'prompt-post-processing',
+    'custom-include-body',
+    'custom-exclude-body',
+    'custom-include-headers',
     'secret-id',
     'regex-preset',
 ];
@@ -79,6 +85,9 @@ const FANCY_NAMES = {
     'start-reply-with': 'Start Reply With',
     'reasoning-template': 'Reasoning Template',
     'prompt-post-processing': 'Prompt Post-Processing',
+    'custom-include-body': 'Include Body Parameters',
+    'custom-exclude-body': 'Exclude Body Parameters',
+    'custom-include-headers': 'Include Request Headers',
     'secret-id': 'Secret',
     'regex-preset': 'Regex Preset',
 };
@@ -167,6 +176,9 @@ const profilesProvider = () => [
  * @property {string} [start-reply-with] Start Reply With
  * @property {string} [reasoning-template] Reasoning Template
  * @property {string} [prompt-post-processing] Prompt Post-Processing
+ * @property {string} [custom-include-body] Include Body Parameters
+ * @property {string} [custom-exclude-body] Exclude Body Parameters
+ * @property {string} [custom-include-headers] Include Request Headers
  * @property {string} [sysprompt] System Prompt Name
  * @property {string} [sysprompt-state] Use System Prompt
  * @property {string} [api-url] Server URL

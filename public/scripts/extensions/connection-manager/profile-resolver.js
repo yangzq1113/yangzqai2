@@ -152,6 +152,18 @@ function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
         overrides.custom_prompt_post_processing = promptPostProcessing;
     }
 
+    if (Object.hasOwn(profile, 'custom-include-body')) {
+        overrides.custom_include_body = String(profile['custom-include-body'] ?? '');
+    }
+
+    if (Object.hasOwn(profile, 'custom-exclude-body')) {
+        overrides.custom_exclude_body = String(profile['custom-exclude-body'] ?? '');
+    }
+
+    if (Object.hasOwn(profile, 'custom-include-headers')) {
+        overrides.custom_include_headers = String(profile['custom-include-headers'] ?? '');
+    }
+
     const secretId = String(profile['secret-id'] || '').trim();
     if (secretId) {
         overrides.secret_id = secretId;

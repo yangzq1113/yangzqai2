@@ -452,6 +452,12 @@ export const settingsToUpdate = {
     extensions: ['#NULL_SELECTOR', 'extensions', false, false],
 };
 
+const connectionProfileOnlyPresetKeys = new Set([
+    'custom_include_body',
+    'custom_exclude_body',
+    'custom_include_headers',
+]);
+
 const settingsKeyToPresetKey = Object.entries(settingsToUpdate).reduce((acc, [presetKey, [, settingsKey]]) => {
     if (!acc[settingsKey]) {
         acc[settingsKey] = presetKey;
@@ -508,6 +514,9 @@ function applyOpenAIPresetToSettings(settings, presetSource, {
     }
 
     for (const [presetKey, value] of Object.entries(presetSource)) {
+        if (isConnectionProfileOnlyPresetField(presetKey)) {
+            continue;
+        }
         const settingToUpdate = settingsToUpdate[presetKey];
         if (!settingToUpdate) {
             continue;
@@ -539,6 +548,10 @@ function applyOpenAIConnectionSettingsOverride(settings, overrides) {
         const [, settingsKey] = settingsToUpdate[presetKey];
         settings[settingsKey] = structuredClone(rawValue);
     }
+}
+
+function isConnectionProfileOnlyPresetField(presetKey) {
+    return connectionProfileOnlyPresetKeys.has(String(presetKey || '').trim());
 }
 
 function getSettingsForRequest({ llmPresetName = '', apiPresetName = '', apiSettingsOverride = null } = {}) {
@@ -5017,6 +5030,9 @@ async function getStatusOpen() {
 export function getChatCompletionPreset(settings = oai_settings) {
     const presetBody = {};
     for (const [presetKey, [, settingsKey]] of Object.entries(settingsToUpdate)) {
+        if (isConnectionProfileOnlyPresetField(presetKey)) {
+            continue;
+        }
         presetBody[presetKey] = settings[settingsKey];
     }
     return structuredClone(presetBody);
@@ -5047,6 +5063,9 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
 
         if (Object.keys(openai_setting_names).includes(data.name)) {
             const value = openai_setting_names[data.name];
+            for (const key of connectionProfileOnlyPresetKeys) {
+                delete openai_settings[value]?.[key];
+            }
             Object.assign(openai_settings[value], presetBody);
             if (triggerUi) {
                 oai_settings.preset_settings_openai = data.name;
@@ -5224,6 +5243,10 @@ async function onPresetImportFileChange(e) {
         toastr.error(t`Invalid file`);
         return;
     }
+
+    for (const key of connectionProfileOnlyPresetKeys) {
+        delete presetBody[key];
+    }
     const fields = sensitiveFields.filter(field => presetBody[field]).map(field => `<b>${field}</b>`);
     const shouldConfirm = fields.length > 0;
 
@@ -5295,6 +5318,9 @@ async function onExportPresetClick() {
     }
 
     const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    for (const key of connectionProfileOnlyPresetKeys) {
+        delete preset[key];
+    }
 
     const fieldValues = sensitiveFields.filter(field => preset[field]).map(field => `<b>${field}</b>: <code>${preset[field]}</code>`);
     if (fieldValues.length > 0) {
@@ -5705,6 +5731,9 @@ async function onSettingsPresetChange(event) {
     } finally {
         let connectionChanged = false;
         for (const [key, [selector, setting, isCheckbox, isConnection]] of Object.entries(settingsToUpdate)) {
+            if (isConnectionProfileOnlyPresetField(key)) {
+                continue;
+            }
             if (isConnection) {
                 if (preset[key] !== undefined) {
                     const nextValue = preset[key];
@@ -7370,7 +7399,53 @@ function updateFeatureSupportFlags() {
     }
 }
 
+function registerConnectionProfileAdditionalParameterSlashCommands() {
+    const definitions = [
+        {
+            name: 'custom-include-body',
+            settingKey: 'custom_include_body',
+            label: t`Include Body Parameters`,
+        },
+        {
+            name: 'custom-exclude-body',
+            settingKey: 'custom_exclude_body',
+            label: t`Exclude Body Parameters`,
+        },
+        {
+            name: 'custom-include-headers',
+            settingKey: 'custom_include_headers',
+            label: t`Include Request Headers`,
+        },
+    ];
+
+    for (const definition of definitions) {
+        SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+            name: definition.name,
+            callback: (args, value) => {
+                const forceApply = String(args?.force || '').toLowerCase() === 'true';
+                if (value === undefined || value === null || (value === '' && !forceApply)) {
+                    return String(oai_settings[definition.settingKey] || '');
+                }
+                oai_settings[definition.settingKey] = String(value);
+                saveSettingsDebounced();
+                return String(oai_settings[definition.settingKey] || '');
+            },
+            returns: definition.label,
+            unnamedArgumentList: [
+                SlashCommandArgument.fromProps({
+                    description: t`value`,
+                    typeList: [ARGUMENT_TYPE.STRING],
+                    isRequired: false,
+                }),
+            ],
+            helpString: t`Sets ${definition.label}. Gets current value if no argument is provided.`,
+        }));
+    }
+}
+
 export function initOpenAI() {
+    registerConnectionProfileAdditionalParameterSlashCommands();
+
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'proxy',
         callback: runProxyCallback,
