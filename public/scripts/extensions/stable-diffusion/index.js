@@ -2908,9 +2908,8 @@ function updateGenerationIndicator() {
             .on('click.sdAbortCurrent', '.sd_generation_abort_btn', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                const isLastGeneration = activeGenerations <= 1;
-                const aborted = abortOneActiveGeneration('Aborted by user');
-                if (aborted && isLastGeneration) {
+                abortOneActiveGeneration('Aborted by user');
+                if (activeGenerations <= 0) {
                     clearGenerationToast();
                 }
             });
