@@ -8494,5 +8494,20 @@
     "Custom Models (Current Source)": "自訂模型（目前來源）",
     "One model ID per line. Applies to the currently selected API source.": "每行一個模型 ID。僅套用到目前選擇的 API 來源。",
     "Apply Custom Models": "套用自訂模型",
-    "Custom models updated.": "自訂模型已更新。"
+    "Custom models updated.": "自訂模型已更新。",
+    "Link current World Info to preset": "將目前世界書綁定到預設",
+    "Import linked preset World Info": "匯入預設綁定的世界書",
+    "Select a World/Lorebook first.": "請先選擇一個世界書。",
+    "Failed to load the selected World/Lorebook.": "無法載入所選世界書。",
+    "Preset Manager is not available for the current API.": "目前 API 沒有可用的預設管理器。",
+    "Linked World/Lorebook saved to the current preset.": "已將綁定世界書儲存到目前預設。",
+    "Current preset has no linked World/Lorebook.": "目前預設沒有綁定世界書。",
+    "Failed to import linked World/Lorebook from preset.": "從預設匯入綁定世界書失敗。",
+    "Imported and activated linked World/Lorebook from preset.": "已從預設匯入並啟用綁定世界書。",
+    "This preset has an embedded World/Lorebook.": "此預設內嵌了一個世界書。",
+    "Import and activate it now?": "要立即匯入並啟用嗎？",
+    "This preset has a linked World/Lorebook.": "此預設綁定了一個世界書。",
+    "Also delete it?": "要一併刪除嗎？",
+    "Linked World/Lorebook deleted.": "已刪除綁定世界書。",
+    "Failed to delete linked World/Lorebook.": "刪除綁定世界書失敗。"
 }

@@ -41,6 +41,7 @@ import {
     textgenerationwebui_presets,
 } from './textgen-settings.js';
 import { download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
+import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
 
 const presetManagers = {};
 
@@ -1151,12 +1152,14 @@ export async function initPresetManager() {
         }
 
         const name = presetManager.getSelectedPresetName();
+        const extensions = presetManager.readPresetExtensionField({ name, path: '' });
         const result = await presetManager.deletePreset();
 
         if (result) {
             const successToast = !presetManager.isAdvancedFormatting() ? t`Preset deleted` : t`Template deleted`;
             toastr.success(successToast);
             await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
+            await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: name, extensions });
         } else {
             const warningToast = !presetManager.isAdvancedFormatting() ? t`Preset was not deleted from server` : t`Template was not deleted from server`;
             toastr.warning(warningToast);

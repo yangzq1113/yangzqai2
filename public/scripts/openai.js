@@ -81,6 +81,7 @@ import { t } from './i18n.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
+import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
 
 export {
     openai_messages_count,
@@ -5419,6 +5420,7 @@ async function onDeletePresetClick() {
 
     const nameToDelete = oai_settings.preset_settings_openai;
     const value = openai_setting_names[oai_settings.preset_settings_openai];
+    const presetBodyToDelete = structuredClone(openai_settings[value] || {});
     $(`#settings_preset_openai option[value="${value}"]`).remove();
     delete openai_setting_names[oai_settings.preset_settings_openai];
     oai_settings.preset_settings_openai = null;
@@ -5441,6 +5443,7 @@ async function onDeletePresetClick() {
     } else {
         toastr.success(t`Preset deleted`);
         await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
+        await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: nameToDelete, extensions: presetBodyToDelete.extensions });
     }
 
     requestAsyncDiffForNextSettingsSave();
