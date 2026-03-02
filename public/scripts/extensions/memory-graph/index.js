@@ -16,6 +16,7 @@ const UI_BLOCK_ID = 'memory_graph_settings';
 const STYLE_ID = 'memory_graph_style';
 const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
+const PERSISTENT_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_PERSISTENT';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const RECALL_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
@@ -294,7 +295,6 @@ const defaultSettings = {
     recallQueryMessages: 2,
     recentRawTurns: 2,
     llmVisibleRecentMessages: 5,
-    lorebookProjectionEnabled: true,
     lorebookNameOverride: '',
     lorebookEntryOrderBase: 9800,
     nodeTypeSchema: defaultNodeTypeSchema,
@@ -317,7 +317,6 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回提示词预设（参数+提示词，留空=当前）',
         'Extract API preset (Connection profile, empty = current)': '生成图 API 预设（连接配置，留空=当前）',
         'Extract preset (params + prompt, empty = current)': '生成图提示词预设（参数+提示词，留空=当前）',
-        'Project recall output to chat lorebook': '将召回结果投影到聊天世界书',
         'Exclude latest N assistant turns from memory injection': '记忆注入时排除最近 N 条 Assistant 回复',
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '生成图时参考最近 Assistant 回复条数',
@@ -483,8 +482,7 @@ function registerLocaleData() {
         'Applied raw graph JSON edit.': '已应用原始图 JSON 编辑。',
         'Memory graph JSON updated.': '记忆图 JSON 已更新。',
         'Graph edit failed: ${0}': '图编辑失败：${0}',
-        'Memory disabled, runtime lorebook projection cleared.': '记忆已禁用，已清理运行时 Lorebook 投影。',
-        'Lorebook projection disabled.': 'Lorebook 投影已禁用。',
+        'Memory disabled, cleared memory lorebook injections.': '记忆已禁用，已清理记忆图世界书注入。',
         'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
         'Recall ready. selected=${0}': '召回就绪。selected=${0}',
         'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
@@ -575,7 +573,6 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回提示詞預設（參數+提示詞，留空=目前）',
         'Extract API preset (Connection profile, empty = current)': '生成圖 API 預設（連線設定，留空=目前）',
         'Extract preset (params + prompt, empty = current)': '生成圖提示詞預設（參數+提示詞，留空=目前）',
-        'Project recall output to chat lorebook': '將召回結果投影到聊天世界書',
         'Exclude latest N assistant turns from memory injection': '記憶注入時排除最近 N 條 Assistant 回覆',
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '生成圖時參考最近 Assistant 回覆條數',
@@ -741,8 +738,7 @@ function registerLocaleData() {
         'Applied raw graph JSON edit.': '已套用原始圖 JSON 編輯。',
         'Memory graph JSON updated.': '記憶圖 JSON 已更新。',
         'Graph edit failed: ${0}': '圖編輯失敗：${0}',
-        'Memory disabled, runtime lorebook projection cleared.': '記憶已停用，已清理執行期 Lorebook 投影。',
-        'Lorebook projection disabled.': 'Lorebook 投影已停用。',
+        'Memory disabled, cleared memory lorebook injections.': '記憶已停用，已清理記憶圖世界書注入。',
         'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
         'Recall ready. selected=${0}': '召回就緒。selected=${0}',
         'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
@@ -1575,7 +1571,7 @@ function getMemoryStore(context, targetHint = null) {
     return memoryStoreCache.get(chatKey) || null;
 }
 
-async function persistMemoryStoreByChatKey(context, chatKey, store) {
+async function persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection = false } = {}) {
     const target = memoryStoreTargets.get(chatKey);
     if (!target) {
         return;
@@ -1591,6 +1587,10 @@ async function persistMemoryStoreByChatKey(context, chatKey, store) {
     );
     if (!result?.ok) {
         throw new Error('Failed to persist memory store.');
+    }
+    if (syncPersistentProjection && chatKey === getChatKey(context)) {
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        await syncPersistentLorebookProjection(context, effectiveSettings, nextStore);
     }
 }
 
@@ -5668,70 +5668,181 @@ async function ensureRuntimeLorebook(context, settings) {
     return newName;
 }
 
-async function syncLorebookProjection(context, settings, blocks) {
-    if (!settings.lorebookProjectionEnabled) {
-        return;
+function getManagedLorebookEntries(data, commentPrefix) {
+    const prefix = `${String(commentPrefix || '').trim()}::`;
+    if (!prefix || !data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+        return [];
     }
-    const bookName = await ensureRuntimeLorebook(context, settings);
-    const data = await context.loadWorldInfo(bookName) || { entries: {} };
+    return Object.entries(data.entries)
+        .filter(([, entry]) => String(entry?.comment || '').startsWith(prefix))
+        .map(([uid, entry]) => ({
+            uid: String(uid || ''),
+            comment: String(entry?.comment || ''),
+            content: normalizeMultilineText(entry?.content || ''),
+            order: Number(entry?.order || 0),
+        }));
+}
+
+function getNextLorebookUid(entries) {
+    return Object.keys(entries || {})
+        .map(uid => Number(uid))
+        .filter(Number.isFinite)
+        .reduce((max, value) => Math.max(max, value), -1) + 1;
+}
+
+function areManagedLorebookEntriesEqual(existingEntries, sections, commentPrefix, baseOrder) {
+    const normalizedSections = Array.isArray(sections) ? sections : [];
+    const normalizedExisting = Array.isArray(existingEntries) ? existingEntries : [];
+    if (normalizedExisting.length !== normalizedSections.length) {
+        return false;
+    }
+    const byComment = new Map(normalizedExisting.map(entry => [String(entry.comment || ''), entry]));
+    if (byComment.size !== normalizedExisting.length) {
+        return false;
+    }
+    for (let i = 0; i < normalizedSections.length; i += 1) {
+        const [name, text] = normalizedSections[i];
+        const comment = `${String(commentPrefix || '').trim()}::${String(name || '').trim()}`;
+        const expectedContent = normalizeMultilineText(text || '');
+        const expectedOrder = baseOrder + i;
+        const existing = byComment.get(comment);
+        if (!existing) {
+            return false;
+        }
+        if (normalizeMultilineText(existing.content || '') !== expectedContent) {
+            return false;
+        }
+        if (Number(existing.order || 0) !== expectedOrder) {
+            return false;
+        }
+    }
+    return true;
+}
+
+async function upsertManagedLorebookProjection(context, settings, {
+    commentPrefix,
+    sections,
+    orderBase,
+    allowCreate = true,
+} = {}) {
+    const prefix = String(commentPrefix || '').trim();
+    if (!prefix) {
+        return { changed: false, bookName: '' };
+    }
+    const normalizedSections = (Array.isArray(sections) ? sections : [])
+        .map((section) => [String(section?.[0] || '').trim(), normalizeMultilineText(section?.[1] || '')])
+        .filter(([name, text]) => Boolean(name) && Boolean(text));
+    const overrideName = String(settings?.lorebookNameOverride || '').trim();
+    const existingName = overrideName || getRuntimeLorebookNameFromMetadata(context);
+    let bookName = existingName;
+    let data = null;
+    if (bookName) {
+        const loaded = await context.loadWorldInfo(bookName);
+        if (loaded && typeof loaded === 'object') {
+            data = loaded;
+        }
+    }
+
+    if (!data) {
+        if (normalizedSections.length === 0 || !allowCreate) {
+            return { changed: false, bookName: existingName };
+        }
+        bookName = await ensureRuntimeLorebook(context, settings);
+        const loaded = await context.loadWorldInfo(bookName);
+        data = loaded && typeof loaded === 'object' ? loaded : { entries: {} };
+    }
+
     if (!data.entries || typeof data.entries !== 'object') {
         data.entries = {};
     }
 
-    for (const [uid, entry] of Object.entries(data.entries)) {
-        const comment = String(entry?.comment || '');
-        if (comment.startsWith(RUNTIME_LOREBOOK_COMMENT_PREFIX)) {
-            delete data.entries[uid];
-        }
+    const baseOrder = Math.max(100, Number(orderBase || settings?.lorebookEntryOrderBase || 9800));
+    const existingEntries = getManagedLorebookEntries(data, prefix);
+    if (areManagedLorebookEntriesEqual(existingEntries, normalizedSections, prefix, baseOrder)) {
+        return { changed: false, bookName };
     }
 
-    const sections = [
-        ['CORE_PACKET', String(blocks.corePacket || '').trim()],
-        ['FOCUS_PACKET', String(blocks.focusPacket || '').trim()],
-    ].filter(([, text]) => Boolean(text));
+    for (const entry of existingEntries) {
+        delete data.entries[entry.uid];
+    }
 
-    let nextUid = Object.keys(data.entries)
-        .map(uid => Number(uid))
-        .filter(Number.isFinite)
-        .reduce((max, value) => Math.max(max, value), -1) + 1;
-    const baseOrder = Math.max(100, Number(settings.lorebookEntryOrderBase || 9800));
-    for (let i = 0; i < sections.length; i++) {
-        const [name, text] = sections[i];
-        const entry = createRuntimeLorebookEntry(
+    let nextUid = getNextLorebookUid(data.entries);
+    for (let i = 0; i < normalizedSections.length; i += 1) {
+        const [name, text] = normalizedSections[i];
+        data.entries[nextUid] = createRuntimeLorebookEntry(
             nextUid,
-            `${RUNTIME_LOREBOOK_COMMENT_PREFIX}::${name}`,
+            `${prefix}::${name}`,
             text,
             baseOrder + i,
         );
-        data.entries[nextUid] = entry;
         nextUid += 1;
     }
 
     await context.saveWorldInfo(bookName, data, true);
+    return { changed: true, bookName };
+}
+
+async function syncPersistentLorebookProjection(context, settings, store) {
+    const semanticNodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+        .filter(node => node && !node.archived);
+    if (semanticNodes.length === 0) {
+        return {
+            changed: false,
+            corePacket: '',
+            alwaysInjectNodes: [],
+        };
+    }
+    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
+    const corePacket = normalizeMultilineText(
+        buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }, context),
+    );
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: PERSISTENT_LOREBOOK_COMMENT_PREFIX,
+        sections: [['CORE_PACKET', corePacket]],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)),
+        allowCreate: true,
+    });
+    return {
+        changed: Boolean(result?.changed),
+        corePacket,
+        alwaysInjectNodes,
+    };
+}
+
+async function syncRuntimeLorebookProjection(context, settings, blocks) {
+    const focusPacket = normalizeMultilineText(blocks?.focusPacket || '');
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: RUNTIME_LOREBOOK_COMMENT_PREFIX,
+        sections: [['FOCUS_PACKET', focusPacket]],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)) + 50,
+        allowCreate: true,
+    });
+    return Boolean(result?.changed);
 }
 
 async function clearRuntimeLorebookProjection(context, settings) {
-    const overrideName = String(settings.lorebookNameOverride || '').trim();
-    const bookName = overrideName || getRuntimeLorebookNameFromMetadata(context);
-    if (!bookName) {
-        return;
-    }
-    const data = await context.loadWorldInfo(bookName);
-    if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
-        return;
-    }
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: RUNTIME_LOREBOOK_COMMENT_PREFIX,
+        sections: [],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)) + 50,
+        allowCreate: false,
+    });
+    return Boolean(result?.changed);
+}
 
-    let changed = false;
-    for (const [uid, entry] of Object.entries(data.entries)) {
-        const comment = String(entry?.comment || '');
-        if (comment.startsWith(RUNTIME_LOREBOOK_COMMENT_PREFIX)) {
-            delete data.entries[uid];
-            changed = true;
-        }
-    }
-    if (changed) {
-        await context.saveWorldInfo(bookName, data, true);
-    }
+async function clearPersistentLorebookProjection(context, settings) {
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: PERSISTENT_LOREBOOK_COMMENT_PREFIX,
+        sections: [],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)),
+        allowCreate: false,
+    });
+    return Boolean(result?.changed);
+}
+
+async function clearAllMemoryLorebookProjection(context, settings) {
+    await clearRuntimeLorebookProjection(context, settings);
+    await clearPersistentLorebookProjection(context, settings);
 }
 
 async function runLLMDrivenRecall(context, store, payload) {
@@ -5953,7 +6064,7 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
     memoryStoreCache.set(chatKey, rebuilt);
-    await persistMemoryStoreByChatKey(context, chatKey, rebuilt);
+    await persistMemoryStoreByChatKey(context, chatKey, rebuilt, { syncPersistentProjection: true });
     return rebuilt;
 }
 
@@ -6143,7 +6254,7 @@ async function ensureStoreSyncedWithChat(context, targetHint = null) {
     const { changed } = alignStoreCoverageToChat(store, context);
     if (changed) {
         const chatKey = getChatKey(context, target);
-        await persistMemoryStoreByChatKey(context, chatKey, store);
+        await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
     }
     return store;
 }
@@ -6167,13 +6278,8 @@ async function injectMemoryPrompts(context, payload) {
     }
 
     if (!settings.enabled) {
-        await clearRuntimeLorebookProjection(context, settings);
-        updateUiStatus(i18n('Memory disabled, runtime lorebook projection cleared.'));
-        return false;
-    }
-    if (!settings.lorebookProjectionEnabled) {
-        await clearRuntimeLorebookProjection(context, settings);
-        updateUiStatus(i18n('Lorebook projection disabled.'));
+        await clearAllMemoryLorebookProjection(context, settings);
+        updateUiStatus(i18n('Memory disabled, cleared memory lorebook injections.'));
         return false;
     }
 
@@ -6183,14 +6289,17 @@ async function injectMemoryPrompts(context, payload) {
         updateUiStatus(i18n('Memory store unavailable for current chat.'));
         return false;
     }
+    const persistentSync = await syncPersistentLorebookProjection(context, settings, store);
+    const corePacket = normalizeMultilineText(persistentSync.corePacket || '');
     const chatKey = getChatKey(context, targetHint);
     const anchor = buildLastUserAnchorFromMessages(payload?.coreChat);
     const shouldReuseSnapshot = settings.recallEnabled
         && RECALL_REUSE_GENERATION_TYPES.has(generationType)
         && canReuseLatestRecallSnapshot(chatKey, anchor);
     if (shouldReuseSnapshot) {
-        const blocks = structuredClone(latestRecallSnapshot.blocks || { corePacket: '', focusPacket: '' });
-        await syncLorebookProjection(context, settings, blocks);
+        const focusPacket = normalizeMultilineText(latestRecallSnapshot?.blocks?.focusPacket || '');
+        const blocks = { corePacket, focusPacket };
+        const runtimeChanged = await syncRuntimeLorebookProjection(context, settings, blocks);
         store.lastRecallTrace = structuredClone(Array.isArray(latestRecallSnapshot.trace) ? latestRecallSnapshot.trace : []);
         store.lastRecallProjection = {
             at: Date.now(),
@@ -6198,17 +6307,17 @@ async function injectMemoryPrompts(context, payload) {
         };
         await persistMemoryStoreByChatKey(context, chatKey, store);
         updateUiStatus(i18nFormat('Recall ready. selected=${0}', Math.max(0, Number(latestRecallSnapshot.selectedCount || 0))));
-        return true;
+        return Boolean(runtimeChanged || persistentSync.changed);
     }
 
-    const { selectedNodes, alwaysInjectNodes, trace, query } = await runLLMDrivenRecall(context, store, payload);
+    const { selectedNodes, trace } = await runLLMDrivenRecall(context, store, payload);
     store.lastRecallTrace = trace;
 
     const blocks = {
-        corePacket: buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }, context),
-        focusPacket: buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }, context),
+        corePacket,
+        focusPacket: normalizeMultilineText(buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }, context)),
     };
-    await syncLorebookProjection(context, settings, blocks);
+    const runtimeChanged = await syncRuntimeLorebookProjection(context, settings, blocks);
     store.lastRecallProjection = {
         at: Date.now(),
         blocks,
@@ -6225,7 +6334,7 @@ async function injectMemoryPrompts(context, payload) {
         }
         : null;
     updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
-    return true;
+    return Boolean(runtimeChanged || persistentSync.changed);
 }
 
 async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_info_scan') {
@@ -6233,7 +6342,6 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
     const generationType = String(payload?.type || '').trim().toLowerCase();
     const shouldShowRuntimeToast = settings.enabled
         && settings.recallEnabled
-        && settings.lorebookProjectionEnabled
         && RECALL_ALLOWED_GENERATION_TYPES.has(generationType)
         && payload?.dryRun !== true
         && generationType !== 'quiet'
@@ -6372,7 +6480,7 @@ function scheduleExtraction(context) {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
                 },
             });
-            await persistMemoryStoreByChatKey(context, chatKey, store);
+            await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
             const debug = store.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
                 'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
@@ -7031,7 +7139,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
     };
     const persistLatest = async (latest, successText, statusText) => {
         memoryStoreCache.set(chatKey, latest);
-        await persistMemoryStoreByChatKey(context, chatKey, latest);
+        await persistMemoryStoreByChatKey(context, chatKey, latest, { syncPersistentProjection: true });
         refreshUiStats();
         if (statusText) {
             updateUiStatus(statusText);
@@ -7735,7 +7843,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
             memoryStoreCache.set(chatKey, migrated);
-            await persistMemoryStoreByChatKey(context, chatKey, migrated);
+            await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
             refreshUiStats();
             updateUiStatus(i18n('Applied raw graph JSON edit.'));
             notifySuccess(i18n('Memory graph JSON updated.'));
@@ -9398,7 +9506,7 @@ async function openManualCompressionPopup(context, settings) {
         const afterArchivedCount = afterNodes.filter(node => Boolean(node?.archived)).length;
         const createdDelta = Math.max(0, afterNodeCount - beforeNodeCount);
         const archivedDelta = Math.max(0, afterArchivedCount - beforeArchivedCount);
-        await persistMemoryStoreByChatKey(context, getChatKey(context), store);
+        await persistMemoryStoreByChatKey(context, getChatKey(context), store, { syncPersistentProjection: true });
         refreshUiStats();
         const summary = i18nFormat('Manual compression completed. Created=${0}, archived=${1}', createdDelta, archivedDelta);
         notifySuccess(summary);
@@ -9435,7 +9543,6 @@ function bindUi() {
     root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
     root.find('#luker_rpg_memory_extract_api_preset').val(String(settings.extractApiPresetName || ''));
     root.find('#luker_rpg_memory_extract_preset').val(String(settings.extractPresetName || ''));
-    root.find('#luker_rpg_memory_projection_enabled').prop('checked', Boolean(settings.lorebookProjectionEnabled));
     root.find('#luker_rpg_memory_update_every').val(String(settings.updateEvery));
     const schemaScopeInfo = getSchemaScopeInfo(context, settings);
     updateSchemaSummary(root, schemaScopeInfo.schema);
@@ -9482,11 +9589,6 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_extract_preset').off('change').on('change', function () {
         settings.extractPresetName = String(jQuery(this).val() || '').trim();
-        saveSettingsDebounced();
-    });
-
-    root.find('#luker_rpg_memory_projection_enabled').off('input').on('input', function () {
-        settings.lorebookProjectionEnabled = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -9600,7 +9702,7 @@ function bindUi() {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
                 },
             });
-            await persistMemoryStoreByChatKey(context, chatKey, store);
+            await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
             const debug = store.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
                 'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
@@ -9680,7 +9782,7 @@ function bindUi() {
                 notifyError(i18n('No active chat selected.'));
                 return;
             }
-            await persistMemoryStoreByChatKey(context, getChatKey(context), store);
+            await persistMemoryStoreByChatKey(context, getChatKey(context), store, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18n('Memory graph rebuilt from current chat.'));
             notifyEventCompressionIfAny(store?.lastExtractionDebug?.compression);
@@ -9766,7 +9868,7 @@ function bindUi() {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latest));
                 },
             });
-            await persistMemoryStoreByChatKey(context, chatKey, store);
+            await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} assistant turn(s).', recentTurns));
             updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, latestSeq));
@@ -9808,7 +9910,7 @@ function bindUi() {
         if (target) {
             await deleteMemoryStoreByTarget(context, target);
         }
-        await clearRuntimeLorebookProjection(context, settings);
+        await clearAllMemoryLorebookProjection(context, settings);
         refreshUiStats();
         notifySuccess(i18n('Current chat memory graph reset.'));
         updateUiStatus(i18n('Reset memory graph for current chat.'));
@@ -9858,7 +9960,7 @@ function bindUi() {
             const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
             memoryStoreCache.set(chatKey, migrated);
-            await persistMemoryStoreByChatKey(context, chatKey, migrated);
+            await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18n('Memory graph imported for current chat.'));
             updateUiStatus(i18n('Imported memory graph JSON.'));
@@ -9901,7 +10003,6 @@ function ensureUi() {
             <select id="luker_rpg_memory_extract_api_preset" class="text_pole"></select>
             <label for="luker_rpg_memory_extract_preset">${escapeHtml(i18n('Extract preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_preset" class="text_pole"></select>
-            <label class="checkbox_label"><input id="luker_rpg_memory_projection_enabled" type="checkbox" /> ${escapeHtml(i18n('Project recall output to chat lorebook'))}</label>
 
             <div class="flex-container">
                 <label style="flex:1">${escapeHtml(i18n('Update every N assistant turns'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>
@@ -9961,6 +10062,28 @@ jQuery(() => {
     registerRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID, getGenerationVisibleHistoryRuntimeRegexScripts);
     saveSettingsDebounced();
     ensureUi();
+    const syncPersistentProjectionForCurrentChat = async () => {
+        const runtimeContext = getContext();
+        try {
+            const store = await ensureStoreSyncedWithChat(runtimeContext);
+            if (!store) {
+                refreshUiStats();
+                return;
+            }
+            const effectiveSettings = getEffectiveSettings(runtimeContext, getSettings());
+            if (!effectiveSettings.enabled) {
+                await clearAllMemoryLorebookProjection(runtimeContext, effectiveSettings);
+                refreshUiStats();
+                return;
+            }
+            await syncPersistentLorebookProjection(runtimeContext, effectiveSettings, store);
+            refreshUiStats();
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to sync persistent lorebook projection on chat open`, error);
+            refreshUiStats();
+        }
+    };
+    void syncPersistentProjectionForCurrentChat();
 
     const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
     if (wiAfterEvent) {
@@ -10021,13 +10144,13 @@ jQuery(() => {
             }
             if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
                 alignStoreCoverageToChat(store, runtimeContext);
-                await persistMemoryStoreByChatKey(runtimeContext, chatKey, store);
+                await persistMemoryStoreByChatKey(runtimeContext, chatKey, store, { syncPersistentProjection: true });
                 refreshUiStats();
                 return;
             }
             truncateStoreFromSeq(store, fromSeq);
             alignStoreCoverageToChat(store, runtimeContext);
-            await persistMemoryStoreByChatKey(runtimeContext, chatKey, store);
+            await persistMemoryStoreByChatKey(runtimeContext, chatKey, store, { syncPersistentProjection: true });
             refreshUiStats();
             updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
         } catch (error) {
@@ -10052,11 +10175,8 @@ jQuery(() => {
         context.eventSource.on(eventName, () => ensureUi());
     }
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
-        const runtimeContext = getContext();
         latestRecallSnapshot = null;
         ensureUi();
-        ensureMemoryStoreLoaded(runtimeContext)
-            .then(() => refreshUiStats())
-            .catch(() => refreshUiStats());
+        void syncPersistentProjectionForCurrentChat();
     });
 });
