@@ -2860,6 +2860,20 @@ function ensureSelectionExists(setting, selector) {
 }
 
 function updateGenerationIndicator() {
+    const clearGenerationToast = () => {
+        if (generationToast) {
+            toastr.clear(generationToast);
+            generationToast = null;
+        }
+
+        $('.sd_generation_abort_btn').each((_, button) => {
+            const toastElement = $(button).closest('.toast');
+            if (toastElement.length) {
+                toastr.clear(toastElement);
+            }
+        });
+    };
+
     if (activeGenerations > 0) {
         const countText = activeGenerations > 1 ? ` (${activeGenerations})` : '';
         const toastText = `
@@ -2894,11 +2908,14 @@ function updateGenerationIndicator() {
             .on('click.sdAbortCurrent', '.sd_generation_abort_btn', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                abortOneActiveGeneration('Aborted by user');
+                const isLastGeneration = activeGenerations <= 1;
+                const aborted = abortOneActiveGeneration('Aborted by user');
+                if (aborted && isLastGeneration) {
+                    clearGenerationToast();
+                }
             });
-    } else if (generationToast) {
-        toastr.clear(generationToast);
-        generationToast = null;
+    } else {
+        clearGenerationToast();
     }
 }
 
