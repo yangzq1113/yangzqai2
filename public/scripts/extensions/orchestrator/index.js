@@ -7,6 +7,7 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
+import { yaml } from '../../../lib.js';
 
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
@@ -1266,22 +1267,48 @@ function extractAllFunctionCallsFromText(responseData, allowedNames = null) {
 function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = '' } = {}) {
     const requiredName = String(requiredFunctionName || '').trim();
     const normalizedTools = Array.isArray(tools) ? tools : [];
-    const schemaGuide = normalizedTools.map((tool) => ({
-        name: String(tool?.function?.name || ''),
-        description: String(tool?.function?.description || ''),
-        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
+    const toolRows = normalizedTools.map((tool) => {
+        const name = String(tool?.function?.name || '').trim();
+        if (!name) {
+            return null;
+        }
+        const description = String(tool?.function?.description || '').replace(/\s+/g, ' ').trim();
+        const params = tool?.function?.parameters && typeof tool.function.parameters === 'object'
             ? tool.function.parameters
-            : { type: 'object', additionalProperties: true },
-    })).filter(item => item.name);
+            : {};
+        const properties = params?.properties && typeof params.properties === 'object'
+            ? Object.keys(params.properties)
+            : [];
+        const required = Array.isArray(params?.required)
+            ? params.required.map(field => String(field || '').trim()).filter(Boolean)
+            : [];
+        const optional = properties.filter(field => !required.includes(field));
+        return {
+            name,
+            description,
+            required,
+            optional,
+        };
+    }).filter(Boolean);
     const requiredLine = requiredName
         ? `Required function name for this response: ${requiredName}.`
         : '';
+    const tableHeader = '| Function | Required args | Optional args | Purpose |\n|---|---|---|---|';
+    const tableRows = toolRows.map(item => {
+        const required = item.required.length > 0 ? item.required.join(', ') : '-';
+        const optional = item.optional.length > 0 ? item.optional.join(', ') : '-';
+        const purpose = item.description || '-';
+        return `| ${item.name} | ${required} | ${optional} | ${purpose} |`;
+    });
     return [
         'Plain-text function-call mode is enabled.',
-        'Follow thought policy defined by current prompts (for example, output <thought>...</thought> before tool payload if required).',
+        'Do necessary reasoning following the current prompt policy, then output function-call payload only.',
+        'Do not output extra prose outside the required payload.',
         'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
         requiredLine,
-        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
+        'Allowed functions:',
+        tableHeader,
+        ...tableRows,
     ].filter(Boolean).join('\n');
 }
 
@@ -1633,17 +1660,25 @@ function toCompactJsonText(value, fallback = '{}') {
     }
 }
 
-function buildJsonXmlBlock(tag, note, value) {
-    const jsonText = toCompactJsonText(value);
+function toReadableYamlText(value, fallback = '{}') {
+    try {
+        const normalized = value === undefined ? null : value;
+        const text = yaml.stringify(normalized, { indent: 2, lineWidth: 0 });
+        const trimmed = String(text || '').trim();
+        return trimmed || fallback;
+    } catch {
+        return toCompactJsonText(value, fallback);
+    }
+}
+
+function buildYamlMarkdownBlock(title, note, value) {
+    const yamlText = toReadableYamlText(value);
     return [
-        `<${tag}>`,
-        '  <note>',
-        `    ${String(note || '')}`,
-        '  </note>',
-        '  <json>',
-        `    ${jsonText}`,
-        '  </json>',
-        `</${tag}>`,
+        `## ${title}`,
+        String(note || '').trim(),
+        '```yaml',
+        yamlText,
+        '```',
     ].join('\n');
 }
 
@@ -1661,25 +1696,24 @@ function buildAiSuggestInputXml({
     toolProtocol = {},
 } = {}) {
     return [
-        '<orchestration_build_input>',
-        '  <input_guide>Below are structured blocks for building a character-specific orchestration profile. Read all blocks before calling tools.</input_guide>',
-        buildJsonXmlBlock('character_profile', 'Current active character card snapshot.', character),
-        buildJsonXmlBlock('override_goal', 'Optional user goal override for this character profile.', { override_goal: String(overrideGoal || '') }),
-        buildJsonXmlBlock('runtime_context_guarantees', 'What runtime context is already guaranteed for both orchestration nodes and final generation.', runtimeContextGuarantees),
-        buildJsonXmlBlock('injection_contract', 'How final orchestration outputs are injected to generation.', injectionContract),
-        buildJsonXmlBlock('mandatory_quality_axes', 'Quality axes that must be covered by stage/preset design.', mandatoryQualityAxes),
-        buildJsonXmlBlock('quality_gate_contract', 'Hard quality gates the profile must explicitly enforce.', qualityGateContract),
-        buildJsonXmlBlock('recommended_blueprint', 'Preferred orchestration blueprint when no special reason to deviate.', recommendedBlueprint),
-        buildJsonXmlBlock('anti_patterns', 'Patterns to avoid when generating orchestration prompts.', antiPatterns),
-        buildJsonXmlBlock('global_orchestration_spec', 'Current global orchestration spec as primary baseline. Reuse/adapt this structure before inventing new topology.', globalOrchestrationSpec),
-        buildJsonXmlBlock('global_presets', 'Current global preset map as primary baseline. Preserve useful detail depth; do not collapse into short generic prompts.', globalPresets),
-        buildJsonXmlBlock('prompt_richness_contract', 'Each node prompt must be concrete and non-trivial.', {
+        '# Orchestration Build Input',
+        'Read all sections before calling tools. Keep edits practical and implementation-oriented.',
+        buildYamlMarkdownBlock('character_profile', 'Current active character card snapshot.', character),
+        buildYamlMarkdownBlock('override_goal', 'Optional user goal override for this character profile.', { override_goal: String(overrideGoal || '') }),
+        buildYamlMarkdownBlock('runtime_context_guarantees', 'What runtime context is already guaranteed for both orchestration nodes and final generation.', runtimeContextGuarantees),
+        buildYamlMarkdownBlock('injection_contract', 'How final orchestration outputs are injected to generation.', injectionContract),
+        buildYamlMarkdownBlock('mandatory_quality_axes', 'Quality axes that must be covered by stage/preset design.', mandatoryQualityAxes),
+        buildYamlMarkdownBlock('quality_gate_contract', 'Hard quality gates the profile must explicitly enforce.', qualityGateContract),
+        buildYamlMarkdownBlock('recommended_blueprint', 'Preferred orchestration blueprint when no special reason to deviate.', recommendedBlueprint),
+        buildYamlMarkdownBlock('anti_patterns', 'Patterns to avoid when generating orchestration prompts.', antiPatterns),
+        buildYamlMarkdownBlock('global_orchestration_spec', 'Current global orchestration spec as primary baseline. Reuse/adapt this structure before inventing new topology.', globalOrchestrationSpec),
+        buildYamlMarkdownBlock('global_presets', 'Current global preset map as primary baseline. Preserve useful detail depth; do not collapse into short generic prompts.', globalPresets),
+        buildYamlMarkdownBlock('prompt_richness_contract', 'Each node prompt must be concrete and non-trivial.', {
             system_prompt_contract: 'At least 3 concrete rule lines; avoid generic slogans.',
             user_template_contract: 'Must include Task block with multiple actionable bullets and clear output contract.',
             anti_lazy_rule: 'Thin one-liner prompts are invalid.',
         }),
-        buildJsonXmlBlock('tool_protocol', 'Function-call protocol and expected argument shapes.', toolProtocol),
-        '</orchestration_build_input>',
+        buildYamlMarkdownBlock('tool_protocol', 'Function-call protocol and expected argument shapes.', toolProtocol),
     ].join('\n');
 }
 
@@ -1768,20 +1802,18 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         .join('\n');
     const { message: lastUser } = extractLastUserMessage(messages);
     const previousOutputs = [
-        '<previous_node_outputs>',
-        '  <note>Outputs from completed nodes in prior stages. Use as upstream context only.</note>',
-        '  <json>',
-        `    ${toCompactJsonText(Object.fromEntries(previousNodeOutputs))}`,
-        '  </json>',
-        '</previous_node_outputs>',
+        '## previous_node_outputs',
+        'Outputs from completed nodes in prior stages. Use as upstream context only.',
+        '```yaml',
+        toReadableYamlText(Object.fromEntries(previousNodeOutputs), '{}'),
+        '```',
     ].join('\n');
     const distillerOutput = [
-        '<distiller_output>',
-        '  <note>Output from distiller node if available.</note>',
-        '  <json>',
-        `    ${toCompactJsonText(previousNodeOutputs.get('distiller') || {})}`,
-        '  </json>',
-        '</distiller_output>',
+        '## distiller_output',
+        'Output from distiller node if available.',
+        '```yaml',
+        toReadableYamlText(previousNodeOutputs.get('distiller') || {}, '{}'),
+        '```',
     ].join('\n');
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
     const baseUserPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
@@ -4420,7 +4452,7 @@ function buildAiIterationSystemPrompt(settings) {
         'Iteration mode contract:',
         '- You are editing an existing orchestration profile incrementally (diff-style).',
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
-        '- Before tool calls, write a detailed <thought> block describing what to change and why.',
+        '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
         '- If you need user decision or clarification, do not call continue/finalize. Stop and wait for user.',
@@ -4444,44 +4476,49 @@ function buildAiIterationUserPrompt(session, userInputText, {
     const recentConversation = (Array.isArray(session?.messages) ? session.messages : [])
         .map(item => `${String(item?.role || 'assistant').toUpperCase()}: ${String(item?.content || '')}`)
         .join('\n\n');
-    const workingProfileText = JSON.stringify({
+    const workingProfileValue = {
         spec: session?.workingProfile?.spec || { stages: [] },
         presets: session?.workingProfile?.presets || {},
-    });
-    const globalProfileText = JSON.stringify({
+    };
+    const globalProfileValue = {
         spec: globalProfile?.spec || { stages: [] },
         presets: globalProfile?.presets || {},
-    });
+    };
     const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
     return [
-        '<iteration_input>',
-        '  <session_guide>',
-        '    You are in a multi-turn orchestration iteration session.',
-        '    Apply focused edits through tools only. Keep edits minimal and high-impact.',
-        '    If source_scope is character, treat global_profile_baseline as canonical reference and keep character edits as targeted overrides.',
-        '  </session_guide>',
-        '  <source_scope>',
-        `    ${String(sourceScope || session?.sourceScope || 'global')}`,
-        '  </source_scope>',
-        '  <source_name>',
-        `    ${String(sourceName || session?.sourceName || '')}`,
-        '  </source_name>',
-        '  <global_profile_baseline>',
-        `    ${globalProfileText}`,
-        '  </global_profile_baseline>',
-        '  <working_profile>',
-        `    ${workingProfileText}`,
-        '  </working_profile>',
-        '  <conversation_history>',
-        `    ${recentConversation || '(empty)'}`,
-        '  </conversation_history>',
-        '  <latest_simulation>',
-        `    ${latestSimulationText}`,
-        '  </latest_simulation>',
-        '  <user_request>',
-        `    ${String(userInputText || '').trim()}`,
-        '  </user_request>',
-        '</iteration_input>',
+        '# iteration_input',
+        'You are in a multi-turn orchestration iteration session.',
+        'Apply focused edits through tools only. Keep edits minimal and high-impact.',
+        'If source_scope is character, treat global_profile_baseline as canonical reference and keep character edits as targeted overrides.',
+        '',
+        '## source_scope',
+        String(sourceScope || session?.sourceScope || 'global'),
+        '',
+        '## source_name',
+        String(sourceName || session?.sourceName || ''),
+        '',
+        '## global_profile_baseline',
+        '```yaml',
+        toReadableYamlText(globalProfileValue, '{}'),
+        '```',
+        '',
+        '## working_profile',
+        '```yaml',
+        toReadableYamlText(workingProfileValue, '{}'),
+        '```',
+        '',
+        '## conversation_history',
+        '```text',
+        recentConversation || '(empty)',
+        '```',
+        '',
+        '## latest_simulation',
+        '```text',
+        latestSimulationText,
+        '```',
+        '',
+        '## user_request',
+        String(userInputText || '').trim(),
     ].join('\n');
 }
 
