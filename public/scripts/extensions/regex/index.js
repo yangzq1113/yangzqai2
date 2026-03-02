@@ -1856,6 +1856,14 @@ jQuery(async () => {
 
     const settingsHtml = $(await renderExtensionTemplateAsync('regex', 'dropdown'));
     $('#regex_container').append(settingsHtml);
+    const regexDrawer = document.querySelector('#regex_container .regex_settings .inline-drawer');
+    regexDrawer?.addEventListener('inline-drawer-toggle', () => {
+        const content = regexDrawer.querySelector(':scope > .inline-drawer-content');
+        const isOpen = content instanceof HTMLElement && content.style.display === 'block';
+        if (isOpen) {
+            void loadRegexScripts();
+        }
+    });
     bindRegexReloadOnSettingsClose();
     $('#open_regex_editor').on('click', function () {
         onRegexEditorOpenClick(false, SCRIPT_TYPES.GLOBAL);
