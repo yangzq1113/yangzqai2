@@ -3033,13 +3033,17 @@ function isPresetUsed(editor, presetId) {
 }
 
 function isPresetReferencedInSpec(spec, presetId) {
-    const targetPresetId = String(presetId || '').trim();
+    const targetPresetId = sanitizeIdentifierToken(presetId, '');
     if (!targetPresetId) {
         return false;
     }
     const stages = Array.isArray(spec?.stages) ? spec.stages : [];
     return stages.some(stage =>
-        (stage?.nodes || []).some(node => String(node?.preset || '') === targetPresetId));
+        (stage?.nodes || []).some(node => {
+            const normalizedNode = normalizeNodeSpec(node);
+            const nodePresetId = sanitizeIdentifierToken(normalizedNode?.preset || normalizedNode?.id, '');
+            return nodePresetId === targetPresetId;
+        }));
 }
 
 function buildAiProfileFromToolCalls(toolCalls) {
@@ -5186,7 +5190,7 @@ async function openAiIterationStudio(context, settings, root) {
         }));
         popupRoot.find(`#${popupId}_pending`).html(renderAiIterationPendingApproval(session, popupId, pendingState.entries));
         popupRoot.find(`#${popupId}_profile`).html(renderAiIterationWorkingProfile(session, {
-            profileOverride: session?.pendingApproval ? pendingState.projectedProfile : null,
+            profileOverride: null,
             previewPending: Boolean(session?.pendingApproval),
         }));
     };
