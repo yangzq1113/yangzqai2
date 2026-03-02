@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 
-import { extension_prompt_roles, extension_prompt_types, saveSettings, saveSettingsDebounced } from '../../../script.js';
+import { extension_prompt_roles, extension_prompt_types, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
@@ -2950,8 +2950,53 @@ async function persistCharacterEditor(context, settings, avatar, {
         ...previous,
         override: overridePayload,
     };
-    await context.writeExtensionField(characterIndex, MODULE_NAME, nextPayload);
-    return true;
+    return await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
+}
+
+async function persistOrchestratorCharacterExtension(context, characterIndex, modulePayload) {
+    const id = Number(characterIndex);
+    const character = Number.isInteger(id) ? context?.characters?.[id] : null;
+    if (!character) {
+        return false;
+    }
+
+    const nextExtensions = structuredClone(character?.data?.extensions ?? {});
+    if (modulePayload && typeof modulePayload === 'object') {
+        nextExtensions[MODULE_NAME] = modulePayload;
+    } else {
+        delete nextExtensions[MODULE_NAME];
+    }
+
+    character.data = character.data || {};
+    character.data.extensions = nextExtensions;
+
+    if (Number(context?.characterId) === id && character.json_data) {
+        try {
+            const jsonData = JSON.parse(character.json_data);
+            jsonData.data = jsonData.data || {};
+            jsonData.data.extensions = nextExtensions;
+            character.json_data = JSON.stringify(jsonData);
+            jQuery('#character_json_data').val(character.json_data);
+        } catch {
+            // Ignore malformed json_data snapshots.
+        }
+    }
+
+    const response = await fetch('/api/characters/edit-attribute', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            ch_name: String(character.name || '').trim() || 'character',
+            avatar_url: character.avatar,
+            field: 'extensions',
+            value: nextExtensions,
+        }),
+    });
+
+    if (!response.ok) {
+        console.error('Failed to persist orchestrator extension data to character card', response.statusText);
+    }
+    return response.ok;
 }
 
 function createPortableProfileFromEditor(editor) {
@@ -5910,7 +5955,11 @@ function bindUi() {
             const previous = getCharacterExtensionDataByAvatar(context, avatar);
             const nextPayload = { ...previous };
             delete nextPayload.override;
-            await context.writeExtensionField(characterIndex, MODULE_NAME, nextPayload);
+            const ok = await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
+            if (!ok) {
+                notifyError(i18n('Failed to persist character override.'));
+                return;
+            }
             uiState.characterEditor = loadCharacterEditorState(context, avatar);
             ensureEditorIntegrity(uiState.characterEditor);
             renderDynamicPanels(root, context);
