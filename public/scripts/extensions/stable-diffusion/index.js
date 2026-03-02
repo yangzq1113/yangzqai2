@@ -73,8 +73,8 @@ let activeGenerations = 0;
 let generationToast = null;
 /** @type {AbortController[]} */
 const generationAbortControllers = [];
-const trackedGenerationControllers = new WeakSet();
-const earlyEndedGenerationControllers = new WeakSet();
+const trackedGenerationControllers = new Set();
+const earlyEndedGenerationControllers = new Set();
 const sources = {
     extras: 'extras',
     horde: 'horde',
@@ -2902,14 +2902,24 @@ function updateGenerationIndicator() {
     }
 }
 
-function startGenerationTracking() {
-    activeGenerations++;
+function syncGenerationTrackingState() {
+    activeGenerations = Math.max(0, trackedGenerationControllers.size - earlyEndedGenerationControllers.size);
     updateGenerationIndicator();
 }
 
-function endGenerationTracking() {
-    activeGenerations = Math.max(0, activeGenerations - 1);
-    updateGenerationIndicator();
+function startGenerationTracking(controller = null) {
+    if (controller instanceof AbortController) {
+        trackedGenerationControllers.add(controller);
+    }
+    syncGenerationTrackingState();
+}
+
+function endGenerationTracking(controller = null) {
+    if (controller instanceof AbortController) {
+        trackedGenerationControllers.delete(controller);
+        earlyEndedGenerationControllers.delete(controller);
+    }
+    syncGenerationTrackingState();
 }
 
 function endGenerationTrackingEarly(controller) {
@@ -2922,7 +2932,7 @@ function endGenerationTrackingEarly(controller) {
     }
 
     earlyEndedGenerationControllers.add(controller);
-    endGenerationTracking();
+    syncGenerationTrackingState();
 }
 
 function registerAbortController(controller) {
@@ -2963,6 +2973,7 @@ function abortOneActiveGeneration(reason = 'Aborted by user') {
         return true;
     }
 
+    syncGenerationTrackingState();
     return false;
 }
 
@@ -3040,8 +3051,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
         prompt = eventData.prompt; // Allow extensions to modify the prompt
 
         registerAbortController(abortController);
-        startGenerationTracking();
-        trackedGenerationControllers.add(abortController);
+        startGenerationTracking(abortController);
         abortController.signal.addEventListener('abort', () => endGenerationTrackingEarly(abortController), { once: true });
         $(stopButton).show();
 
@@ -3073,14 +3083,7 @@ async function generatePicture(initiator, args, trigger, message, callback) {
             args._abortController.removeEventListener('abort', stopListener);
         }
         unregisterAbortController(abortController);
-        if (trackedGenerationControllers.has(abortController)) {
-            trackedGenerationControllers.delete(abortController);
-            if (earlyEndedGenerationControllers.has(abortController)) {
-                earlyEndedGenerationControllers.delete(abortController);
-            } else {
-                endGenerationTracking();
-            }
-        }
+        endGenerationTracking(abortController);
     }
 
     return imagePath;
@@ -3405,7 +3408,6 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
     } catch (err) {
         if (signal?.aborted) {
             console.log('SD: Image generation aborted by user');
-            toastr.info('Image generation stopped.', 'Image Generation');
             return;
         }
 
