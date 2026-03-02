@@ -7387,5 +7387,7 @@
     "This preset has a linked World/Lorebook.": "该预设绑定了一个世界书。",
     "Also delete it?": "是否同时删除？",
     "Linked World/Lorebook deleted.": "已删除绑定世界书。",
-    "Failed to delete linked World/Lorebook.": "删除绑定世界书失败。"
+    "Failed to delete linked World/Lorebook.": "删除绑定世界书失败。",
+    "Search prompts...": "搜索提示词...",
+    "No prompts match your search.": "没有匹配的提示词。"
 }

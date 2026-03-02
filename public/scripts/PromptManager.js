@@ -365,6 +365,9 @@ class PromptManager {
         // DOM element containing the prompt list
         this.listElement = null;
 
+        // Prompt list filter text
+        this.promptListSearchQuery = '';
+
         // Currently selected character
         this.activeCharacter = null;
 
@@ -2003,6 +2006,18 @@ class PromptManager {
         const headerHtml = await renderTemplateAsync('promptManagerHeader', { error: this.error, errorDiv, prefix: this.configuration.prefix, totalActiveTokens });
         promptManagerDiv.insertAdjacentHTML('beforeend', headerHtml);
 
+        const searchInput = /** @type {HTMLInputElement|null} */(promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_search`));
+        if (searchInput) {
+            searchInput.value = this.promptListSearchQuery;
+            searchInput.addEventListener('input', (event) => {
+                if (!(event.target instanceof HTMLInputElement)) {
+                    return;
+                }
+                this.promptListSearchQuery = String(event.target.value || '');
+                this.renderPromptManagerListItems();
+            });
+        }
+
         this.listElement = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_list`);
 
         if (null !== this.activeCharacter) {
@@ -2050,7 +2065,24 @@ class PromptManager {
 
         let listItemHtml = await renderTemplateAsync('promptManagerListHeader', { prefix });
 
-        this.getPromptsForCharacter(this.activeCharacter).forEach(prompt => {
+        const searchQuery = String(this.promptListSearchQuery || '').trim().toLowerCase();
+        const visiblePrompts = this.getPromptsForCharacter(this.activeCharacter)
+            .filter(prompt => {
+                if (!prompt) {
+                    return false;
+                }
+                if (!searchQuery) {
+                    return true;
+                }
+                const haystack = [
+                    String(prompt.identifier || ''),
+                    String(prompt.name || ''),
+                    String(prompt.content || ''),
+                ].join('\n').toLowerCase();
+                return haystack.includes(searchQuery);
+            });
+
+        visiblePrompts.forEach(prompt => {
             if (!prompt) return;
 
             const listEntry = this.getPromptOrderEntry(this.activeCharacter, prompt.identifier);
@@ -2161,6 +2193,14 @@ class PromptManager {
                 </li>
             `;
         });
+
+        if (searchQuery && visiblePrompts.length === 0) {
+            listItemHtml += `
+                <li class="${prefix}prompt_manager_prompt_disabled">
+                    <span>${escapeHtml(String(t`No prompts match your search.`))}</span>
+                </li>
+            `;
+        }
 
         promptManagerList.insertAdjacentHTML('beforeend', listItemHtml);
 

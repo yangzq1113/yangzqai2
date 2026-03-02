@@ -261,6 +261,14 @@
     display: inherit;
 }
 
+#completion_prompt_manager .completion_prompt_manager_search {
+    margin: 0.35em 0.25em 0.4em 0.25em;
+}
+
+#completion_prompt_manager .completion_prompt_manager_search input {
+    width: 100%;
+}
+
 #completion_prompt_manager .completion_prompt_manager_footer {
     display: flex;
     flex-direction: row;
