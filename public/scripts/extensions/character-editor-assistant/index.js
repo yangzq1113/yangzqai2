@@ -16,15 +16,8 @@ import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, reloa
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
     TOOL_PROTOCOL_STYLE,
-    buildPlainTextToolProtocolMessage,
-    buildFunctionCallRetryAddendum,
-    buildToolChoiceConstraintAddendum,
-    extractDisplayTextFromPlainTextFunctionResponse,
     extractToolCallsFromResponse,
-    extractToolCallsFromTextResponse,
-    generateRandomTriggerSignal,
     getResponseMessageContent,
-    mergeUserAddendumIntoPromptMessages,
     validateParsedToolCalls,
 } from '../function-call-runtime.js';
 
@@ -2243,31 +2236,8 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     const options = requestPresetOptions && typeof requestPresetOptions === 'object' ? requestPresetOptions : {};
     const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax || 0) || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const triggerSignal = usePlainTextCalls ? generateRandomTriggerSignal() : '';
+    const functionCallMode = usePlainTextCalls ? 'prompt_json' : 'native';
     const toolChoice = 'auto';
-    const requestMessages = usePlainTextCalls
-        ? mergeUserAddendumIntoPromptMessages(
-            promptMessages,
-            buildPlainTextToolProtocolMessage(tools, {
-                style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
-                allowReasoningText: true,
-                triggerSignal,
-                toolChoice,
-            }),
-            'function_call_protocol',
-        )
-        : promptMessages;
-    let activeRequestMessages = requestMessages;
-    if (usePlainTextCalls) {
-        const toolChoiceConstraint = buildToolChoiceConstraintAddendum(toolChoice, tools);
-        if (toolChoiceConstraint) {
-            activeRequestMessages = mergeUserAddendumIntoPromptMessages(
-                activeRequestMessages,
-                toolChoiceConstraint,
-                'function_call_tool_choice',
-            );
-        }
-    }
     const allowSet = allowedNames instanceof Set
         ? allowedNames
         : Array.isArray(allowedNames)
@@ -2277,34 +2247,25 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', activeRequestMessages, null, {
-                tools: usePlainTextCalls ? [] : tools,
-                toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+                tools,
+                toolChoice,
                 replaceTools: true,
                 requestScope: 'extension_internal',
                 llmPresetName: options.llmPresetName,
                 apiPresetName: options.apiPresetName,
                 apiSettingsOverride: options.apiSettingsOverride,
+                functionCallMode,
+                functionCallOptions: {
+                    strictTwoPart: true,
+                    protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                    allowReasoningText: true,
+                },
             });
             const rawContent = getResponseMessageContent(responseData);
-            const assistantText = usePlainTextCalls
-                ? extractDisplayTextFromPlainTextFunctionResponse(rawContent, { triggerSignal })
-                : rawContent;
-
-            if (!usePlainTextCalls) {
-                const calls = extractToolCallsFromResponse(responseData)
-                    .filter(call => !allowSet || allowSet.has(String(call?.name || '').trim()));
-                const validationError = validateParsedToolCalls(calls, tools);
-                if (validationError) {
-                    throw new Error(validationError);
-                }
-                return { calls, assistantText };
-            }
-
-            const calls = extractToolCallsFromTextResponse(responseData, allowSet, {
-                triggerSignal,
-                triggerRequired: Boolean(triggerSignal),
-            });
+            const assistantText = rawContent;
+            const calls = extractToolCallsFromResponse(responseData)
+                .filter(call => !allowSet || allowSet.has(String(call?.name || '').trim()));
             const validationError = validateParsedToolCalls(calls, tools);
             if (validationError) {
                 throw new Error(validationError);
@@ -2315,13 +2276,6 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
             if (attempt >= retries) {
                 throw error;
             }
-            const retryAddendum = buildFunctionCallRetryAddendum({
-                rawResponse: '',
-                errorDetails: error?.message || String(error),
-                triggerSignal,
-                plainTextMode: usePlainTextCalls,
-            });
-            activeRequestMessages = mergeUserAddendumIntoPromptMessages(activeRequestMessages, retryAddendum, 'function_call_retry');
             console.warn(`[${MODULE_NAME}] Lorebook tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
         }
     }

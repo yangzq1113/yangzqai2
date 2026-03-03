@@ -82,6 +82,17 @@ import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
+import {
+    TOOL_PROTOCOL_STYLE,
+    buildPlainTextToolProtocolMessage,
+    buildStrictThoughtAndFunctionOnlyAddendum,
+    buildToolChoiceConstraintAddendum,
+    extractAllFunctionCallsFromText,
+    extractDisplayTextFromPlainTextFunctionResponse,
+    generateRandomTriggerSignal,
+    mergeUserAddendumIntoPromptMessages,
+    validateParsedToolCalls,
+} from './extensions/function-call-runtime.js';
 
 export {
     openai_messages_count,
@@ -3255,19 +3266,94 @@ export async function createGenerationParameters(settings, model, type, messages
  * @returns {Promise<unknown>}
  * @throws {Error}
  */
-async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, tools = null, toolChoice = null, replaceTools = false, responseLength = null, llmPresetName = '', apiPresetName = '', apiSettingsOverride = null, requestScope = 'chat' } = {}) {
+async function sendOpenAIRequest(type, messages, signal, {
+    jsonSchema = null,
+    tools = null,
+    toolChoice = null,
+    replaceTools = false,
+    responseLength = null,
+    llmPresetName = '',
+    apiPresetName = '',
+    apiSettingsOverride = null,
+    requestScope = 'chat',
+    functionCallMode = 'native',
+    functionCallOptions = null,
+} = {}) {
     // Provide default abort signal
     if (!signal) {
         signal = new AbortController().signal;
     }
 
     const requestSettings = getSettingsForRequest({ llmPresetName, apiPresetName, apiSettingsOverride });
+    const usePromptJsonFunctionCalls = String(functionCallMode || 'native') === 'prompt_json';
+    const normalizedTools = Array.isArray(tools) ? tools : [];
+    const normalizedToolChoice = toolChoice ?? 'auto';
+    const modeOptions = functionCallOptions && typeof functionCallOptions === 'object' ? functionCallOptions : {};
+    let requestMessages = Array.isArray(messages)
+        ? messages.map(message => ({ ...message }))
+        : messages;
+    let effectiveTools = tools;
+    let effectiveToolChoice = toolChoice;
+    let effectiveReplaceTools = replaceTools;
+    let runtimeFunctionCallContext = null;
+
+    if (usePromptJsonFunctionCalls && normalizedTools.length > 0) {
+        const triggerSignal = String(modeOptions.triggerSignal || generateRandomTriggerSignal()).trim();
+        const protocolStyle = modeOptions.protocolStyle === TOOL_PROTOCOL_STYLE.TABLE
+            ? TOOL_PROTOCOL_STYLE.TABLE
+            : TOOL_PROTOCOL_STYLE.JSON_SCHEMA;
+        const strictTwoPart = modeOptions.strictTwoPart !== false;
+        const allowReasoningText = Boolean(modeOptions.allowReasoningText);
+        const appendStrictContract = modeOptions.appendStrictContract !== false;
+        const requiredFunctionName = String(
+            modeOptions.requiredFunctionName
+            || normalizedToolChoice?.function?.name
+            || normalizedToolChoice?.name
+            || '',
+        ).trim();
+
+        requestMessages = mergeUserAddendumIntoPromptMessages(
+            requestMessages,
+            buildPlainTextToolProtocolMessage(normalizedTools, {
+                requiredFunctionName,
+                style: protocolStyle,
+                strictTwoPart,
+                triggerSignal,
+                toolChoice: normalizedToolChoice,
+                allowReasoningText,
+            }),
+        );
+
+        const toolChoiceConstraint = buildToolChoiceConstraintAddendum(normalizedToolChoice, normalizedTools);
+        if (toolChoiceConstraint) {
+            requestMessages = mergeUserAddendumIntoPromptMessages(requestMessages, toolChoiceConstraint);
+        }
+
+        if (appendStrictContract) {
+            requestMessages = mergeUserAddendumIntoPromptMessages(
+                requestMessages,
+                buildStrictThoughtAndFunctionOnlyAddendum({
+                    plainTextMode: true,
+                    requiredFunctionName,
+                }),
+            );
+        }
+
+        effectiveTools = [];
+        effectiveToolChoice = 'auto';
+        effectiveReplaceTools = true;
+        runtimeFunctionCallContext = {
+            triggerSignal,
+            tools: normalizedTools,
+        };
+    }
+
     const model = getChatCompletionModel(requestSettings);
-    const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(requestSettings, model, type, messages, {
+    const { generate_data, stream, canMultiSwipe } = await createGenerationParameters(requestSettings, model, type, requestMessages, {
         jsonSchema,
-        tools,
-        toolChoice,
-        replaceTools,
+        tools: effectiveTools,
+        toolChoice: effectiveToolChoice,
+        replaceTools: effectiveReplaceTools,
         responseLength,
     });
     const shouldRunChatCompletionHooks = requestScope !== 'extension_internal';
@@ -3376,6 +3462,32 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null, to
             const message = data.error.message || response.statusText || t`Unknown error`;
             toastr.error(message, t`API returned an error`);
             throw new Error(message);
+        }
+
+        if (runtimeFunctionCallContext) {
+            const parsedCalls = extractAllFunctionCallsFromText(data, null, {
+                triggerSignal: runtimeFunctionCallContext.triggerSignal,
+                triggerRequired: Boolean(runtimeFunctionCallContext.triggerSignal),
+            });
+            const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext.tools);
+            if (validationError) {
+                throw new Error(validationError);
+            }
+            const choiceMessage = data?.choices?.[0]?.message;
+            if (choiceMessage && typeof choiceMessage === 'object') {
+                choiceMessage.tool_calls = parsedCalls.map(call => ({
+                    id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
+                    type: 'function',
+                    function: {
+                        name: String(call?.name || ''),
+                        arguments: JSON.stringify(call?.args ?? {}),
+                    },
+                }));
+                choiceMessage.content = extractDisplayTextFromPlainTextFunctionResponse(
+                    String(choiceMessage.content || ''),
+                    { triggerSignal: runtimeFunctionCallContext.triggerSignal },
+                );
+            }
         }
 
         if (type !== 'quiet') {

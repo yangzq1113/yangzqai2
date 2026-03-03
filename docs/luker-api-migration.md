@@ -464,7 +464,30 @@ Luker now exposes a shared helper module for extension-side tool calling:
 
 - `public/scripts/extensions/function-call-runtime.js`
 
-Recommended exports:
+Core request API now also supports mode switching:
+
+- `sendOpenAIRequest(type, messages, signal, options?)`
+- New options:
+  - `functionCallMode`: `'native' | 'prompt_json'` (default `'native'`)
+  - `functionCallOptions` (optional):
+    - `requiredFunctionName?: string`
+    - `strictTwoPart?: boolean` (default `true`)
+    - `protocolStyle?: TOOL_PROTOCOL_STYLE.TABLE | TOOL_PROTOCOL_STYLE.JSON_SCHEMA`
+    - `allowReasoningText?: boolean`
+    - `appendStrictContract?: boolean` (default `true`)
+    - `triggerSignal?: string` (auto-generated when omitted)
+
+Behavior:
+
+- `functionCallMode='native'`:
+  - Uses normal `tools/tool_choice` flow.
+- `functionCallMode='prompt_json'`:
+  - Core injects plain-text tool protocol prompts automatically.
+  - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.
+  - Core parses model text response as JSON tool-calls and normalizes it to `choices[0].message.tool_calls`.
+  - Plugins can keep using `extractAllFunctionCalls(...)` as if it were native output.
+
+Recommended runtime exports (for custom parsing/contracts when needed):
 
 - `buildPlainTextToolProtocolMessage(tools, options?)`
 - `buildStrictThoughtAndFunctionOnlyAddendum(options?)`
@@ -484,8 +507,9 @@ Protocol styles:
 
 Practical rules:
 
+- Prefer `sendOpenAIRequest(..., { functionCallMode })` over manually injecting/parsing in each plugin.
 - Prefer native tool-calling where available.
-- Keep plain-text mode as fallback and enforce strict output contract.
+- Keep plain-text mode (`prompt_json`) as fallback and enforce strict output contract.
 - Use shared helpers instead of per-plugin parser copies to avoid drift.
 
 ### `secret_id` request override (chat-completions)
