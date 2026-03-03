@@ -13,6 +13,15 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../popup.js';
 import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, reloadEditor, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
+import {
+    TOOL_PROTOCOL_STYLE,
+    buildPlainTextToolProtocolMessage,
+    extractDisplayTextFromPlainTextFunctionResponse,
+    extractToolCallsFromResponse,
+    extractToolCallsFromTextResponse,
+    getResponseMessageContent,
+    mergeUserAddendumIntoPromptMessages,
+} from '../function-call-runtime.js';
 
 const MODULE_NAME = 'character_editor_assistant';
 const UI_BLOCK_ID = 'character_editor_assistant_settings';
@@ -2187,30 +2196,6 @@ function buildLorebookSyncModelTools() {
     ];
 }
 
-function extractToolCallsFromResponse(responseData) {
-    const toolCalls = responseData?.choices?.[0]?.message?.tool_calls;
-    if (!Array.isArray(toolCalls)) {
-        return [];
-    }
-    const output = [];
-    for (const call of toolCalls) {
-        const name = String(call?.function?.name || '').trim();
-        const argsText = String(call?.function?.arguments || '').trim();
-        if (!name || !argsText) {
-            continue;
-        }
-        try {
-            output.push({
-                name,
-                args: JSON.parse(argsText),
-            });
-        } catch {
-            continue;
-        }
-    }
-    return output;
-}
-
 function renderLorebookSyncHistoryItems(state) {
     const items = Array.isArray(state?.journal) ? state.journal.slice().reverse() : [];
     const toolbar = items.length > 0
@@ -2239,190 +2224,6 @@ function renderLorebookSyncHistoryItems(state) {
     }).join('')}`;
 }
 
-function getResponseMessageContent(responseData) {
-    return String(responseData?.choices?.[0]?.message?.content || '').trim();
-}
-
-function collectJsonPayloadCandidates(text) {
-    const source = String(text || '').trim();
-    if (!source) {
-        return [];
-    }
-    const candidates = [source];
-    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
-    let blockMatch;
-    while ((blockMatch = codeBlockRegex.exec(source)) !== null) {
-        const body = String(blockMatch?.[1] || '').trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    const arrayStart = source.indexOf('[');
-    const arrayEnd = source.lastIndexOf(']');
-    if (arrayStart >= 0 && arrayEnd > arrayStart) {
-        const body = source.slice(arrayStart, arrayEnd + 1).trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    const objectStart = source.indexOf('{');
-    const objectEnd = source.lastIndexOf('}');
-    if (objectStart >= 0 && objectEnd > objectStart) {
-        const body = source.slice(objectStart, objectEnd + 1).trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    return [...new Set(candidates)];
-}
-
-function normalizeTextToolCallsPayload(payload) {
-    if (Array.isArray(payload)) {
-        return payload;
-    }
-    if (payload && typeof payload === 'object') {
-        if (Array.isArray(payload.tool_calls)) {
-            return payload.tool_calls;
-        }
-        if (Array.isArray(payload.calls)) {
-            return payload.calls;
-        }
-        if (payload.name || payload.function?.name) {
-            return [payload];
-        }
-    }
-    return [];
-}
-
-function coerceToolCallArgumentsObject(rawArgs, functionName) {
-    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
-        return rawArgs;
-    }
-    if (typeof rawArgs === 'string' && rawArgs.trim()) {
-        try {
-            const parsed = JSON.parse(rawArgs);
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                return parsed;
-            }
-        } catch {
-            throw new Error(`Tool call '${functionName}' arguments are not valid JSON.`);
-        }
-    }
-    throw new Error(`Tool call '${functionName}' arguments are empty.`);
-}
-
-function extractToolCallsFromTextResponse(responseData, allowedNames = null) {
-    const content = getResponseMessageContent(responseData);
-    if (!content) {
-        return [];
-    }
-    const allowSet = allowedNames instanceof Set
-        ? allowedNames
-        : Array.isArray(allowedNames)
-            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
-            : null;
-    const candidates = collectJsonPayloadCandidates(content);
-    for (const candidate of candidates) {
-        try {
-            const parsed = JSON.parse(candidate);
-            const rawCalls = normalizeTextToolCallsPayload(parsed);
-            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
-                continue;
-            }
-            const calls = [];
-            for (const item of rawCalls) {
-                const name = String(item?.name || item?.function?.name || '').trim();
-                if (!name) {
-                    continue;
-                }
-                if (allowSet && !allowSet.has(name)) {
-                    continue;
-                }
-                const rawArgs = item?.arguments ?? item?.args ?? item?.function?.arguments;
-                calls.push({
-                    name,
-                    args: coerceToolCallArgumentsObject(rawArgs, name),
-                });
-            }
-            if (calls.length > 0) {
-                return calls;
-            }
-        } catch {
-            continue;
-        }
-    }
-    return [];
-}
-
-function extractDisplayTextFromPlainTextFunctionResponse(rawText) {
-    const source = String(rawText || '').trim();
-    if (!source) {
-        return '';
-    }
-    const candidates = collectJsonPayloadCandidates(source);
-    for (const candidate of candidates) {
-        if (!source.endsWith(candidate)) {
-            continue;
-        }
-        try {
-            const parsed = JSON.parse(candidate);
-            const rawCalls = normalizeTextToolCallsPayload(parsed);
-            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
-                continue;
-            }
-            return source.slice(0, source.length - candidate.length).trim();
-        } catch {
-            continue;
-        }
-    }
-    return source;
-}
-
-function buildPlainTextToolProtocolMessage(tools = []) {
-    const normalizedTools = Array.isArray(tools) ? tools : [];
-    const schemaGuide = normalizedTools.map((tool) => ({
-        name: String(tool?.function?.name || ''),
-        description: String(tool?.function?.description || ''),
-        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
-            ? tool.function.parameters
-            : { type: 'object', additionalProperties: true },
-    })).filter(item => item.name);
-    return [
-        'Plain-text function-call mode is enabled.',
-        'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.',
-        'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
-        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
-    ].join('\n');
-}
-
-function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagName = 'function_call_protocol') {
-    const messages = Array.isArray(promptMessages)
-        ? promptMessages.map(message => ({ ...message }))
-        : [];
-    const addendum = String(addendumText || '').trim();
-    if (!addendum) {
-        return messages;
-    }
-    const tag = String(tagName || '').trim() || 'function_call_protocol';
-    const wrapped = [`<${tag}>`, addendum, `</${tag}>`].join('\n');
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-        const message = messages[index];
-        if (String(message?.role || '').toLowerCase() !== 'user') {
-            continue;
-        }
-        const base = typeof message?.content === 'string'
-            ? message.content
-            : String(message?.content ?? '');
-        messages[index] = {
-            ...message,
-            content: base ? `${base}\n\n${wrapped}` : wrapped,
-        };
-        return messages;
-    }
-    messages.push({ role: 'user', content: wrapped });
-    return messages;
-}
-
 async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     tools = [],
     allowedNames = null,
@@ -2438,7 +2239,14 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax || 0) || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
     const requestMessages = usePlainTextCalls
-        ? mergeUserAddendumIntoPromptMessages(promptMessages, buildPlainTextToolProtocolMessage(tools))
+        ? mergeUserAddendumIntoPromptMessages(
+            promptMessages,
+            buildPlainTextToolProtocolMessage(tools, {
+                style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                allowReasoningText: true,
+            }),
+            'function_call_protocol',
+        )
         : promptMessages;
     const allowSet = allowedNames instanceof Set
         ? allowedNames

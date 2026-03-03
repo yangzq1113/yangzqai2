@@ -458,6 +458,36 @@ Return values:
 
 This keeps plugin behavior aligned with core connection semantics and avoids drift when new connection fields are added.
 
+### Shared function-call runtime for extensions
+
+Luker now exposes a shared helper module for extension-side tool calling:
+
+- `public/scripts/extensions/function-call-runtime.js`
+
+Recommended exports:
+
+- `buildPlainTextToolProtocolMessage(tools, options?)`
+- `buildStrictThoughtAndFunctionOnlyAddendum(options?)`
+- `mergeUserAddendumIntoPromptMessages(messages, addendum, tagOptions?)`
+- `extractFunctionCallArguments(responseData, functionName)`
+- `extractAllFunctionCalls(responseData, allowedNames?)`
+- `extractAllFunctionCallsFromText(responseData, allowedNames?)`
+- `extractToolCallsFromResponse(responseData, allowedNames?)` (lenient)
+- `extractToolCallsFromTextResponse(responseData, allowedNames?)` (lenient)
+- `extractDisplayTextFromPlainTextFunctionResponse(rawText)`
+- `getResponseMessageContent(responseData)`
+
+Protocol styles:
+
+- `TOOL_PROTOCOL_STYLE.TABLE` (compact function table)
+- `TOOL_PROTOCOL_STYLE.JSON_SCHEMA` (function + JSON schema list)
+
+Practical rules:
+
+- Prefer native tool-calling where available.
+- Keep plain-text mode as fallback and enforce strict output contract.
+- Use shared helpers instead of per-plugin parser copies to avoid drift.
+
 ### `secret_id` request override (chat-completions)
 
 Luker supports an optional `secret_id` in chat-completions requests:

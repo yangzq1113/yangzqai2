@@ -9,6 +9,16 @@ import { getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate } from '../../world-info.js';
 import { notifyRuntimeRegexScriptsChanged, registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
+import {
+    TOOL_PROTOCOL_STYLE,
+    buildPlainTextToolProtocolMessage,
+    buildStrictThoughtAndFunctionOnlyAddendum,
+    extractAllFunctionCalls,
+    extractAllFunctionCallsFromText,
+    extractFunctionCallArguments,
+    getResponseMessageContent,
+    mergeUserAddendumIntoPromptMessages,
+} from '../function-call-runtime.js';
 
 const MODULE_NAME = 'memory_graph';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
@@ -2251,261 +2261,6 @@ async function summarizeRollupFieldsWithLLM(context, settings, spec, instruction
     }
 }
 
-function extractFunctionCallArguments(responseData, functionName) {
-    const expectedName = String(functionName || '').trim();
-    if (!expectedName) {
-        throw new Error('Function name is required.');
-    }
-
-    const toolCalls = responseData?.choices?.[0]?.message?.tool_calls;
-    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-        throw new Error('Model did not return any tool call.');
-    }
-
-    const matchedCall = toolCalls.find(call => String(call?.function?.name || '') === expectedName);
-    if (!matchedCall) {
-        throw new Error(`Model returned tool call, but not '${expectedName}'.`);
-    }
-
-    const argsText = matchedCall?.function?.arguments;
-    if (typeof argsText !== 'string' || !argsText.trim()) {
-        throw new Error('Tool call arguments are empty.');
-    }
-
-    try {
-        return JSON.parse(argsText);
-    } catch {
-        throw new Error('Tool call arguments are not valid JSON.');
-    }
-}
-
-function extractAllFunctionCalls(responseData, allowedNames = null) {
-    const toolCalls = responseData?.choices?.[0]?.message?.tool_calls;
-    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-        throw new Error('Model did not return any tool call.');
-    }
-
-    const allowSet = allowedNames instanceof Set
-        ? allowedNames
-        : Array.isArray(allowedNames)
-            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
-            : null;
-    const parsedCalls = [];
-    for (const call of toolCalls) {
-        const fnName = String(call?.function?.name || '').trim();
-        if (!fnName) {
-            continue;
-        }
-        if (allowSet && !allowSet.has(fnName)) {
-            continue;
-        }
-        const argsText = call?.function?.arguments;
-        if (typeof argsText !== 'string' || !argsText.trim()) {
-            throw new Error(`Tool call '${fnName}' arguments are empty.`);
-        }
-        try {
-            parsedCalls.push({
-                id: String(call?.id || ''),
-                name: fnName,
-                args: JSON.parse(argsText),
-            });
-        } catch {
-            throw new Error(`Tool call '${fnName}' arguments are not valid JSON.`);
-        }
-    }
-    if (parsedCalls.length === 0) {
-        throw new Error('Model returned tool calls, but none matched expected function names.');
-    }
-    return parsedCalls;
-}
-
-function getResponseMessageContent(responseData) {
-    return String(responseData?.choices?.[0]?.message?.content || '').trim();
-}
-
-function collectJsonPayloadCandidates(text) {
-    const source = String(text || '').trim();
-    if (!source) {
-        return [];
-    }
-    const candidates = [source];
-    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
-    let blockMatch;
-    while ((blockMatch = codeBlockRegex.exec(source)) !== null) {
-        const body = String(blockMatch?.[1] || '').trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    const arrayStart = source.indexOf('[');
-    const arrayEnd = source.lastIndexOf(']');
-    if (arrayStart >= 0 && arrayEnd > arrayStart) {
-        const body = source.slice(arrayStart, arrayEnd + 1).trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    const objectStart = source.indexOf('{');
-    const objectEnd = source.lastIndexOf('}');
-    if (objectStart >= 0 && objectEnd > objectStart) {
-        const body = source.slice(objectStart, objectEnd + 1).trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    return [...new Set(candidates)];
-}
-
-function normalizeTextToolCallsPayload(payload) {
-    if (Array.isArray(payload)) {
-        return payload;
-    }
-    if (payload && typeof payload === 'object') {
-        if (Array.isArray(payload.tool_calls)) {
-            return payload.tool_calls;
-        }
-        if (Array.isArray(payload.calls)) {
-            return payload.calls;
-        }
-        if (payload.name || payload.function?.name) {
-            return [payload];
-        }
-    }
-    return [];
-}
-
-function coerceToolCallArgumentsObject(rawArgs, functionName) {
-    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
-        return rawArgs;
-    }
-    if (typeof rawArgs === 'string' && rawArgs.trim()) {
-        try {
-            const parsed = JSON.parse(rawArgs);
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                return parsed;
-            }
-        } catch {
-            throw new Error(`Tool call '${functionName}' arguments are not valid JSON.`);
-        }
-    }
-    throw new Error(`Tool call '${functionName}' arguments are empty.`);
-}
-
-function extractAllFunctionCallsFromText(responseData, allowedNames = null) {
-    const content = getResponseMessageContent(responseData);
-    if (!content) {
-        throw new Error('Model returned empty text response.');
-    }
-    const allowSet = allowedNames instanceof Set
-        ? allowedNames
-        : Array.isArray(allowedNames)
-            ? new Set(allowedNames.map(name => String(name || '').trim()).filter(Boolean))
-            : null;
-    const candidates = collectJsonPayloadCandidates(content);
-    let lastError = null;
-    for (const candidate of candidates) {
-        try {
-            const parsed = JSON.parse(candidate);
-            const rawCalls = normalizeTextToolCallsPayload(parsed);
-            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
-                continue;
-            }
-            const calls = [];
-            for (const item of rawCalls) {
-                const name = String(item?.name || item?.function?.name || '').trim();
-                if (!name) {
-                    continue;
-                }
-                if (allowSet && !allowSet.has(name)) {
-                    continue;
-                }
-                const rawArgs = item?.arguments ?? item?.args ?? item?.function?.arguments;
-                calls.push({
-                    id: String(item?.id || ''),
-                    name,
-                    args: coerceToolCallArgumentsObject(rawArgs, name),
-                });
-            }
-            if (calls.length > 0) {
-                return calls;
-            }
-        } catch (error) {
-            lastError = error;
-        }
-    }
-    if (lastError) {
-        throw lastError;
-    }
-    throw new Error('Model text output did not contain parseable function calls JSON.');
-}
-
-function buildPlainTextToolProtocolMessage(tools = [], { requiredFunctionName = '' } = {}) {
-    const requiredName = String(requiredFunctionName || '').trim();
-    const normalizedTools = Array.isArray(tools) ? tools : [];
-    const schemaGuide = normalizedTools.map((tool) => ({
-        name: String(tool?.function?.name || ''),
-        description: String(tool?.function?.description || ''),
-        parameters: tool?.function?.parameters && typeof tool.function.parameters === 'object'
-            ? tool.function.parameters
-            : { type: 'object', additionalProperties: true },
-    })).filter(item => item.name);
-    const requiredLine = requiredName
-        ? `Required function name for this response: ${requiredName}.`
-        : '';
-    return [
-        'Plain-text function-call mode is enabled.',
-        'Output contract is strict.',
-        'Return exactly two parts in order: (1) one <thought>...</thought>; (2) one and only one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}.',
-        'No narrative/body text, markdown, code fences, comments, XML blocks (except <thought>), or extra JSON before/after the JSON object.',
-        requiredLine,
-        `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
-    ].filter(Boolean).join('\n');
-}
-
-function buildStrictThoughtAndFunctionOnlyAddendum({ plainTextMode = false, requiredFunctionName = '' } = {}) {
-    const requiredName = String(requiredFunctionName || '').trim();
-    return [
-        'HIGHEST PRIORITY OUTPUT CONTRACT:',
-        'You must return EXACTLY two parts in this order:',
-        '1) one <thought>...</thought> block.',
-        plainTextMode
-            ? '2) exactly one JSON object for function calls: {"tool_calls":[...]}'
-            : '2) function calls only (tool-calls channel).',
-        requiredName ? `Required function name: ${requiredName}.` : '',
-        'Do NOT output any other text or blocks.',
-        'Forbidden: narrative/body text, <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, markdown, code fences, comments, duplicate JSON payloads.',
-        'After function calls, stop immediately.',
-    ].filter(Boolean).join('\n');
-}
-
-function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText, tagName = 'function_call_protocol') {
-    const messages = Array.isArray(promptMessages)
-        ? promptMessages.map(message => ({ ...message }))
-        : [];
-    const addendum = String(addendumText || '').trim();
-    if (!addendum) {
-        return messages;
-    }
-    const tag = String(tagName || '').trim() || 'function_call_protocol';
-    const wrapped = [`<${tag}>`, addendum, `</${tag}>`].join('\n');
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-        const message = messages[index];
-        if (String(message?.role || '').toLowerCase() !== 'user') {
-            continue;
-        }
-        const base = typeof message?.content === 'string'
-            ? message.content
-            : String(message?.content ?? '');
-        messages[index] = {
-            ...message,
-            content: base ? `${base}\n\n${wrapped}` : wrapped,
-        };
-        return messages;
-    }
-    messages.push({ role: 'user', content: wrapped });
-    return messages;
-}
-
 function isAbortSignalLike(value) {
     return Boolean(value && typeof value === 'object' && 'aborted' in value);
 }
@@ -2587,7 +2342,11 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     if (usePlainTextCalls) {
         requestMessages = mergeUserAddendumIntoPromptMessages(
             requestMessages,
-            buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+            buildPlainTextToolProtocolMessage(tools, {
+                requiredFunctionName: fnName,
+                style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                strictTwoPart: true,
+            }),
             'function_call_protocol',
         );
     }
@@ -2656,7 +2415,10 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     if (usePlainTextCalls) {
         requestMessages = mergeUserAddendumIntoPromptMessages(
             requestMessages,
-            buildPlainTextToolProtocolMessage(tools),
+            buildPlainTextToolProtocolMessage(tools, {
+                style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                strictTwoPart: true,
+            }),
             'function_call_protocol',
         );
     }
