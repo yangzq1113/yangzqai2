@@ -17,7 +17,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     enabled: false,
     provider: 'ddg',
     defaultMaxResults: 8,
-    defaultVisitMaxChars: 12000,
+    defaultVisitMaxChars: 0,
     safeSearch: 'moderate',
 });
 
@@ -58,7 +58,7 @@ function ensureSettings() {
     );
     settings.defaultVisitMaxChars = clampInteger(
         settings.defaultVisitMaxChars ?? DEFAULT_SETTINGS.defaultVisitMaxChars,
-        500,
+        0,
         50000,
         DEFAULT_SETTINGS.defaultVisitMaxChars,
     );
@@ -190,12 +190,13 @@ async function visitWebPage(args = {}) {
         throw new Error('url is required.');
     }
 
-    const maxChars = clampInteger(
-        args?.max_chars ?? settings.defaultVisitMaxChars,
-        500,
-        50000,
-        settings.defaultVisitMaxChars,
-    );
+    const rawMaxChars = args?.max_chars ?? settings.defaultVisitMaxChars;
+    const normalizedMaxChars = Number.isFinite(Number(rawMaxChars))
+        ? Math.floor(Number(rawMaxChars))
+        : settings.defaultVisitMaxChars;
+    const maxChars = normalizedMaxChars > 0
+        ? clampInteger(normalizedMaxChars, 1, 50000, settings.defaultVisitMaxChars)
+        : 0;
 
     const response = await fetch('/api/search/visit', {
         method: 'POST',
@@ -211,14 +212,14 @@ async function visitWebPage(args = {}) {
     const html = await response.text();
     const parsed = htmlToReadableText(html);
     const fullText = normalizeWhitespace(parsed.text || fallbackStripHtml(html));
-    const excerpt = fullText.slice(0, maxChars);
+    const excerpt = maxChars > 0 ? fullText.slice(0, maxChars) : fullText;
 
     return {
         url,
         title: parsed.title || '',
         text: excerpt,
         total_chars: fullText.length,
-        truncated: fullText.length > excerpt.length,
+        truncated: maxChars > 0 ? (fullText.length > excerpt.length) : false,
     };
 }
 
@@ -283,7 +284,7 @@ function registerTools(context) {
             type: 'object',
             properties: {
                 url: { type: 'string', description: 'HTTP/HTTPS page URL.' },
-                max_chars: { type: 'integer', description: 'Maximum output characters (500-50000).' },
+                max_chars: { type: 'integer', description: 'Maximum output characters (0-50000). 0 means no truncation.' },
             },
             required: ['url'],
             additionalProperties: false,
@@ -319,8 +320,8 @@ function renderSettingsBlock() {
             <option value="moderate">${escapeHtml(i18n('Moderate'))}</option>
             <option value="strict">${escapeHtml(i18n('Strict'))}</option>
         </select>
-        <label for="search_tools_default_visit_max_chars">${escapeHtml(i18n('Default page excerpt max chars'))}</label>
-        <input id="search_tools_default_visit_max_chars" class="text_pole" type="number" min="500" max="50000" step="100" />
+        <label for="search_tools_default_visit_max_chars">${escapeHtml(i18n('Default page excerpt max chars (0 = no truncation)'))}</label>
+        <input id="search_tools_default_visit_max_chars" class="text_pole" type="number" min="0" max="50000" step="100" />
     </div>
 </div>`;
 }
@@ -353,7 +354,7 @@ function bindSettingsUi() {
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_default_visit_max_chars', function () {
-        settings.defaultVisitMaxChars = clampInteger(jQuery(this).val(), 500, 50000, DEFAULT_SETTINGS.defaultVisitMaxChars);
+        settings.defaultVisitMaxChars = clampInteger(jQuery(this).val(), 0, 50000, DEFAULT_SETTINGS.defaultVisitMaxChars);
         jQuery(this).val(String(settings.defaultVisitMaxChars));
         saveSettingsDebounced();
     });
@@ -386,7 +387,7 @@ function registerLocaleData() {
         'Off': '关闭',
         'Moderate': '中等',
         'Strict': '严格',
-        'Default page excerpt max chars': '默认网页摘录最大字符数',
+        'Default page excerpt max chars (0 = no truncation)': '默认网页摘录最大字符数（0=不截断）',
     });
 
     addLocaleData('zh-tw', {
@@ -399,7 +400,7 @@ function registerLocaleData() {
         'Off': '關閉',
         'Moderate': '中等',
         'Strict': '嚴格',
-        'Default page excerpt max chars': '預設網頁摘錄最大字元數',
+        'Default page excerpt max chars (0 = no truncation)': '預設網頁摘錄最大字元數（0=不截斷）',
     });
 }
 

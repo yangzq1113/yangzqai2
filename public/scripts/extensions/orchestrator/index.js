@@ -20,11 +20,23 @@ import { yaml } from '../../../lib.js';
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
+const ORCH_CHAT_STATE_NAMESPACE = 'luker_orchestrator_state';
+const ORCH_CHAT_STATE_VERSION = 1;
+const NODE_TOOL_SEARCH = 'luker_orch_web_search';
+const NODE_TOOL_VISIT = 'luker_orch_web_visit';
+const NODE_TOOL_KNOWLEDGE_UPSERT = 'luker_orch_upsert_global_knowledge';
+const NODE_TOOL_KNOWLEDGE_DELETE = 'luker_orch_delete_global_knowledge';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints. Before function-call output, provide one concise <thought>...</thought> that reflects your role-specific reasoning.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
+    'Previous orchestration snapshot:',
+    '{{previous_snapshot}}',
+    '',
     'Previous orchestration capsule:',
     '{{previous_orchestration}}',
+    '',
+    'Global knowledge base:',
+    '{{global_knowledge}}',
     '',
     'Recent chat:',
     '{{recent_chat}}',
@@ -41,7 +53,7 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     'Put final injected guidance in field `text` (string).',
     'The `text` content is injected directly as-is.',
 ].join('\n');
-const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_orchestration'];
+const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_snapshot', 'previous_orchestration', 'global_knowledge'];
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const ORCH_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
@@ -82,6 +94,10 @@ function getDefaultAiSuggestSystemPrompt() {
         'Non-final stage nodes should return structured tool-call fields for machine processing.',
         'Last-stage nodes must return function-call payload with a single field `text`.',
         'Runtime injects the `text` content directly as-is (no YAML wrapping).',
+        `Runtime node tools available: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
+        'Design at least one suitable agent to decide whether external search is needed for this turn.',
+        'That agent should use search tools when needed, then persist reusable findings via global-knowledge upsert tool.',
+        'If stored knowledge is outdated or wrong, that agent should delete it through global-knowledge delete tool.',
         'Do NOT hardcode any fixed narrator persona/identity/roleplay character in system prompts.',
         'Do NOT mirror long single-prompt identity blocks; focus on process quality and constraints.',
         'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
@@ -106,8 +122,10 @@ function getDefaultAiSuggestSystemPrompt() {
         '- Every generated userPromptTemplate should include placeholders needed by that node role; avoid static templates that ignore runtime context.',
         '- Distiller/state nodes should include {{recent_chat}} and {{last_user}}.',
         '- Nodes depending on upstream reasoning should include {{distiller}} and/or {{previous_outputs}}.',
+        '- Continuity and review-sensitive nodes should include {{previous_snapshot}}.',
         '- Continuity-sensitive nodes should include {{previous_orchestration}}.',
-        '- Final synthesizer should generally include {{distiller}}, {{previous_outputs}}, and {{previous_orchestration}}.',
+        '- Knowledge-sensitive nodes should include {{global_knowledge}}.',
+        '- Final synthesizer should generally include {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, and {{global_knowledge}}.',
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
         'Read global_orchestration_spec and global_presets as primary reference before creating card-specific overrides.',
         'Do not output thin prompts. Each node preset must contain concrete process steps, hard constraints, and output contract details.',
@@ -126,7 +144,7 @@ const defaultSpec = {
     stages: [
         { id: 'distill', mode: 'serial', nodes: ['distiller'] },
         { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
-        { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
+        { id: 'reason', mode: 'parallel', nodes: ['research_router', 'planner', 'critic', 'recall_relevance'] },
         { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
     ],
 };
@@ -134,31 +152,35 @@ const defaultSpec = {
 const defaultPresets = {
     distiller: {
         systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Previous orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
+        userPromptTemplate: 'Previous orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nGlobal knowledge base:\n{{global_knowledge}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
     },
     lorebook_reader: {
         systemPrompt: 'You are a lorebook compliance reader. Extract only active hard constraints from world-info, especially explicit banned wording/style requirements. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nGlobal knowledge base:\n{{global_knowledge}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     anti_data_guard: {
         systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+    },
+    research_router: {
+        systemPrompt: `You are a research and knowledge router. Your responsibility is to decide whether this turn needs external search, execute search when needed, and maintain shared global knowledge. Use tools explicitly: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}. Output one concise <thought>...</thought> before your function call.`,
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nGlobal knowledge base:\n{{global_knowledge}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Decide whether external web search is needed for this turn (time-sensitive facts, ambiguous references, missing evidence).\n- If needed, call search/visit tools and then upsert reusable findings into global knowledge.\n- If some stored entries are obsolete, wrong, or irrelevant, call delete tool to remove them.\n- Finally return concise directives/risks for downstream nodes.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     planner: {
         systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nGlobal knowledge base:\n{{global_knowledge}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
         systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nGlobal knowledge base:\n{{global_knowledge}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious orchestration snapshot:\n{{previous_snapshot}}\n\nPrevious orchestration capsule:\n{{previous_orchestration}}\n\nGlobal knowledge base:\n{{global_knowledge}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Merge planner/critic/recall/research_router plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
     },
 };
 
@@ -170,6 +192,7 @@ const defaultSettings = {
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
     plainTextFunctionCallMode: false,
+    nodeIterationMaxRounds: 3,
     toolCallRetryMax: 2,
     agentTimeoutSeconds: 0,
     maxRecentMessages: 14,
@@ -210,6 +233,7 @@ function registerLocaleData() {
         'Reset AI build prompt': '重置 AI 生成提示词',
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '确认重置 AI 生成提示词为默认值？这会覆盖当前内容。',
         'Recent assistant turns for orchestration (N)': '编排阶段可见最近 N 条 Assistant 回复',
+        'Node tool iteration max rounds (N)': '节点工具迭代最大轮数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
         'Capsule injection position': '胶囊注入位置',
@@ -314,7 +338,7 @@ function registerLocaleData() {
         'Node ID': '节点 ID',
         'Preset': '预设',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}',
         'Execution': '执行方式',
         'Serial': '串行',
         'Parallel': '并行',
@@ -391,6 +415,7 @@ function registerLocaleData() {
         'Reset AI build prompt': '重置 AI 生成提示詞',
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '確認重置 AI 生成提示詞為預設值？這會覆蓋目前內容。',
         'Recent assistant turns for orchestration (N)': '編排階段可見最近 N 條 Assistant 回覆',
+        'Node tool iteration max rounds (N)': '節點工具迭代最大輪數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
         'Capsule injection position': '膠囊注入位置',
@@ -494,7 +519,7 @@ function registerLocaleData() {
         'Node ID': '節點 ID',
         'Preset': '預設',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}',
         'Execution': '執行方式',
         'Serial': '串行',
         'Parallel': '並行',
@@ -573,6 +598,8 @@ let activeAiIterationAbortController = null;
 let activeOrchRunAbortController = null;
 let activeAiBuildAbortController = null;
 let latestOrchestrationSnapshot = null;
+let latestGlobalKnowledgeEntries = [];
+let loadedChatStateKey = '';
 
 function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
@@ -702,6 +729,10 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    extension_settings[MODULE_NAME].nodeIterationMaxRounds = Math.max(
+        1,
+        Math.min(20, Math.floor(Number(extension_settings[MODULE_NAME].nodeIterationMaxRounds) || 0)),
+    );
     extension_settings[MODULE_NAME].agentTimeoutSeconds = Math.max(
         0,
         Math.min(3600, Math.floor(Number(extension_settings[MODULE_NAME].agentTimeoutSeconds) || 0)),
@@ -722,6 +753,146 @@ function clearCapsulePrompt(context) {
     );
 }
 
+function normalizeKnowledgeEntry(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const id = sanitizeIdentifierToken(source.id, '');
+    const content = String(source.content || '').trim();
+    if (!id || !content) {
+        return null;
+    }
+    const tags = Array.isArray(source.tags)
+        ? [...new Set(source.tags.map(item => String(item || '').trim()).filter(Boolean))]
+        : [];
+    const sources = Array.isArray(source.sources)
+        ? [...new Set(source.sources.map(item => String(item || '').trim()).filter(Boolean))]
+        : [];
+    return {
+        id,
+        title: String(source.title || '').trim(),
+        content,
+        tags,
+        sources,
+        updatedAt: String(source.updatedAt || source.createdAt || '').trim(),
+        createdAt: String(source.createdAt || source.updatedAt || '').trim(),
+        byNode: sanitizeIdentifierToken(source.byNode, ''),
+    };
+}
+
+function normalizeKnowledgeEntries(entries) {
+    const list = Array.isArray(entries) ? entries : [];
+    const normalized = [];
+    for (const item of list) {
+        const entry = normalizeKnowledgeEntry(item);
+        if (!entry) {
+            continue;
+        }
+        normalized.push(entry);
+    }
+    return normalized;
+}
+
+function normalizeOrchestrationSnapshot(raw) {
+    const source = raw && typeof raw === 'object' ? raw : null;
+    if (!source) {
+        return null;
+    }
+    const capsuleText = String(source.capsuleText || '').trim();
+    if (!capsuleText) {
+        return null;
+    }
+    return {
+        chatKey: String(source.chatKey || '').trim(),
+        anchorFloor: Number(source.anchorFloor || 0),
+        anchorPlayableFloor: Number(source.anchorPlayableFloor || 0),
+        anchorHash: String(source.anchorHash || '').trim(),
+        capsuleText,
+        updatedAt: String(source.updatedAt || '').trim(),
+        targetLayer: Number(source.targetLayer || 0),
+        stageOutputs: Array.isArray(source.stageOutputs) ? structuredClone(source.stageOutputs) : [],
+    };
+}
+
+function normalizeOrchestratorChatState(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return {
+        version: Number(source.version || ORCH_CHAT_STATE_VERSION),
+        snapshot: normalizeOrchestrationSnapshot(source.snapshot),
+        globalKnowledge: normalizeKnowledgeEntries(source.globalKnowledge),
+    };
+}
+
+async function loadOrchestratorChatState(context, { force = false } = {}) {
+    const chatKey = getChatKey(context);
+    if (!chatKey) {
+        latestOrchestrationSnapshot = null;
+        latestGlobalKnowledgeEntries = [];
+        loadedChatStateKey = '';
+        return;
+    }
+    if (!force && loadedChatStateKey === chatKey) {
+        return;
+    }
+
+    let payload = null;
+    if (typeof context?.getChatState === 'function') {
+        payload = await context.getChatState(ORCH_CHAT_STATE_NAMESPACE, {});
+    }
+    const normalized = normalizeOrchestratorChatState(payload);
+    latestOrchestrationSnapshot = normalized.snapshot;
+    latestGlobalKnowledgeEntries = normalized.globalKnowledge;
+    loadedChatStateKey = chatKey;
+}
+
+async function persistOrchestratorChatState(context) {
+    const chatKey = getChatKey(context);
+    if (!chatKey || typeof context?.updateChatState !== 'function') {
+        return;
+    }
+    loadedChatStateKey = chatKey;
+    const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
+    const globalKnowledge = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
+    await context.updateChatState(ORCH_CHAT_STATE_NAMESPACE, () => ({
+        version: ORCH_CHAT_STATE_VERSION,
+        snapshot,
+        globalKnowledge,
+    }), { maxOperations: 2000, maxRetries: 1 });
+}
+
+function getGlobalKnowledgeForPrompt() {
+    const entries = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
+    if (entries.length === 0) {
+        return '';
+    }
+    return toReadableYamlText({
+        entries: entries.map(entry => ({
+            id: entry.id,
+            title: entry.title,
+            content: entry.content,
+            tags: entry.tags,
+            sources: entry.sources,
+            updated_at: entry.updatedAt,
+        })),
+    }, '{}');
+}
+
+function getPreviousOrchestrationSnapshotText(context, payload) {
+    const chatKey = getChatKey(context);
+    const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
+    if (!snapshot || String(snapshot.chatKey || '') !== String(chatKey || '')) {
+        return '';
+    }
+    const currentTargetLayer = getTargetAssistantLayer(payload);
+    const expectedPreviousLayer = Math.max(currentTargetLayer - 1, 0);
+    const storedLayer = Number(snapshot.targetLayer || 0);
+    if (expectedPreviousLayer <= 0 || storedLayer !== expectedPreviousLayer) {
+        return '';
+    }
+    return toReadableYamlText({
+        updated_at: String(snapshot.updatedAt || ''),
+        stage_outputs: Array.isArray(snapshot.stageOutputs) ? snapshot.stageOutputs : [],
+    }, '{}');
+}
+
 function getLatestOrchestrationEntry(context) {
     const chatKey = getChatKey(context);
     if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
@@ -740,13 +911,16 @@ function getLatestOrchestrationEntry(context) {
     };
 }
 
-function clearLastOrchestrationSnapshot(context) {
+function clearLastOrchestrationSnapshot(context, { persist = false } = {}) {
     const chatKey = getChatKey(context);
     if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
         return;
     }
     if (String(latestOrchestrationSnapshot.chatKey || '') === String(chatKey || '')) {
         latestOrchestrationSnapshot = null;
+        if (persist) {
+            void persistOrchestratorChatState(context);
+        }
     }
 }
 
@@ -761,19 +935,20 @@ function getTargetAssistantLayer(payload) {
 
 function getPreviousOrchestrationCapsuleText(context, payload) {
     const chatKey = getChatKey(context);
-    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+    const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
+    if (!snapshot) {
         return '';
     }
-    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+    if (String(snapshot.chatKey || '') !== String(chatKey || '')) {
         return '';
     }
     const currentTargetLayer = getTargetAssistantLayer(payload);
     const expectedPreviousLayer = Math.max(currentTargetLayer - 1, 0);
-    const storedLayer = Number(latestOrchestrationSnapshot.targetLayer || 0);
+    const storedLayer = Number(snapshot.targetLayer || 0);
     if (expectedPreviousLayer <= 0 || storedLayer !== expectedPreviousLayer) {
         return '';
     }
-    return String(latestOrchestrationSnapshot.capsuleText || '').trim();
+    return String(snapshot.capsuleText || '').trim();
 }
 
 function renderLastOrchestrationResultHtml(context) {
@@ -1346,7 +1521,9 @@ function renderTemplate(template, vars) {
         last_user: String(safeVars.last_user || ''),
         previous_outputs: String(safeVars.previous_outputs || ''),
         distiller: String(safeVars.distiller || ''),
+        previous_snapshot: String(safeVars.previous_snapshot || ''),
         previous_orchestration: String(safeVars.previous_orchestration || ''),
+        global_knowledge: String(safeVars.global_knowledge || ''),
     };
     let output = String(template || '');
     for (const [key, value] of Object.entries(replacements)) {
@@ -1559,6 +1736,290 @@ function buildRuntimeWorldInfoFromPayload(payload = null) {
     return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
 }
 
+function getNodeIterationMaxRounds(settings = null) {
+    const source = settings && typeof settings === 'object' ? settings : extension_settings[MODULE_NAME];
+    return Math.max(1, Math.min(20, Math.floor(Number(source?.nodeIterationMaxRounds) || 0)));
+}
+
+function buildNodeToolSet({ isFinalStage = false } = {}) {
+    const outputTool = isFinalStage
+        ? {
+            type: 'function',
+            function: {
+                name: 'luker_orch_final_guidance',
+                description: 'Final orchestration guidance to inject into generation context.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        text: { type: 'string' },
+                    },
+                    required: ['text'],
+                    additionalProperties: false,
+                },
+            },
+        }
+        : {
+            type: 'function',
+            function: {
+                name: 'luker_orch_node_output',
+                description: 'Orchestrator node output with concise structured guidance.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        summary: { type: 'string' },
+                        xml_guidance: { type: 'string' },
+                        directives: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                        risks: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                        tags: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                    },
+                    additionalProperties: true,
+                },
+            },
+        };
+
+    return [
+        outputTool,
+        {
+            type: 'function',
+            function: {
+                name: NODE_TOOL_SEARCH,
+                description: 'Search the web for time-sensitive or missing facts.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        query: { type: 'string' },
+                        provider: { type: 'string' },
+                        max_results: { type: 'integer' },
+                        safe_search: { type: 'string' },
+                        time_range: { type: 'string' },
+                        region: { type: 'string' },
+                    },
+                    required: ['query'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: NODE_TOOL_VISIT,
+                description: 'Visit one webpage and extract readable text.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        url: { type: 'string' },
+                        max_chars: { type: 'integer' },
+                    },
+                    required: ['url'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: NODE_TOOL_KNOWLEDGE_UPSERT,
+                description: 'Create or update one entry in global knowledge base shared by orchestration nodes.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string' },
+                        title: { type: 'string' },
+                        content: { type: 'string' },
+                        tags: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                        sources: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                    },
+                    required: ['content'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: NODE_TOOL_KNOWLEDGE_DELETE,
+                description: 'Delete entries in global knowledge base by ids, tags, keyword, or delete_all.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        ids: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                        match_tag: { type: 'string' },
+                        match_keyword: { type: 'string' },
+                        delete_all: { type: 'boolean' },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        },
+    ];
+}
+
+function buildNodeIterationContractText({ isFinalStage = false } = {}) {
+    const outputName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
+    return [
+        '## node_iteration_contract',
+        `- You may call ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE} before finalizing.`,
+        `- When the node result is ready, call ${outputName} exactly once.`,
+        '- Do not output plain prose outside function-call payload.',
+    ].join('\n');
+}
+
+async function runNodeWebSearchTool(args = {}) {
+    const api = globalThis?.Luker?.searchTools;
+    if (!api || typeof api.search !== 'function') {
+        throw new Error('Search tools extension is unavailable.');
+    }
+    return await api.search(args);
+}
+
+async function runNodeWebVisitTool(args = {}) {
+    const api = globalThis?.Luker?.searchTools;
+    if (!api || typeof api.visit !== 'function') {
+        throw new Error('Search tools extension is unavailable.');
+    }
+    return await api.visit(args);
+}
+
+function upsertGlobalKnowledgeEntry(args = {}, nodeId = '') {
+    const content = String(args?.content || '').trim();
+    if (!content) {
+        throw new Error('Global knowledge upsert requires non-empty content.');
+    }
+    const explicitId = sanitizeIdentifierToken(args?.id, '');
+    const autoIdSeed = `kb_${Math.abs(Number(getStringHash(`${content}|${args?.title || ''}`) || Date.now())).toString(36)}`;
+    const id = explicitId || autoIdSeed;
+    const now = new Date().toISOString();
+    const entry = normalizeKnowledgeEntry({
+        id,
+        title: String(args?.title || '').trim(),
+        content,
+        tags: Array.isArray(args?.tags) ? args.tags : [],
+        sources: Array.isArray(args?.sources) ? args.sources : [],
+        updatedAt: now,
+        createdAt: now,
+        byNode: nodeId,
+    });
+    if (!entry) {
+        throw new Error('Global knowledge upsert produced invalid entry.');
+    }
+
+    const list = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
+    const index = list.findIndex(item => String(item.id || '') === entry.id);
+    if (index >= 0) {
+        const existing = list[index];
+        list[index] = {
+            ...existing,
+            ...entry,
+            createdAt: existing.createdAt || entry.createdAt,
+            updatedAt: now,
+            byNode: sanitizeIdentifierToken(nodeId, ''),
+        };
+    } else {
+        list.push({
+            ...entry,
+            createdAt: entry.createdAt || now,
+            updatedAt: now,
+            byNode: sanitizeIdentifierToken(nodeId, ''),
+        });
+    }
+    latestGlobalKnowledgeEntries = list;
+    return {
+        ok: true,
+        action: index >= 0 ? 'updated' : 'created',
+        entry_id: entry.id,
+        total_entries: list.length,
+    };
+}
+
+function deleteGlobalKnowledgeEntries(args = {}) {
+    const list = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
+    if (list.length === 0) {
+        return { ok: true, removed_ids: [], total_entries: 0 };
+    }
+
+    const ids = Array.isArray(args?.ids)
+        ? new Set(args.ids.map(item => sanitizeIdentifierToken(item, '')).filter(Boolean))
+        : new Set();
+    const matchTag = String(args?.match_tag || '').trim().toLowerCase();
+    const matchKeyword = String(args?.match_keyword || '').trim().toLowerCase();
+    const deleteAll = Boolean(args?.delete_all);
+
+    if (!deleteAll && ids.size === 0 && !matchTag && !matchKeyword) {
+        throw new Error('Global knowledge delete requires ids/match_tag/match_keyword/delete_all.');
+    }
+
+    const shouldDelete = (entry) => {
+        if (deleteAll) {
+            return true;
+        }
+        if (ids.has(String(entry?.id || ''))) {
+            return true;
+        }
+        if (matchTag && Array.isArray(entry?.tags) && entry.tags.some(tag => String(tag || '').trim().toLowerCase() === matchTag)) {
+            return true;
+        }
+        if (matchKeyword) {
+            const haystack = `${entry?.title || ''}\n${entry?.content || ''}`.toLowerCase();
+            if (haystack.includes(matchKeyword)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const removedIds = [];
+    const kept = [];
+    for (const entry of list) {
+        if (shouldDelete(entry)) {
+            removedIds.push(String(entry.id || ''));
+        } else {
+            kept.push(entry);
+        }
+    }
+    latestGlobalKnowledgeEntries = kept;
+    return {
+        ok: true,
+        removed_ids: removedIds,
+        total_entries: kept.length,
+    };
+}
+
+async function executeNodeExternalToolCall(call, nodeSpec) {
+    const name = String(call?.name || '').trim();
+    const args = call?.args && typeof call.args === 'object' ? call.args : {};
+    if (name === NODE_TOOL_SEARCH) {
+        return await runNodeWebSearchTool(args);
+    }
+    if (name === NODE_TOOL_VISIT) {
+        return await runNodeWebVisitTool(args);
+    }
+    if (name === NODE_TOOL_KNOWLEDGE_UPSERT) {
+        return upsertGlobalKnowledgeEntry(args, nodeSpec?.id || '');
+    }
+    if (name === NODE_TOOL_KNOWLEDGE_DELETE) {
+        return deleteGlobalKnowledgeEntries(args);
+    }
+    throw new Error(`Unsupported node tool: ${name}`);
+}
+
 async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
     const isFinalStage = Boolean(options?.isFinalStage);
     const settings = extension_settings[MODULE_NAME];
@@ -1580,15 +2041,19 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         toReadableYamlText(previousNodeOutputs.get('distiller') || {}, '{}'),
         '```',
     ].join('\n');
+    const previousSnapshot = getPreviousOrchestrationSnapshotText(context, payload);
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
+    const globalKnowledge = getGlobalKnowledgeForPrompt();
+
     const baseUserPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
         recent_chat: recent,
         last_user: String(lastUser?.mes || ''),
         previous_outputs: previousOutputs,
         distiller: distillerOutput,
+        previous_snapshot: previousSnapshot,
         previous_orchestration: previousOrchestration,
+        global_knowledge: globalKnowledge,
     });
-    const userPrompt = baseUserPrompt;
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
     const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
@@ -1600,78 +2065,99 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     });
     const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
     const apiSettingsOverride = llmProfileResolution.apiSettingsOverride;
-    const promptMessages = await buildPresetAwareMessages(
-        context,
-        settings,
-        String(preset.systemPrompt || '').trim(),
-        userPrompt,
-        {
-            api,
-            promptPresetName,
-            worldInfoMessages: messages,
-            worldInfoType: String(payload?.type || 'quiet'),
-            runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
-            forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
-        },
-    );
+    const tools = buildNodeToolSet({ isFinalStage });
+    const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
+    const maxRounds = getNodeIterationMaxRounds(settings);
+    const outputToolName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
+    const toolHistory = [];
 
-    if (isFinalStage) {
-        const finalOutput = await requestToolCallWithRetry(settings, promptMessages, {
-            functionName: 'luker_orch_final_guidance',
-            functionDescription: 'Final orchestration guidance to inject into generation context.',
-            parameters: {
-                type: 'object',
-                properties: {
-                    text: { type: 'string' },
-                },
-                required: ['text'],
-                additionalProperties: false,
+    for (let round = 1; round <= maxRounds; round++) {
+        const iterationPrompt = [
+            baseUserPrompt,
+            '',
+            buildNodeIterationContractText({ isFinalStage }),
+            '',
+            '## node_iteration_round',
+            `${round}/${maxRounds}`,
+            '',
+            '## node_tool_history',
+            '```yaml',
+            toReadableYamlText(toolHistory, '[]'),
+            '```',
+        ].join('\n');
+
+        const promptMessages = await buildPresetAwareMessages(
+            context,
+            settings,
+            String(preset.systemPrompt || '').trim(),
+            iterationPrompt,
+            {
+                api,
+                promptPresetName,
+                worldInfoMessages: messages,
+                worldInfoType: String(payload?.type || 'quiet'),
+                runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+                forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
             },
+        );
+
+        const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
+            tools,
+            allowedNames,
             llmPresetName,
             apiSettingsOverride,
             abortSignal,
+            includeAssistantText: true,
+            allowNoToolCalls: false,
+            applyAgentTimeout: true,
         });
-        const finalText = String(finalOutput?.text ?? '');
-        if (!finalText.trim()) {
-            throw new Error(`Node '${nodeSpec.id}' returned empty final guidance text.`);
+        const calls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
+        if (calls.length === 0) {
+            throw new Error(`Node '${nodeSpec.id}' did not return tool calls.`);
         }
-        return finalText;
+
+        let finalizedOutput = null;
+        const roundResults = [];
+        for (const call of calls) {
+            const name = String(call?.name || '').trim();
+            if (!name) {
+                continue;
+            }
+            if (name === outputToolName && finalizedOutput === null) {
+                finalizedOutput = call?.args && typeof call.args === 'object' ? call.args : {};
+                continue;
+            }
+            const result = await executeNodeExternalToolCall(call, nodeSpec);
+            roundResults.push({
+                tool: name,
+                args: call?.args && typeof call.args === 'object' ? structuredClone(call.args) : {},
+                result,
+            });
+        }
+
+        if (roundResults.length > 0) {
+            toolHistory.push({
+                round,
+                results: roundResults,
+            });
+        }
+
+        if (finalizedOutput !== null) {
+            if (isFinalStage) {
+                const finalText = String(finalizedOutput?.text ?? '');
+                if (!finalText.trim()) {
+                    throw new Error(`Node '${nodeSpec.id}' returned empty final guidance text.`);
+                }
+                return finalText;
+            }
+            if (finalizedOutput && typeof finalizedOutput === 'object') {
+                return finalizedOutput;
+            }
+            throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
+        }
     }
 
-    const nodeOutputSchema = {
-        type: 'object',
-        properties: {
-            summary: { type: 'string' },
-            xml_guidance: { type: 'string' },
-            directives: {
-                type: 'array',
-                items: { type: 'string' },
-            },
-            risks: {
-                type: 'array',
-                items: { type: 'string' },
-            },
-            tags: {
-                type: 'array',
-                items: { type: 'string' },
-            },
-        },
-        additionalProperties: true,
-    };
-
-    const toolOutput = await requestToolCallWithRetry(settings, promptMessages, {
-        functionName: 'luker_orch_node_output',
-        functionDescription: `Orchestrator node output for '${nodeSpec.id}'.`,
-        parameters: nodeOutputSchema,
-        llmPresetName,
-        apiSettingsOverride,
-        abortSignal,
-    });
-    if (toolOutput && typeof toolOutput === 'object') {
-        return toolOutput;
-    }
-
-    throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
+    throw new Error(`Node '${nodeSpec.id}' exceeded max iteration rounds (${maxRounds}) without ${outputToolName}.`);
 }
 
 async function executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null, options = {}) {
@@ -1832,8 +2318,9 @@ async function onWorldInfoFinalized(payload) {
         return;
     }
     if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        await loadOrchestratorChatState(context, { force: false });
         clearCapsulePrompt(context);
-        clearLastOrchestrationSnapshot(context);
+        clearLastOrchestrationSnapshot(context, { persist: true });
         updateUiStatus(i18n('Generation aborted. Skipped orchestration.'));
         return;
     }
@@ -1846,11 +2333,12 @@ async function onWorldInfoFinalized(payload) {
         : payload;
 
     try {
+        await loadOrchestratorChatState(context, { force: false });
         const profile = getEffectiveProfile(context);
         const messages = structuredClone(getCoreMessages(payload));
         if (messages.length === 0) {
             clearCapsulePrompt(context);
-            clearLastOrchestrationSnapshot(context);
+            clearLastOrchestrationSnapshot(context, { persist: true });
             return;
         }
         const generationType = String(payload?.type || '').trim().toLowerCase();
@@ -1866,6 +2354,7 @@ async function onWorldInfoFinalized(payload) {
                     updatedAt: new Date().toISOString(),
                     targetLayer: getTargetAssistantLayer(payload),
                 };
+                await persistOrchestratorChatState(context);
                 updateUiStatus(i18n('Orchestrator completed.'));
                 clearRunInfoToast();
                 return;
@@ -1893,13 +2382,15 @@ async function onWorldInfoFinalized(payload) {
             capsuleText,
             updatedAt: new Date().toISOString(),
             targetLayer: getTargetAssistantLayer(payload),
+            stageOutputs: compactStageOutputs(finalRun.stageOutputs || []),
         };
+        await persistOrchestratorChatState(context);
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
     } catch (error) {
         if (isAbortError(error, orchestrationPayload?.signal)) {
             clearCapsulePrompt(context);
-            clearLastOrchestrationSnapshot(context);
+            clearLastOrchestrationSnapshot(context, { persist: true });
             const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
             updateUiStatus(generationAborted
                 ? i18n('Generation aborted. Skipped orchestration.')
@@ -1908,7 +2399,7 @@ async function onWorldInfoFinalized(payload) {
             return;
         }
         clearCapsulePrompt(context);
-        clearLastOrchestrationSnapshot(context);
+        clearLastOrchestrationSnapshot(context, { persist: true });
         console.warn(`[${MODULE_NAME}] Orchestration failed`, error);
         const failText = i18nFormat('Orchestrator failed: ${0}', String(error?.message || error));
         updateUiStatus(failText);
@@ -1956,7 +2447,7 @@ function onMessageDeleted(_chatLength, details) {
     }
 
     clearCapsulePrompt(context);
-    clearLastOrchestrationSnapshot(context);
+    clearLastOrchestrationSnapshot(context, { persist: true });
 }
 
 function notifyInfo(message) {
@@ -2374,7 +2865,7 @@ function renderWorkflowBoard(scope, editor) {
         ${renderPresetOptions(editor.presets, node.preset)}
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_orchestration}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
 
         return `
@@ -2935,6 +3426,9 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Hard output rule: follow each node prompt\'s explicit thought policy.',
         'Reasoning-heavy node prompts should explicitly require one <thought>...</thought> before tool calls.',
         'Do not add extra narrative/body text outside the required output contract.',
+        `Node runtime tools: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
+        'Design one suitable agent that explicitly decides whether web search is needed.',
+        'That agent should persist reusable findings into global knowledge and delete stale entries when necessary.',
         'Runtime hard contract (must follow): return COMPLETE tool calls in one response; never return only one tool call.',
         'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
         'luker_orch_finalize_profile must be last.',
@@ -2951,6 +3445,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             character_card_context_is_available: true,
             world_info_context_is_available: true,
             recent_messages_are_available: true,
+            runtime_node_tools: [NODE_TOOL_SEARCH, NODE_TOOL_VISIT, NODE_TOOL_KNOWLEDGE_UPSERT, NODE_TOOL_KNOWLEDGE_DELETE],
             reminder: 'Do not duplicate static card data in every node; use behavior-focused checks.',
         },
         injectionContract: {
@@ -2975,13 +3470,14 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             stages: [
                 { id: 'distill', mode: 'serial', nodes: ['distiller'] },
                 { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
-                { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
+                { id: 'reason', mode: 'parallel', nodes: ['research_router', 'planner', 'critic', 'recall_relevance'] },
                 { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
             ],
             role_contracts: {
                 distiller: 'Produce compact evidence-grounded state snapshot.',
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
+                research_router: 'Decide whether web search is needed, run search tools when needed, then maintain global knowledge via upsert/delete.',
                 planner: 'Produce causally coherent next-step plan.',
                 critic: 'Run hard-gate checks and output minimal fix directives.',
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
@@ -3027,8 +3523,10 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                     general: 'Template must consume runtime context via appropriate placeholders.',
                     distiller_like: 'Prefer {{recent_chat}} + {{last_user}}.',
                     reasoning_like: 'Prefer {{distiller}} and/or {{previous_outputs}}.',
+                    snapshot_like: 'Prefer {{previous_snapshot}} for continuity-sensitive nodes.',
                     continuity_like: 'Prefer {{previous_orchestration}}.',
-                    synthesizer_like: 'Prefer {{distiller}} + {{previous_outputs}} + {{previous_orchestration}}.',
+                    knowledge_like: 'Prefer {{global_knowledge}} for research-sensitive nodes.',
+                    synthesizer_like: 'Prefer {{distiller}} + {{previous_outputs}} + {{previous_snapshot}} + {{previous_orchestration}} + {{global_knowledge}}.',
                 },
             },
             finalize: {
@@ -4267,6 +4765,9 @@ function buildAiIterationSystemPrompt(settings) {
         '- You are editing an existing orchestration profile incrementally (diff-style).',
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
+        `- Remember node runtime tools are available: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
+        '- Ensure at least one suitable node prompt includes search decision logic (when to search, when not to search).',
+        '- Ensure node templates use runtime placeholders for continuity and shared memory when relevant: {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}.',
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
         '- If you need user decision or clarification, do not call continue/finalize. Stop and wait for user.',
@@ -4299,6 +4800,10 @@ function buildAiIterationUserPrompt(session, userInputText, {
         presets: globalProfile?.presets || {},
     };
     const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
+    const latestSnapshotText = toReadableYamlText(normalizeOrchestrationSnapshot(latestOrchestrationSnapshot) || {}, '{}');
+    const globalKnowledgeText = toReadableYamlText({
+        entries: normalizeKnowledgeEntries(latestGlobalKnowledgeEntries),
+    }, '{}');
     return [
         '# iteration_input',
         'You are in a multi-turn orchestration iteration session.',
@@ -4329,6 +4834,16 @@ function buildAiIterationUserPrompt(session, userInputText, {
         '## latest_simulation',
         '```text',
         latestSimulationText,
+        '```',
+        '',
+        '## latest_orchestration_snapshot',
+        '```yaml',
+        latestSnapshotText,
+        '```',
+        '',
+        '## global_knowledge_base',
+        '```yaml',
+        globalKnowledgeText,
         '```',
         '',
         '## user_request',
@@ -4491,6 +5006,9 @@ function getChatMessagesForSimulation(context, recentMessagesN) {
 }
 
 async function runAiIterationSimulation(context, session, args = {}, abortSignal = null) {
+    await loadOrchestratorChatState(context, { force: false });
+    const snapshotBefore = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
+    const knowledgeBefore = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
     const simulationMessages = getChatMessagesForSimulation(context, args.recent_messages_n);
     const customText = String(args.simulation_text || '').trim();
     if (customText) {
@@ -4519,7 +5037,13 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
         signal: abortSignal,
         forceWorldInfoResimulate: true,
     };
-    const run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
+    let run = null;
+    try {
+        run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
+    } finally {
+        latestOrchestrationSnapshot = snapshotBefore ? structuredClone(snapshotBefore) : null;
+        latestGlobalKnowledgeEntries = structuredClone(knowledgeBefore);
+    }
     const allStageOutputs = compactStageOutputs(run?.stageOutputs || []);
     const finalStage = getFinalStageSnapshot(run?.stageOutputs || []);
     const finalNodes = Array.isArray(finalStage?.nodes) ? finalStage.nodes : [];
@@ -5245,6 +5769,7 @@ function bindUi() {
     root.find('#luker_orch_ai_suggest_preset').val(String(settings.aiSuggestPresetName || ''));
     root.find('#luker_orch_ai_suggest_system_prompt').val(String(settings.aiSuggestSystemPrompt || ''));
     root.find('#luker_orch_max_recent_messages').val(String(settings.maxRecentMessages || 14));
+    root.find('#luker_orch_node_iterations').val(String(settings.nodeIterationMaxRounds || 3));
     root.find('#luker_orch_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
     root.find('#luker_orch_agent_timeout').val(String(settings.agentTimeoutSeconds ?? 0));
     root.find('#luker_orch_capsule_position').val(String(Number(settings.capsuleInjectPosition)));
@@ -5320,6 +5845,11 @@ function bindUi() {
 
     root.on('change.lukerOrch', '#luker_orch_max_recent_messages', function () {
         settings.maxRecentMessages = Math.max(1, Math.min(80, Number(jQuery(this).val()) || 14));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_node_iterations', function () {
+        settings.nodeIterationMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(jQuery(this).val()) || 3)));
         saveSettingsDebounced();
     });
 
@@ -6364,6 +6894,8 @@ function ensureUi() {
             </div>
             <label for="luker_orch_max_recent_messages">${escapeHtml(i18n('Recent assistant turns for orchestration (N)'))}</label>
             <input id="luker_orch_max_recent_messages" class="text_pole" type="number" min="1" max="80" step="1" />
+            <label for="luker_orch_node_iterations">${escapeHtml(i18n('Node tool iteration max rounds (N)'))}</label>
+            <input id="luker_orch_node_iterations" class="text_pole" type="number" min="1" max="20" step="1" />
             <label for="luker_orch_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
             <label for="luker_orch_agent_timeout">${escapeHtml(i18n('Per-agent timeout seconds (0 = disabled)'))}</label>
@@ -6415,7 +6947,7 @@ jQuery(() => {
     ensureSettings();
     saveSettingsDebounced();
     clearCapsulePrompt(context);
-    ensureUi();
+    void loadOrchestratorChatState(context, { force: true }).finally(() => ensureUi());
 
     if (context.eventTypes.GENERATION_WORLD_INFO_FINALIZED) {
         context.eventSource.on(context.eventTypes.GENERATION_WORLD_INFO_FINALIZED, onWorldInfoFinalized);
@@ -6440,8 +6972,10 @@ jQuery(() => {
         context.eventSource.on(eventName, () => ensureUi());
     }
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
+        loadedChatStateKey = '';
         latestOrchestrationSnapshot = null;
+        latestGlobalKnowledgeEntries = [];
         clearCapsulePrompt(context);
-        ensureUi();
+        void loadOrchestratorChatState(context, { force: true }).finally(() => ensureUi());
     });
 });
