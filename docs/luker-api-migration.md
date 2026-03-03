@@ -474,6 +474,7 @@ Core request API now also supports mode switching:
     - `strictTwoPart?: boolean` (default `true`)
     - `protocolStyle?: TOOL_PROTOCOL_STYLE.TABLE | TOOL_PROTOCOL_STYLE.JSON_SCHEMA`
     - `allowReasoningText?: boolean`
+    - `allowNoToolCalls?: boolean` (default `false`)
     - `appendStrictContract?: boolean` (default `true`)
     - `triggerSignal?: string` (auto-generated when omitted)
 
@@ -485,7 +486,14 @@ Behavior:
   - Core injects plain-text tool protocol prompts automatically.
   - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.
   - Core parses model text response as JSON tool-calls and normalizes it to `choices[0].message.tool_calls`.
+  - If `functionCallOptions.allowNoToolCalls=true`, missing tool-calls are treated as valid text-only completion for that request.
+  - If `functionCallOptions.allowNoToolCalls=false`, missing/invalid tool-calls are treated as request errors.
   - Plugins can keep using `extractAllFunctionCalls(...)` as if it were native output.
+
+Retry responsibility:
+
+- `sendOpenAIRequest(...)` does **not** perform implicit retry loops for function-calling.
+- Retry policy (if needed) is owned by the caller/plugin, including max attempts and retry conditions.
 
 Recommended runtime exports (for custom parsing/contracts when needed):
 
