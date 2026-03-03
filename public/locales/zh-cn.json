@@ -788,6 +788,8 @@
 
 
     "Enable function calling": "启用函数调用",
+    "Use plain-text function calling in main chat": "主聊天使用纯文本函数调用",
+    "When enabled, main chat uses prompt-based JSON tool calling (prompt_json) instead of native tool-call protocol.": "启用后，主聊天将使用基于提示词的 JSON 工具调用（prompt_json），而不是原生工具调用协议。",
 
 
     "Supported by the current model": "当前模型支持",

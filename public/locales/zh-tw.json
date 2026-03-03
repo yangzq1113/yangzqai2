@@ -707,6 +707,8 @@
 
 
     "Enable function calling": "啟用函式呼叫",
+    "Use plain-text function calling in main chat": "主聊天使用純文字函式呼叫",
+    "When enabled, main chat uses prompt-based JSON tool calling (prompt_json) instead of native tool-call protocol.": "啟用後，主聊天會改用基於提示詞的 JSON 工具呼叫（prompt_json），而不是原生工具呼叫協定。",
 
 
     "Send inline images": "傳送內嵌圖片",
