@@ -25,6 +25,95 @@ const visitHeaders = {
     'Sec-Fetch-User': '?1',
 };
 
+function normalizeWhitespace(text) {
+    return String(text || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function stripHtmlTags(text) {
+    return String(text || '').replace(/<[^>]*>/g, ' ');
+}
+
+function decodeHtmlFragment(text) {
+    return normalizeWhitespace(decode(stripHtmlTags(text)));
+}
+
+function resolveDuckDuckGoResultUrl(rawHref) {
+    let href = String(rawHref || '').trim();
+    if (!href) {
+        return '';
+    }
+
+    if (href.startsWith('//')) {
+        href = `https:${href}`;
+    }
+
+    try {
+        const parsed = new URL(href, 'https://duckduckgo.com');
+        const isRedirect = parsed.hostname.endsWith('duckduckgo.com') && parsed.pathname === '/l/';
+        if (isRedirect) {
+            const target = parsed.searchParams.get('uddg');
+            if (target) {
+                try {
+                    return decodeURIComponent(target);
+                } catch {
+                    return target;
+                }
+            }
+        }
+        return parsed.toString();
+    } catch {
+        return href;
+    }
+}
+
+function parseDuckDuckGoHtml(html, maxResults = 8) {
+    const source = String(html || '');
+    const results = [];
+    const seenUrls = new Set();
+    const anchorRegex = /<a[^>]+class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+
+    let match;
+    while ((match = anchorRegex.exec(source)) !== null) {
+        if (results.length >= maxResults) {
+            break;
+        }
+
+        const rawHref = match[1];
+        const titleHtml = match[2];
+        const title = decodeHtmlFragment(titleHtml);
+        const url = resolveDuckDuckGoResultUrl(rawHref);
+
+        if (!title || !url || seenUrls.has(url)) {
+            continue;
+        }
+
+        let protocol = '';
+        try {
+            protocol = new URL(url).protocol;
+        } catch {
+            protocol = '';
+        }
+
+        if (protocol !== 'http:' && protocol !== 'https:') {
+            continue;
+        }
+
+        const tail = source.slice(match.index + match[0].length, match.index + match[0].length + 1400);
+        const snippetMatch = tail.match(
+            /<a[^>]+class="[^"]*\bresult__snippet\b[^"]*"[^>]*>([\s\S]*?)<\/a>|<div[^>]+class="[^"]*\bresult__snippet\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+        );
+        const snippetHtml = snippetMatch?.[1] || snippetMatch?.[2] || '';
+        const snippet = decodeHtmlFragment(snippetHtml);
+
+        seenUrls.add(url);
+        results.push({ title, url, snippet });
+    }
+
+    return results;
+}
+
 /**
  * Extract the transcript of a YouTube video
  * @param {string} videoPageBody HTML of the video page
@@ -113,6 +202,67 @@ router.post('/serpapi', async (request, response) => {
         const data = await result.json();
         console.debug('SerpApi response', data);
         return response.json(data);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/ddg', async (request, response) => {
+    try {
+        const query = String(request.body.query || '').trim();
+
+        if (!query) {
+            console.error('Query is required for /ddg');
+            return response.sendStatus(400);
+        }
+
+        const maxResults = Math.max(1, Math.min(20, Math.floor(Number(request.body.max_results ?? request.body.maxResults ?? 8) || 8)));
+        const safeSearchRaw = String(request.body.safe_search ?? request.body.safeSearch ?? 'moderate').trim().toLowerCase();
+        const timeRangeRaw = String(request.body.time_range ?? request.body.timeRange ?? '').trim().toLowerCase();
+        const region = String(request.body.region || '').trim();
+        const safeSearchMap = {
+            off: '-2',
+            moderate: '-1',
+            strict: '1',
+        };
+        const timeRangeMap = {
+            day: 'd',
+            week: 'w',
+            month: 'm',
+            year: 'y',
+        };
+
+        const searchUrl = new URL('https://duckduckgo.com/html/');
+        searchUrl.searchParams.set('q', query);
+        searchUrl.searchParams.set('kp', safeSearchMap[safeSearchRaw] || '-1');
+        if (region) {
+            searchUrl.searchParams.set('kl', region);
+        }
+        if (timeRangeMap[timeRangeRaw]) {
+            searchUrl.searchParams.set('df', timeRangeMap[timeRangeRaw]);
+        }
+
+        console.debug('DDG query', query);
+        const result = await fetch(searchUrl, {
+            headers: visitHeaders,
+        });
+
+        if (!result.ok) {
+            const text = await result.text();
+            console.error('DDG request failed', result.statusText, text);
+            return response.status(500).send(text);
+        }
+
+        const html = await result.text();
+        const results = parseDuckDuckGoHtml(html, maxResults);
+
+        return response.json({
+            provider: 'ddg',
+            query,
+            result_count: results.length,
+            results,
+        });
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);

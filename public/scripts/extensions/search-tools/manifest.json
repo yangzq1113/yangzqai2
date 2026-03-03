@@ -1,0 +1,10 @@
+{
+    "display_name": "Search Tools",
+    "loading_order": 113,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "Luker",
+    "version": "0.1.0",
+    "homePage": "https://github.com/funnycups/Luker"
+}
