@@ -250,6 +250,8 @@ function registerTools(context) {
         name: TOOL_NAMES.SEARCH,
         displayName: 'Web Search',
         description: 'Search the web for up-to-date information. Uses DuckDuckGo by default and does not require login.',
+        // This only controls visibility to main model tool-calling.
+        // Plugin API (Luker.searchTools.search/visit) remains available regardless.
         shouldRegister: async () => isToolEnabled(),
         parameters: {
             type: 'object',
@@ -274,6 +276,8 @@ function registerTools(context) {
         name: TOOL_NAMES.VISIT,
         displayName: 'Visit Web Page',
         description: 'Fetch one webpage and return readable text excerpt.',
+        // This only controls visibility to main model tool-calling.
+        // Plugin API (Luker.searchTools.search/visit) remains available regardless.
         shouldRegister: async () => isToolEnabled(),
         parameters: {
             type: 'object',
@@ -301,7 +305,7 @@ function renderSettingsBlock() {
     <div class="inline-drawer-content">
         <label class="checkbox_label">
             <input id="search_tools_enabled" type="checkbox" />
-            ${escapeHtml(i18n('Register global function tools'))}
+            ${escapeHtml(i18n('Expose tools to main model'))}
         </label>
         <label for="search_tools_provider">${escapeHtml(i18n('Search provider'))}</label>
         <select id="search_tools_provider" class="text_pole">
@@ -374,7 +378,7 @@ function ensureUi() {
 function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Search Tools': '搜索工具',
-        'Register global function tools': '注册全局函数工具',
+        'Expose tools to main model': '暴露工具给主模型',
         'Search provider': '搜索提供方',
         'DuckDuckGo (no login)': 'DuckDuckGo（无需登录）',
         'Default max search results': '默认搜索结果上限',
@@ -387,7 +391,7 @@ function registerLocaleData() {
 
     addLocaleData('zh-tw', {
         'Search Tools': '搜尋工具',
-        'Register global function tools': '註冊全域函式工具',
+        'Expose tools to main model': '將工具暴露給主模型',
         'Search provider': '搜尋提供方',
         'DuckDuckGo (no login)': 'DuckDuckGo（無需登入）',
         'Default max search results': '預設搜尋結果上限',
