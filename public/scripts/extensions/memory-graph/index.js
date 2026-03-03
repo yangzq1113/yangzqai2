@@ -5725,6 +5725,9 @@ async function ensureRuntimeLorebook(context, settings) {
 
     const newName = buildRuntimeLorebookName(context);
     await context.saveWorldInfo(newName, { entries: {} }, true);
+    if (typeof context.updateWorldInfoList === 'function') {
+        await context.updateWorldInfoList();
+    }
     context.updateChatMetadata({ [CHAT_LOREBOOK_METADATA_KEY]: newName });
     await context.saveMetadata();
     return newName;
