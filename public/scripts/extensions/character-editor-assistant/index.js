@@ -2260,6 +2260,7 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
                     strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                     allowReasoningText: true,
+                    allowNoToolCalls: true,
                 },
             });
             const rawContent = getResponseMessageContent(responseData);

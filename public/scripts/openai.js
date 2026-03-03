@@ -89,6 +89,7 @@ import {
     buildToolChoiceConstraintAddendum,
     extractAllFunctionCallsFromText,
     extractDisplayTextFromPlainTextFunctionResponse,
+    getResponseMessageContent,
     generateRandomTriggerSignal,
     mergeUserAddendumIntoPromptMessages,
     validateParsedToolCalls,
@@ -3345,6 +3346,7 @@ async function sendOpenAIRequest(type, messages, signal, {
         runtimeFunctionCallContext = {
             triggerSignal,
             tools: normalizedTools,
+            allowNoToolCalls: Boolean(modeOptions.allowNoToolCalls),
         };
     }
 
@@ -3465,17 +3467,34 @@ async function sendOpenAIRequest(type, messages, signal, {
         }
 
         if (runtimeFunctionCallContext) {
-            const parsedCalls = extractAllFunctionCallsFromText(data, null, {
-                triggerSignal: runtimeFunctionCallContext.triggerSignal,
-                triggerRequired: Boolean(runtimeFunctionCallContext.triggerSignal),
-            });
-            const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext.tools);
-            if (validationError) {
-                throw new Error(validationError);
+            const assistantTextRaw = getResponseMessageContent(data);
+            const assistantTextDisplay = extractDisplayTextFromPlainTextFunctionResponse(
+                assistantTextRaw,
+                { triggerSignal: runtimeFunctionCallContext.triggerSignal },
+            );
+            let parsedCalls = [];
+            try {
+                parsedCalls = extractAllFunctionCallsFromText(data, null, {
+                    triggerSignal: runtimeFunctionCallContext.triggerSignal,
+                    triggerRequired: Boolean(runtimeFunctionCallContext.triggerSignal),
+                });
+                const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext.tools);
+                if (validationError) {
+                    throw new Error(validationError);
+                }
+            } catch (error) {
+                if (!runtimeFunctionCallContext.allowNoToolCalls) {
+                    throw error;
+                }
+                parsedCalls = [];
             }
-            const choiceMessage = data?.choices?.[0]?.message;
-            if (choiceMessage && typeof choiceMessage === 'object') {
-                choiceMessage.tool_calls = parsedCalls.map(call => ({
+
+            const firstChoice = Array.isArray(data?.choices) ? data.choices[0] : null;
+            if (firstChoice && typeof firstChoice === 'object') {
+                if (!firstChoice.message || typeof firstChoice.message !== 'object') {
+                    firstChoice.message = { role: 'assistant', content: '' };
+                }
+                firstChoice.message.tool_calls = parsedCalls.map(call => ({
                     id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
                     type: 'function',
                     function: {
@@ -3483,10 +3502,7 @@ async function sendOpenAIRequest(type, messages, signal, {
                         arguments: JSON.stringify(call?.args ?? {}),
                     },
                 }));
-                choiceMessage.content = extractDisplayTextFromPlainTextFunctionResponse(
-                    String(choiceMessage.content || ''),
-                    { triggerSignal: runtimeFunctionCallContext.triggerSignal },
-                );
+                firstChoice.message.content = assistantTextDisplay;
             }
         }
 

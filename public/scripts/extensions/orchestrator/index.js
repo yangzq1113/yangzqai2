@@ -1283,6 +1283,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 functionCallOptions: {
                     strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                    allowNoToolCalls: Boolean(allowNoToolCalls),
                 },
             };
             const responseData = await sendOpenAIRequest('quiet', promptMessages, attemptController.signal, {
