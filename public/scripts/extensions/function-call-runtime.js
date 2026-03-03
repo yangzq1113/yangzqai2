@@ -120,6 +120,46 @@ function extractSseTextContent(raw) {
     return out.trim();
 }
 
+function extractTextFromContentNode(node) {
+    if (typeof node === 'string') {
+        return node;
+    }
+    if (Array.isArray(node)) {
+        return node.map(item => extractTextFromContentNode(item)).filter(Boolean).join('');
+    }
+    if (!node || typeof node !== 'object') {
+        return '';
+    }
+    if (typeof node.text === 'string') {
+        return node.text;
+    }
+    if (typeof node.content === 'string' || Array.isArray(node.content) || (node.content && typeof node.content === 'object')) {
+        const contentText = extractTextFromContentNode(node.content);
+        if (contentText) {
+            return contentText;
+        }
+    }
+    if (Array.isArray(node.parts)) {
+        const partsText = node.parts.map(part => extractTextFromContentNode(part)).filter(Boolean).join('');
+        if (partsText) {
+            return partsText;
+        }
+    }
+    if (Array.isArray(node.thinking)) {
+        const thinkingText = node.thinking.map(part => extractTextFromContentNode(part)).filter(Boolean).join('');
+        if (thinkingText) {
+            return thinkingText;
+        }
+    }
+    if (node.delta && typeof node.delta === 'object') {
+        const deltaText = extractTextFromContentNode(node.delta);
+        if (deltaText) {
+            return deltaText;
+        }
+    }
+    return '';
+}
+
 export function generateRandomTriggerSignal() {
     let suffix = '';
     for (let i = 0; i < 4; i += 1) {
@@ -190,11 +230,22 @@ export function getResponseMessageContent(responseData) {
         return extractSseTextContent(responseData);
     }
     if (responseData && typeof responseData === 'object') {
-        const direct = responseData?.choices?.[0]?.message?.content;
-        if (typeof direct === 'string' && direct.trim()) {
-            return direct.trim();
+        const choice = responseData?.choices?.[0];
+        const direct = choice?.message?.content;
+        const directText = extractTextFromContentNode(direct);
+        if (typeof directText === 'string' && directText.trim()) {
+            return directText.trim();
         }
-        const alt = responseData?.content ?? responseData?.raw_text ?? responseData?.sse_text ?? '';
+        const choiceText = extractTextFromContentNode(choice?.text);
+        if (typeof choiceText === 'string' && choiceText.trim()) {
+            return choiceText.trim();
+        }
+        const candidateText = extractTextFromContentNode(responseData?.candidates?.[0]?.content);
+        if (typeof candidateText === 'string' && candidateText.trim()) {
+            return candidateText.trim();
+        }
+        const altRaw = responseData?.content ?? responseData?.raw_text ?? responseData?.sse_text ?? '';
+        const alt = typeof altRaw === 'string' ? altRaw : extractTextFromContentNode(altRaw);
         if (typeof alt === 'string' && alt.trim()) {
             return extractSseTextContent(alt);
         }
