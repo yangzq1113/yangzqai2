@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
+// Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
 
 import {
     converter,
@@ -16,11 +17,15 @@ import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfil
 import {
     TOOL_PROTOCOL_STYLE,
     buildPlainTextToolProtocolMessage,
+    buildFunctionCallRetryAddendum,
+    buildToolChoiceConstraintAddendum,
     extractDisplayTextFromPlainTextFunctionResponse,
     extractToolCallsFromResponse,
     extractToolCallsFromTextResponse,
+    generateRandomTriggerSignal,
     getResponseMessageContent,
     mergeUserAddendumIntoPromptMessages,
+    validateParsedToolCalls,
 } from '../function-call-runtime.js';
 
 const MODULE_NAME = 'character_editor_assistant';
@@ -2238,16 +2243,31 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     const options = requestPresetOptions && typeof requestPresetOptions === 'object' ? requestPresetOptions : {};
     const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax || 0) || 0)));
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
+    const triggerSignal = usePlainTextCalls ? generateRandomTriggerSignal() : '';
+    const toolChoice = 'auto';
     const requestMessages = usePlainTextCalls
         ? mergeUserAddendumIntoPromptMessages(
             promptMessages,
             buildPlainTextToolProtocolMessage(tools, {
                 style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 allowReasoningText: true,
+                triggerSignal,
+                toolChoice,
             }),
             'function_call_protocol',
         )
         : promptMessages;
+    let activeRequestMessages = requestMessages;
+    if (usePlainTextCalls) {
+        const toolChoiceConstraint = buildToolChoiceConstraintAddendum(toolChoice, tools);
+        if (toolChoiceConstraint) {
+            activeRequestMessages = mergeUserAddendumIntoPromptMessages(
+                activeRequestMessages,
+                toolChoiceConstraint,
+                'function_call_tool_choice',
+            );
+        }
+    }
     const allowSet = allowedNames instanceof Set
         ? allowedNames
         : Array.isArray(allowedNames)
@@ -2257,9 +2277,9 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            const responseData = await sendOpenAIRequest('quiet', requestMessages, null, {
+            const responseData = await sendOpenAIRequest('quiet', activeRequestMessages, null, {
                 tools: usePlainTextCalls ? [] : tools,
-                toolChoice: 'auto',
+                toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
                 replaceTools: true,
                 requestScope: 'extension_internal',
                 llmPresetName: options.llmPresetName,
@@ -2268,22 +2288,40 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
             });
             const rawContent = getResponseMessageContent(responseData);
             const assistantText = usePlainTextCalls
-                ? extractDisplayTextFromPlainTextFunctionResponse(rawContent)
+                ? extractDisplayTextFromPlainTextFunctionResponse(rawContent, { triggerSignal })
                 : rawContent;
 
             if (!usePlainTextCalls) {
                 const calls = extractToolCallsFromResponse(responseData)
                     .filter(call => !allowSet || allowSet.has(String(call?.name || '').trim()));
+                const validationError = validateParsedToolCalls(calls, tools);
+                if (validationError) {
+                    throw new Error(validationError);
+                }
                 return { calls, assistantText };
             }
 
-            const calls = extractToolCallsFromTextResponse(responseData, allowSet);
+            const calls = extractToolCallsFromTextResponse(responseData, allowSet, {
+                triggerSignal,
+                triggerRequired: Boolean(triggerSignal),
+            });
+            const validationError = validateParsedToolCalls(calls, tools);
+            if (validationError) {
+                throw new Error(validationError);
+            }
             return { calls, assistantText };
         } catch (error) {
             lastError = error;
             if (attempt >= retries) {
                 throw error;
             }
+            const retryAddendum = buildFunctionCallRetryAddendum({
+                rawResponse: '',
+                errorDetails: error?.message || String(error),
+                triggerSignal,
+                plainTextMode: usePlainTextCalls,
+            });
+            activeRequestMessages = mergeUserAddendumIntoPromptMessages(activeRequestMessages, retryAddendum, 'function_call_retry');
             console.warn(`[${MODULE_NAME}] Lorebook tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
         }
     }

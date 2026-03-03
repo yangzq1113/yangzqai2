@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
+// Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
 
 import { extension_prompt_roles, extension_prompt_types, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
@@ -8,14 +9,18 @@ import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
+    TOOL_PROTOCOL_STYLE,
     buildPlainTextToolProtocolMessage,
+    buildFunctionCallRetryAddendum,
     buildStrictThoughtAndFunctionOnlyAddendum,
+    buildToolChoiceConstraintAddendum,
     extractAllFunctionCalls,
     extractAllFunctionCallsFromText,
     extractDisplayTextFromPlainTextFunctionResponse,
-    extractFunctionCallArguments,
+    generateRandomTriggerSignal,
     getResponseMessageContent,
     mergeUserAddendumIntoPromptMessages,
+    validateParsedToolCalls,
 } from '../function-call-runtime.js';
 import { yaml } from '../../../lib.js';
 
@@ -1186,12 +1191,23 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         function: { name: fnName },
     };
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
+    const triggerSignal = usePlainTextCalls ? generateRandomTriggerSignal() : '';
     let requestMessages = promptMessages;
     if (usePlainTextCalls) {
         requestMessages = mergeUserAddendumIntoPromptMessages(
             requestMessages,
-            buildPlainTextToolProtocolMessage(tools, { requiredFunctionName: fnName }),
+            buildPlainTextToolProtocolMessage(tools, {
+                requiredFunctionName: fnName,
+                style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                strictTwoPart: true,
+                triggerSignal,
+                toolChoice,
+            }),
         );
+        const toolChoiceConstraint = buildToolChoiceConstraintAddendum(toolChoice, tools);
+        if (toolChoiceConstraint) {
+            requestMessages = mergeUserAddendumIntoPromptMessages(requestMessages, toolChoiceConstraint);
+        }
     }
     requestMessages = mergeUserAddendumIntoPromptMessages(
         requestMessages,
@@ -1219,15 +1235,24 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             const responseData = await sendOpenAIRequest('quiet', requestMessages, attemptController.signal, {
                 ...requestOptions,
             });
-            if (usePlainTextCalls) {
-                const calls = extractAllFunctionCallsFromText(responseData, [fnName]);
-                const matched = calls.find(call => String(call?.name || '') === fnName);
-                if (!matched) {
+            const calls = usePlainTextCalls
+                ? extractAllFunctionCallsFromText(responseData, [fnName], {
+                    triggerSignal,
+                    triggerRequired: Boolean(triggerSignal),
+                })
+                : extractAllFunctionCalls(responseData, [fnName]);
+            const validationError = validateParsedToolCalls(calls, tools);
+            if (validationError) {
+                throw new Error(validationError);
+            }
+            const matched = calls.find(call => String(call?.name || '') === fnName);
+            if (!matched) {
+                if (usePlainTextCalls) {
                     throw new Error(`Model returned text calls, but not '${fnName}'.`);
                 }
-                return matched.args;
+                throw new Error(`Model returned tool call, but not '${fnName}'.`);
             }
-            return extractFunctionCallArguments(responseData, fnName);
+            return matched.args;
         } catch (error) {
             const timedOut = attemptController.didTimeout();
             const sourceAborted = isAbortError(error, abortSignal);
@@ -1241,6 +1266,14 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             if (attempt >= retries) {
                 throw effectiveError;
             }
+            const retryAddendum = buildFunctionCallRetryAddendum({
+                rawResponse: '',
+                errorDetails: effectiveError?.message || String(effectiveError),
+                triggerSignal,
+                requiredFunctionName: fnName,
+                plainTextMode: usePlainTextCalls,
+            });
+            requestMessages = mergeUserAddendumIntoPromptMessages(requestMessages, retryAddendum);
             console.warn(`[${MODULE_NAME}] Tool call '${fnName}' failed. Retrying (${attempt + 1}/${retries})...`, effectiveError);
         } finally {
             attemptController.cleanup();
@@ -1271,12 +1304,23 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const timeoutMs = applyAgentTimeout ? getAgentTimeoutMs(settings) : 0;
     const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
+    const triggerSignal = usePlainTextCalls ? generateRandomTriggerSignal() : '';
+    const toolChoice = 'auto';
     let requestMessages = promptMessages;
     if (usePlainTextCalls) {
         requestMessages = mergeUserAddendumIntoPromptMessages(
             requestMessages,
-            buildPlainTextToolProtocolMessage(tools),
+            buildPlainTextToolProtocolMessage(tools, {
+                style: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                strictTwoPart: true,
+                triggerSignal,
+                toolChoice,
+            }),
         );
+        const toolChoiceConstraint = buildToolChoiceConstraintAddendum(toolChoice, tools);
+        if (toolChoiceConstraint) {
+            requestMessages = mergeUserAddendumIntoPromptMessages(requestMessages, toolChoiceConstraint);
+        }
     }
     requestMessages = mergeUserAddendumIntoPromptMessages(
         requestMessages,
@@ -1293,7 +1337,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         try {
             const requestOptions = {
                 tools: usePlainTextCalls ? [] : tools,
-                toolChoice: 'auto',
+                toolChoice: usePlainTextCalls ? 'auto' : toolChoice,
                 replaceTools: true,
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
@@ -1306,7 +1350,10 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 const rawContent = getResponseMessageContent(responseData);
                 let calls = [];
                 try {
-                    calls = extractAllFunctionCallsFromText(responseData, allowedNames);
+                    calls = extractAllFunctionCallsFromText(responseData, allowedNames, {
+                        triggerSignal,
+                        triggerRequired: Boolean(triggerSignal),
+                    });
                 } catch (error) {
                     if (allowNoToolCalls && rawContent && isNoToolCallExtractionError(error)) {
                         if (includeAssistantText) {
@@ -1320,10 +1367,14 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                     }
                     throw error;
                 }
+                const validationError = validateParsedToolCalls(calls, tools);
+                if (validationError) {
+                    throw new Error(validationError);
+                }
                 if (includeAssistantText) {
                     return {
                         toolCalls: calls,
-                        assistantText: extractDisplayTextFromPlainTextFunctionResponse(rawContent),
+                        assistantText: extractDisplayTextFromPlainTextFunctionResponse(rawContent, { triggerSignal }),
                         rawAssistantText: rawContent,
                     };
                 }
@@ -1346,6 +1397,10 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 }
                 throw error;
             }
+            const validationError = validateParsedToolCalls(calls, tools);
+            if (validationError) {
+                throw new Error(validationError);
+            }
             if (includeAssistantText) {
                 return {
                     toolCalls: calls,
@@ -1367,6 +1422,13 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             if (attempt >= retries) {
                 throw effectiveError;
             }
+            const retryAddendum = buildFunctionCallRetryAddendum({
+                rawResponse: '',
+                errorDetails: effectiveError?.message || String(effectiveError),
+                triggerSignal,
+                plainTextMode: usePlainTextCalls,
+            });
+            requestMessages = mergeUserAddendumIntoPromptMessages(requestMessages, retryAddendum);
             console.warn(`[${MODULE_NAME}] Multi tool call request failed. Retrying (${attempt + 1}/${retries})...`, effectiveError);
         } finally {
             attemptController.cleanup();
