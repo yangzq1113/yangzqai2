@@ -74,7 +74,6 @@ let generationToast = null;
 /** @type {AbortController[]} */
 const generationAbortControllers = [];
 const trackedGenerationControllers = new Set();
-const earlyEndedGenerationControllers = new Set();
 const sources = {
     extras: 'extras',
     horde: 'horde',
@@ -2919,7 +2918,14 @@ function updateGenerationIndicator() {
 }
 
 function syncGenerationTrackingState() {
-    activeGenerations = Math.max(0, trackedGenerationControllers.size - earlyEndedGenerationControllers.size);
+    const activeControllers = new Set();
+    for (const controller of generationAbortControllers) {
+        if (controller instanceof AbortController && !controller.signal.aborted) {
+            activeControllers.add(controller);
+        }
+    }
+
+    activeGenerations = activeControllers.size;
     updateGenerationIndicator();
 }
 
@@ -2933,21 +2939,14 @@ function startGenerationTracking(controller = null) {
 function endGenerationTracking(controller = null) {
     if (controller instanceof AbortController) {
         trackedGenerationControllers.delete(controller);
-        earlyEndedGenerationControllers.delete(controller);
     }
     syncGenerationTrackingState();
 }
 
 function endGenerationTrackingEarly(controller) {
-    if (!(controller instanceof AbortController)) {
+    if (!(controller instanceof AbortController) || !trackedGenerationControllers.has(controller)) {
         return;
     }
-
-    if (!trackedGenerationControllers.has(controller) || earlyEndedGenerationControllers.has(controller)) {
-        return;
-    }
-
-    earlyEndedGenerationControllers.add(controller);
     syncGenerationTrackingState();
 }
 
@@ -2974,8 +2973,8 @@ function abortOneActiveGeneration(reason = 'Aborted by user') {
                 if (trackedOnly && !trackedGenerationControllers.has(controller)) {
                     continue;
                 }
-                endGenerationTrackingEarly(controller);
                 controller.abort(reason);
+                syncGenerationTrackingState();
                 return true;
             }
         }
