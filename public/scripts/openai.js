@@ -4471,7 +4471,7 @@ function loadOpenAISettings(data, settings) {
     openai_settings = data.openai_settings;
     openai_settings.forEach(function (item, i) {
         const parsed = JSON.parse(item);
-        openai_settings[i] = structuredClone(parsed);
+        openai_settings[i] = stripOpenAIConnectionFieldsFromPreset(structuredClone(parsed));
     });
 
     $('#settings_preset_openai').empty();
@@ -5018,6 +5018,9 @@ async function getStatusOpen() {
 export function getChatCompletionPreset(settings = oai_settings) {
     const presetBody = {};
     for (const [presetKey, [, settingsKey]] of Object.entries(settingsToUpdate)) {
+        if (isOpenAIConnectionPresetField(presetKey)) {
+            continue;
+        }
         if (isConnectionProfileOnlyPresetField(presetKey)) {
             continue;
         }
@@ -5051,8 +5054,10 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
 
         if (Object.keys(openai_setting_names).includes(data.name)) {
             const value = openai_setting_names[data.name];
-            for (const key of connectionProfileOnlyPresetKeys) {
-                delete openai_settings[value]?.[key];
+            for (const key of Object.keys(settingsToUpdate)) {
+                if (isOpenAIConnectionPresetField(key)) {
+                    delete openai_settings[value]?.[key];
+                }
             }
             Object.assign(openai_settings[value], presetBody);
             if (triggerUi) {
@@ -5264,6 +5269,11 @@ async function onPresetImportFileChange(e) {
     if (Object.keys(openai_setting_names).includes(data.name)) {
         oai_settings.preset_settings_openai = data.name;
         const value = openai_setting_names[data.name];
+        for (const key of Object.keys(settingsToUpdate)) {
+            if (isOpenAIConnectionPresetField(key)) {
+                delete openai_settings[value]?.[key];
+            }
+        }
         Object.assign(openai_settings[value], presetBody);
         $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
         $('#settings_preset_openai').trigger('change');
@@ -5665,27 +5675,12 @@ async function onSettingsPresetChange(event) {
             presetNameBefore: presetNameBefore,
         });
     } finally {
-        let connectionChanged = false;
         for (const [key, [selector, setting, isCheckbox, isConnection]] of Object.entries(settingsToUpdate)) {
             if (isConnectionProfileOnlyPresetField(key)) {
                 continue;
             }
             if (isConnection) {
-                if (preset[key] !== undefined) {
-                    const nextValue = preset[key];
-                    oai_settings[setting] = nextValue;
-                    if (selector && selector !== '#NULL_SELECTOR') {
-                        const $element = $(selector);
-                        if ($element.length > 0) {
-                            if (isCheckbox) {
-                                $element.prop('checked', Boolean(nextValue));
-                            } else {
-                                $element.val(nextValue);
-                            }
-                        }
-                    }
-                    connectionChanged = true;
-                }
+                // Luker decouples chat-completion presets from API connection/profile state.
                 continue;
             }
 
@@ -5703,12 +5698,6 @@ async function onSettingsPresetChange(event) {
                 }
                 oai_settings[setting] = preset[key];
             }
-        }
-
-        if (connectionChanged) {
-            syncProxyPresetSelectionByConnection();
-            $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');
-            reconnectOpenAi();
         }
 
         $('#openai_logit_bias_preset').trigger('change');
