@@ -800,6 +800,43 @@ function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
     };
 }
 
+function applyWorldInfoPostActivationHook(runtimeWorldInfo = null, postActivationHook = null) {
+    const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
+    if (typeof postActivationHook !== 'function') {
+        return normalized;
+    }
+
+    const payload = {
+        worldInfoBefore: normalized.worldInfoBefore,
+        worldInfoAfter: normalized.worldInfoAfter,
+        worldInfoDepth: normalized.worldInfoDepth.map(entry => ({
+            depth: Math.max(0, Math.floor(Number(entry?.depth) || 0)),
+            role: normalizeLayoutRole(entry?.role),
+            entries: Array.isArray(entry?.entries) ? entry.entries.map(item => String(item ?? '').trim()).filter(Boolean) : [],
+        })),
+        outletEntries: Object.fromEntries(
+            Object.entries(normalized.outletEntries).map(([key, value]) => [key, Array.isArray(value) ? [...value] : []]),
+        ),
+        worldInfoExamples: normalized.worldInfoExamples.map(example => ({
+            position: Number(example?.position),
+            content: String(example?.content ?? '').trim(),
+        })),
+        anBefore: [...normalized.anBefore],
+        anAfter: [...normalized.anAfter],
+    };
+
+    try {
+        const hookResult = postActivationHook(payload);
+        if (hookResult && typeof hookResult === 'object') {
+            return normalizeRuntimeWorldInfo({ ...payload, ...hookResult });
+        }
+        return normalizeRuntimeWorldInfo(payload);
+    } catch (error) {
+        console.warn('[LUKER] world-info postActivationHook failed', error);
+        return normalized;
+    }
+}
+
 function mergeWorldInfoDepthIntoMessages(messages, worldInfoDepthEntries) {
     const base = Array.isArray(messages)
         ? messages.map(message => ({ ...message }))
@@ -992,6 +1029,7 @@ async function resolveWorldInfoForMessages(messages = [], {
     includeNames = true,
     globalScanData = undefined,
     fallbackToCurrentChat = true,
+    postActivationHook = null,
 } = {}) {
     const sourceMessages = Array.isArray(messages) && messages.length > 0
         ? messages
@@ -1017,7 +1055,7 @@ async function resolveWorldInfoForMessages(messages = [], {
 
     try {
         const resolution = await simulateWorldInfoActivation(request);
-        return normalizeRuntimeWorldInfo({
+        return applyWorldInfoPostActivationHook({
             worldInfoBefore: resolution?.worldInfoBefore || '',
             worldInfoAfter: resolution?.worldInfoAfter || '',
             worldInfoDepth: Array.isArray(resolution?.worldInfoDepth) ? resolution.worldInfoDepth : [],
@@ -1025,7 +1063,7 @@ async function resolveWorldInfoForMessages(messages = [], {
             worldInfoExamples: Array.isArray(resolution?.worldInfoExamples) ? resolution.worldInfoExamples : [],
             anBefore: Array.isArray(resolution?.anBefore) ? resolution.anBefore : [],
             anAfter: Array.isArray(resolution?.anAfter) ? resolution.anAfter : [],
-        });
+        }, postActivationHook);
     } catch (error) {
         console.warn('[LUKER] resolveWorldInfoForMessages failed', error);
         return normalizeRuntimeWorldInfo();

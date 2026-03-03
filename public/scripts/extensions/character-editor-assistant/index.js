@@ -362,6 +362,7 @@ async function buildPresetAwareLorebookMessages(context, systemPrompt, userPromp
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(worldInfoMessages, {
             type: 'quiet',
             fallbackToCurrentChat: false,
+            postActivationHook: rewriteDepthWorldInfoToAfterWithNotes,
         });
     }
     try {
@@ -383,6 +384,41 @@ async function buildPresetAwareLorebookMessages(context, systemPrompt, userPromp
     }
 
     return baseMessages;
+}
+
+function rewriteDepthWorldInfoToAfterWithNotes(payload = {}) {
+    if (!payload || typeof payload !== 'object') {
+        return payload;
+    }
+    const depthEntries = Array.isArray(payload.worldInfoDepth) ? payload.worldInfoDepth : [];
+    if (depthEntries.length === 0) {
+        return payload;
+    }
+
+    const blocks = [];
+    for (const entry of depthEntries) {
+        const depth = Math.max(0, Math.floor(Number(entry?.depth) || 0));
+        const lines = Array.isArray(entry?.entries) ? entry.entries : [];
+        for (const line of lines) {
+            const content = String(line ?? '').trim();
+            if (!content) {
+                continue;
+            }
+            blocks.push(`[原聊天深度注入: ${depth}]\n${content}`);
+        }
+    }
+
+    payload.worldInfoDepth = [];
+    if (blocks.length === 0) {
+        return payload;
+    }
+
+    const mergedDepthText = blocks.join('\n\n').trim();
+    payload.worldInfoAfter = [String(payload.worldInfoAfter || '').trim(), mergedDepthText]
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+    return payload;
 }
 
 function getOpenAIPresetNames(context) {

@@ -1775,6 +1775,39 @@ function normalizeWorldInfoResolverMessages(messages = []) {
     });
 }
 
+function rewriteDepthWorldInfoToAfter(payload = {}) {
+    if (!payload || typeof payload !== 'object') {
+        return payload;
+    }
+    const depthEntries = Array.isArray(payload.worldInfoDepth) ? payload.worldInfoDepth : [];
+    if (depthEntries.length === 0) {
+        return payload;
+    }
+
+    const blocks = [];
+    for (const entry of depthEntries) {
+        const lines = Array.isArray(entry?.entries) ? entry.entries : [];
+        for (const line of lines) {
+            const content = String(line ?? '').trim();
+            if (content) {
+                blocks.push(content);
+            }
+        }
+    }
+
+    payload.worldInfoDepth = [];
+    if (blocks.length === 0) {
+        return payload;
+    }
+
+    const mergedDepthText = blocks.join('\n\n').trim();
+    payload.worldInfoAfter = [String(payload.worldInfoAfter || '').trim(), mergedDepthText]
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+    return payload;
+}
+
 async function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     api = '',
     promptPresetName = '',
@@ -1795,6 +1828,7 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(resolverMessages, {
             type: String(worldInfoType || 'quiet'),
             fallbackToCurrentChat: false,
+            postActivationHook: rewriteDepthWorldInfoToAfter,
         });
     }
 
