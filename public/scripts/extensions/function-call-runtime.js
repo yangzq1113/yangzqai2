@@ -594,15 +594,18 @@ export function buildPlainTextToolProtocolMessage(
         }));
         return [
             'Plain-text function-call mode is enabled.',
+            'Multiple tool calls are fully supported in a single response and are encouraged when the task needs them.',
             allowReasoningText
                 ? 'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.'
                 : 'Output contract is strict.',
             strictTwoPart
-                ? 'Return exactly two parts in order: (1) one <thought>...</thought>; (2) one and only one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}.'
-                : 'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+                ? 'Return exactly two parts in order: (1) one <thought>...</thought>; (2) one and only one JSON object containing the tool_calls array (array may include one or more calls).'
+                : 'The final output must end with one JSON object containing the tool_calls array (array may include one or more calls).',
             strictTwoPart
                 ? 'No narrative/body text, markdown, code fences, comments, XML blocks (except <thought>), or extra JSON before/after the JSON object.'
                 : '',
+            'Example (single call): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
+            'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}',
             triggerLine,
             requiredLine,
             toolChoiceLine,
@@ -619,9 +622,12 @@ export function buildPlainTextToolProtocolMessage(
     });
     return [
         'Plain-text function-call mode is enabled.',
+        'Multiple tool calls are fully supported in a single response and are encouraged when the task needs them.',
         'Do necessary reasoning following the current prompt policy, then output function-call payload only.',
         'Do not output extra prose outside the required payload.',
-        'The final output must end with one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}',
+        'The final output must end with one JSON object containing the tool_calls array (array may include one or more calls).',
+        'Example (single call): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
+        'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}',
         triggerLine,
         requiredLine,
         toolChoiceLine,
@@ -638,8 +644,10 @@ export function buildStrictThoughtAndFunctionOnlyAddendum({ plainTextMode = fals
         'You must return EXACTLY two parts in this order:',
         '1) one <thought>...</thought> block.',
         plainTextMode
-            ? '2) exactly one JSON object for function calls: {"tool_calls":[...]}'
+            ? '2) exactly one JSON object for function calls: {"tool_calls":[...]} (array may include one or more calls).'
             : '2) function calls only (tool-calls channel).',
+        plainTextMode ? 'Multiple tool calls in one response are valid and recommended when needed.' : '',
+        plainTextMode ? 'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}' : '',
         requiredName ? `Required function name: ${requiredName}.` : '',
         'Do NOT output any other text or blocks.',
         'Forbidden: narrative/body text, <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, markdown, code fences, comments, duplicate JSON payloads.',
@@ -666,8 +674,9 @@ export function buildFunctionCallRetryAddendum({
         'Retry now with strictly valid output only.',
         trigger ? `First line must be exactly: ${trigger}` : '',
         plainTextMode
-            ? 'Then output exactly one JSON object: {"tool_calls":[{"name":"FUNCTION_NAME","arguments":{...}}]}'
+            ? 'Then output exactly one JSON object containing the tool_calls array (array may include one or more calls).'
             : 'Then output tool calls only.',
+        plainTextMode ? 'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}' : '',
         required ? `Required function name: ${required}.` : '',
         'Do not output any extra prose after the function payload.',
     ].filter(Boolean).join('\n');
