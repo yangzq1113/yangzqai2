@@ -2644,12 +2644,61 @@ async function runCharacterEditorSearchToolCall(call) {
     throw new Error(`Unsupported search tool: ${name}`);
 }
 
-function buildCharacterEditorSearchFollowUpMessage(round, searchRoundResults) {
-    return [
-        `Search tool results (round ${Number(round)}):`,
-        JSON.stringify(searchRoundResults || [], null, 2),
-        'Continue editing task based on these results. If enough information is available, return edit tool calls.',
-    ].join('\n\n');
+function makeRuntimeToolCallId() {
+    return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function serializeToolResultContent(result) {
+    if (typeof result === 'string') {
+        return result;
+    }
+    if (result === null || result === undefined) {
+        return '';
+    }
+    try {
+        return JSON.stringify(result, null, 2);
+    } catch {
+        return String(result);
+    }
+}
+
+function appendStandardToolRoundMessages(targetMessages, executedCalls, assistantText = '') {
+    if (!Array.isArray(targetMessages) || !Array.isArray(executedCalls) || executedCalls.length === 0) {
+        return;
+    }
+
+    const toolCalls = executedCalls.map((call) => {
+        const id = String(call?.id || '').trim() || makeRuntimeToolCallId();
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        return {
+            id,
+            type: 'function',
+            function: {
+                name,
+                arguments: JSON.stringify(args),
+            },
+            _result: call?.result,
+        };
+    }).filter(call => call.function.name);
+
+    if (toolCalls.length === 0) {
+        return;
+    }
+
+    targetMessages.push({
+        role: 'assistant',
+        content: String(assistantText || ''),
+        tool_calls: toolCalls.map(({ _result, ...toolCall }) => toolCall),
+    });
+
+    for (const toolCall of toolCalls) {
+        targetMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: serializeToolResultContent(toolCall._result),
+        });
+    }
 }
 
 function buildCharacterEditorModelTools({ includeSearchTools = true } = {}) {
@@ -2911,6 +2960,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
     const settings = getSettings();
     const allowedToolNames = new Set(availableToolNames);
     const conversationHistory = history.map(item => ({ role: item.role, content: item.content }));
+    const runtimeToolMessages = [];
     let lastAssistantText = '';
 
     for (let round = 1; round <= CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT; round++) {
@@ -2924,10 +2974,11 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 search_round: round,
             }),
         ].join('\n\n');
-        const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
+        const baseRequestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
             ...requestPresetOptions,
             worldInfoMessages: conversationHistory,
         });
+        const requestMessages = baseRequestMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
         const { calls: rawCalls, assistantText } = await requestLorebookToolCallsWithRetry(
             settings,
             requestMessages,
@@ -2947,24 +2998,31 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
             };
         }
 
-        const searchRoundResults = [];
+        const executedSearchCalls = [];
         for (const call of searchCalls) {
             const name = String(call?.name || '').trim();
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
             try {
                 const result = await runCharacterEditorSearchToolCall(call);
-                searchRoundResults.push({
+                executedSearchCalls.push({
+                    id: callId,
                     name,
                     args,
-                    ok: true,
-                    result,
+                    result: {
+                        ok: true,
+                        result,
+                    },
                 });
             } catch (error) {
-                searchRoundResults.push({
+                executedSearchCalls.push({
+                    id: callId,
                     name,
                     args,
-                    ok: false,
-                    error: String(error?.message || error || 'search tool failed'),
+                    result: {
+                        ok: false,
+                        error: String(error?.message || error || 'search tool failed'),
+                    },
                 });
             }
         }
@@ -2975,10 +3033,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 content: lastAssistantText,
             });
         }
-        conversationHistory.push({
-            role: 'user',
-            content: buildCharacterEditorSearchFollowUpMessage(round, searchRoundResults),
-        });
+        appendStandardToolRoundMessages(runtimeToolMessages, executedSearchCalls, lastAssistantText);
     }
 
     throw new Error(`Character editor search chain exceeded internal safety limit (${CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT}).`);

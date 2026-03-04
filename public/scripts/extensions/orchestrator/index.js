@@ -2025,6 +2025,63 @@ async function executeNodeExternalToolCall(call, nodeSpec) {
     throw new Error(`Unsupported node tool: ${name}`);
 }
 
+function makeRuntimeToolCallId() {
+    return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function serializeToolResultContent(result) {
+    if (typeof result === 'string') {
+        return result;
+    }
+    if (result === null || result === undefined) {
+        return '';
+    }
+    try {
+        return JSON.stringify(result, null, 2);
+    } catch {
+        return String(result);
+    }
+}
+
+function appendStandardToolRoundMessages(targetMessages, executedCalls, assistantText = '') {
+    if (!Array.isArray(targetMessages) || !Array.isArray(executedCalls) || executedCalls.length === 0) {
+        return;
+    }
+
+    const toolCalls = executedCalls.map((call) => {
+        const id = String(call?.id || '').trim() || makeRuntimeToolCallId();
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        return {
+            id,
+            type: 'function',
+            function: {
+                name,
+                arguments: JSON.stringify(args),
+            },
+            _result: call?.result,
+        };
+    }).filter(call => call.function.name);
+
+    if (toolCalls.length === 0) {
+        return;
+    }
+
+    targetMessages.push({
+        role: 'assistant',
+        content: String(assistantText || ''),
+        tool_calls: toolCalls.map(({ _result, ...toolCall }) => toolCall),
+    });
+
+    for (const toolCall of toolCalls) {
+        targetMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: serializeToolResultContent(toolCall._result),
+        });
+    }
+}
+
 async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
     const isFinalStage = Boolean(options?.isFinalStage);
     const settings = extension_settings[MODULE_NAME];
@@ -2074,7 +2131,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
     const maxRounds = getNodeIterationMaxRounds(settings);
     const outputToolName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
-    const toolHistory = [];
+    const runtimeToolMessages = [];
 
     for (let round = 1; round <= maxRounds; round++) {
         const iterationPrompt = [
@@ -2084,14 +2141,9 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
             '',
             '## node_iteration_round',
             `${round}/${maxRounds}`,
-            '',
-            '## node_tool_history',
-            '```yaml',
-            toReadableYamlText(toolHistory, '[]'),
-            '```',
         ].join('\n');
 
-        const promptMessages = await buildPresetAwareMessages(
+        const basePromptMessages = await buildPresetAwareMessages(
             context,
             settings,
             String(preset.systemPrompt || '').trim(),
@@ -2105,6 +2157,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
                 forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
             },
         );
+        const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
 
         const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
             tools,
@@ -2122,7 +2175,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         }
 
         let finalizedOutput = null;
-        const roundResults = [];
+        const executedCalls = [];
         for (const call of calls) {
             const name = String(call?.name || '').trim();
             if (!name) {
@@ -2133,17 +2186,13 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
                 continue;
             }
             const result = await executeNodeExternalToolCall(call, nodeSpec);
-            roundResults.push({
-                tool: name,
-                args: call?.args && typeof call.args === 'object' ? structuredClone(call.args) : {},
+            const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
+            const args = call?.args && typeof call.args === 'object' ? structuredClone(call.args) : {};
+            executedCalls.push({
+                id: callId,
+                name,
+                args,
                 result,
-            });
-        }
-
-        if (roundResults.length > 0) {
-            toolHistory.push({
-                round,
-                results: roundResults,
             });
         }
 
@@ -2160,6 +2209,11 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
             }
             throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
         }
+
+        if (executedCalls.length === 0) {
+            throw new Error(`Node '${nodeSpec.id}' did not execute any non-output tool calls before next iteration.`);
+        }
+        appendStandardToolRoundMessages(runtimeToolMessages, executedCalls, detailed?.assistantText || '');
     }
 
     throw new Error(`Node '${nodeSpec.id}' exceeded max iteration rounds (${maxRounds}) without ${outputToolName}.`);
