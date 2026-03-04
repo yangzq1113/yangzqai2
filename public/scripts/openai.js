@@ -89,6 +89,7 @@ import {
     buildToolChoiceConstraintAddendum,
     extractAllFunctionCallsFromText,
     extractDisplayTextFromPlainTextFunctionResponse,
+    findLastTriggerSignalOutsideThought,
     getResponseMessageContent,
     generateRandomTriggerSignal,
     mergeUserAddendumIntoPromptMessages,
@@ -3354,7 +3355,6 @@ async function sendOpenAIRequest(type, messages, signal, {
         runtimeFunctionCallContext = {
             triggerSignal,
             tools: normalizedTools,
-            allowNoToolCalls: Boolean(modeOptions.allowNoToolCalls),
         };
     }
 
@@ -3491,7 +3491,9 @@ async function sendOpenAIRequest(type, messages, signal, {
                     throw new Error(validationError);
                 }
             } catch (error) {
-                if (!runtimeFunctionCallContext.allowNoToolCalls) {
+                const hasTrigger = Boolean(runtimeFunctionCallContext.triggerSignal)
+                    && findLastTriggerSignalOutsideThought(assistantTextRaw, runtimeFunctionCallContext.triggerSignal) >= 0;
+                if (hasTrigger) {
                     throw error;
                 }
                 parsedCalls = [];

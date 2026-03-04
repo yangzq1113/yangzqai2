@@ -474,7 +474,6 @@ Core request API now also supports mode switching:
     - `strictTwoPart?: boolean` (default `true`)
     - `protocolStyle?: TOOL_PROTOCOL_STYLE.TABLE | TOOL_PROTOCOL_STYLE.JSON_SCHEMA`
     - `allowReasoningText?: boolean`
-    - `allowNoToolCalls?: boolean` (default `false`)
     - `appendStrictContract?: boolean` (default `true`)
     - `triggerSignal?: string` (auto-generated when omitted)
 
@@ -486,8 +485,8 @@ Behavior:
   - Core injects plain-text tool protocol prompts automatically.
   - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.
   - Core parses model text response as JSON tool-calls and normalizes it to `choices[0].message.tool_calls`.
-  - If `functionCallOptions.allowNoToolCalls=true`, missing tool-calls are treated as valid text-only completion for that request.
-  - If `functionCallOptions.allowNoToolCalls=false`, missing/invalid tool-calls are treated as request errors.
+  - If model output has no trigger signal / no tool-call payload, core returns `tool_calls=[]` and leaves policy decisions to the caller/plugin.
+  - If trigger signal appears but tool-call JSON is invalid/unparseable, core throws request error.
   - Plugins can keep using `extractAllFunctionCalls(...)` as if it were native output.
 
 Retry responsibility:
