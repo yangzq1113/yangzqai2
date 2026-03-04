@@ -314,6 +314,9 @@ function registerLocaleData() {
         'Apply to Character': '应用到角色卡',
         'Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...': '输入给 AI 的需求，例如：保持紧凑节奏，并用我提供的场景做一次模拟...',
         'No messages yet. Start by telling AI what you want to optimize.': '还没有对话。先告诉 AI 你希望优化什么。',
+        'Auto simulation context (folded)': '自动模拟上下文（已折叠）',
+        'Long message (${0} chars)': '长消息（${0} 字符）',
+        'Preview': '预览',
         'No character selected. Cannot apply to character override.': '当前未选择角色卡，无法应用到角色卡覆写。',
         'Iteration session applied to global profile.': '迭代会话已应用到全局配置。',
         'Iteration session applied to character override: ${0}.': '迭代会话已应用到角色卡覆写：${0}。',
@@ -495,6 +498,9 @@ function registerLocaleData() {
         'Apply to Character': '套用到角色卡',
         'Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...': '輸入給 AI 的需求，例如：保持緊湊節奏，並用我提供的場景做一次模擬...',
         'No messages yet. Start by telling AI what you want to optimize.': '尚無對話。先告訴 AI 你希望優化什麼。',
+        'Auto simulation context (folded)': '自動模擬上下文（已摺疊）',
+        'Long message (${0} chars)': '長訊息（${0} 字符）',
+        'Preview': '預覽',
         'No character selected. Cannot apply to character override.': '目前未選擇角色卡，無法套用到角色卡覆寫。',
         'Iteration session applied to global profile.': '迭代會話已套用到全域設定。',
         'Iteration session applied to character override: ${0}.': '迭代會話已套用到角色卡覆寫：${0}。',
@@ -3888,6 +3894,47 @@ function summarizeStageForUi(stage) {
     };
 }
 
+const ITERATION_MESSAGE_FOLD_CHAR_THRESHOLD = 1200;
+const ITERATION_MESSAGE_FOLD_LINE_THRESHOLD = 18;
+
+function isIterationMessageLikelySimulationContext(text) {
+    const source = String(text || '');
+    if (!source) {
+        return false;
+    }
+    return source.includes('<simulation_results>')
+        || source.includes('"all_stage_outputs"')
+        || source.includes('"final_stage_id"')
+        || source.includes('AUTO CONTINUE')
+        || source.includes('Previous tool execution is complete. Review the result and continue iteration.');
+}
+
+function renderAiIterationMessageBodyHtml(content, { auto = false } = {}) {
+    const text = stripIterationThoughtForDisplay(content || '');
+    if (!text) {
+        return escapeHtml('(empty)');
+    }
+    const lineCount = text.split('\n').length;
+    const simulationLike = isIterationMessageLikelySimulationContext(text);
+    const tooLong = text.length > ITERATION_MESSAGE_FOLD_CHAR_THRESHOLD || lineCount > ITERATION_MESSAGE_FOLD_LINE_THRESHOLD;
+    const shouldFold = simulationLike || tooLong;
+    if (!shouldFold) {
+        return escapeHtml(text);
+    }
+
+    const summary = simulationLike && auto
+        ? i18n('Auto simulation context (folded)')
+        : i18nFormat('Long message (${0} chars)', text.length);
+    const preview = text.slice(0, 280).trim();
+
+    return `
+<details class="luker_orch_iter_msg_folded">
+    <summary>${escapeHtml(summary)}</summary>
+    ${preview ? `<div class="luker_orch_iter_msg_preview"><b>${escapeHtml(i18n('Preview'))}:</b> ${escapeHtml(preview)}${text.length > preview.length ? ' ...' : ''}</div>` : ''}
+    <pre class="luker_orch_iter_msg_full">${escapeHtml(text)}</pre>
+</details>`;
+}
+
 function renderAiIterationConversation(session, { loading = false, loadingText = '' } = {}) {
     const items = Array.isArray(session?.messages) ? session.messages : [];
     if (items.length === 0 && !loading) {
@@ -3898,11 +3945,11 @@ function renderAiIterationConversation(session, { loading = false, loadingText =
         const auto = Boolean(item?.auto);
         const label = auto ? 'AUTO' : (role === 'user' ? 'You' : 'AI');
         const bubbleClass = role === 'user' ? 'user' : 'assistant';
-        const text = stripIterationThoughtForDisplay(item?.content || '');
+        const bodyHtml = renderAiIterationMessageBodyHtml(item?.content || '', { auto });
         return `
 <div class="luker_orch_iter_msg ${bubbleClass}">
     <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
-    <div class="luker_orch_iter_msg_body">${escapeHtml(text || '(empty)')}</div>
+    <div class="luker_orch_iter_msg_body">${bodyHtml}</div>
 </div>`;
     }).join('');
     if (!loading) {
@@ -5521,7 +5568,10 @@ async function openAiIterationStudio(context, settings, root) {
         if (executionResult.continueRequested || (Array.isArray(executionResult.simulations) && executionResult.simulations.length > 0)) {
             setStatus(i18n('Running auto-continue...'));
             const autoPrompt = buildAiIterationAutoContinuePrompt(executionResult);
-            const followUp = await runAiIterationTurn(context, settings, session, autoPrompt, controller.signal, { auto: true });
+            const followUp = await runAiIterationTurn(context, settings, session, autoPrompt, controller.signal, {
+                auto: true,
+                appendUserMessage: false,
+            });
             setStatus(followUp?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
             rerender();
             return true;
@@ -6782,6 +6832,29 @@ function ensureStyles() {
     white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.4;
+}
+.luker_orch_iter_msg_folded {
+    margin: 0;
+}
+.luker_orch_iter_msg_folded > summary {
+    cursor: pointer;
+    font-weight: 600;
+    opacity: 0.9;
+}
+.luker_orch_iter_msg_preview {
+    margin-top: 6px;
+    opacity: 0.92;
+}
+.luker_orch_iter_msg_full {
+    margin-top: 6px;
+    max-height: 260px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: rgba(0,0,0,0.14);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 6px;
+    padding: 8px;
 }
 .luker_orch_iter_msg.loading .luker_orch_iter_msg_body {
     display: inline-flex;
