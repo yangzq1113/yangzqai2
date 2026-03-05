@@ -35,11 +35,6 @@ const LEVEL = {
     SEMANTIC: 'semantic',
 };
 
-function isPlainTextFunctionCallModeEnabled(settings = null) {
-    const currentSettings = settings && typeof settings === 'object' ? settings : getSettings();
-    return Boolean(currentSettings?.plainTextFunctionCallMode);
-}
-
 const defaultNodeTypeSchema = [
     {
         id: 'event',
@@ -291,7 +286,6 @@ const defaultSettings = {
     recallApiPresetName: '',
     recallPresetName: '',
     toolCallRetryMax: 2,
-    plainTextFunctionCallMode: false,
     recallMaxIterations: 3,
     recallRouteSystemPrompt: DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
     recallFinalizeSystemPrompt: DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT,
@@ -982,7 +976,7 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
-    extension_settings[MODULE_NAME].plainTextFunctionCallMode = Boolean(extension_settings[MODULE_NAME].plainTextFunctionCallMode);
+    delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
     extension_settings[MODULE_NAME].updateEvery = Math.max(
         1,
         Math.floor(Number(extension_settings[MODULE_NAME].updateEvery) || defaultSettings.updateEvery),
@@ -2335,9 +2329,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         type: 'function',
         function: { name: fnName },
     };
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const functionCallMode = usePlainTextCalls ? 'prompt_json' : 'native';
-
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
@@ -2348,7 +2339,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
-                functionCallMode,
                 functionCallOptions: {
                     requiredFunctionName: fnName,
                     strictTwoPart: true,
@@ -2396,8 +2386,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         ? Number(settings?.toolCallRetryMax)
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const functionCallMode = usePlainTextCalls ? 'prompt_json' : 'native';
     const toolChoice = 'auto';
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -2409,7 +2397,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
-                functionCallMode,
                 functionCallOptions: {
                     strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
@@ -9341,7 +9328,6 @@ function bindUi() {
     }
 
     root.find('#luker_rpg_memory_enabled').prop('checked', Boolean(settings.enabled));
-    root.find('#luker_rpg_memory_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled(settings));
     root.find('#luker_rpg_memory_recall_enabled').prop('checked', Boolean(settings.recallEnabled));
     root.find('#luker_rpg_memory_recall_api_preset').val(String(settings.recallApiPresetName || ''));
     root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
@@ -9363,11 +9349,6 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_enabled').off('input').on('input', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
-        saveSettingsDebounced();
-    });
-
-    root.find('#luker_rpg_memory_plain_text_calls').off('input').on('input', function () {
-        settings.plainTextFunctionCallMode = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -9797,7 +9778,6 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="luker_rpg_memory_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
             <label for="luker_rpg_memory_recall_api_preset">${escapeHtml(i18n('Recall API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_api_preset" class="text_pole"></select>

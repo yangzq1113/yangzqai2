@@ -53,7 +53,15 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     'Put final injected guidance in field `text` (string).',
     'The `text` content is injected directly as-is.',
 ].join('\n');
-const ALLOWED_TEMPLATE_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller', 'previous_snapshot', 'previous_orchestration', 'global_knowledge'];
+const TEMPLATE_PLACEHOLDER_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
+const AUTO_INJECTED_CONTEXT_VARS = ['previous_orchestration'];
+const LEGACY_REMOVED_CONTEXT_VARS = ['previous_snapshot', 'global_knowledge'];
+const ALLOWED_TEMPLATE_VARS = [...TEMPLATE_PLACEHOLDER_VARS, ...AUTO_INJECTED_CONTEXT_VARS, ...LEGACY_REMOVED_CONTEXT_VARS];
+const AI_VISIBLE_TEMPLATE_VARS = [...TEMPLATE_PLACEHOLDER_VARS];
+const AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE = '(auto-injected above)';
+const AUTO_INJECTED_PLACEHOLDER_AI_NOTE = '(auto-injected by runtime before this template)';
+const AUTO_INJECTED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${AUTO_INJECTED_CONTEXT_VARS.join('|')})\\s*}}`, 'gi');
+const LEGACY_REMOVED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${LEGACY_REMOVED_CONTEXT_VARS.join('|')})\\s*}}`, 'gi');
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const ORCH_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
@@ -72,13 +80,6 @@ const ORCH_AI_QUALITY_AXES = {
     human_realism: 'Increase human-like behavior through natural uncertainty, bounded knowledge, and believable pacing.',
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
 };
-
-function isPlainTextFunctionCallModeEnabled(settings = null) {
-    const currentSettings = settings && typeof settings === 'object'
-        ? settings
-        : extension_settings[MODULE_NAME];
-    return Boolean(currentSettings?.plainTextFunctionCallMode);
-}
 
 function getDefaultAiSuggestSystemPrompt() {
     return [
@@ -116,16 +117,15 @@ function getDefaultAiSuggestSystemPrompt() {
         'Flexibility policy: treat the provided blueprint as a strong baseline, not a prison.',
         'You may innovate node roles/stage topology for this specific character card if quality improves.',
         'Any innovation must keep hard-gate coverage, causal clarity, and final-output contract intact.',
-        `Allowed template placeholders ONLY: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
+        `Allowed template placeholders ONLY: ${AI_VISIBLE_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
         'Do not invent any other placeholder names.',
+        'Runtime auto-injects previous orchestration capsule before each node template.',
+        'Do not use placeholders for auto-injected context. Encode how to use it in Task rules.',
         'Placeholder usage policy (must follow):',
         '- Every generated userPromptTemplate should include placeholders needed by that node role; avoid static templates that ignore runtime context.',
         '- Distiller/state nodes should include {{recent_chat}} and {{last_user}}.',
         '- Nodes depending on upstream reasoning should include {{distiller}} and/or {{previous_outputs}}.',
-        '- Continuity and review-sensitive nodes should include {{previous_snapshot}}.',
-        '- Continuity-sensitive nodes should include {{previous_orchestration}}.',
-        '- Knowledge-sensitive nodes should include {{global_knowledge}}.',
-        '- Final synthesizer should generally include {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, and {{global_knowledge}}.',
+        '- Final synthesizer should generally include {{distiller}} and {{previous_outputs}}.',
         'When designing prompts, encode checks and directives, not verbose restatements of the card.',
         'Read global_orchestration_spec and global_presets as primary reference before creating card-specific overrides.',
         'Do not output thin prompts. Each node preset must contain concrete process steps, hard constraints, and output contract details.',
@@ -191,7 +191,6 @@ const defaultSettings = {
     singleAgentUserPromptTemplate: DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE,
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
-    plainTextFunctionCallMode: false,
     nodeIterationMaxRounds: 3,
     toolCallRetryMax: 2,
     agentTimeoutSeconds: 0,
@@ -341,7 +340,7 @@ function registerLocaleData() {
         'Node ID': '节点 ID',
         'Preset': '预设',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration capsule is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上轮编排 capsule 会自动注入。',
         'Execution': '执行方式',
         'Serial': '串行',
         'Parallel': '并行',
@@ -525,7 +524,7 @@ function registerLocaleData() {
         'Node ID': '節點 ID',
         'Preset': '預設',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration capsule is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上輪編排 capsule 會自動注入。',
         'Execution': '執行方式',
         'Serial': '串行',
         'Parallel': '並行',
@@ -690,7 +689,7 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].singleAgentModeEnabled = Boolean(extension_settings[MODULE_NAME].singleAgentModeEnabled);
     extension_settings[MODULE_NAME].singleAgentSystemPrompt = String(extension_settings[MODULE_NAME].singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT);
     extension_settings[MODULE_NAME].singleAgentUserPromptTemplate = String(extension_settings[MODULE_NAME].singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE);
-    extension_settings[MODULE_NAME].plainTextFunctionCallMode = Boolean(extension_settings[MODULE_NAME].plainTextFunctionCallMode);
+    delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
 
     extension_settings[MODULE_NAME].orchestrationSpec = sanitizeSpec(extension_settings[MODULE_NAME].orchestrationSpec);
     extension_settings[MODULE_NAME].presets = sanitizePresetMap(extension_settings[MODULE_NAME].presets);
@@ -1364,9 +1363,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         type: 'function',
         function: { name: fnName },
     };
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const functionCallMode = usePlainTextCalls ? 'prompt_json' : 'native';
-
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         const attemptController = createAttemptAbortController(
@@ -1381,7 +1377,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
-                functionCallMode,
                 functionCallOptions: {
                     requiredFunctionName: fnName,
                     strictTwoPart: true,
@@ -1443,8 +1438,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         : Number(retriesOverride);
     const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
     const timeoutMs = applyAgentTimeout ? getAgentTimeoutMs(settings) : 0;
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const functionCallMode = usePlainTextCalls ? 'prompt_json' : 'native';
     const toolChoice = 'auto';
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -1460,7 +1453,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
-                functionCallMode,
                 functionCallOptions: {
                     strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
@@ -1517,6 +1509,90 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         }
     }
     throw lastError || new Error('Multi tool call request failed.');
+}
+
+function replaceAutoInjectedTemplatePlaceholders(template, replacement = '') {
+    const source = String(template || '');
+    if (!source) {
+        return '';
+    }
+    return source.replace(AUTO_INJECTED_PLACEHOLDER_REGEX, String(replacement || ''));
+}
+
+function replaceLegacyRemovedTemplatePlaceholders(template, replacement = '') {
+    const source = String(template || '');
+    if (!source) {
+        return '';
+    }
+    return source.replace(LEGACY_REMOVED_PLACEHOLDER_REGEX, String(replacement || ''));
+}
+
+function normalizeTemplateForRuntime(template) {
+    const withAutoInjected = replaceAutoInjectedTemplatePlaceholders(template, AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE);
+    return replaceLegacyRemovedTemplatePlaceholders(withAutoInjected, '');
+}
+
+function normalizeTemplateForAiPrompt(template) {
+    const withAutoInjected = replaceAutoInjectedTemplatePlaceholders(template, AUTO_INJECTED_PLACEHOLDER_AI_NOTE);
+    return replaceLegacyRemovedTemplatePlaceholders(withAutoInjected, '');
+}
+
+function sanitizeProfileForAiPrompt(profile = null) {
+    const safeSpec = sanitizeSpec(profile?.spec);
+    const safePresets = sanitizePresetMap(profile?.presets);
+    const stages = Array.isArray(safeSpec?.stages) ? safeSpec.stages : [];
+    const sanitizedStages = stages.map((stage) => {
+        const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+        const sanitizedNodes = nodes.map((rawNode) => {
+            if (typeof rawNode === 'string') {
+                return rawNode;
+            }
+            const node = normalizeNodeSpec(rawNode);
+            const nextNode = {
+                id: String(node?.id || '').trim(),
+                preset: String(node?.preset || node?.id || '').trim(),
+            };
+            const template = String(node?.userPromptTemplate || '');
+            if (template.trim()) {
+                nextNode.userPromptTemplate = normalizeTemplateForAiPrompt(template);
+            }
+            return nextNode.id ? nextNode : null;
+        }).filter(Boolean);
+        return {
+            id: String(stage?.id || '').trim(),
+            mode: String(stage?.mode || '').toLowerCase() === 'parallel' ? 'parallel' : 'serial',
+            nodes: sanitizedNodes,
+        };
+    });
+
+    const sanitizedPresets = {};
+    for (const [presetId, preset] of Object.entries(safePresets || {})) {
+        sanitizedPresets[presetId] = {
+            systemPrompt: String(preset?.systemPrompt || '').trim(),
+            userPromptTemplate: normalizeTemplateForAiPrompt(String(preset?.userPromptTemplate || '').trim()),
+        };
+    }
+
+    return {
+        spec: { stages: sanitizedStages },
+        presets: sanitizedPresets,
+    };
+}
+
+function buildAutoInjectedNodePromptPrelude({
+    previousOrchestration = '',
+} = {}) {
+    const orchestrationText = String(previousOrchestration || '').trim();
+    const sections = [];
+    if (orchestrationText) {
+        sections.push([
+            '## auto_injected_previous_orchestration_capsule',
+            '```text',
+            orchestrationText,
+            '```',
+        ].join('\n'));
+    }
+    return sections.join('\n\n');
 }
 
 function renderTemplate(template, vars) {
@@ -2103,18 +2179,20 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         toReadableYamlText(previousNodeOutputs.get('distiller') || {}, '{}'),
         '```',
     ].join('\n');
-    const previousSnapshot = getPreviousOrchestrationSnapshotText(context, payload);
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
-    const globalKnowledge = getGlobalKnowledgeForPrompt();
+    const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
+        previousOrchestration,
+    });
 
-    const baseUserPrompt = renderTemplate(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '', {
+    const runtimeTemplate = normalizeTemplateForRuntime(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '');
+    const baseUserPrompt = renderTemplate(runtimeTemplate, {
         recent_chat: recent,
         last_user: String(lastUser?.mes || ''),
         previous_outputs: previousOutputs,
         distiller: distillerOutput,
-        previous_snapshot: previousSnapshot,
-        previous_orchestration: previousOrchestration,
-        global_knowledge: globalKnowledge,
+        previous_snapshot: '',
+        previous_orchestration: AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE,
+        global_knowledge: '',
     });
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
@@ -2135,13 +2213,12 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
 
     for (let round = 1; round <= maxRounds; round++) {
         const iterationPrompt = [
+            autoInjectedPrelude,
             baseUserPrompt,
-            '',
             buildNodeIterationContractText({ isFinalStage }),
-            '',
             '## node_iteration_round',
             `${round}/${maxRounds}`,
-        ].join('\n');
+        ].filter(Boolean).join('\n\n');
 
         const basePromptMessages = await buildPresetAwareMessages(
             context,
@@ -2924,7 +3001,7 @@ function renderWorkflowBoard(scope, editor) {
         ${renderPresetOptions(editor.presets, node.preset)}
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}, {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration capsule is auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
 
         return `
@@ -3392,7 +3469,21 @@ function buildAiProfileFromToolCalls(toolCalls) {
         const mode = String(rawStage.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
         const nodes = Array.isArray(rawStage.nodes) ? rawStage.nodes : [];
         const normalizedNodes = nodes
-            .map(rawNode => normalizeNodeSpec(rawNode))
+            .map((rawNode) => {
+                const node = normalizeNodeSpec(rawNode);
+                if (!node?.id) {
+                    return null;
+                }
+                const nextNode = {
+                    id: String(node.id || '').trim(),
+                    preset: String(node.preset || node.id || '').trim(),
+                };
+                const template = String(node.userPromptTemplate || '');
+                if (template.trim()) {
+                    nextNode.userPromptTemplate = normalizeTemplateForRuntime(template);
+                }
+                return nextNode.id ? nextNode : null;
+            })
             .filter(node => Boolean(node?.id));
         if (normalizedNodes.length === 0) {
             return;
@@ -3428,7 +3519,7 @@ function buildAiProfileFromToolCalls(toolCalls) {
             }
             draftPresets[presetId] = {
                 systemPrompt: String(args.systemPrompt || '').trim(),
-                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+                userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
             };
             continue;
         }
@@ -3479,7 +3570,11 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
 
     const currentSpec = sanitizeSpec(settings.orchestrationSpec);
     const currentPresets = serializeEditorPresetMap(settings.presets);
-    const suggestSystemPromptBase = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
+    const aiVisibleGlobalProfile = sanitizeProfileForAiPrompt({
+        spec: currentSpec,
+        presets: currentPresets,
+    });
+    const suggestSystemPromptBase = normalizeTemplateForAiPrompt(String(settings.aiSuggestSystemPrompt || '').trim()) || getDefaultAiSuggestSystemPrompt();
     const suggestSystemPrompt = [
         suggestSystemPromptBase,
         'Hard output rule: follow each node prompt\'s explicit thought policy.',
@@ -3494,6 +3589,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         `Must include dedicated required node ids: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
+        'Runtime prepends previous orchestration capsule before node template text; do not add placeholders for that context.',
         'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
     ].join('\n');
     const suggestUserPrompt = buildAiSuggestInputXml({
@@ -3560,8 +3656,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             no_json_blob_in_summary: true,
             no_single_tool_call_partial_output: true,
         },
-        globalOrchestrationSpec: currentSpec,
-        globalPresets: currentPresets,
+        globalOrchestrationSpec: aiVisibleGlobalProfile.spec,
+        globalPresets: aiVisibleGlobalProfile.presets,
         toolProtocol: {
             append_stage: {
                 function: 'luker_orch_append_stage',
@@ -3576,16 +3672,14 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 shape: {
                     preset_id: 'string',
                     systemPrompt: 'string',
-                    userPromptTemplate: `Use only: ${ALLOWED_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
+                    userPromptTemplate: `Use only: ${AI_VISIBLE_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
                 },
                 placeholder_policy: {
-                    general: 'Template must consume runtime context via appropriate placeholders.',
+                    general: 'Template should consume dynamic runtime context via placeholders where needed.',
                     distiller_like: 'Prefer {{recent_chat}} + {{last_user}}.',
                     reasoning_like: 'Prefer {{distiller}} and/or {{previous_outputs}}.',
-                    snapshot_like: 'Prefer {{previous_snapshot}} for continuity-sensitive nodes.',
-                    continuity_like: 'Prefer {{previous_orchestration}}.',
-                    knowledge_like: 'Prefer {{global_knowledge}} for research-sensitive nodes.',
-                    synthesizer_like: 'Prefer {{distiller}} + {{previous_outputs}} + {{previous_snapshot}} + {{previous_orchestration}} + {{global_knowledge}}.',
+                    auto_injected_context: 'Previous orchestration capsule is prepended automatically before template text.',
+                    synthesizer_like: 'Prefer {{distiller}} + {{previous_outputs}}, then synthesize with auto-injected capsule context.',
                 },
             },
             finalize: {
@@ -4588,7 +4682,7 @@ function buildAiIterationPendingDiffState(session, pending) {
             const beforeNode = existingIndex >= 0 ? structuredClone(nodes[existingIndex]) : null;
             const presetId = sanitizeIdentifierToken(args.preset, nodeId || 'distiller') || 'distiller';
             const afterUserPromptTemplate = typeof args.userPromptTemplate === 'string'
-                ? args.userPromptTemplate
+                ? normalizeTemplateForRuntime(args.userPromptTemplate)
                 : (beforeNode ? String(beforeNode.userPromptTemplate || '') : '');
             const nextNode = {
                 id: nodeId,
@@ -4665,7 +4759,7 @@ function buildAiIterationPendingDiffState(session, pending) {
                 : null;
             const afterPreset = {
                 systemPrompt: String(args.systemPrompt || '').trim(),
-                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+                userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
             };
             presets[presetId] = afterPreset;
             item.summary = `Preset "${presetId}" ${beforePreset ? 'updated' : 'created'}`;
@@ -4857,7 +4951,7 @@ function renderAiIterationWorkingProfile(session, { profileOverride = null, prev
 }
 
 function buildAiIterationSystemPrompt(settings) {
-    const base = String(settings.aiSuggestSystemPrompt || '').trim() || getDefaultAiSuggestSystemPrompt();
+    const base = normalizeTemplateForAiPrompt(String(settings.aiSuggestSystemPrompt || '').trim()) || getDefaultAiSuggestSystemPrompt();
     return [
         base,
         '',
@@ -4867,7 +4961,7 @@ function buildAiIterationSystemPrompt(settings) {
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
         `- Remember node runtime tools are available: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
         '- Ensure at least one suitable node prompt includes search decision logic (when to search, when not to search).',
-        '- Ensure node templates use runtime placeholders for continuity and shared memory when relevant: {{previous_snapshot}}, {{previous_orchestration}}, {{global_knowledge}}.',
+        '- Runtime prepends previous orchestration capsule before node template text; do not use placeholders for that context.',
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
         '- If you need user decision or clarification, do not call continue/finalize. Stop and wait for user.',
@@ -4899,6 +4993,8 @@ function buildAiIterationUserPrompt(session, userInputText, {
         spec: globalProfile?.spec || { stages: [] },
         presets: globalProfile?.presets || {},
     };
+    const aiVisibleWorkingProfile = sanitizeProfileForAiPrompt(workingProfileValue);
+    const aiVisibleGlobalProfile = sanitizeProfileForAiPrompt(globalProfileValue);
     const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
     const latestSnapshotText = toReadableYamlText(normalizeOrchestrationSnapshot(latestOrchestrationSnapshot) || {}, '{}');
     const globalKnowledgeText = toReadableYamlText({
@@ -4918,12 +5014,12 @@ function buildAiIterationUserPrompt(session, userInputText, {
         '',
         '## global_profile_baseline',
         '```yaml',
-        toReadableYamlText(globalProfileValue, '{}'),
+        toReadableYamlText(aiVisibleGlobalProfile, '{}'),
         '```',
         '',
         '## working_profile',
         '```yaml',
-        toReadableYamlText(workingProfileValue, '{}'),
+        toReadableYamlText(aiVisibleWorkingProfile, '{}'),
         '```',
         '',
         '## conversation_history',
@@ -5274,7 +5370,9 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             const nextNode = {
                 id: nodeId,
                 preset: presetId,
-                userPromptTemplate: typeof args.userPromptTemplate === 'string' ? args.userPromptTemplate : (existingIndex >= 0 ? String(nodes[existingIndex]?.userPromptTemplate || '') : ''),
+                userPromptTemplate: typeof args.userPromptTemplate === 'string'
+                    ? normalizeTemplateForRuntime(args.userPromptTemplate)
+                    : (existingIndex >= 0 ? String(nodes[existingIndex]?.userPromptTemplate || '') : ''),
             };
             if (existingIndex >= 0) {
                 nodes[existingIndex] = nextNode;
@@ -5322,7 +5420,7 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             pendingPresetRemovalActions.delete(presetId);
             session.workingProfile.presets[presetId] = {
                 systemPrompt: String(args.systemPrompt || '').trim(),
-                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+                userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
             };
             actions.push(`Preset "${presetId}" updated.`);
             changed = true;
@@ -5865,7 +5963,6 @@ function bindUi() {
     root.find('#luker_orch_single_agent_mode').prop('checked', Boolean(settings.singleAgentModeEnabled));
     root.find('#luker_orch_single_agent_system_prompt').val(String(settings.singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT));
     root.find('#luker_orch_single_agent_user_prompt').val(String(settings.singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE));
-    root.find('#luker_orch_plain_text_calls').prop('checked', isPlainTextFunctionCallModeEnabled(settings));
     root.find('#luker_orch_llm_api_preset').val(String(settings.llmNodeApiPresetName || ''));
     root.find('#luker_orch_llm_preset').val(String(settings.llmNodePresetName || ''));
     root.find('#luker_orch_ai_suggest_api_preset').val(String(settings.aiSuggestApiPresetName || ''));
@@ -5903,11 +6000,6 @@ function bindUi() {
 
     root.on('input.lukerOrch', '#luker_orch_single_agent_user_prompt', function () {
         settings.singleAgentUserPromptTemplate = String(jQuery(this).val() || '');
-        saveSettingsDebounced();
-    });
-
-    root.on('input.lukerOrch', '#luker_orch_plain_text_calls', function () {
-        settings.plainTextFunctionCallMode = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -7004,7 +7096,6 @@ function ensureUi() {
                 <label for="luker_orch_single_agent_user_prompt">${escapeHtml(i18n('Single-agent user prompt template'))}</label>
                 <textarea id="luker_orch_single_agent_user_prompt" class="text_pole textarea_compact" rows="6"></textarea>
             </div>
-            <label class="checkbox_label"><input id="luker_orch_plain_text_calls" type="checkbox" /> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
             <label for="luker_orch_llm_preset">${escapeHtml(i18n('LLM node preset (params + prompt, empty = current)'))}</label>

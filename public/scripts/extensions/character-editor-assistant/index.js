@@ -41,7 +41,6 @@ const defaultSettings = {
     replaceLorebookSyncEnabled: true,
     lorebookSyncLlmPresetName: '',
     lorebookSyncApiPresetName: '',
-    plainTextFunctionCallMode: false,
     toolCallRetryMax: 2,
     maxJournalEntries: 120,
 };
@@ -50,11 +49,6 @@ const stateCache = new Map();
 const lorebookSnapshotCache = new Map();
 const lorebookSyncDialogLocks = new Set();
 const editorStudioDialogLocks = new Set();
-
-function isPlainTextFunctionCallModeEnabled(settings = null) {
-    const currentSettings = settings && typeof settings === 'object' ? settings : getSettings();
-    return Boolean(currentSettings?.plainTextFunctionCallMode);
-}
 
 function i18n(text) {
     return translate(String(text || ''));
@@ -316,7 +310,7 @@ function ensureSettings() {
     settings.replaceLorebookSyncEnabled = settings.replaceLorebookSyncEnabled !== false;
     settings.lorebookSyncLlmPresetName = String(settings.lorebookSyncLlmPresetName || '').trim();
     settings.lorebookSyncApiPresetName = String(settings.lorebookSyncApiPresetName || '').trim();
-    settings.plainTextFunctionCallMode = Boolean(settings.plainTextFunctionCallMode);
+    delete settings.plainTextFunctionCallMode;
     settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(settings.toolCallRetryMax || defaultSettings.toolCallRetryMax) || 0)));
     settings.maxJournalEntries = Math.max(20, Math.min(500, Number(settings.maxJournalEntries || defaultSettings.maxJournalEntries)));
 }
@@ -2240,8 +2234,6 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     }
     const options = requestPresetOptions && typeof requestPresetOptions === 'object' ? requestPresetOptions : {};
     const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax || 0) || 0)));
-    const usePlainTextCalls = isPlainTextFunctionCallModeEnabled(settings);
-    const functionCallMode = usePlainTextCalls ? 'prompt_json' : 'native';
     const toolChoice = 'auto';
     const allowSet = allowedNames instanceof Set
         ? allowedNames
@@ -2260,7 +2252,6 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
                 llmPresetName: options.llmPresetName,
                 apiPresetName: options.apiPresetName,
                 apiSettingsOverride: options.apiSettingsOverride,
-                functionCallMode,
                 functionCallOptions: {
                     strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
@@ -4957,7 +4948,6 @@ function ensureUi() {
             <select id="cea_sync_llm_preset" class="text_pole"></select>
             <label for="cea_sync_api_preset">${escapeHtml(i18n('Model request API preset name'))}</label>
             <select id="cea_sync_api_preset" class="text_pole"></select>
-            <label class="checkbox_label"><input id="cea_plain_text_calls" type="checkbox"/> ${escapeHtml(i18n('Plain-text function-call mode'))}</label>
             <label for="cea_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="cea_tool_retries" class="text_pole" type="number" min="0" max="10" step="1"/>
 
@@ -4988,7 +4978,6 @@ async function refreshUiState(context = getContext()) {
     }
     const settings = getSettings();
     root.find('#cea_replace_sync').prop('checked', Boolean(settings.replaceLorebookSyncEnabled));
-    root.find('#cea_plain_text_calls').prop('checked', Boolean(settings.plainTextFunctionCallMode));
     root.find('#cea_tool_retries').val(String(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax));
     refreshPresetSelectors(root, context, settings);
 
@@ -5054,12 +5043,6 @@ function bindUi() {
     root.on('change.cea', '#cea_sync_api_preset', function () {
         const settings = getSettings();
         settings.lorebookSyncApiPresetName = String(jQuery(this).val() || '').trim();
-        saveSettingsDebounced();
-    });
-
-    root.on('change.cea', '#cea_plain_text_calls', function () {
-        const settings = getSettings();
-        settings.plainTextFunctionCallMode = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
