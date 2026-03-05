@@ -444,7 +444,7 @@ For generation requests, send the full `messages` array in the request body.
 
 ### Connection profile resolution (recommended for plugins)
 
-If your plugin supports selecting a Connection Manager profile, do not manually map profile fields (`api`, `model`, `api-url`, `proxy`, `secret-id`) to request payload keys.
+If your plugin supports selecting a Connection Manager profile, do not manually map profile fields (`api`, `model`, `api-url`, `proxy`, `secret-id`, `function-calling-plain-text`) to request payload keys.
 
 Use shared resolver:
 
@@ -481,6 +481,7 @@ Behavior:
 
 - `functionCallMode='native'`:
   - Uses normal `tools/tool_choice` flow.
+  - If resolved request settings include `function_calling_plain_text=true`, runtime auto-upgrades to `prompt_json` mode (applies to both chat and extension-internal requests).
 - `functionCallMode='prompt_json'`:
   - Core injects plain-text tool protocol prompts automatically.
   - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.

@@ -3290,11 +3290,10 @@ async function sendOpenAIRequest(type, messages, signal, {
 
     const requestSettings = getSettingsForRequest({ llmPresetName, apiPresetName, apiSettingsOverride });
     const requestedFunctionCallMode = String(functionCallMode || 'native');
-    const shouldUseChatPlainTextFunctionCalling =
-        requestScope === 'chat'
-        && requestedFunctionCallMode === 'native'
+    const shouldUsePresetPlainTextFunctionCalling =
+        requestedFunctionCallMode === 'native'
         && Boolean(requestSettings?.function_calling_plain_text);
-    const resolvedFunctionCallMode = shouldUseChatPlainTextFunctionCalling ? 'prompt_json' : requestedFunctionCallMode;
+    const resolvedFunctionCallMode = shouldUsePresetPlainTextFunctionCalling ? 'prompt_json' : requestedFunctionCallMode;
     const usePromptJsonFunctionCalls = resolvedFunctionCallMode === 'prompt_json';
     const normalizedTools = Array.isArray(tools) ? tools : [];
     const normalizedToolChoice = toolChoice ?? 'auto';
@@ -7504,6 +7503,36 @@ function registerConnectionProfileAdditionalParameterSlashCommands() {
             helpString: t`Sets ${definition.label}. Gets current value if no argument is provided.`,
         }));
     }
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'function-calling-plain-text',
+        callback: (args, value) => {
+            const forceApply = String(args?.force || '').toLowerCase() === 'true';
+            const raw = String(value ?? '').trim().toLowerCase();
+            if (!raw && !forceApply) {
+                return String(Boolean(oai_settings.function_calling_plain_text));
+            }
+
+            const truthy = new Set(['true', '1', 'yes', 'on']);
+            const falsy = new Set(['false', '0', 'no', 'off']);
+            if (!truthy.has(raw) && !falsy.has(raw)) {
+                throw new Error(t`Value must be true/false (also supports 1/0, yes/no, on/off).`);
+            }
+
+            oai_settings.function_calling_plain_text = truthy.has(raw);
+            saveSettingsDebounced();
+            return String(Boolean(oai_settings.function_calling_plain_text));
+        },
+        returns: t`plain-text function calling state`,
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: t`value`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+            }),
+        ],
+        helpString: t`Sets plain-text function calling mode. Gets current value if no argument is provided.`,
+    }));
 }
 
 export function initOpenAI() {

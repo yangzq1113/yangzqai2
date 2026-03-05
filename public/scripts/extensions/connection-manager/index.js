@@ -44,6 +44,7 @@ const CC_COMMANDS = [
     'start-reply-with',
     'reasoning-template',
     'prompt-post-processing',
+    'function-calling-plain-text',
     'custom-include-body',
     'custom-exclude-body',
     'custom-include-headers',
@@ -85,6 +86,7 @@ const FANCY_NAMES = {
     'start-reply-with': 'Start Reply With',
     'reasoning-template': 'Reasoning Template',
     'prompt-post-processing': 'Prompt Post-Processing',
+    'function-calling-plain-text': 'Plain-text Function Calling',
     'custom-include-body': 'Include Body Parameters',
     'custom-exclude-body': 'Exclude Body Parameters',
     'custom-include-headers': 'Include Request Headers',
@@ -176,6 +178,7 @@ const profilesProvider = () => [
  * @property {string} [start-reply-with] Start Reply With
  * @property {string} [reasoning-template] Reasoning Template
  * @property {string} [prompt-post-processing] Prompt Post-Processing
+ * @property {string} [function-calling-plain-text] Plain-text Function Calling
  * @property {string} [custom-include-body] Include Body Parameters
  * @property {string} [custom-exclude-body] Exclude Body Parameters
  * @property {string} [custom-include-headers] Include Request Headers

@@ -423,6 +423,9 @@ export class ConnectionManagerRequestService {
                     }
 
                     const proxyPreset = proxies.find((p) => p.name === profile.proxy);
+                    const plainTextFunctionCallingRaw = String(profile['function-calling-plain-text'] ?? '').trim().toLowerCase();
+                    const shouldOverridePlainTextFunctionCalling = plainTextFunctionCallingRaw.length > 0;
+                    const plainTextFunctionCalling = ['true', '1', 'yes', 'on'].includes(plainTextFunctionCallingRaw);
 
                     const messages = Array.isArray(prompt) ? prompt : [{ role: 'user', content: prompt }];
                     return await context.ChatCompletionService.processRequest({
@@ -437,6 +440,7 @@ export class ConnectionManagerRequestService {
                         reverse_proxy: proxyPreset?.url,
                         proxy_password: proxyPreset?.password,
                         custom_prompt_post_processing: profile['prompt-post-processing'],
+                        ...(shouldOverridePlainTextFunctionCalling ? { function_calling_plain_text: plainTextFunctionCalling } : {}),
                         secret_id: profile['secret-id'],
                         ...overridePayload,
                     }, {

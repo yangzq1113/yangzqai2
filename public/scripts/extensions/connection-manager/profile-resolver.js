@@ -118,6 +118,23 @@ function resolveRequestApiFromProfile(defaultApi, profile) {
     return defaultApi;
 }
 
+function parseProfileBoolean(value) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+    return null;
+}
+
 function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
     if (!profile) {
         return null;
@@ -150,6 +167,13 @@ function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
     const promptPostProcessing = String(profile['prompt-post-processing'] || '').trim();
     if (promptPostProcessing) {
         overrides.custom_prompt_post_processing = promptPostProcessing;
+    }
+
+    if (Object.hasOwn(profile, 'function-calling-plain-text')) {
+        const plainTextFunctionCalling = parseProfileBoolean(profile['function-calling-plain-text']);
+        if (plainTextFunctionCalling !== null) {
+            overrides.function_calling_plain_text = plainTextFunctionCalling;
+        }
     }
 
     if (Object.hasOwn(profile, 'custom-include-body')) {
