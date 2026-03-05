@@ -36,7 +36,7 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     '{{last_user}}',
     '',
     'Task:',
-    '- Use the auto-injected previous orchestration capsule above as continuity context.',
+    '- Use the auto-injected previous orchestration result above as continuity context.',
     '- Distill the immediate narrative state and user intent.',
     '- Provide concrete directives for next reply drafting.',
     '- List key risks to avoid (OOC, continuity breaks, data-like language).',
@@ -111,7 +111,7 @@ function getDefaultAiSuggestSystemPrompt() {
         'Any innovation must keep hard-gate coverage, causal clarity, and final-output contract intact.',
         `Allowed template placeholders ONLY: ${AI_VISIBLE_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
         'Do not invent any other placeholder names.',
-        'Runtime auto-injects previous orchestration capsule before each node template.',
+        'Runtime auto-injects previous orchestration result before each node template.',
         'Do not use placeholders for auto-injected context. Encode how to use it in Task rules.',
         'Placeholder usage policy (must follow):',
         '- Every generated userPromptTemplate should include placeholders needed by that node role; avoid static templates that ignore runtime context.',
@@ -144,35 +144,35 @@ const defaultSpec = {
 const defaultPresets = {
     distiller: {
         systemPrompt: 'You are a narrative state distiller. Build a compact, evidence-grounded state snapshot for this turn. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
+        userPromptTemplate: 'Recent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Distill user intent, scene state, active tensions, and likely immediate direction.\n- Keep it factual and grounded in visible dialogue/actions.\n- Prefer compact high-signal state, not long prose.\n\nReturn function-call fields only. summary should be concise plain text, not JSON string.',
     },
     lorebook_reader: {
         systemPrompt: 'You are a lorebook compliance reader. Extract only active hard constraints from world-info, especially explicit banned wording/style requirements. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Identify hard constraints that must affect THIS turn (style bans, narration boundaries, role constraints, taboo rules, continuity anchors).\n- Include explicit anti-data constraints from lorebook if present: ban report/observation/analysis tone, ban metric-like phrasing.\n- Keep only high-impact constraints; avoid copying long lorebook prose.\n- Phrase outputs as executable writing directives, not summaries of lorebook documents.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     anti_data_guard: {
         systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     research_router: {
         systemPrompt: `You are a research and knowledge router. Your responsibility is to decide whether this turn needs external search, execute search when needed, and maintain shared global knowledge. Use tools explicitly: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}. Output one concise <thought>...</thought> before your function call.`,
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Decide whether external web search is needed for this turn (time-sensitive facts, ambiguous references, missing evidence).\n- If needed, call search/visit tools and then upsert reusable findings into global knowledge.\n- If some stored entries are obsolete, wrong, or irrelevant, call delete tool to remove them.\n- Finally return concise directives/risks for downstream nodes.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Decide whether external web search is needed for this turn (time-sensitive facts, ambiguous references, missing evidence).\n- If needed, call search/visit tools and then upsert reusable findings into global knowledge.\n- If some stored entries are obsolete, wrong, or irrelevant, call delete tool to remove them.\n- Finally return concise directives/risks for downstream nodes.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     planner: {
         systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
         systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Identify high-value recalled facts/themes likely to matter now.\n- Prioritize by immediate relevance to current turn goals.\n- Do not invent unseen facts.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration capsule above as continuity context.\n- Merge planner/critic/recall/research_router plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge planner/critic/recall/research_router plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
     },
 };
 
@@ -227,13 +227,13 @@ function registerLocaleData() {
         'Node tool iteration max rounds (N)': '节点工具迭代最大轮数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
-        'Capsule injection position': '胶囊注入位置',
+        'Orchestration result injection position': '编排结果注入位置',
         'In-Chat': '聊天内',
         'In-Prompt (system block)': '提示词内（系统块）',
         'Before-Prompt': '提示词前',
-        'Capsule depth (IN_CHAT only, recommended 1 = before latest message)': '胶囊深度（仅聊天内，建议 1=最后一条消息前）',
-        'Capsule role (IN_CHAT only)': '胶囊角色（仅聊天内）',
-        'Custom capsule instruction (prepended before analysis)': '自定义胶囊指令（会放在分析结果前）',
+        'Orchestration result depth (IN_CHAT only, recommended 1 = before latest message)': '编排结果深度（仅聊天内，建议 1=最后一条消息前）',
+        'Orchestration result role (IN_CHAT only)': '编排结果角色（仅聊天内）',
+        'Custom orchestration result instruction (prepended before analysis)': '自定义编排结果指令（会放在分析结果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指导，再用角色语气完成最终回复。',
         'System': 'System',
         'User': 'User',
@@ -271,7 +271,7 @@ function registerLocaleData() {
         'Open Orchestration Editor': '打开编排编辑器',
         'View Last Run': '查看最近一轮',
         'View Research Records': '查看研究记录',
-        'Latest Orchestration Result': '最近编排效果',
+        'Latest Orchestration Result': '最近编排结果',
         'Research Records': '研究记录',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
         'No research records available for this chat.': '当前聊天暂无研究记录。',
@@ -341,7 +341,7 @@ function registerLocaleData() {
         'Node ID': '节点 ID',
         'Preset': '预设',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration capsule is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上轮编排 capsule 会自动注入。',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上轮编排结果会自动注入。',
         'Execution': '执行方式',
         'Serial': '串行',
         'Parallel': '并行',
@@ -421,13 +421,13 @@ function registerLocaleData() {
         'Node tool iteration max rounds (N)': '節點工具迭代最大輪數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
-        'Capsule injection position': '膠囊注入位置',
+        'Orchestration result injection position': '編排結果注入位置',
         'In-Chat': '聊天內',
         'In-Prompt (system block)': '提示詞內（系統區塊）',
         'Before-Prompt': '提示詞前',
-        'Capsule depth (IN_CHAT only, recommended 1 = before latest message)': '膠囊深度（僅聊天內，建議 1=最後一則訊息前）',
-        'Capsule role (IN_CHAT only)': '膠囊角色（僅聊天內）',
-        'Custom capsule instruction (prepended before analysis)': '自訂膠囊指令（會放在分析結果前）',
+        'Orchestration result depth (IN_CHAT only, recommended 1 = before latest message)': '編排結果深度（僅聊天內，建議 1=最後一則訊息前）',
+        'Orchestration result role (IN_CHAT only)': '編排結果角色（僅聊天內）',
+        'Custom orchestration result instruction (prepended before analysis)': '自訂編排結果指令（會放在分析結果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指導，再以角色語氣完成最終回覆。',
         'System': 'System',
         'User': 'User',
@@ -464,7 +464,7 @@ function registerLocaleData() {
         'Open Orchestration Editor': '開啟編排編輯器',
         'View Last Run': '查看最近一輪',
         'View Research Records': '查看研究記錄',
-        'Latest Orchestration Result': '最近編排效果',
+        'Latest Orchestration Result': '最近編排結果',
         'Research Records': '研究記錄',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
         'No research records available for this chat.': '目前聊天暫無研究記錄。',
@@ -534,7 +534,7 @@ function registerLocaleData() {
         'Node ID': '節點 ID',
         'Preset': '預設',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration capsule is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上輪編排 capsule 會自動注入。',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上輪編排結果會自動注入。',
         'Execution': '執行方式',
         'Serial': '串行',
         'Parallel': '並行',
@@ -3134,7 +3134,7 @@ function renderWorkflowBoard(scope, editor) {
         ${renderPresetOptions(editor.presets, node.preset)}
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration capsule is auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
 
         return `
@@ -3722,7 +3722,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         `Must include dedicated required node ids: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
-        'Runtime prepends previous orchestration capsule before node template text; do not add placeholders for that context.',
+        'Runtime prepends previous orchestration result before node template text; do not add placeholders for that context.',
         'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
     ].join('\n');
     const suggestUserPrompt = buildAiSuggestInputXml({
@@ -3811,8 +3811,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                     general: 'Template should consume dynamic runtime context via placeholders where needed.',
                     distiller_like: 'Prefer {{recent_chat}} + {{last_user}}.',
                     reasoning_like: 'Prefer {{distiller}} and/or {{previous_outputs}}.',
-                    auto_injected_context: 'Previous orchestration capsule is prepended automatically before template text.',
-                    synthesizer_like: 'Prefer {{distiller}} + {{previous_outputs}}, then synthesize with auto-injected capsule context.',
+                    auto_injected_context: 'Previous orchestration result is prepended automatically before template text.',
+                    synthesizer_like: 'Prefer {{distiller}} + {{previous_outputs}}, then synthesize with auto-injected orchestration result context.',
                 },
             },
             finalize: {
@@ -5094,7 +5094,7 @@ function buildAiIterationSystemPrompt(settings) {
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
         `- Remember node runtime tools are available: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
         '- Ensure at least one suitable node prompt includes search decision logic (when to search, when not to search).',
-        '- Runtime prepends previous orchestration capsule before node template text; do not use placeholders for that context.',
+        '- Runtime prepends previous orchestration result before node template text; do not use placeholders for that context.',
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
         '- If you need user decision or clarification, do not call continue/finalize. Stop and wait for user.',
@@ -7332,21 +7332,21 @@ function ensureUi() {
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
             <label for="luker_orch_agent_timeout">${escapeHtml(i18n('Per-agent timeout seconds (0 = disabled)'))}</label>
             <input id="luker_orch_agent_timeout" class="text_pole" type="number" min="0" max="3600" step="1" />
-            <label for="luker_orch_capsule_position">${escapeHtml(i18n('Capsule injection position'))}</label>
+            <label for="luker_orch_capsule_position">${escapeHtml(i18n('Orchestration result injection position'))}</label>
             <select id="luker_orch_capsule_position" class="text_pole">
                 <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
                 <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
                 <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
             </select>
-            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Capsule depth (IN_CHAT only, recommended 1 = before latest message)'))}</label>
+            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Orchestration result depth (IN_CHAT only, recommended 1 = before latest message)'))}</label>
             <input id="luker_orch_capsule_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
-            <label for="luker_orch_capsule_role">${escapeHtml(i18n('Capsule role (IN_CHAT only)'))}</label>
+            <label for="luker_orch_capsule_role">${escapeHtml(i18n('Orchestration result role (IN_CHAT only)'))}</label>
             <select id="luker_orch_capsule_role" class="text_pole">
                 <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
                 <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
                 <option value="${extension_prompt_roles.ASSISTANT}">${escapeHtml(i18n('Assistant'))}</option>
             </select>
-            <label for="luker_orch_capsule_custom_instruction">${escapeHtml(i18n('Custom capsule instruction (prepended before analysis)'))}</label>
+            <label for="luker_orch_capsule_custom_instruction">${escapeHtml(i18n('Custom orchestration result instruction (prepended before analysis)'))}</label>
             <textarea id="luker_orch_capsule_custom_instruction" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. Follow this guidance first, then write final reply in-character.'))}"></textarea>
             <small id="luker_orch_single_mode_hint" style="opacity:0.8">${escapeHtml(i18n('Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.'))}</small>
 
