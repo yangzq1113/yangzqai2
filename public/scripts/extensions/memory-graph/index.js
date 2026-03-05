@@ -2366,6 +2366,30 @@ function isAbortSignalLike(value) {
     return Boolean(value && typeof value === 'object' && 'aborted' in value);
 }
 
+function parseProfileBoolean(value) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+    return null;
+}
+
+function resolveFunctionCallModeFromApiOverride(apiSettingsOverride = null) {
+    const plainTextOverride = parseProfileBoolean(
+        apiSettingsOverride?.function_calling_plain_text ?? apiSettingsOverride?.['function-calling-plain-text'],
+    );
+    return plainTextOverride === true ? 'prompt_json' : 'native';
+}
+
 function isAbortError(error, abortSignal = null) {
     if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
         return true;
@@ -2448,6 +2472,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
+                functionCallMode: resolveFunctionCallModeFromApiOverride(apiSettingsOverride),
                 functionCallOptions: {
                     requiredFunctionName: fnName,
                     strictTwoPart: true,
@@ -2506,6 +2531,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 llmPresetName: String(llmPresetName || '').trim(),
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
+                functionCallMode: resolveFunctionCallModeFromApiOverride(apiSettingsOverride),
                 functionCallOptions: {
                     strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,

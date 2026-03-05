@@ -216,6 +216,28 @@ function findProfileByName(value) {
 }
 
 /**
+ * Parses a profile boolean value.
+ * @param {unknown} value
+ * @returns {boolean|null}
+ */
+function parseProfileBoolean(value) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+    return null;
+}
+
+/**
  * Reads the connection profile from the commands.
  * @param {string} mode Mode of the connection profile
  * @param {ConnectionProfile} profile Connection profile
@@ -522,14 +544,70 @@ async function renderDetailsContent(detailsContent) {
     /** @type {HTMLSelectElement} */
     // @ts-ignore
     const profiles = document.getElementById('connection_profiles');
+    const detailsContent = document.getElementById('connection_profile_details_content');
+    const viewDetails = document.getElementById('view_connection_profile');
+    const plainTextFunctionCallingToggle = document.getElementById('connection_profile_function_calling_plain_text');
     renderConnectionProfiles(profiles);
+
+    /**
+     * @returns {ConnectionProfile|null}
+     */
+    function getSelectedProfile() {
+        const selectedProfileId = extension_settings.connectionManager.selectedProfile;
+        return extension_settings.connectionManager.profiles.find(p => p.id === selectedProfileId) || null;
+    }
+
+    function syncPlainTextFunctionCallingToggle() {
+        if (!plainTextFunctionCallingToggle) {
+            return;
+        }
+        const profile = getSelectedProfile();
+        const supported = Boolean(profile && profile.mode === 'cc');
+        plainTextFunctionCallingToggle.disabled = !supported;
+        if (!supported) {
+            plainTextFunctionCallingToggle.checked = false;
+            return;
+        }
+        const parsed = parseProfileBoolean(profile['function-calling-plain-text']);
+        plainTextFunctionCallingToggle.checked = parsed === true;
+    }
 
     function toggleProfileSpecificButtons() {
         const profileId = extension_settings.connectionManager.selectedProfile;
         const profileSpecificButtons = ['update_connection_profile', 'reload_connection_profile', 'delete_connection_profile'];
         profileSpecificButtons.forEach(id => document.getElementById(id).classList.toggle('disabled', !profileId));
+        syncPlainTextFunctionCallingToggle();
     }
     toggleProfileSpecificButtons();
+
+    if (plainTextFunctionCallingToggle) {
+        plainTextFunctionCallingToggle.addEventListener('input', async () => {
+            const profile = getSelectedProfile();
+            if (!profile || profile.mode !== 'cc') {
+                syncPlainTextFunctionCallingToggle();
+                return;
+            }
+
+            const oldProfile = structuredClone(profile);
+            profile['function-calling-plain-text'] = plainTextFunctionCallingToggle.checked ? 'true' : 'false';
+            if (!Array.isArray(profile.exclude)) {
+                profile.exclude = [];
+            }
+            profile.exclude = profile.exclude.filter(command => command !== 'function-calling-plain-text');
+
+            try {
+                await applyConnectionProfile(profile);
+            } catch (error) {
+                console.error('Failed to apply profile after plain-text function calling toggle', error);
+            }
+
+            saveSettingsDebounced();
+            await renderDetailsContent(detailsContent);
+            await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
+            await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
+            syncPlainTextFunctionCallingToggle();
+        });
+    }
 
     profiles.addEventListener('change', async function () {
         const selectedProfile = profiles.selectedOptions[0];
@@ -588,6 +666,7 @@ async function renderDetailsContent(detailsContent) {
         saveSettingsDebounced();
         renderConnectionProfiles(profiles);
         await renderDetailsContent(detailsContent);
+        toggleProfileSpecificButtons();
         await eventSource.emit(event_types.CONNECTION_PROFILE_CREATED, profile);
         await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
     });
@@ -604,6 +683,7 @@ async function renderDetailsContent(detailsContent) {
         await updateConnectionProfile(profile);
         await renderDetailsContent(detailsContent);
         saveSettingsDebounced();
+        toggleProfileSpecificButtons();
         await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
         await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
         toastr.success('Connection profile updated', '', { timeOut: 1500 });
@@ -614,6 +694,7 @@ async function renderDetailsContent(detailsContent) {
         await deleteConnectionProfile();
         renderConnectionProfiles(profiles);
         await renderDetailsContent(detailsContent);
+        toggleProfileSpecificButtons();
         await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, NONE);
     });
 
@@ -690,11 +771,9 @@ async function renderDetailsContent(detailsContent) {
         await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
         renderConnectionProfiles(profiles);
         await renderDetailsContent(detailsContent);
+        toggleProfileSpecificButtons();
     });
 
-    /** @type {HTMLElement} */
-    const viewDetails = document.getElementById('view_connection_profile');
-    const detailsContent = document.getElementById('connection_profile_details_content');
     viewDetails.addEventListener('click', async () => {
         viewDetails.classList.toggle('active');
         detailsContent.classList.toggle('hidden');
