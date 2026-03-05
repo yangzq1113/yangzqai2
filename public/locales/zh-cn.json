@@ -4615,9 +4615,6 @@
     "Connection Profile": "API连接配置",
 
     "Plain-text Function Calling": "纯文本函数调用",
-
-    "Plain-text Function Calling (Selected Profile)": "纯文本函数调用（当前连接配置）",
-
 
     "View connection profile details": "查看API连接配置详情",
 
