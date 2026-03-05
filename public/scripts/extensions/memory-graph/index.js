@@ -2,7 +2,7 @@
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 // Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
 
-import { saveSettings, saveSettingsDebounced } from '../../../script.js';
+import { extension_prompt_roles, extension_prompt_types, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
@@ -283,6 +283,9 @@ const defaultSettings = {
     updateEvery: 1,
     maxTurns: 900,
     recallEnabled: true,
+    recallInjectPosition: extension_prompt_types.IN_CHAT,
+    recallInjectDepth: 4,
+    recallInjectRole: extension_prompt_roles.SYSTEM,
     recallApiPresetName: '',
     recallPresetName: '',
     toolCallRetryMax: 2,
@@ -315,6 +318,15 @@ function registerLocaleData() {
         'Memory': '记忆',
         'Enabled': '启用',
         'Enable recall injection': '启用记忆召回注入',
+        'Recall injection position': '召回注入位置',
+        'In-Chat': '聊天内',
+        'In-Prompt (system block)': '提示词内（系统块）',
+        'Before-Prompt': '提示词前',
+        'Recall injection depth (IN_CHAT only, recommended 1 = before latest message)': '召回注入深度（仅聊天内，建议 1=最后一条消息前）',
+        'Recall injection role (IN_CHAT only)': '召回注入角色（仅聊天内）',
+        'System': 'System',
+        'User': 'User',
+        'Assistant': 'Assistant',
         'Recall API preset (Connection profile, empty = current)': '召回 API 预设（连接配置，留空=当前）',
         'Recall preset (params + prompt, empty = current)': '召回提示词预设（参数+提示词，留空=当前）',
         'Extract API preset (Connection profile, empty = current)': '生成图 API 预设（连接配置，留空=当前）',
@@ -571,6 +583,15 @@ function registerLocaleData() {
         'Memory': '記憶',
         'Enabled': '啟用',
         'Enable recall injection': '啟用記憶召回注入',
+        'Recall injection position': '召回注入位置',
+        'In-Chat': '聊天內',
+        'In-Prompt (system block)': '提示詞內（系統區塊）',
+        'Before-Prompt': '提示詞前',
+        'Recall injection depth (IN_CHAT only, recommended 1 = before latest message)': '召回注入深度（僅聊天內，建議 1=最後一則訊息前）',
+        'Recall injection role (IN_CHAT only)': '召回注入角色（僅聊天內）',
+        'System': 'System',
+        'User': 'User',
+        'Assistant': 'Assistant',
         'Recall API preset (Connection profile, empty = current)': '召回 API 預設（連線設定，留空=目前）',
         'Recall preset (params + prompt, empty = current)': '召回提示詞預設（參數+提示詞，留空=目前）',
         'Extract API preset (Connection profile, empty = current)': '生成圖 API 預設（連線設定，留空=目前）',
@@ -961,6 +982,91 @@ function normalizeNodeTypeSchema(schema) {
     return deduped.length > 0 ? deduped : structuredClone(defaultNodeTypeSchema);
 }
 
+function normalizeRecallInjectPosition(value) {
+    const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
+    const numeric = Number(value);
+    return allowed.includes(numeric) ? numeric : extension_prompt_types.IN_CHAT;
+}
+
+function normalizeRecallInjectDepth(value) {
+    return Math.max(0, Math.min(10000, Math.floor(Number(value) || 0)));
+}
+
+function normalizeRecallInjectRole(value) {
+    const allowed = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
+    const numeric = Number(value);
+    return allowed.includes(numeric) ? numeric : extension_prompt_roles.SYSTEM;
+}
+
+function mapPromptRoleToWorldInfoRole(value) {
+    const role = normalizeRecallInjectRole(value);
+    if (role === extension_prompt_roles.USER) {
+        return 'user';
+    }
+    if (role === extension_prompt_roles.ASSISTANT) {
+        return 'assistant';
+    }
+    return 'system';
+}
+
+function appendUniqueWorldInfoBlock(text, block) {
+    const existing = String(text || '').trim();
+    const incoming = String(block || '').trim();
+    if (!incoming) {
+        return { text: existing, changed: false };
+    }
+    if (existing.includes(incoming)) {
+        return { text: existing, changed: false };
+    }
+    return {
+        text: [existing, incoming].filter(Boolean).join('\n\n').trim(),
+        changed: true,
+    };
+}
+
+function injectRecallFocusPacketToPayload(payload, settings, focusPacket) {
+    if (!payload || typeof payload !== 'object') {
+        return false;
+    }
+    const packet = normalizeMultilineText(focusPacket || '');
+    if (!packet) {
+        return false;
+    }
+    const position = normalizeRecallInjectPosition(settings?.recallInjectPosition);
+    if (position === extension_prompt_types.BEFORE_PROMPT) {
+        const next = appendUniqueWorldInfoBlock(payload.worldInfoBefore, packet);
+        payload.worldInfoBefore = next.text;
+        return next.changed;
+    }
+    if (position === extension_prompt_types.IN_PROMPT) {
+        const next = appendUniqueWorldInfoBlock(payload.worldInfoAfter, packet);
+        payload.worldInfoAfter = next.text;
+        return next.changed;
+    }
+
+    const depth = normalizeRecallInjectDepth(settings?.recallInjectDepth);
+    const role = mapPromptRoleToWorldInfoRole(settings?.recallInjectRole);
+    if (!Array.isArray(payload.worldInfoDepth)) {
+        payload.worldInfoDepth = [];
+    }
+    let target = payload.worldInfoDepth.find((entry) => {
+        const entryDepth = Math.max(0, Math.floor(Number(entry?.depth) || 0));
+        const entryRole = String(entry?.role || '').trim().toLowerCase();
+        return entryDepth === depth && entryRole === role;
+    });
+    if (!target) {
+        target = { depth, role, entries: [] };
+        payload.worldInfoDepth.push(target);
+    } else if (!Array.isArray(target.entries)) {
+        target.entries = [];
+    }
+    if (target.entries.includes(packet)) {
+        return false;
+    }
+    target.entries.push(packet);
+    return true;
+}
+
 function ensureSettings() {
     if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
         extension_settings[MODULE_NAME] = {};
@@ -976,6 +1082,9 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    extension_settings[MODULE_NAME].recallInjectPosition = normalizeRecallInjectPosition(extension_settings[MODULE_NAME].recallInjectPosition);
+    extension_settings[MODULE_NAME].recallInjectDepth = normalizeRecallInjectDepth(extension_settings[MODULE_NAME].recallInjectDepth);
+    extension_settings[MODULE_NAME].recallInjectRole = normalizeRecallInjectRole(extension_settings[MODULE_NAME].recallInjectRole);
     delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
     extension_settings[MODULE_NAME].updateEvery = Math.max(
         1,
@@ -5600,17 +5709,6 @@ async function syncPersistentLorebookProjection(context, settings, store) {
     };
 }
 
-async function syncRuntimeLorebookProjection(context, settings, blocks) {
-    const focusPacket = normalizeMultilineText(blocks?.focusPacket || '');
-    const result = await upsertManagedLorebookProjection(context, settings, {
-        commentPrefix: RUNTIME_LOREBOOK_COMMENT_PREFIX,
-        sections: [['FOCUS_PACKET', focusPacket]],
-        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)) + 50,
-        allowCreate: true,
-    });
-    return Boolean(result?.changed);
-}
-
 async function clearRuntimeLorebookProjection(context, settings) {
     const result = await upsertManagedLorebookProjection(context, settings, {
         commentPrefix: RUNTIME_LOREBOOK_COMMENT_PREFIX,
@@ -6054,6 +6152,9 @@ async function injectMemoryPrompts(context, payload) {
     const settings = getEffectiveSettings(context, getSettings());
     const generationType = String(payload?.type || '').trim().toLowerCase();
     const isDryRun = payload?.dryRun === true;
+    if (payload && typeof payload === 'object') {
+        payload.__lukerRpgMemoryNeedRescan = false;
+    }
     if (isDryRun || generationType === 'quiet') {
         return false;
     }
@@ -6090,15 +6191,18 @@ async function injectMemoryPrompts(context, payload) {
     if (shouldReuseSnapshot) {
         const focusPacket = normalizeMultilineText(latestRecallSnapshot?.blocks?.focusPacket || '');
         const blocks = { corePacket, focusPacket };
-        const runtimeChanged = await syncRuntimeLorebookProjection(context, settings, blocks);
+        const payloadInjected = injectRecallFocusPacketToPayload(payload, settings, blocks.focusPacket);
         store.lastRecallTrace = structuredClone(Array.isArray(latestRecallSnapshot.trace) ? latestRecallSnapshot.trace : []);
         store.lastRecallProjection = {
             at: Date.now(),
             blocks,
         };
         await persistMemoryStoreByChatKey(context, chatKey, store);
+        if (payload && typeof payload === 'object') {
+            payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed);
+        }
         updateUiStatus(i18nFormat('Recall ready. selected=${0}', Math.max(0, Number(latestRecallSnapshot.selectedCount || 0))));
-        return Boolean(runtimeChanged || persistentSync.changed);
+        return Boolean(payloadInjected || persistentSync.changed);
     }
 
     const { selectedNodes, trace } = await runLLMDrivenRecall(context, store, payload);
@@ -6108,12 +6212,15 @@ async function injectMemoryPrompts(context, payload) {
         corePacket,
         focusPacket: normalizeMultilineText(buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }, context)),
     };
-    const runtimeChanged = await syncRuntimeLorebookProjection(context, settings, blocks);
+    const payloadInjected = injectRecallFocusPacketToPayload(payload, settings, blocks.focusPacket);
     store.lastRecallProjection = {
         at: Date.now(),
         blocks,
     };
     await persistMemoryStoreByChatKey(context, chatKey, store);
+    if (payload && typeof payload === 'object') {
+        payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed);
+    }
     latestRecallSnapshot = anchor
         ? {
             chatKey,
@@ -6125,7 +6232,7 @@ async function injectMemoryPrompts(context, payload) {
         }
         : null;
     updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
-    return Boolean(runtimeChanged || persistentSync.changed);
+    return Boolean(payloadInjected || persistentSync.changed);
 }
 
 async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_info_scan') {
@@ -9329,6 +9436,9 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_enabled').prop('checked', Boolean(settings.enabled));
     root.find('#luker_rpg_memory_recall_enabled').prop('checked', Boolean(settings.recallEnabled));
+    root.find('#luker_rpg_memory_recall_inject_position').val(String(normalizeRecallInjectPosition(settings.recallInjectPosition)));
+    root.find('#luker_rpg_memory_recall_inject_depth').val(String(normalizeRecallInjectDepth(settings.recallInjectDepth)));
+    root.find('#luker_rpg_memory_recall_inject_role').val(String(normalizeRecallInjectRole(settings.recallInjectRole)));
     root.find('#luker_rpg_memory_recall_api_preset').val(String(settings.recallApiPresetName || ''));
     root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
     root.find('#luker_rpg_memory_extract_api_preset').val(String(settings.extractApiPresetName || ''));
@@ -9354,6 +9464,24 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_recall_enabled').off('input').on('input', function () {
         settings.recallEnabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_inject_position').off('change').on('change', function () {
+        settings.recallInjectPosition = normalizeRecallInjectPosition(jQuery(this).val());
+        jQuery(this).val(String(settings.recallInjectPosition));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_inject_depth').off('change input').on('change input', function () {
+        settings.recallInjectDepth = normalizeRecallInjectDepth(jQuery(this).val());
+        jQuery(this).val(String(settings.recallInjectDepth));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_inject_role').off('change').on('change', function () {
+        settings.recallInjectRole = normalizeRecallInjectRole(jQuery(this).val());
+        jQuery(this).val(String(settings.recallInjectRole));
         saveSettingsDebounced();
     });
 
@@ -9779,6 +9907,20 @@ function ensureUi() {
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
+            <label for="luker_rpg_memory_recall_inject_position">${escapeHtml(i18n('Recall injection position'))}</label>
+            <select id="luker_rpg_memory_recall_inject_position" class="text_pole">
+                <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
+                <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
+                <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
+            </select>
+            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Recall injection depth (IN_CHAT only, recommended 1 = before latest message)'))}</label>
+            <input id="luker_rpg_memory_recall_inject_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
+            <label for="luker_rpg_memory_recall_inject_role">${escapeHtml(i18n('Recall injection role (IN_CHAT only)'))}</label>
+            <select id="luker_rpg_memory_recall_inject_role" class="text_pole">
+                <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
+                <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
+                <option value="${extension_prompt_roles.ASSISTANT}">${escapeHtml(i18n('Assistant'))}</option>
+            </select>
             <label for="luker_rpg_memory_recall_api_preset">${escapeHtml(i18n('Recall API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_rpg_memory_recall_api_preset" class="text_pole"></select>
             <label for="luker_rpg_memory_recall_preset">${escapeHtml(i18n('Recall preset (params + prompt, empty = current)'))}</label>
@@ -9873,8 +10015,8 @@ jQuery(() => {
     if (wiAfterEvent) {
         context.eventSource.on(wiAfterEvent, async (payload) => {
             const runtimeContext = getContext();
-            const injected = await safeInjectMemoryPrompts(runtimeContext, payload, 'after_world_info_scan');
-            if (injected && payload && typeof payload === 'object') {
+            await safeInjectMemoryPrompts(runtimeContext, payload, 'after_world_info_scan');
+            if (payload && typeof payload === 'object' && payload.__lukerRpgMemoryNeedRescan) {
                 payload.requestRescan = true;
             }
         });
