@@ -272,6 +272,10 @@ function registerLocaleData() {
         'View Last Run': '查看最近一轮',
         'View Research Records': '查看研究记录',
         'Latest Orchestration Result': '最近编排结果',
+        'Edit Result': '编辑结果',
+        'Edit latest orchestration result text.': '编辑最近一轮编排结果文本。',
+        'Orchestration result cannot be empty.': '编排结果不能为空。',
+        'Saved latest orchestration result.': '最近一轮编排结果已保存。',
         'Research Records': '研究记录',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
         'No research records available for this chat.': '当前聊天暂无研究记录。',
@@ -465,6 +469,10 @@ function registerLocaleData() {
         'View Last Run': '查看最近一輪',
         'View Research Records': '查看研究記錄',
         'Latest Orchestration Result': '最近編排結果',
+        'Edit Result': '編輯結果',
+        'Edit latest orchestration result text.': '編輯最近一輪編排結果文本。',
+        'Orchestration result cannot be empty.': '編排結果不能為空。',
+        'Saved latest orchestration result.': '最近一輪編排結果已儲存。',
         'Research Records': '研究記錄',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
         'No research records available for this chat.': '目前聊天暫無研究記錄。',
@@ -1094,14 +1102,84 @@ function renderLastOrchestrationResultHtml(context) {
 </div>`;
 }
 
+async function editLastOrchestrationResult(context) {
+    await loadOrchestratorChatState(context, { force: false });
+    const entry = getLatestOrchestrationEntry(context);
+    if (!entry || typeof entry !== 'object') {
+        notifyError(i18n('No recent orchestration result available for this chat.'));
+        return false;
+    }
+
+    const input = await context.callGenericPopup(
+        i18n('Edit latest orchestration result text.'),
+        context.POPUP_TYPE.INPUT,
+        String(entry.injectedText || ''),
+        {
+            rows: 16,
+            wide: true,
+            wider: true,
+            large: true,
+            okButton: i18n('Save'),
+            cancelButton: i18n('Cancel'),
+        },
+    );
+    if (typeof input !== 'string') {
+        return false;
+    }
+
+    const nextText = String(input || '').trim();
+    if (!nextText) {
+        notifyError(i18n('Orchestration result cannot be empty.'));
+        return false;
+    }
+
+    const chatKey = getChatKey(context);
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        notifyError(i18n('No recent orchestration result available for this chat.'));
+        return false;
+    }
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+        notifyError(i18n('No recent orchestration result available for this chat.'));
+        return false;
+    }
+
+    latestOrchestrationSnapshot = {
+        ...latestOrchestrationSnapshot,
+        capsuleText: nextText,
+        updatedAt: new Date().toISOString(),
+    };
+    injectCapsule(context, nextText);
+    await persistOrchestratorChatState(context);
+    notifySuccess(i18n('Saved latest orchestration result.'));
+    updateUiStatus(i18n('Saved latest orchestration result.'));
+    return true;
+}
+
 async function openLastOrchestrationResult(context) {
     await loadOrchestratorChatState(context, { force: false });
-    await context.callGenericPopup(
+    const hasEntry = Boolean(getLatestOrchestrationEntry(context));
+    const editButtonResult = context?.POPUP_RESULT?.CUSTOM1 ?? 2;
+    const popupResult = await context.callGenericPopup(
         renderLastOrchestrationResultHtml(context),
         context.POPUP_TYPE.TEXT,
         i18n('Latest Orchestration Result'),
-        { wide: true, wider: true, large: true, allowVerticalScrolling: true },
+        {
+            wide: true,
+            wider: true,
+            large: true,
+            allowVerticalScrolling: true,
+            okButton: i18n('Close'),
+            customButtons: hasEntry
+                ? [{ text: i18n('Edit Result'), result: editButtonResult, appendAtEnd: true }]
+                : [],
+        },
     );
+    if (popupResult === editButtonResult) {
+        const saved = await editLastOrchestrationResult(context);
+        if (saved) {
+            await openLastOrchestrationResult(context);
+        }
+    }
 }
 
 async function openResearchRecords(context) {
