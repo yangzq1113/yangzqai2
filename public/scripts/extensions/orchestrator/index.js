@@ -2025,7 +2025,16 @@ function buildRuntimeWorldInfoFromPayload(payload = null) {
         anBefore: Array.isArray(payload?.anBefore) ? payload.anBefore : [],
         anAfter: Array.isArray(payload?.anAfter) ? payload.anAfter : [],
     });
-    return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
+    const rewritten = normalizeRuntimeWorldInfo(rewriteDepthWorldInfoToAfter({
+        ...candidate,
+        worldInfoDepth: Array.isArray(candidate.worldInfoDepth)
+            ? candidate.worldInfoDepth.map(entry => ({
+                ...entry,
+                entries: Array.isArray(entry?.entries) ? entry.entries.slice() : [],
+            }))
+            : [],
+    }));
+    return hasEffectiveRuntimeWorldInfo(rewritten) ? rewritten : null;
 }
 
 function getNodeIterationMaxRounds(settings = null) {
