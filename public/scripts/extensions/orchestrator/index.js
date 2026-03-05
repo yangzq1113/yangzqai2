@@ -3911,6 +3911,9 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
 
     const aiSuggestApiPresetName = String(settings.aiSuggestApiPresetName || '').trim();
     const suggestPresetName = String(settings.aiSuggestPresetName || '').trim();
+    const worldInfoMessages = normalizeWorldInfoResolverMessages(
+        getRecentMessages(Array.isArray(context?.chat) ? context.chat : [], settings.maxRecentMessages),
+    );
     const aiSuggestProfileResolution = resolveChatCompletionRequestProfile({
         profileName: aiSuggestApiPresetName,
         defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
@@ -3924,6 +3927,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         {
             api: aiSuggestProfileResolution.requestApi,
             promptPresetName: suggestPresetName,
+            worldInfoMessages,
+            worldInfoType: 'quiet',
         },
     );
 
