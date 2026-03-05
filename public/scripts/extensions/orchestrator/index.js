@@ -270,8 +270,17 @@ function registerLocaleData() {
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
         'Open Orchestration Editor': '打开编排编辑器',
         'View Last Run': '查看最近一轮',
+        'View Research Records': '查看研究记录',
         'Latest Orchestration Result': '最近编排效果',
+        'Research Records': '研究记录',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
+        'No research records available for this chat.': '当前聊天暂无研究记录。',
+        'Total records': '记录总数',
+        'Record ID': '记录 ID',
+        'Created At': '创建时间',
+        'Written by node': '写入节点',
+        'Content': '内容',
+        'Sources': '来源',
         'Updated At': '更新时间',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '当前迭代来源：${0}',
@@ -454,8 +463,17 @@ function registerLocaleData() {
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
         'Open Orchestration Editor': '開啟編排編輯器',
         'View Last Run': '查看最近一輪',
+        'View Research Records': '查看研究記錄',
         'Latest Orchestration Result': '最近編排效果',
+        'Research Records': '研究記錄',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
+        'No research records available for this chat.': '目前聊天暫無研究記錄。',
+        'Total records': '記錄總數',
+        'Record ID': '記錄 ID',
+        'Created At': '建立時間',
+        'Written by node': '寫入節點',
+        'Content': '內容',
+        'Sources': '來源',
         'Updated At': '更新時間',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '目前迭代來源：${0}',
@@ -948,6 +966,118 @@ function getPreviousOrchestrationCapsuleText(context, payload) {
     return String(snapshot.capsuleText || '').trim();
 }
 
+function formatReadableTimestamp(value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+        return i18n('Not set');
+    }
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+        return raw;
+    }
+    try {
+        return parsed.toLocaleString();
+    } catch {
+        return raw;
+    }
+}
+
+function buildKnowledgeEntryDisplayTitle(entry, index = 0) {
+    const title = String(entry?.title || '').trim();
+    if (title) {
+        return title;
+    }
+    const content = String(entry?.content || '').trim();
+    if (content) {
+        const firstLine = content.split(/\r?\n/).find(line => line.trim()) || content;
+        return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+    }
+    const id = String(entry?.id || '').trim();
+    if (id) {
+        return id;
+    }
+    return `#${Number(index) + 1}`;
+}
+
+function renderKnowledgeTagsHtml(tags) {
+    const safeTags = Array.isArray(tags)
+        ? tags.map(tag => String(tag || '').trim()).filter(Boolean)
+        : [];
+    if (safeTags.length === 0) {
+        return `<span class="luker_orch_kb_empty">${escapeHtml(i18n('Not set'))}</span>`;
+    }
+    return safeTags.map(tag => `<span class="luker_orch_kb_tag">${escapeHtml(tag)}</span>`).join('');
+}
+
+function renderKnowledgeSourcesHtml(sources) {
+    const safeSources = Array.isArray(sources)
+        ? sources.map(source => String(source || '').trim()).filter(Boolean)
+        : [];
+    if (safeSources.length === 0) {
+        return `<div class="luker_orch_kb_empty">${escapeHtml(i18n('Not set'))}</div>`;
+    }
+    const items = safeSources.map((source) => {
+        if (/^https?:\/\//i.test(source)) {
+            const safeSource = escapeHtml(source);
+            return `<li><a href="${safeSource}" target="_blank" rel="noopener noreferrer">${safeSource}</a></li>`;
+        }
+        return `<li>${escapeHtml(source)}</li>`;
+    }).join('');
+    return `<ul class="luker_orch_kb_sources">${items}</ul>`;
+}
+
+function renderResearchRecordsHtml() {
+    const entries = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries)
+        .sort((left, right) => {
+            const leftTsRaw = new Date(left.updatedAt || left.createdAt || 0).getTime();
+            const rightTsRaw = new Date(right.updatedAt || right.createdAt || 0).getTime();
+            const leftTs = Number.isFinite(leftTsRaw) ? leftTsRaw : 0;
+            const rightTs = Number.isFinite(rightTsRaw) ? rightTsRaw : 0;
+            return rightTs - leftTs;
+        });
+    if (entries.length === 0) {
+        return `<div class="luker_orch_last_run_empty">${escapeHtml(i18n('No research records available for this chat.'))}</div>`;
+    }
+
+    const cards = entries.map((entry, index) => {
+        const title = buildKnowledgeEntryDisplayTitle(entry, index);
+        const updatedAt = formatReadableTimestamp(entry.updatedAt);
+        const createdAt = formatReadableTimestamp(entry.createdAt);
+        const byNode = String(entry.byNode || '').trim() || i18n('Not set');
+
+        return `
+<article class="luker_orch_kb_card">
+    <header class="luker_orch_kb_card_header">
+        <div class="luker_orch_kb_card_title">${escapeHtml(title)}</div>
+    </header>
+    <div class="luker_orch_kb_meta_grid">
+        <div><b>${escapeHtml(i18n('Record ID'))}</b>：${escapeHtml(entry.id)}</div>
+        <div><b>${escapeHtml(i18n('Written by node'))}</b>：${escapeHtml(byNode)}</div>
+        <div><b>${escapeHtml(i18n('Created At'))}</b>：${escapeHtml(createdAt)}</div>
+        <div><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
+    </div>
+    <section class="luker_orch_kb_section">
+        <div class="luker_orch_kb_section_title">${escapeHtml(i18n('Tags'))}</div>
+        <div class="luker_orch_kb_tags">${renderKnowledgeTagsHtml(entry.tags)}</div>
+    </section>
+    <section class="luker_orch_kb_section">
+        <div class="luker_orch_kb_section_title">${escapeHtml(i18n('Sources'))}</div>
+        ${renderKnowledgeSourcesHtml(entry.sources)}
+    </section>
+    <section class="luker_orch_kb_section">
+        <div class="luker_orch_kb_section_title">${escapeHtml(i18n('Content'))}</div>
+        <pre class="luker_orch_kb_content">${escapeHtml(entry.content)}</pre>
+    </section>
+</article>`.trim();
+    }).join('\n');
+
+    return `
+<div class="luker_orch_kb_popup">
+    <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Total records'))}</b>：${entries.length}</div>
+    <div class="luker_orch_kb_list">${cards}</div>
+</div>`;
+}
+
 function renderLastOrchestrationResultHtml(context) {
     const entry = getLatestOrchestrationEntry(context);
     if (!entry || typeof entry !== 'object') {
@@ -965,10 +1095,21 @@ function renderLastOrchestrationResultHtml(context) {
 }
 
 async function openLastOrchestrationResult(context) {
+    await loadOrchestratorChatState(context, { force: false });
     await context.callGenericPopup(
         renderLastOrchestrationResultHtml(context),
         context.POPUP_TYPE.TEXT,
         i18n('Latest Orchestration Result'),
+        { wide: true, wider: true, large: true, allowVerticalScrolling: true },
+    );
+}
+
+async function openResearchRecords(context) {
+    await loadOrchestratorChatState(context, { force: false });
+    await context.callGenericPopup(
+        renderResearchRecordsHtml(),
+        context.POPUP_TYPE.TEXT,
+        i18n('Research Records'),
         { wide: true, wider: true, large: true, allowVerticalScrolling: true },
     );
 }
@@ -6473,6 +6614,11 @@ function bindUi() {
             return;
         }
 
+        if (action === 'view-research-records') {
+            await openResearchRecords(context);
+            return;
+        }
+
         if (action === 'open-orch-editor') {
             await openOrchestrationEditorPopup(context, settings);
             return;
@@ -6938,6 +7084,83 @@ function ensureStyles() {
     opacity: 0.85;
     padding: 8px;
 }
+.luker_orch_kb_popup {
+    display: grid;
+    gap: 10px;
+}
+.luker_orch_kb_list {
+    display: grid;
+    gap: 10px;
+}
+.luker_orch_kb_card {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 10px;
+    background: rgba(0,0,0,0.16);
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_kb_card_header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.luker_orch_kb_card_title {
+    font-weight: 600;
+    line-height: 1.35;
+}
+.luker_orch_kb_meta_grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 6px 10px;
+    font-size: 0.9rem;
+    opacity: 0.92;
+}
+.luker_orch_kb_section {
+    display: grid;
+    gap: 6px;
+}
+.luker_orch_kb_section_title {
+    font-weight: 600;
+    font-size: 0.92rem;
+}
+.luker_orch_kb_tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.luker_orch_kb_tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(39, 117, 215, 0.16);
+    border: 1px solid rgba(39, 117, 215, 0.35);
+    font-size: 0.82rem;
+}
+.luker_orch_kb_empty {
+    opacity: 0.8;
+    font-size: 0.9rem;
+}
+.luker_orch_kb_sources {
+    margin: 0;
+    padding-left: 1.1em;
+    display: grid;
+    gap: 4px;
+}
+.luker_orch_kb_content {
+    margin: 0;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.2);
+    max-height: 260px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.38;
+}
 .luker_orch_iter_popup .menu_button,
 .luker_orch_iter_popup .menu_button_small {
     width: auto;
@@ -7136,6 +7359,7 @@ function ensureUi() {
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
+                    <div class="menu_button" data-luker-action="view-research-records">${escapeHtml(i18n('View Research Records'))}</div>
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
