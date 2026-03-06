@@ -407,6 +407,7 @@ function registerLocaleData() {
         'Delete': '删除',
         'Memory graph imported for current chat.': '当前聊天记忆图已导入。',
         'Imported memory graph JSON.': '已导入记忆图 JSON。',
+        'Imported memory graph JSON as current chat baseline.': '已将记忆图 JSON 作为当前聊天基线导入。',
         'Memory graph import failed.': '记忆图导入失败。',
         'Memory graph incremental fill completed.': '记忆图增量补全完成。',
         'Memory graph is already up to date.': '记忆图已是最新，无需补全。',
@@ -672,6 +673,7 @@ function registerLocaleData() {
         'Delete': '刪除',
         'Memory graph imported for current chat.': '目前聊天記憶圖已匯入。',
         'Imported memory graph JSON.': '已匯入記憶圖 JSON。',
+        'Imported memory graph JSON as current chat baseline.': '已將記憶圖 JSON 作為目前聊天基線匯入。',
         'Memory graph import failed.': '記憶圖匯入失敗。',
         'Memory graph incremental fill completed.': '記憶圖譜增量補全完成。',
         'Memory graph is already up to date.': '記憶圖譜已是最新，無需補全。',
@@ -6365,6 +6367,23 @@ function buildPlayableFramesFromContext(context) {
     return frames;
 }
 
+function rebaseStoreToChatBaseline(store, context) {
+    if (!store || typeof store !== 'object') {
+        return;
+    }
+    const baselineSeq = Math.max(0, Math.floor(Number(buildPlayableFramesFromContext(context).length || 0)));
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        node.seqTo = baselineSeq;
+    }
+    store.appliedSeqTo = baselineSeq;
+    store.seqCounter = baselineSeq;
+    store.lastRecallTrace = [];
+    store.lastRecallProjection = null;
+}
+
 function getSemanticCoverageSeq(store) {
     const nodes = Object.values(store?.nodes || {})
         .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC);
@@ -10278,13 +10297,15 @@ function bindUi() {
                 memoryStoreTargets.set(chatKey, target);
             }
             const migrated = normalizeStoreForRuntime(parsed);
+            rebaseStoreToChatBaseline(migrated, context);
             updateStoreSourceState(migrated, context);
             memoryStoreCache.set(chatKey, migrated);
             clearRollbackHistory(chatKey);
+            latestRecallSnapshot = null;
             await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18n('Memory graph imported for current chat.'));
-            updateUiStatus(i18n('Imported memory graph JSON.'));
+            updateUiStatus(i18n('Imported memory graph JSON as current chat baseline.'));
         } catch (error) {
             notifyError(i18nFormat('Import failed: ${0}', error?.message || error));
             updateUiStatus(i18n('Memory graph import failed.'));
