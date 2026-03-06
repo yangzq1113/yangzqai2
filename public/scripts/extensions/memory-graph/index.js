@@ -850,12 +850,15 @@ const extractionTimers = new Map();
 const memoryStoreCache = new Map();
 const memoryStoreTargets = new Map();
 const memoryLoadTasks = new Map();
+const rollbackHistoryCache = new Map();
+const pendingMutationInvalidations = new Map();
 let activeRuntimeInfoToast = null;
 let activeRecallAbortController = null;
 let activeExtractionAbortController = null;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 let latestRecallSnapshot = null;
+let generationInProgress = false;
 function getGenerationVisibleHistoryRuntimeRegexScripts() {
     const context = getContext();
     const settings = getEffectiveSettings(context, getSettings());
@@ -1553,12 +1556,12 @@ function createEmptyStore() {
         nodeSeq: 0,
         seqCounter: 0,
         appliedSeqTo: 0,
+        pendingFullRebuild: false,
         nodes: {},
         edges: [],
         lastRecallTrace: [],
         lastRecallProjection: null,
         sourceMessageCount: 0,
-        sourceDigest: '',
     };
 }
 
@@ -1568,7 +1571,7 @@ function normalizeStoreForRuntime(store) {
     }
     const normalized = createEmptyStore();
     normalized.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
-    normalized.sourceDigest = String(store.sourceDigest || '');
+    normalized.pendingFullRebuild = Boolean(store.pendingFullRebuild);
     normalized.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
     normalized.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? store.lastRecallProjection
@@ -1856,18 +1859,10 @@ function findValueByKeyDeep(value, targetKey, depth = 0) {
     return undefined;
 }
 
-function hashTextFNV1a(text) {
-    let hash = 0x811c9dc5;
-    const input = String(text || '');
-    for (let i = 0; i < input.length; i++) {
-        hash ^= input.charCodeAt(i);
-        hash = (hash * 0x01000193) >>> 0;
-    }
-    return hash.toString(16).padStart(8, '0');
-}
-
-function getAssistantChatMessages(context) {
-    const source = Array.isArray(context?.chat) ? context.chat : [];
+function getAssistantChatMessages(sourceOrContext) {
+    const source = Array.isArray(sourceOrContext)
+        ? sourceOrContext
+        : (Array.isArray(sourceOrContext?.chat) ? sourceOrContext.chat : []);
     const result = [];
     let lastUser = null;
     for (const message of source) {
@@ -1899,44 +1894,402 @@ function getAssistantChatMessages(context) {
     return result;
 }
 
-function computeChatSourceState(context) {
-    const source = getAssistantChatMessages(context);
-    const tail = [];
+function computeChatSourceStateFromMessages(messages) {
+    const source = getAssistantChatMessages(messages);
     let count = 0;
     for (const message of source) {
         count += 1;
-        tail.push({
-            is_user: Boolean(message.is_user),
-            name: String(message.name || ''),
-            mes: String(message.mes || ''),
-            send_date: String(message.send_date || ''),
-            last_user_name: String(message.last_user_name || ''),
-            last_user_mes: String(message.last_user_mes || ''),
-            last_user_send_date: String(message.last_user_send_date || ''),
-        });
-        if (tail.length > 24) {
-            tail.shift();
-        }
     }
-    const digestPayload = tail.map(message => [
-        message.is_user ? 'u' : 'a',
-        message.name,
-        normalizeText(message.mes),
-        message.send_date,
-        `ctx_user_name=${message.last_user_name}`,
-        `ctx_user_mes=${normalizeText(message.last_user_mes)}`,
-        `ctx_user_date=${message.last_user_send_date}`,
-    ].join('|')).join('\n');
     return {
         messageCount: count,
-        digest: hashTextFNV1a(`${count}\n${digestPayload}`),
     };
+}
+
+function computeChatSourceState(context) {
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    return computeChatSourceStateFromMessages(source);
 }
 
 function updateStoreSourceState(store, context) {
     const source = computeChatSourceState(context);
     store.sourceMessageCount = Number(source.messageCount || 0);
-    store.sourceDigest = String(source.digest || '');
+    store.pendingFullRebuild = false;
+}
+
+function cloneRollbackNodeSnapshot(rawNode) {
+    if (!rawNode || typeof rawNode !== 'object') {
+        return null;
+    }
+    return {
+        id: String(rawNode.id || '').trim(),
+        type: String(rawNode.type || 'unknown'),
+        level: String(rawNode.level || LEVEL.SEMANTIC),
+        title: normalizeText(rawNode.title || rawNode.id || ''),
+        parentId: String(rawNode.parentId || '').trim(),
+        childrenIds: Array.isArray(rawNode.childrenIds)
+            ? rawNode.childrenIds.map(child => String(child || '').trim()).filter(Boolean)
+            : [],
+        fields: rawNode.fields && typeof rawNode.fields === 'object' && !Array.isArray(rawNode.fields)
+            ? structuredClone(rawNode.fields)
+            : {},
+        semanticDepth: Number.isFinite(Number(rawNode.semanticDepth)) ? Number(rawNode.semanticDepth) : 0,
+        semanticRollup: Boolean(rawNode.semanticRollup),
+        seqTo: Number.isFinite(Number(rawNode.seqTo)) ? Math.max(0, Math.floor(Number(rawNode.seqTo))) : undefined,
+        archived: Boolean(rawNode.archived),
+    };
+}
+
+function cloneRollbackEdgeSnapshot(rawEdge) {
+    if (!rawEdge || typeof rawEdge !== 'object') {
+        return null;
+    }
+    const from = String(rawEdge.from || '').trim();
+    const to = String(rawEdge.to || '').trim();
+    if (!from || !to || from === to) {
+        return null;
+    }
+    return {
+        from,
+        to,
+        type: normalizeText(rawEdge.type || 'related') || 'related',
+    };
+}
+
+function getRollbackEdgeKey(edge) {
+    const snapshot = cloneRollbackEdgeSnapshot(edge);
+    if (!snapshot) {
+        return '';
+    }
+    return `${snapshot.from}\u241F${snapshot.type}\u241F${snapshot.to}`;
+}
+
+function getRollbackHistory(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return [];
+    }
+    if (!rollbackHistoryCache.has(key)) {
+        rollbackHistoryCache.set(key, []);
+    }
+    return rollbackHistoryCache.get(key);
+}
+
+function clearRollbackHistory(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return;
+    }
+    rollbackHistoryCache.delete(key);
+}
+
+function trimRollbackHistoryFromSeq(chatKey, fromSeq) {
+    const key = String(chatKey || '').trim();
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    if (!key || !Number.isFinite(startSeq) || startSeq <= 0) {
+        return;
+    }
+    const history = rollbackHistoryCache.get(key);
+    if (!Array.isArray(history) || history.length === 0) {
+        return;
+    }
+    const nextHistory = history.filter(entry => Math.max(0, Math.floor(Number(entry?.seqTo || 0))) < startSeq);
+    if (nextHistory.length > 0) {
+        rollbackHistoryCache.set(key, nextHistory);
+    } else {
+        rollbackHistoryCache.delete(key);
+    }
+}
+
+function captureRollbackSnapshot(store) {
+    const nodes = {};
+    for (const [id, node] of Object.entries(store?.nodes || {})) {
+        const snapshot = cloneRollbackNodeSnapshot(node);
+        if (snapshot) {
+            nodes[String(id || '').trim()] = snapshot;
+        }
+    }
+    return {
+        nodeSeq: Math.max(0, Math.floor(Number(store?.nodeSeq || 0))),
+        seqCounter: Math.max(0, Math.floor(Number(store?.seqCounter || 0))),
+        appliedSeqTo: Math.max(0, Math.floor(Number(store?.appliedSeqTo || 0))),
+        nodes,
+        edges: Array.isArray(store?.edges)
+            ? store.edges.map(cloneRollbackEdgeSnapshot).filter(Boolean)
+            : [],
+    };
+}
+
+function restoreStoreFromRollbackSnapshot(store, snapshot) {
+    if (!store || typeof store !== 'object' || !snapshot || typeof snapshot !== 'object') {
+        return;
+    }
+    store.nodeSeq = Math.max(0, Math.floor(Number(snapshot.nodeSeq || 0)));
+    store.seqCounter = Math.max(0, Math.floor(Number(snapshot.seqCounter || 0)));
+    store.appliedSeqTo = Math.max(0, Math.floor(Number(snapshot.appliedSeqTo || 0)));
+    store.nodes = {};
+    for (const [id, node] of Object.entries(snapshot.nodes || {})) {
+        const restored = cloneRollbackNodeSnapshot(node);
+        if (restored) {
+            store.nodes[String(id || '').trim()] = restored;
+        }
+    }
+    store.edges = Array.isArray(snapshot.edges)
+        ? snapshot.edges.map(cloneRollbackEdgeSnapshot).filter(Boolean)
+        : [];
+    repairStoreAfterRollback(store);
+}
+
+function repairStoreAfterRollback(store) {
+    if (!store || typeof store !== 'object') {
+        return;
+    }
+    const validNodeIds = new Set(Object.keys(store.nodes || {}));
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        node.childrenIds = Array.isArray(node.childrenIds)
+            ? [...new Set(node.childrenIds.map(child => String(child || '').trim()).filter(child => child && child !== node.id && validNodeIds.has(child)))]
+            : [];
+        const parentId = String(node.parentId || '').trim();
+        node.parentId = parentId && parentId !== node.id && validNodeIds.has(parentId) ? parentId : '';
+    }
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object' || !node.parentId) {
+            continue;
+        }
+        const parent = store.nodes?.[node.parentId];
+        if (!parent || typeof parent !== 'object') {
+            node.parentId = '';
+            continue;
+        }
+        if (!Array.isArray(parent.childrenIds)) {
+            parent.childrenIds = [];
+        }
+        if (!parent.childrenIds.includes(node.id)) {
+            parent.childrenIds.push(node.id);
+        }
+    }
+    const nextEdges = [];
+    const seen = new Set();
+    for (const edge of Array.isArray(store.edges) ? store.edges : []) {
+        const snapshot = cloneRollbackEdgeSnapshot(edge);
+        const key = getRollbackEdgeKey(snapshot);
+        if (!snapshot || !key || seen.has(key)) {
+            continue;
+        }
+        if (!validNodeIds.has(snapshot.from) || !validNodeIds.has(snapshot.to)) {
+            continue;
+        }
+        seen.add(key);
+        nextEdges.push(snapshot);
+    }
+    store.edges = nextEdges;
+}
+
+function buildRollbackEntry(chatKey, beforeSnapshot, store, { seqFrom = 0, seqTo = 0, kind = 'extract' } = {}) {
+    const key = String(chatKey || '').trim();
+    if (!key || !beforeSnapshot || typeof beforeSnapshot !== 'object' || !store || typeof store !== 'object') {
+        return null;
+    }
+    const afterSnapshot = captureRollbackSnapshot(store);
+    const nodeIds = new Set([
+        ...Object.keys(beforeSnapshot.nodes || {}),
+        ...Object.keys(afterSnapshot.nodes || {}),
+    ]);
+    const nodesBefore = {};
+    let nodeChangeCount = 0;
+    for (const id of nodeIds) {
+        const beforeNode = beforeSnapshot.nodes?.[id] ?? null;
+        const afterNode = afterSnapshot.nodes?.[id] ?? null;
+        if (JSON.stringify(beforeNode) === JSON.stringify(afterNode)) {
+            continue;
+        }
+        nodesBefore[id] = beforeNode ? cloneRollbackNodeSnapshot(beforeNode) : null;
+        nodeChangeCount += 1;
+    }
+    const beforeEdges = Array.isArray(beforeSnapshot.edges) ? beforeSnapshot.edges : [];
+    const afterEdges = Array.isArray(afterSnapshot.edges) ? afterSnapshot.edges : [];
+    const beforeEdgeKeys = new Set(beforeEdges.map(getRollbackEdgeKey).filter(Boolean));
+    const afterEdgeKeys = new Set(afterEdges.map(getRollbackEdgeKey).filter(Boolean));
+    const addedEdges = afterEdges.filter(edge => {
+        const edgeKey = getRollbackEdgeKey(edge);
+        return edgeKey && !beforeEdgeKeys.has(edgeKey);
+    });
+    const removedEdges = beforeEdges.filter(edge => {
+        const edgeKey = getRollbackEdgeKey(edge);
+        return edgeKey && !afterEdgeKeys.has(edgeKey);
+    });
+    const metaChanged = beforeSnapshot.nodeSeq !== afterSnapshot.nodeSeq
+        || beforeSnapshot.seqCounter !== afterSnapshot.seqCounter
+        || beforeSnapshot.appliedSeqTo !== afterSnapshot.appliedSeqTo;
+    if (!metaChanged && nodeChangeCount === 0 && addedEdges.length === 0 && removedEdges.length === 0) {
+        return null;
+    }
+    return {
+        kind: String(kind || 'extract'),
+        seqFrom: Math.max(1, Math.floor(Number(seqFrom || 0))),
+        seqTo: Math.max(1, Math.floor(Number(seqTo || seqFrom || 0))),
+        metaBefore: {
+            nodeSeq: beforeSnapshot.nodeSeq,
+            seqCounter: beforeSnapshot.seqCounter,
+            appliedSeqTo: beforeSnapshot.appliedSeqTo,
+        },
+        nodesBefore,
+        addedEdges: addedEdges.map(cloneRollbackEdgeSnapshot).filter(Boolean),
+        removedEdges: removedEdges.map(cloneRollbackEdgeSnapshot).filter(Boolean),
+    };
+}
+
+function recordRollbackEntry(chatKey, entry) {
+    const key = String(chatKey || '').trim();
+    if (!key || !entry || typeof entry !== 'object') {
+        return;
+    }
+    getRollbackHistory(key).push(entry);
+}
+
+function applyRollbackEntry(store, entry) {
+    if (!store || typeof store !== 'object' || !entry || typeof entry !== 'object') {
+        return;
+    }
+    const nodesBefore = entry.nodesBefore && typeof entry.nodesBefore === 'object' ? entry.nodesBefore : {};
+    for (const [id, nodeBefore] of Object.entries(nodesBefore)) {
+        const nodeId = String(id || '').trim();
+        if (!nodeId) {
+            continue;
+        }
+        if (!nodeBefore) {
+            delete store.nodes[nodeId];
+            continue;
+        }
+        const restored = cloneRollbackNodeSnapshot(nodeBefore);
+        if (restored) {
+            store.nodes[nodeId] = restored;
+        }
+    }
+    const addedEdgeKeys = new Set(
+        (Array.isArray(entry.addedEdges) ? entry.addedEdges : [])
+            .map(getRollbackEdgeKey)
+            .filter(Boolean),
+    );
+    if (addedEdgeKeys.size > 0) {
+        store.edges = (Array.isArray(store.edges) ? store.edges : []).filter(edge => !addedEdgeKeys.has(getRollbackEdgeKey(edge)));
+    }
+    for (const edge of Array.isArray(entry.removedEdges) ? entry.removedEdges : []) {
+        addEdge(store, edge?.from, edge?.to, edge?.type);
+    }
+    store.nodeSeq = Math.max(0, Math.floor(Number(entry?.metaBefore?.nodeSeq || 0)));
+    store.seqCounter = Math.max(0, Math.floor(Number(entry?.metaBefore?.seqCounter || 0)));
+    store.appliedSeqTo = Math.max(0, Math.floor(Number(entry?.metaBefore?.appliedSeqTo || 0)));
+}
+
+function rollbackStoreUsingHistory(store, chatKey, fromSeq) {
+    const key = String(chatKey || '').trim();
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    if (!key || !Number.isFinite(startSeq) || startSeq <= 0) {
+        return { rolledBack: false, rollbackStartSeq: null };
+    }
+    const history = rollbackHistoryCache.get(key);
+    if (!Array.isArray(history) || history.length === 0) {
+        return { rolledBack: false, rollbackStartSeq: null };
+    }
+    let rolledBack = false;
+    let rollbackStartSeq = null;
+    while (history.length > 0) {
+        const lastEntry = history[history.length - 1];
+        const entrySeqTo = Math.max(0, Math.floor(Number(lastEntry?.seqTo || 0)));
+        if (entrySeqTo < startSeq) {
+            break;
+        }
+        applyRollbackEntry(store, lastEntry);
+        history.pop();
+        rolledBack = true;
+        const entrySeqFrom = Math.max(1, Math.floor(Number(lastEntry?.seqFrom || startSeq)));
+        rollbackStartSeq = rollbackStartSeq === null ? entrySeqFrom : Math.min(rollbackStartSeq, entrySeqFrom);
+    }
+    if (!rolledBack) {
+        return { rolledBack: false, rollbackStartSeq: null };
+    }
+    repairStoreAfterRollback(store);
+    store.pendingFullRebuild = false;
+    if (history.length === 0) {
+        rollbackHistoryCache.delete(key);
+    } else {
+        rollbackHistoryCache.set(key, history);
+    }
+    return { rolledBack: true, rollbackStartSeq };
+}
+
+function findAssistantSeqFromPlayableSeq(context, playableSeqFrom) {
+    const targetPlayableSeq = Math.max(1, Math.floor(Number(playableSeqFrom || 0)));
+    if (!Number.isFinite(targetPlayableSeq) || targetPlayableSeq <= 0) {
+        return null;
+    }
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    let playableSeq = 0;
+    let assistantSeq = 0;
+    for (const message of source) {
+        if (!message || message.is_system) {
+            continue;
+        }
+        playableSeq += 1;
+        if (message.is_user) {
+            continue;
+        }
+        assistantSeq += 1;
+        if (playableSeq >= targetPlayableSeq) {
+            return assistantSeq;
+        }
+    }
+    return null;
+}
+
+function findAffectedAssistantSeqFromMessageIndex(context, messageIndex) {
+    const targetIndex = Math.max(0, Math.floor(Number(messageIndex || 0)));
+    if (!Number.isFinite(targetIndex) || targetIndex < 0) {
+        return null;
+    }
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    let assistantSeq = 0;
+    for (let i = 0; i < source.length; i++) {
+        const message = source[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (message.is_user) {
+            continue;
+        }
+        assistantSeq += 1;
+        if (i >= targetIndex) {
+            return assistantSeq;
+        }
+    }
+    return null;
+}
+
+function getStoreSourceSyncState(store, context) {
+    const sourceState = computeChatSourceState(context);
+    const storedMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
+    const currentMessageCount = Math.max(0, Number(sourceState.messageCount || 0));
+    let requiresFullRebuild = false;
+    let reason = '';
+
+    if (Boolean(store?.pendingFullRebuild)) {
+        requiresFullRebuild = true;
+        reason = 'pending_full_rebuild';
+    } else if (currentMessageCount < storedMessageCount) {
+        requiresFullRebuild = true;
+        reason = 'source_count_decreased';
+    }
+
+    return {
+        sourceState,
+        storedMessageCount,
+        currentMessageCount,
+        requiresFullRebuild,
+        reason,
+    };
 }
 
 function getNodeTypeSchemaMap(settings, context = null) {
@@ -4444,6 +4797,7 @@ async function runExtractionForStore(context, store, {
         1,
         Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
     );
+    const historyChatKey = String(getChatKey(context) || '').trim();
     let extractedAny = false;
     for (let i = beginSeq - 1; i < frames.length; i += extractBatchTurns) {
         if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
@@ -4465,6 +4819,7 @@ async function runExtractionForStore(context, store, {
         let success = false;
         let lastFrameError = null;
         for (let attempt = 0; attempt <= frameErrorRetries; attempt++) {
+            const attemptSnapshot = captureRollbackSnapshot(store);
             try {
                 success = await processPendingMessageBatchWithLLM(
                     context,
@@ -4481,8 +4836,21 @@ async function runExtractionForStore(context, store, {
                     },
                 );
                 lastFrameError = null;
+                if (success) {
+                    extractedAny = true;
+                    store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(endFrame?.seq || 0));
+                    const rollbackEntry = buildRollbackEntry(historyChatKey, attemptSnapshot, store, {
+                        kind: 'extract',
+                        seqFrom: Number(startFrame?.seq || 0),
+                        seqTo: Number(endFrame?.seq || 0),
+                    });
+                    if (rollbackEntry) {
+                        recordRollbackEntry(historyChatKey, rollbackEntry);
+                    }
+                }
                 break;
             } catch (error) {
+                restoreStoreFromRollbackSnapshot(store, attemptSnapshot);
                 if (isAbortError(error, abortSignal)) {
                     throw error;
                 }
@@ -4502,15 +4870,22 @@ async function runExtractionForStore(context, store, {
         if (!success) {
             break;
         }
-        extractedAny = true;
-        store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(endFrame?.seq || 0));
     }
     if (extractedAny) {
+        const compressionSnapshot = captureRollbackSnapshot(store);
         await runCompressionLoop(context, store, settings, {
             compressionStats,
             maxSeq: latestSeq,
             abortSignal: abortSignal || null,
         });
+        const compressionRollbackEntry = buildRollbackEntry(historyChatKey, compressionSnapshot, store, {
+            kind: 'compression',
+            seqFrom: beginSeq,
+            seqTo: latestSeq,
+        });
+        if (compressionRollbackEntry) {
+            recordRollbackEntry(historyChatKey, compressionRollbackEntry);
+        }
     }
     store.appliedSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
     store.seqCounter = store.appliedSeqTo;
@@ -5943,13 +6318,14 @@ async function runLLMDrivenRecall(context, store, payload) {
     };
 }
 
-async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatchStart = null } = {}) {
-    const chatKey = getChatKey(context);
-    const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
+async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatchStart = null, targetHint = null } = {}) {
+    const chatKey = getChatKey(context, targetHint);
+    const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context, targetHint);
     if (!target) {
         return null;
     }
 
+    clearRollbackHistory(chatKey);
     const rebuilt = createEmptyStore();
     await runExtractionForStore(context, rebuilt, {
         force: true,
@@ -6031,53 +6407,12 @@ function formatExtractionRangeToast(beginSeq, endSeq, latestSeq) {
     return i18nFormat('Memory graph update running... seq ${0}-${1} / latest ${2}', begin, end, latest);
 }
 
-function normalizeMutationMeta(rawMeta = null) {
-    if (!rawMeta || typeof rawMeta !== 'object') {
-        return null;
-    }
-    const kind = String(rawMeta.kind || '').trim().toLowerCase();
-    const assistantFromSeq = Number(rawMeta?.deletedAssistantSeqFrom);
-    const assistantToSeq = Number(rawMeta?.deletedAssistantSeqTo);
-    const playableFromSeq = Number(rawMeta?.deletedPlayableSeqFrom);
-    const playableToSeq = Number(rawMeta?.deletedPlayableSeqTo);
-    return {
-        kind,
-        deletedAssistantSeqFrom: Number.isFinite(assistantFromSeq) ? Math.max(1, Math.floor(assistantFromSeq)) : null,
-        deletedAssistantSeqTo: Number.isFinite(assistantToSeq) ? Math.max(1, Math.floor(assistantToSeq)) : null,
-        deletedPlayableSeqFrom: Number.isFinite(playableFromSeq) ? Math.max(1, Math.floor(playableFromSeq)) : null,
-        deletedPlayableSeqTo: Number.isFinite(playableToSeq) ? Math.max(1, Math.floor(playableToSeq)) : null,
-    };
-}
-
-function findAssistantSeqFromPlayableSeq(context, playableSeqFrom) {
-    const targetPlayableSeq = Math.max(1, Math.floor(Number(playableSeqFrom || 0)));
-    if (!Number.isFinite(targetPlayableSeq) || targetPlayableSeq <= 0) {
-        return null;
-    }
-    const source = Array.isArray(context?.chat) ? context.chat : [];
-    let playableSeq = 0;
-    let assistantSeq = 0;
-    for (const message of source) {
-        if (!message || message.is_system) {
-            continue;
-        }
-        playableSeq += 1;
-        if (message.is_user) {
-            continue;
-        }
-        assistantSeq += 1;
-        if (playableSeq >= targetPlayableSeq) {
-            return assistantSeq;
-        }
-    }
-    return null;
-}
-
-function truncateStoreFromSeq(store, fromSeq) {
+function truncateStoreFromSeq(store, fromSeq, chatKey = '') {
     const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
     if (!store || typeof store !== 'object' || !Number.isFinite(startSeq) || startSeq <= 0) {
         return;
     }
+    trimRollbackHistoryFromSeq(chatKey, startSeq);
     const removeIds = new Set();
     for (const [id, node] of Object.entries(store.nodes || {})) {
         const nodeSeq = Number(node?.seqTo || 0);
@@ -6129,7 +6464,7 @@ function alignStoreCoverageToChat(store, context) {
     const covered = getSemanticCoverageSeq(store);
     let changed = false;
     if (covered > latestSeq) {
-        truncateStoreFromSeq(store, latestSeq + 1);
+        truncateStoreFromSeq(store, latestSeq + 1, getChatKey(context));
         changed = true;
     }
     const normalizedCovered = Math.min(latestSeq, getSemanticCoverageSeq(store));
@@ -6149,8 +6484,20 @@ async function ensureStoreSyncedWithChat(context, targetHint = null) {
     if (!target) {
         return store;
     }
+    const syncState = getStoreSourceSyncState(store, context);
+    let storeChanged = false;
+    if (syncState.requiresFullRebuild) {
+        const rollbackResult = syncState.reason === 'source_count_decreased'
+            ? rollbackStoreUsingHistory(store, getChatKey(context, target), Number(syncState.currentMessageCount || 0) + 1)
+            : { rolledBack: false };
+        storeChanged = Boolean(rollbackResult.rolledBack);
+        if (!rollbackResult.rolledBack) {
+            return await rebuildStoreFromCurrentChat(context, { targetHint });
+        }
+    }
     const { changed } = alignStoreCoverageToChat(store, context);
-    if (changed) {
+    storeChanged = Boolean(storeChanged || changed);
+    if (storeChanged) {
         const chatKey = getChatKey(context, target);
         await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
     }
@@ -6342,8 +6689,53 @@ function scheduleExtraction(context) {
         const extractionAbortController = new AbortController();
         activeExtractionAbortController = extractionAbortController;
         try {
-            alignStoreCoverageToChat(store, context);
             const settings = getEffectiveSettings(context, getSettings());
+            const syncState = getStoreSourceSyncState(store, context);
+            let rolledBackByHistory = false;
+            if (syncState.requiresFullRebuild) {
+                const rollbackResult = syncState.reason === 'source_count_decreased'
+                    ? rollbackStoreUsingHistory(store, chatKey, Number(syncState.currentMessageCount || 0) + 1)
+                    : { rolledBack: false };
+                if (rollbackResult.rolledBack) {
+                    rolledBackByHistory = true;
+                    alignStoreCoverageToChat(store, context);
+                } else {
+                    const rebuildLatestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+                    const extractBatchTurns = Math.max(
+                        1,
+                        Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+                    );
+                    const initialEndSeq = Math.min(
+                        Math.max(1, rebuildLatestSeq),
+                        extractBatchTurns,
+                    );
+                    showRuntimeInfoToast(formatExtractionRangeToast(1, initialEndSeq, Math.max(1, rebuildLatestSeq)), {
+                        stopLabel: i18n('Stop'),
+                        onStop: () => {
+                            if (!extractionAbortController.signal.aborted) {
+                                extractionAbortController.abort();
+                            }
+                        },
+                    });
+                    const rebuilt = await rebuildStoreFromCurrentChat(context, {
+                        abortSignal: extractionAbortController.signal,
+                        onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                            updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+                        },
+                    });
+                    const debug = rebuilt?.lastExtractionDebug || {};
+                    updateUiStatus(i18nFormat(
+                        'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                        debug.extracted ? 'ok' : 'skip',
+                        Number(debug.beginSeq || 0),
+                        Number(debug.latestSeq || 0),
+                        Number(debug.coveredSeqTo || 0),
+                    ));
+                    refreshUiStats();
+                    return;
+                }
+            }
+            alignStoreCoverageToChat(store, context);
             const preview = computeExtractionWindow(context, store, null);
             if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
                 store.lastExtractionDebug = {
@@ -6362,6 +6754,9 @@ function scheduleExtraction(context) {
                     Number(debug.latestSeq || 0),
                     Number(debug.coveredSeqTo || 0),
                 ));
+                if (rolledBackByHistory) {
+                    await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
+                }
                 refreshUiStats();
                 return;
             }
@@ -6962,7 +7357,7 @@ function renderEdgeFormEditorHtml(store, editorId, edge = {}, edgeIndex = -1) {
 }
 
 async function openGraphInspectorPopup(context) {
-    await ensureMemoryStoreLoaded(context);
+    await ensureStoreSyncedWithChat(context);
     const chatKey = getChatKey(context);
     const store = getMemoryStore(context);
     if (!store) {
@@ -7046,6 +7441,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
     };
     const persistLatest = async (latest, successText, statusText) => {
         memoryStoreCache.set(chatKey, latest);
+        clearRollbackHistory(chatKey);
         await persistMemoryStoreByChatKey(context, chatKey, latest, { syncPersistentProjection: true });
         refreshUiStats();
         if (statusText) {
@@ -7750,6 +8146,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
             memoryStoreCache.set(chatKey, migrated);
+            clearRollbackHistory(chatKey);
             await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
             refreshUiStats();
             updateUiStatus(i18n('Applied raw graph JSON edit.'));
@@ -9582,7 +9979,7 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_fill').off('click').on('click', async function () {
-        await ensureMemoryStoreLoaded(context);
+        await ensureStoreSyncedWithChat(context);
         const chatKey = getChatKey(context);
         const store = memoryStoreCache.get(chatKey);
         if (!store) {
@@ -9651,7 +10048,7 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_recall_debug').off('click').on('click', async function () {
-        await ensureMemoryStoreLoaded(context);
+        await ensureStoreSyncedWithChat(context);
         const store = getMemoryStore(context);
         if (!store) {
             notifyError(i18n('No active chat selected.'));
@@ -9761,7 +10158,7 @@ function bindUi() {
         }
 
         const startSeq = Math.max(1, latestSeq - recentTurns + 1);
-        truncateStoreFromSeq(store, startSeq);
+        truncateStoreFromSeq(store, startSeq, chatKey);
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
         const runtimeSettings = getEffectiveSettings(context, settings);
@@ -9829,6 +10226,7 @@ function bindUi() {
             memoryStoreTargets.set(chatKey, target);
         }
         memoryStoreCache.set(chatKey, createEmptyStore());
+        clearRollbackHistory(chatKey);
         if (target) {
             await deleteMemoryStoreByTarget(context, target);
         }
@@ -9882,6 +10280,7 @@ function bindUi() {
             const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
             memoryStoreCache.set(chatKey, migrated);
+            clearRollbackHistory(chatKey);
             await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18n('Memory graph imported for current chat.'));
@@ -10038,8 +10437,94 @@ jQuery(() => {
             console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
         }
     };
+    const mutationStatusText = i18n('Chat mutation detected. Memory graph will re-sync on next generation.');
+    const queueMutationInvalidation = (fromSeq = null, { scheduleReplay = false } = {}) => {
+        const runtimeContext = getContext();
+        const chatKey = getChatKey(runtimeContext);
+        if (!chatKey || chatKey === 'invalid_target') {
+            latestRecallSnapshot = null;
+            return;
+        }
+        const normalizedFromSeq = Number.isFinite(Number(fromSeq)) && Number(fromSeq) > 0
+            ? Math.max(1, Math.floor(Number(fromSeq)))
+            : null;
+        const existing = pendingMutationInvalidations.get(chatKey);
+        if (existing) {
+            existing.fromSeq = normalizedFromSeq === null
+                ? existing.fromSeq
+                : (existing.fromSeq === null ? normalizedFromSeq : Math.min(existing.fromSeq, normalizedFromSeq));
+            existing.scheduleReplay = Boolean(existing.scheduleReplay || scheduleReplay);
+            return;
+        }
+        const task = {
+            fromSeq: normalizedFromSeq,
+            scheduleReplay: Boolean(scheduleReplay),
+            timer: setTimeout(async () => {
+                pendingMutationInvalidations.delete(chatKey);
+                const liveContext = getContext();
+                const isCurrentChat = getChatKey(liveContext) === chatKey;
+                const store = memoryStoreCache.get(chatKey);
+                if (!store) {
+                    latestRecallSnapshot = null;
+                    return;
+                }
+                latestRecallSnapshot = null;
+                if (extractionTimers.has(chatKey)) {
+                    clearTimeout(extractionTimers.get(chatKey));
+                    extractionTimers.delete(chatKey);
+                }
+                if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+                    activeExtractionAbortController.abort();
+                }
+                let rolledBack = false;
+                const hasAffectedSeq = Number.isFinite(task.fromSeq) && task.fromSeq > 0;
+                if (hasAffectedSeq) {
+                    const rollbackResult = rollbackStoreUsingHistory(store, chatKey, task.fromSeq);
+                    rolledBack = Boolean(rollbackResult.rolledBack);
+                }
+                if (!hasAffectedSeq) {
+                    return;
+                }
+                if (!rolledBack) {
+                    store.pendingFullRebuild = true;
+                } else {
+                    alignStoreCoverageToChat(store, liveContext);
+                }
+                store.lastRecallProjection = null;
+                try {
+                    await persistMemoryStoreByChatKey(liveContext, chatKey, store);
+                    if (isCurrentChat) {
+                        await clearAllMemoryLorebookProjection(liveContext, getSettings());
+                    }
+                    refreshUiStats();
+                    if (isCurrentChat) {
+                        updateUiStatus(mutationStatusText);
+                    }
+                    if (task.scheduleReplay && isCurrentChat) {
+                        setTimeout(() => {
+                            if (!generationInProgress) {
+                                scheduleExtraction(getContext());
+                            }
+                        }, 0);
+                    }
+                } catch (error) {
+                    console.warn(`[${MODULE_NAME}] Failed to apply memory graph mutation rollback for ${chatKey}`, error);
+                    if (isCurrentChat) {
+                        updateUiStatus(mutationStatusText);
+                    }
+                }
+            }, 0),
+        };
+        pendingMutationInvalidations.set(chatKey, task);
+    };
+    if (context.eventTypes.GENERATION_STARTED) {
+        context.eventSource.on(context.eventTypes.GENERATION_STARTED, () => {
+            generationInProgress = true;
+        });
+    }
     if (context.eventTypes.GENERATION_ENDED) {
         context.eventSource.on(context.eventTypes.GENERATION_ENDED, async () => {
+            generationInProgress = false;
             await clearRuntimeProjectionAfterGeneration();
             clearRuntimeInfoToast();
             const runtimeContext = getContext();
@@ -10053,46 +10538,45 @@ jQuery(() => {
     }
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_messageCount, mutationMeta) => {
         const runtimeContext = getContext();
-        try {
-            await ensureMemoryStoreLoaded(runtimeContext);
-            const chatKey = getChatKey(runtimeContext);
-            const store = memoryStoreCache.get(chatKey);
-            if (!store) {
-                return;
-            }
-            latestRecallSnapshot = null;
-            if (extractionTimers.has(chatKey)) {
-                clearTimeout(extractionTimers.get(chatKey));
-                extractionTimers.delete(chatKey);
-            }
-            if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
-                activeExtractionAbortController.abort();
-            }
-            const meta = normalizeMutationMeta(mutationMeta);
-            let fromSeq = Number(meta?.deletedAssistantSeqFrom || 0);
-            if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
-                const playableFromSeq = Number(meta?.deletedPlayableSeqFrom || 0);
-                const derivedAssistantSeq = findAssistantSeqFromPlayableSeq(runtimeContext, playableFromSeq);
-                if (Number.isFinite(Number(derivedAssistantSeq)) && Number(derivedAssistantSeq) > 0) {
-                    fromSeq = Number(derivedAssistantSeq);
-                }
-            }
-            if (!Number.isFinite(fromSeq) || fromSeq <= 0) {
-                alignStoreCoverageToChat(store, runtimeContext);
-                await persistMemoryStoreByChatKey(runtimeContext, chatKey, store, { syncPersistentProjection: true });
-                refreshUiStats();
-                return;
-            }
-            truncateStoreFromSeq(store, fromSeq);
-            alignStoreCoverageToChat(store, runtimeContext);
-            await persistMemoryStoreByChatKey(runtimeContext, chatKey, store, { syncPersistentProjection: true });
-            refreshUiStats();
-            updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
-        } catch (error) {
-            console.warn(`[${MODULE_NAME}] Local truncate after chat mutation failed`, error);
-            updateUiStatus(i18n('Chat mutation detected. Memory graph will re-sync on next generation.'));
-        }
+        const assistantFromSeq = Number(mutationMeta?.deletedAssistantSeqFrom || 0);
+        const playableFromSeq = Number(mutationMeta?.deletedPlayableSeqFrom || 0);
+        const fromSeq = Number.isFinite(assistantFromSeq) && assistantFromSeq > 0
+            ? assistantFromSeq
+            : findAssistantSeqFromPlayableSeq(runtimeContext, playableFromSeq);
+        queueMutationInvalidation(fromSeq, { scheduleReplay: true });
     });
+    if (context.eventTypes.MESSAGE_SWIPED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, (messageId) => {
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
+    if (context.eventTypes.MESSAGE_SWIPE_DELETED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_SWIPE_DELETED, (payload) => {
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), payload?.messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
+    const messageMutationEvents = [
+        context.eventTypes.MESSAGE_EDITED,
+        context.eventTypes.MESSAGE_UPDATED,
+    ].filter(Boolean);
+    for (const eventName of messageMutationEvents) {
+        context.eventSource.on(eventName, (messageId) => {
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
+    if (context.eventTypes.MESSAGE_RECEIVED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, (messageId, generationType) => {
+            const normalizedType = String(generationType || '').trim().toLowerCase();
+            if (!['continue', 'append', 'appendfinal'].includes(normalizedType)) {
+                return;
+            }
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
     if (context.eventTypes.PRESET_CHANGED) {
         context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
             if (String(event?.apiId || '') === 'openai') {
