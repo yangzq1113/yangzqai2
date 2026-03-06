@@ -22,10 +22,6 @@ const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const ORCH_CHAT_STATE_NAMESPACE = 'luker_orchestrator_state';
 const ORCH_CHAT_STATE_VERSION = 1;
-const NODE_TOOL_SEARCH = 'luker_orch_web_search';
-const NODE_TOOL_VISIT = 'luker_orch_web_visit';
-const NODE_TOOL_KNOWLEDGE_UPSERT = 'luker_orch_upsert_global_knowledge';
-const NODE_TOOL_KNOWLEDGE_DELETE = 'luker_orch_delete_global_knowledge';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints. Before function-call output, provide one concise <thought>...</thought> that reflects your role-specific reasoning.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
@@ -47,7 +43,7 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
 ].join('\n');
 const TEMPLATE_PLACEHOLDER_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
 const AUTO_INJECTED_CONTEXT_VARS = ['previous_orchestration'];
-const LEGACY_REMOVED_CONTEXT_VARS = ['previous_snapshot', 'global_knowledge'];
+const LEGACY_REMOVED_CONTEXT_VARS = ['previous_snapshot'];
 const ALLOWED_TEMPLATE_VARS = [...TEMPLATE_PLACEHOLDER_VARS, ...AUTO_INJECTED_CONTEXT_VARS, ...LEGACY_REMOVED_CONTEXT_VARS];
 const AI_VISIBLE_TEMPLATE_VARS = [...TEMPLATE_PLACEHOLDER_VARS];
 const AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE = '(auto-injected above)';
@@ -87,10 +83,6 @@ function getDefaultAiSuggestSystemPrompt() {
         'Non-final stage nodes should return structured tool-call fields for machine processing.',
         'Last-stage nodes must return function-call payload with a single field `text`.',
         'Runtime injects the `text` content directly as-is (no YAML wrapping).',
-        `Runtime node tools available: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
-        'Design at least one suitable agent to decide whether external search is needed for this turn.',
-        'That agent should use search tools when needed, then persist reusable findings via global-knowledge upsert tool.',
-        'If stored knowledge is outdated or wrong, that agent should delete it through global-knowledge delete tool.',
         'Do NOT hardcode any fixed narrator persona/identity/roleplay character in system prompts.',
         'Do NOT mirror long single-prompt identity blocks; focus on process quality and constraints.',
         'Runtime context guarantee: both orchestration agents and final generation already see assembled preset context, character card context, and world-info activation context.',
@@ -136,7 +128,7 @@ const defaultSpec = {
     stages: [
         { id: 'distill', mode: 'serial', nodes: ['distiller'] },
         { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
-        { id: 'reason', mode: 'parallel', nodes: ['research_router', 'planner', 'critic', 'recall_relevance'] },
+        { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
         { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
     ],
 };
@@ -154,10 +146,6 @@ const defaultPresets = {
         systemPrompt: 'You are the anti-data hard gate for RP prose. Block report-style, observation/analysis style, metric style, and weather-broadcast style flat narration. Violations are blockers, not suggestions. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Audit for forbidden data-like patterns: numeric ranges (e.g. 3-5分钟), percentages, KPI/metrics, pseudo-scientific wording, report/bulletin cadence.\n- Audit for forbidden verb/tone families: 观察/分析/评估/统计/监测/检测/实验/推测/记录/汇报 and observation/analyze/evaluate/metric/KPI style.\n- Audit for weather-broadcast tone: detached flat reporting such as “像播报天气预报一样平静”.\n- For every violation, output concrete rewrite directives that convert it to vivid in-scene narrative language.\n- Mark unresolved violations in risks as BLOCKER.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
-    research_router: {
-        systemPrompt: `You are a research and knowledge router. Your responsibility is to decide whether this turn needs external search, execute search when needed, and maintain shared global knowledge. Use tools explicitly: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}. Output one concise <thought>...</thought> before your function call.`,
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nCurrent user message:\n{{last_user}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Decide whether external web search is needed for this turn (time-sensitive facts, ambiguous references, missing evidence).\n- If needed, call search/visit tools and then upsert reusable findings into global knowledge.\n- If some stored entries are obsolete, wrong, or irrelevant, call delete tool to remove them.\n- Finally return concise directives/risks for downstream nodes.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
-    },
     planner: {
         systemPrompt: 'You are a progression planner. Turn current state into a concrete, believable next-step plan. Output one concise <thought>...</thought> before your function call.',
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
@@ -172,7 +160,7 @@ const defaultPresets = {
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge planner/critic/recall/research_router plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
     },
 };
 
@@ -270,21 +258,13 @@ function registerLocaleData() {
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
         'Open Orchestration Editor': '打开编排编辑器',
         'View Last Run': '查看最近一轮',
-        'View Research Records': '查看研究记录',
         'Latest Orchestration Result': '最近编排结果',
         'Edit Result': '编辑结果',
         'Edit latest orchestration result text.': '编辑最近一轮编排结果文本。',
         'Orchestration result cannot be empty.': '编排结果不能为空。',
         'Saved latest orchestration result.': '最近一轮编排结果已保存。',
-        'Research Records': '研究记录',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
-        'No research records available for this chat.': '当前聊天暂无研究记录。',
-        'Total records': '记录总数',
-        'Record ID': '记录 ID',
         'Created At': '创建时间',
-        'Written by node': '写入节点',
-        'Content': '内容',
-        'Sources': '来源',
         'Updated At': '更新时间',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '当前迭代来源：${0}',
@@ -467,21 +447,13 @@ function registerLocaleData() {
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
         'Open Orchestration Editor': '開啟編排編輯器',
         'View Last Run': '查看最近一輪',
-        'View Research Records': '查看研究記錄',
         'Latest Orchestration Result': '最近編排結果',
         'Edit Result': '編輯結果',
         'Edit latest orchestration result text.': '編輯最近一輪編排結果文本。',
         'Orchestration result cannot be empty.': '編排結果不能為空。',
         'Saved latest orchestration result.': '最近一輪編排結果已儲存。',
-        'Research Records': '研究記錄',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
-        'No research records available for this chat.': '目前聊天暫無研究記錄。',
-        'Total records': '記錄總數',
-        'Record ID': '記錄 ID',
         'Created At': '建立時間',
-        'Written by node': '寫入節點',
-        'Content': '內容',
-        'Sources': '來源',
         'Updated At': '更新時間',
         'AI Iteration Studio': 'AI 迭代工作台',
         'Iteration source: ${0}': '目前迭代來源：${0}',
@@ -621,7 +593,6 @@ let activeAiIterationAbortController = null;
 let activeOrchRunAbortController = null;
 let activeAiBuildAbortController = null;
 let latestOrchestrationSnapshot = null;
-let latestGlobalKnowledgeEntries = [];
 let loadedChatStateKey = '';
 
 function cloneDefault(value) {
@@ -776,44 +747,6 @@ function clearCapsulePrompt(context) {
     );
 }
 
-function normalizeKnowledgeEntry(raw) {
-    const source = raw && typeof raw === 'object' ? raw : {};
-    const id = sanitizeIdentifierToken(source.id, '');
-    const content = String(source.content || '').trim();
-    if (!id || !content) {
-        return null;
-    }
-    const tags = Array.isArray(source.tags)
-        ? [...new Set(source.tags.map(item => String(item || '').trim()).filter(Boolean))]
-        : [];
-    const sources = Array.isArray(source.sources)
-        ? [...new Set(source.sources.map(item => String(item || '').trim()).filter(Boolean))]
-        : [];
-    return {
-        id,
-        title: String(source.title || '').trim(),
-        content,
-        tags,
-        sources,
-        updatedAt: String(source.updatedAt || source.createdAt || '').trim(),
-        createdAt: String(source.createdAt || source.updatedAt || '').trim(),
-        byNode: sanitizeIdentifierToken(source.byNode, ''),
-    };
-}
-
-function normalizeKnowledgeEntries(entries) {
-    const list = Array.isArray(entries) ? entries : [];
-    const normalized = [];
-    for (const item of list) {
-        const entry = normalizeKnowledgeEntry(item);
-        if (!entry) {
-            continue;
-        }
-        normalized.push(entry);
-    }
-    return normalized;
-}
-
 function normalizeOrchestrationSnapshot(raw) {
     const source = raw && typeof raw === 'object' ? raw : null;
     if (!source) {
@@ -840,7 +773,6 @@ function normalizeOrchestratorChatState(raw) {
     return {
         version: Number(source.version || ORCH_CHAT_STATE_VERSION),
         snapshot: normalizeOrchestrationSnapshot(source.snapshot),
-        globalKnowledge: normalizeKnowledgeEntries(source.globalKnowledge),
     };
 }
 
@@ -848,7 +780,6 @@ async function loadOrchestratorChatState(context, { force = false } = {}) {
     const chatKey = getChatKey(context);
     if (!chatKey) {
         latestOrchestrationSnapshot = null;
-        latestGlobalKnowledgeEntries = [];
         loadedChatStateKey = '';
         return;
     }
@@ -862,7 +793,6 @@ async function loadOrchestratorChatState(context, { force = false } = {}) {
     }
     const normalized = normalizeOrchestratorChatState(payload);
     latestOrchestrationSnapshot = normalized.snapshot;
-    latestGlobalKnowledgeEntries = normalized.globalKnowledge;
     loadedChatStateKey = chatKey;
 }
 
@@ -873,29 +803,10 @@ async function persistOrchestratorChatState(context) {
     }
     loadedChatStateKey = chatKey;
     const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
-    const globalKnowledge = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
     await context.updateChatState(ORCH_CHAT_STATE_NAMESPACE, () => ({
         version: ORCH_CHAT_STATE_VERSION,
         snapshot,
-        globalKnowledge,
     }), { maxOperations: 2000, maxRetries: 1 });
-}
-
-function getGlobalKnowledgeForPrompt() {
-    const entries = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
-    if (entries.length === 0) {
-        return '';
-    }
-    return toReadableYamlText({
-        entries: entries.map(entry => ({
-            id: entry.id,
-            title: entry.title,
-            content: entry.content,
-            tags: entry.tags,
-            sources: entry.sources,
-            updated_at: entry.updatedAt,
-        })),
-    }, '{}');
 }
 
 function getPreviousOrchestrationSnapshotText(context, payload) {
@@ -988,102 +899,6 @@ function formatReadableTimestamp(value) {
     } catch {
         return raw;
     }
-}
-
-function buildKnowledgeEntryDisplayTitle(entry, index = 0) {
-    const title = String(entry?.title || '').trim();
-    if (title) {
-        return title;
-    }
-    const content = String(entry?.content || '').trim();
-    if (content) {
-        const firstLine = content.split(/\r?\n/).find(line => line.trim()) || content;
-        return firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
-    }
-    const id = String(entry?.id || '').trim();
-    if (id) {
-        return id;
-    }
-    return `#${Number(index) + 1}`;
-}
-
-function renderKnowledgeTagsHtml(tags) {
-    const safeTags = Array.isArray(tags)
-        ? tags.map(tag => String(tag || '').trim()).filter(Boolean)
-        : [];
-    if (safeTags.length === 0) {
-        return `<span class="luker_orch_kb_empty">${escapeHtml(i18n('Not set'))}</span>`;
-    }
-    return safeTags.map(tag => `<span class="luker_orch_kb_tag">${escapeHtml(tag)}</span>`).join('');
-}
-
-function renderKnowledgeSourcesHtml(sources) {
-    const safeSources = Array.isArray(sources)
-        ? sources.map(source => String(source || '').trim()).filter(Boolean)
-        : [];
-    if (safeSources.length === 0) {
-        return `<div class="luker_orch_kb_empty">${escapeHtml(i18n('Not set'))}</div>`;
-    }
-    const items = safeSources.map((source) => {
-        if (/^https?:\/\//i.test(source)) {
-            const safeSource = escapeHtml(source);
-            return `<li><a href="${safeSource}" target="_blank" rel="noopener noreferrer">${safeSource}</a></li>`;
-        }
-        return `<li>${escapeHtml(source)}</li>`;
-    }).join('');
-    return `<ul class="luker_orch_kb_sources">${items}</ul>`;
-}
-
-function renderResearchRecordsHtml() {
-    const entries = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries)
-        .sort((left, right) => {
-            const leftTsRaw = new Date(left.updatedAt || left.createdAt || 0).getTime();
-            const rightTsRaw = new Date(right.updatedAt || right.createdAt || 0).getTime();
-            const leftTs = Number.isFinite(leftTsRaw) ? leftTsRaw : 0;
-            const rightTs = Number.isFinite(rightTsRaw) ? rightTsRaw : 0;
-            return rightTs - leftTs;
-        });
-    if (entries.length === 0) {
-        return `<div class="luker_orch_last_run_empty">${escapeHtml(i18n('No research records available for this chat.'))}</div>`;
-    }
-
-    const cards = entries.map((entry, index) => {
-        const title = buildKnowledgeEntryDisplayTitle(entry, index);
-        const updatedAt = formatReadableTimestamp(entry.updatedAt);
-        const createdAt = formatReadableTimestamp(entry.createdAt);
-        const byNode = String(entry.byNode || '').trim() || i18n('Not set');
-
-        return `
-<article class="luker_orch_kb_card">
-    <header class="luker_orch_kb_card_header">
-        <div class="luker_orch_kb_card_title">${escapeHtml(title)}</div>
-    </header>
-    <div class="luker_orch_kb_meta_grid">
-        <div><b>${escapeHtml(i18n('Record ID'))}</b>：${escapeHtml(entry.id)}</div>
-        <div><b>${escapeHtml(i18n('Written by node'))}</b>：${escapeHtml(byNode)}</div>
-        <div><b>${escapeHtml(i18n('Created At'))}</b>：${escapeHtml(createdAt)}</div>
-        <div><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
-    </div>
-    <section class="luker_orch_kb_section">
-        <div class="luker_orch_kb_section_title">${escapeHtml(i18n('Tags'))}</div>
-        <div class="luker_orch_kb_tags">${renderKnowledgeTagsHtml(entry.tags)}</div>
-    </section>
-    <section class="luker_orch_kb_section">
-        <div class="luker_orch_kb_section_title">${escapeHtml(i18n('Sources'))}</div>
-        ${renderKnowledgeSourcesHtml(entry.sources)}
-    </section>
-    <section class="luker_orch_kb_section">
-        <div class="luker_orch_kb_section_title">${escapeHtml(i18n('Content'))}</div>
-        <pre class="luker_orch_kb_content">${escapeHtml(entry.content)}</pre>
-    </section>
-</article>`.trim();
-    }).join('\n');
-
-    return `
-<div class="luker_orch_kb_popup">
-    <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Total records'))}</b>：${entries.length}</div>
-    <div class="luker_orch_kb_list">${cards}</div>
-</div>`;
 }
 
 function renderLastOrchestrationResultHtml(context) {
@@ -1180,16 +995,6 @@ async function openLastOrchestrationResult(context) {
             await openLastOrchestrationResult(context);
         }
     }
-}
-
-async function openResearchRecords(context) {
-    await loadOrchestratorChatState(context, { force: false });
-    await context.callGenericPopup(
-        renderResearchRecordsHtml(),
-        context.POPUP_TYPE.TEXT,
-        i18n('Research Records'),
-        { wide: true, wider: true, large: true, allowVerticalScrolling: true },
-    );
 }
 
 function shouldRunOrchestrationForPayload(payload) {
@@ -1815,7 +1620,6 @@ function renderTemplate(template, vars) {
         distiller: String(safeVars.distiller || ''),
         previous_snapshot: String(safeVars.previous_snapshot || ''),
         previous_orchestration: String(safeVars.previous_orchestration || ''),
-        global_knowledge: String(safeVars.global_knowledge || ''),
     };
     let output = String(template || '');
     for (const [key, value] of Object.entries(replacements)) {
@@ -2043,7 +1847,7 @@ function getNodeIterationMaxRounds(settings = null) {
 }
 
 function buildNodeToolSet({ isFinalStage = false } = {}) {
-    const outputTool = isFinalStage
+    return [isFinalStage
         ? {
             type: 'function',
             function: {
@@ -2085,240 +1889,16 @@ function buildNodeToolSet({ isFinalStage = false } = {}) {
                     additionalProperties: true,
                 },
             },
-        };
-
-    return [
-        outputTool,
-        {
-            type: 'function',
-            function: {
-                name: NODE_TOOL_SEARCH,
-                description: 'Search the web for time-sensitive or missing facts.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        query: { type: 'string' },
-                        provider: { type: 'string' },
-                        max_results: { type: 'integer' },
-                        safe_search: { type: 'string' },
-                        time_range: { type: 'string' },
-                        region: { type: 'string' },
-                    },
-                    required: ['query'],
-                    additionalProperties: false,
-                },
-            },
-        },
-        {
-            type: 'function',
-            function: {
-                name: NODE_TOOL_VISIT,
-                description: 'Visit one webpage and extract readable text.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        url: { type: 'string' },
-                        max_chars: { type: 'integer' },
-                    },
-                    required: ['url'],
-                    additionalProperties: false,
-                },
-            },
-        },
-        {
-            type: 'function',
-            function: {
-                name: NODE_TOOL_KNOWLEDGE_UPSERT,
-                description: 'Create or update one entry in global knowledge base shared by orchestration nodes.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        id: { type: 'string' },
-                        title: { type: 'string' },
-                        content: { type: 'string' },
-                        tags: {
-                            type: 'array',
-                            items: { type: 'string' },
-                        },
-                        sources: {
-                            type: 'array',
-                            items: { type: 'string' },
-                        },
-                    },
-                    required: ['content'],
-                    additionalProperties: false,
-                },
-            },
-        },
-        {
-            type: 'function',
-            function: {
-                name: NODE_TOOL_KNOWLEDGE_DELETE,
-                description: 'Delete entries in global knowledge base by ids, tags, keyword, or delete_all.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        ids: {
-                            type: 'array',
-                            items: { type: 'string' },
-                        },
-                        match_tag: { type: 'string' },
-                        match_keyword: { type: 'string' },
-                        delete_all: { type: 'boolean' },
-                    },
-                    additionalProperties: false,
-                },
-            },
-        },
-    ];
+        }];
 }
 
 function buildNodeIterationContractText({ isFinalStage = false } = {}) {
     const outputName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
     return [
         '## node_iteration_contract',
-        `- You may call ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE} before finalizing.`,
         `- When the node result is ready, call ${outputName} exactly once.`,
         '- Do not output plain prose outside function-call payload.',
     ].join('\n');
-}
-
-async function runNodeWebSearchTool(args = {}) {
-    const api = globalThis?.Luker?.searchTools;
-    if (!api || typeof api.search !== 'function') {
-        throw new Error('Search tools extension is unavailable.');
-    }
-    return await api.search(args);
-}
-
-async function runNodeWebVisitTool(args = {}) {
-    const api = globalThis?.Luker?.searchTools;
-    if (!api || typeof api.visit !== 'function') {
-        throw new Error('Search tools extension is unavailable.');
-    }
-    return await api.visit(args);
-}
-
-function upsertGlobalKnowledgeEntry(args = {}, nodeId = '') {
-    const content = String(args?.content || '').trim();
-    if (!content) {
-        throw new Error('Global knowledge upsert requires non-empty content.');
-    }
-    const explicitId = sanitizeIdentifierToken(args?.id, '');
-    const autoIdSeed = `kb_${Math.abs(Number(getStringHash(`${content}|${args?.title || ''}`) || Date.now())).toString(36)}`;
-    const id = explicitId || autoIdSeed;
-    const now = new Date().toISOString();
-    const entry = normalizeKnowledgeEntry({
-        id,
-        title: String(args?.title || '').trim(),
-        content,
-        tags: Array.isArray(args?.tags) ? args.tags : [],
-        sources: Array.isArray(args?.sources) ? args.sources : [],
-        updatedAt: now,
-        createdAt: now,
-        byNode: nodeId,
-    });
-    if (!entry) {
-        throw new Error('Global knowledge upsert produced invalid entry.');
-    }
-
-    const list = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
-    const index = list.findIndex(item => String(item.id || '') === entry.id);
-    if (index >= 0) {
-        const existing = list[index];
-        list[index] = {
-            ...existing,
-            ...entry,
-            createdAt: existing.createdAt || entry.createdAt,
-            updatedAt: now,
-            byNode: sanitizeIdentifierToken(nodeId, ''),
-        };
-    } else {
-        list.push({
-            ...entry,
-            createdAt: entry.createdAt || now,
-            updatedAt: now,
-            byNode: sanitizeIdentifierToken(nodeId, ''),
-        });
-    }
-    latestGlobalKnowledgeEntries = list;
-    return {
-        ok: true,
-        action: index >= 0 ? 'updated' : 'created',
-        entry_id: entry.id,
-        total_entries: list.length,
-    };
-}
-
-function deleteGlobalKnowledgeEntries(args = {}) {
-    const list = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
-    if (list.length === 0) {
-        return { ok: true, removed_ids: [], total_entries: 0 };
-    }
-
-    const ids = Array.isArray(args?.ids)
-        ? new Set(args.ids.map(item => sanitizeIdentifierToken(item, '')).filter(Boolean))
-        : new Set();
-    const matchTag = String(args?.match_tag || '').trim().toLowerCase();
-    const matchKeyword = String(args?.match_keyword || '').trim().toLowerCase();
-    const deleteAll = Boolean(args?.delete_all);
-
-    if (!deleteAll && ids.size === 0 && !matchTag && !matchKeyword) {
-        throw new Error('Global knowledge delete requires ids/match_tag/match_keyword/delete_all.');
-    }
-
-    const shouldDelete = (entry) => {
-        if (deleteAll) {
-            return true;
-        }
-        if (ids.has(String(entry?.id || ''))) {
-            return true;
-        }
-        if (matchTag && Array.isArray(entry?.tags) && entry.tags.some(tag => String(tag || '').trim().toLowerCase() === matchTag)) {
-            return true;
-        }
-        if (matchKeyword) {
-            const haystack = `${entry?.title || ''}\n${entry?.content || ''}`.toLowerCase();
-            if (haystack.includes(matchKeyword)) {
-                return true;
-            }
-        }
-        return false;
-    };
-
-    const removedIds = [];
-    const kept = [];
-    for (const entry of list) {
-        if (shouldDelete(entry)) {
-            removedIds.push(String(entry.id || ''));
-        } else {
-            kept.push(entry);
-        }
-    }
-    latestGlobalKnowledgeEntries = kept;
-    return {
-        ok: true,
-        removed_ids: removedIds,
-        total_entries: kept.length,
-    };
-}
-
-async function executeNodeExternalToolCall(call, nodeSpec) {
-    const name = String(call?.name || '').trim();
-    const args = call?.args && typeof call.args === 'object' ? call.args : {};
-    if (name === NODE_TOOL_SEARCH) {
-        return await runNodeWebSearchTool(args);
-    }
-    if (name === NODE_TOOL_VISIT) {
-        return await runNodeWebVisitTool(args);
-    }
-    if (name === NODE_TOOL_KNOWLEDGE_UPSERT) {
-        return upsertGlobalKnowledgeEntry(args, nodeSpec?.id || '');
-    }
-    if (name === NODE_TOOL_KNOWLEDGE_DELETE) {
-        return deleteGlobalKnowledgeEntries(args);
-    }
-    throw new Error(`Unsupported node tool: ${name}`);
 }
 
 function makeRuntimeToolCallId() {
@@ -2412,7 +1992,6 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         distiller: distillerOutput,
         previous_snapshot: '',
         previous_orchestration: AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE,
-        global_knowledge: '',
     });
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
@@ -2472,7 +2051,6 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         }
 
         let finalizedOutput = null;
-        const executedCalls = [];
         for (const call of calls) {
             const name = String(call?.name || '').trim();
             if (!name) {
@@ -2482,15 +2060,6 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
                 finalizedOutput = call?.args && typeof call.args === 'object' ? call.args : {};
                 continue;
             }
-            const result = await executeNodeExternalToolCall(call, nodeSpec);
-            const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
-            const args = call?.args && typeof call.args === 'object' ? structuredClone(call.args) : {};
-            executedCalls.push({
-                id: callId,
-                name,
-                args,
-                result,
-            });
         }
 
         if (finalizedOutput !== null) {
@@ -2507,10 +2076,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
             throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
         }
 
-        if (executedCalls.length === 0) {
-            throw new Error(`Node '${nodeSpec.id}' did not execute any non-output tool calls before next iteration.`);
-        }
-        appendStandardToolRoundMessages(runtimeToolMessages, executedCalls, detailed?.assistantText || '');
+        throw new Error(`Node '${nodeSpec.id}' did not return the required output tool '${outputToolName}'.`);
     }
 
     throw new Error(`Node '${nodeSpec.id}' exceeded max iteration rounds (${maxRounds}) without ${outputToolName}.`);
@@ -3800,9 +3366,6 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Hard output rule: follow each node prompt\'s explicit thought policy.',
         'Reasoning-heavy node prompts should explicitly require one <thought>...</thought> before tool calls.',
         'Do not add extra narrative/body text outside the required output contract.',
-        `Node runtime tools: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
-        'Design one suitable agent that explicitly decides whether web search is needed.',
-        'That agent should persist reusable findings into global knowledge and delete stale entries when necessary.',
         'Runtime hard contract (must follow): return COMPLETE tool calls in one response; never return only one tool call.',
         'At minimum include luker_orch_append_stage and luker_orch_finalize_profile in the same response.',
         'luker_orch_finalize_profile must be last.',
@@ -3820,7 +3383,6 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             character_card_context_is_available: true,
             world_info_context_is_available: true,
             recent_messages_are_available: true,
-            runtime_node_tools: [NODE_TOOL_SEARCH, NODE_TOOL_VISIT, NODE_TOOL_KNOWLEDGE_UPSERT, NODE_TOOL_KNOWLEDGE_DELETE],
             reminder: 'Do not duplicate static card data in every node; use behavior-focused checks.',
         },
         injectionContract: {
@@ -3845,14 +3407,13 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             stages: [
                 { id: 'distill', mode: 'serial', nodes: ['distiller'] },
                 { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
-                { id: 'reason', mode: 'parallel', nodes: ['research_router', 'planner', 'critic', 'recall_relevance'] },
+                { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
                 { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
             ],
             role_contracts: {
                 distiller: 'Produce compact evidence-grounded state snapshot.',
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
-                research_router: 'Decide whether web search is needed, run search tools when needed, then maintain global knowledge via upsert/delete.',
                 planner: 'Produce causally coherent next-step plan.',
                 critic: 'Run hard-gate checks and output minimal fix directives.',
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
@@ -5184,8 +4745,6 @@ function buildAiIterationSystemPrompt(settings) {
         '- You are editing an existing orchestration profile incrementally (diff-style).',
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
-        `- Remember node runtime tools are available: ${NODE_TOOL_SEARCH}, ${NODE_TOOL_VISIT}, ${NODE_TOOL_KNOWLEDGE_UPSERT}, ${NODE_TOOL_KNOWLEDGE_DELETE}.`,
-        '- Ensure at least one suitable node prompt includes search decision logic (when to search, when not to search).',
         '- Runtime prepends previous orchestration result before node template text; do not use placeholders for that context.',
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
@@ -5222,9 +4781,6 @@ function buildAiIterationUserPrompt(session, userInputText, {
     const aiVisibleGlobalProfile = sanitizeProfileForAiPrompt(globalProfileValue);
     const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
     const latestSnapshotText = toReadableYamlText(normalizeOrchestrationSnapshot(latestOrchestrationSnapshot) || {}, '{}');
-    const globalKnowledgeText = toReadableYamlText({
-        entries: normalizeKnowledgeEntries(latestGlobalKnowledgeEntries),
-    }, '{}');
     return [
         '# iteration_input',
         'You are in a multi-turn orchestration iteration session.',
@@ -5260,11 +4816,6 @@ function buildAiIterationUserPrompt(session, userInputText, {
         '## latest_orchestration_snapshot',
         '```yaml',
         latestSnapshotText,
-        '```',
-        '',
-        '## global_knowledge_base',
-        '```yaml',
-        globalKnowledgeText,
         '```',
         '',
         '## user_request',
@@ -5429,7 +4980,6 @@ function getChatMessagesForSimulation(context, recentMessagesN) {
 async function runAiIterationSimulation(context, session, args = {}, abortSignal = null) {
     await loadOrchestratorChatState(context, { force: false });
     const snapshotBefore = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
-    const knowledgeBefore = normalizeKnowledgeEntries(latestGlobalKnowledgeEntries);
     const simulationMessages = getChatMessagesForSimulation(context, args.recent_messages_n);
     const customText = String(args.simulation_text || '').trim();
     if (customText) {
@@ -5463,7 +5013,6 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
         run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
     } finally {
         latestOrchestrationSnapshot = snapshotBefore ? structuredClone(snapshotBefore) : null;
-        latestGlobalKnowledgeEntries = structuredClone(knowledgeBefore);
     }
     const allStageOutputs = compactStageOutputs(run?.stageOutputs || []);
     const finalStage = getFinalStageSnapshot(run?.stageOutputs || []);
@@ -6706,11 +6255,6 @@ function bindUi() {
             return;
         }
 
-        if (action === 'view-research-records') {
-            await openResearchRecords(context);
-            return;
-        }
-
         if (action === 'open-orch-editor') {
             await openOrchestrationEditorPopup(context, settings);
             return;
@@ -7451,7 +6995,6 @@ function ensureUi() {
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
-                    <div class="menu_button" data-luker-action="view-research-records">${escapeHtml(i18n('View Research Records'))}</div>
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
@@ -7499,7 +7042,6 @@ jQuery(() => {
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
         loadedChatStateKey = '';
         latestOrchestrationSnapshot = null;
-        latestGlobalKnowledgeEntries = [];
         clearCapsulePrompt(context);
         void loadOrchestratorChatState(context, { force: true }).finally(() => ensureUi());
     });

@@ -1,6 +1,6 @@
 {
     "display_name": "Search Tools",
-    "loading_order": 113,
+    "loading_order": 109,
     "requires": [],
     "optional": [],
     "js": "index.js",
