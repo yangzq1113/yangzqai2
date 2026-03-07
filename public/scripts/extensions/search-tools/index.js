@@ -63,6 +63,8 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 let activeAgentRunToken = 0;
+let activeAgentRunInfoToast = null;
+let activeAgentAbortController = null;
 
 function i18n(text) {
     return translate(String(text || ''));
@@ -276,10 +278,12 @@ async function runDdgSearch({
     safeSearch,
     timeRange,
     region,
+    abortSignal = null,
 }) {
     const response = await fetch('/api/search/ddg', {
         method: 'POST',
         headers: getRequestHeaders(),
+        signal: isAbortSignalLike(abortSignal) ? abortSignal : null,
         body: JSON.stringify({
             query,
             max_results: maxResults,
@@ -312,7 +316,7 @@ async function runSearchProvider(provider, options) {
     return await runDdgSearch(options);
 }
 
-async function searchWeb(args = {}) {
+async function searchWeb(args = {}, { abortSignal = null } = {}) {
     const settings = getSettings();
     const query = normalizeWhitespace(args?.query || '');
     if (!query) {
@@ -335,10 +339,11 @@ async function searchWeb(args = {}) {
         safeSearch,
         timeRange,
         region,
+        abortSignal,
     });
 }
 
-async function visitWebPage(args = {}) {
+async function visitWebPage(args = {}, { abortSignal = null } = {}) {
     const settings = getSettings();
     const url = normalizeWhitespace(args?.url || '');
     if (!url) {
@@ -356,6 +361,7 @@ async function visitWebPage(args = {}) {
     const response = await fetch('/api/search/visit', {
         method: 'POST',
         headers: getRequestHeaders(),
+        signal: isAbortSignalLike(abortSignal) ? abortSignal : null,
         body: JSON.stringify({ url, html: true }),
     });
 
@@ -608,6 +614,40 @@ function isAbortError(error, signal = null) {
         return true;
     }
     return Boolean(signal?.aborted);
+}
+
+function linkAbortSignals(...signals) {
+    const validSignals = signals.filter(isAbortSignalLike);
+    if (validSignals.length === 0) {
+        return { signal: null, cleanup: () => {} };
+    }
+    if (validSignals.length === 1) {
+        return { signal: validSignals[0], cleanup: () => {} };
+    }
+
+    const controller = new AbortController();
+    const onAbort = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    for (const signal of validSignals) {
+        if (signal.aborted) {
+            onAbort();
+            break;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return {
+        signal: controller.signal,
+        cleanup: () => {
+            for (const signal of validSignals) {
+                signal.removeEventListener('abort', onAbort);
+            }
+        },
+    };
 }
 
 async function requestToolCallsWithRetry(settings, promptMessages, {
@@ -1300,9 +1340,9 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             let result = null;
 
             if (callName === TOOL_NAMES.AGENT_SEARCH) {
-                result = await searchWeb(args);
+                result = await searchWeb(args, { abortSignal: payload?.signal || null });
             } else if (callName === TOOL_NAMES.AGENT_VISIT) {
-                result = await visitWebPage(args);
+                result = await visitWebPage(args, { abortSignal: payload?.signal || null });
             } else if (callName === TOOL_NAMES.AGENT_UPSERT) {
                 if (!lorebookData) {
                     const createdLorebook = await ensureChatLorebook(context, true);
@@ -1381,11 +1421,30 @@ async function maybeRunPreRequestSearchAgent(payload) {
         return;
     }
 
+    if (activeAgentAbortController && !activeAgentAbortController.signal.aborted) {
+        activeAgentAbortController.abort();
+    }
+
     const runToken = ++activeAgentRunToken;
+    const pluginAbortController = new AbortController();
+    activeAgentAbortController = pluginAbortController;
+    const linkedAbort = linkAbortSignals(payload?.signal, pluginAbortController.signal);
+    const effectivePayload = linkedAbort.signal && linkedAbort.signal !== payload?.signal
+        ? { ...payload, signal: linkedAbort.signal }
+        : payload;
+
     updateUiStatus(i18n('Search agent running...'));
+    showAgentRunInfoToast(i18n('Search agent running...'), {
+        stopLabel: i18n('Stop'),
+        onStop: () => {
+            if (!pluginAbortController.signal.aborted) {
+                pluginAbortController.abort();
+            }
+        },
+    });
 
     try {
-        const result = await runPreRequestSearchAgent(context, settings, payload);
+        const result = await runPreRequestSearchAgent(context, settings, effectivePayload);
         if (runToken !== activeAgentRunToken) {
             return;
         }
@@ -1396,12 +1455,23 @@ async function maybeRunPreRequestSearchAgent(payload) {
                 : i18n(`Search agent finished with no lorebook changes (${result.managedEntryCount} managed entries).${summary}`),
         );
     } catch (error) {
-        if (isAbortError(error, payload?.signal || null)) {
+        if (runToken !== activeAgentRunToken) {
+            return;
+        }
+        if (isAbortError(error, effectivePayload?.signal || null)) {
             updateUiStatus(i18n('Search agent aborted.'));
             return;
         }
         console.warn(`[${MODULE_NAME}] Pre-request search agent failed`, error);
         updateUiStatus(i18n('Search agent failed. Check console for details.'));
+    } finally {
+        linkedAbort.cleanup();
+        if (activeAgentAbortController === pluginAbortController) {
+            activeAgentAbortController = null;
+        }
+        if (runToken === activeAgentRunToken) {
+            clearAgentRunInfoToast();
+        }
     }
 }
 
@@ -1466,6 +1536,50 @@ function updateUiStatus(text) {
         return;
     }
     element.text(String(text || ''));
+}
+
+function showAgentRunInfoToast(message, { stopLabel = '', onStop = null } = {}) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    if (activeAgentRunInfoToast) {
+        toastr.clear(activeAgentRunInfoToast);
+        activeAgentRunInfoToast = null;
+    }
+    activeAgentRunInfoToast = toastr.info(String(message || ''), '', {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: false,
+        closeButton: true,
+        progressBar: false,
+    });
+    if (activeAgentRunInfoToast && typeof onStop === 'function') {
+        const toastBody = activeAgentRunInfoToast.find('.toast-message');
+        if (toastBody.length > 0) {
+            const button = jQuery('<button type="button" class="menu_button menu_button_small luker-toast-stop-button"></button>');
+            button.text(String(stopLabel || i18n('Stop')));
+            button.on('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                button.prop('disabled', true);
+                const toastElement = button.closest('.toast');
+                clearAgentRunInfoToast();
+                if (toastElement && toastElement.length > 0) {
+                    toastElement.remove();
+                }
+                onStop();
+            });
+            toastBody.append(button);
+        }
+    }
+}
+
+function clearAgentRunInfoToast() {
+    if (typeof toastr === 'undefined' || !activeAgentRunInfoToast) {
+        return;
+    }
+    toastr.clear(activeAgentRunInfoToast);
+    activeAgentRunInfoToast = null;
 }
 
 async function refreshUiStatusForCurrentChat() {
@@ -1617,6 +1731,7 @@ function registerLocaleData() {
         'System': '系统',
         'User': '用户',
         'Assistant': '助手',
+        'Stop': '终止',
         'Search agent running...': '搜索 Agent 运行中...',
         'Search agent aborted.': '搜索 Agent 已中止。',
         'Search agent failed. Check console for details.': '搜索 Agent 失败，请查看控制台。',
@@ -1651,6 +1766,7 @@ function registerLocaleData() {
         'System': '系統',
         'User': '使用者',
         'Assistant': '助手',
+        'Stop': '終止',
         'Search agent running...': '搜尋 Agent 執行中...',
         'Search agent aborted.': '搜尋 Agent 已中止。',
         'Search agent failed. Check console for details.': '搜尋 Agent 失敗，請查看主控台。',
