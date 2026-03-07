@@ -2,7 +2,7 @@ import { getRequestHeaders } from '../script.js';
 import { t } from './i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, callGenericPopup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
-import { ensureImageFormatSupported, getBase64Async, humanFileSize } from './utils.js';
+import { copyText, ensureImageFormatSupported, getBase64Async, humanFileSize } from './utils.js';
 
 /**
  * @type {import('../../src/users.js').UserViewModel} Logged in user
@@ -639,6 +639,86 @@ async function restoreUserData(handle, file, selection, mode, callback) {
     return data;
 }
 
+async function createLanMigrationLink(handle, selection) {
+    const response = await fetch('/api/users/lan-migration/offer', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ handle, selection }),
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to create migration link');
+    }
+
+    return response.json();
+}
+
+function isLocalOnlyHostName(hostname) {
+    const normalized = String(hostname || '').trim().toLowerCase();
+    return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]';
+}
+
+async function getShareableLanMigrationLink(link) {
+    try {
+        const currentLink = new URL(String(link || ''));
+        if (!isLocalOnlyHostName(currentLink.hostname)) {
+            return currentLink.toString();
+        }
+
+        const input = await callGenericPopup(
+            t`Enter a LAN host or IP for this device. You can include a port.`,
+            POPUP_TYPE.INPUT,
+            '',
+            {
+                okButton: t`Use Host`,
+                cancelButton: t`Cancel`,
+                rows: 1,
+                wide: false,
+                large: false,
+            },
+        );
+
+        const value = String(input || '').trim();
+        if (!value) {
+            return currentLink.toString();
+        }
+
+        const sharedUrl = new URL(value.includes('://') ? value : `${currentLink.protocol}//${value}`);
+        if (!sharedUrl.port && currentLink.port) {
+            sharedUrl.port = currentLink.port;
+        }
+        sharedUrl.pathname = currentLink.pathname;
+        sharedUrl.search = currentLink.search;
+        sharedUrl.hash = currentLink.hash;
+        return sharedUrl.toString();
+    } catch {
+        return String(link || '');
+    }
+}
+
+async function importLanMigrationLink(handle, url, selection, mode, callback) {
+    const response = await fetch('/api/users/lan-migration/import', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            handle,
+            url,
+            selection,
+            mode,
+        }),
+    });
+
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to import migration link');
+    }
+
+    const data = await response.json();
+    callback?.(data);
+    return data;
+}
+
 function buildRestoreDiagnosticReport({ handle, file, mode, selection, result }) {
     return {
         timestamp: new Date().toISOString(),
@@ -748,6 +828,11 @@ async function openBackupManager(handle, callback) {
     const checkboxes = template.find('input[name="backupCategory"]');
     const summaryText = template.find('.backupCategorySummary');
     const globalExtensionsItem = template.find('.backupCategoryGlobalExtensions');
+    const lanCreateLinkButton = template.find('.backupLanCreateLinkButton');
+    const lanCopyLinkButton = template.find('.backupLanCopyLinkButton');
+    const lanGeneratedLink = template.find('.backupLanGeneratedLink');
+    const lanImportLink = template.find('.backupLanImportLink');
+    const lanImportButton = template.find('.backupLanImportButton');
     globalExtensionsItem.toggle(canManageGlobalExtensions);
     if (!canManageGlobalExtensions) {
         template.find('input[name="backupCategory"][value="globalExtensions"]').prop('checked', false);
@@ -773,6 +858,30 @@ async function openBackupManager(handle, callback) {
         const hasFile = Boolean(fileInput[0]?.files?.[0]);
         restoreButton.toggleClass('disabled', !hasFile);
         importDataButton.toggleClass('disabled', !hasFile);
+    };
+
+    const updateLanState = () => {
+        const hasGeneratedLink = Boolean(String(lanGeneratedLink.val() || '').trim());
+        const hasImportLink = Boolean(String(lanImportLink.val() || '').trim());
+        lanCopyLinkButton.toggleClass('disabled', !hasGeneratedLink);
+        lanImportButton.toggleClass('disabled', !hasImportLink);
+    };
+
+    const setActionBusy = (busy) => {
+        [
+            restoreButton,
+            restoreSelectButton,
+            importDataButton,
+            downloadButton,
+            lanCreateLinkButton,
+            lanCopyLinkButton,
+            lanImportButton,
+        ].forEach((element) => element.toggleClass('disabled', Boolean(busy)));
+
+        if (!busy) {
+            updateRestoreState();
+            updateLanState();
+        }
     };
 
     const runRestore = async (file, selectionOverride = null) => {
@@ -809,10 +918,7 @@ async function openBackupManager(handle, callback) {
                 t`Backup and Restore`,
                 { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
             );
-            restoreButton.addClass('disabled');
-            restoreSelectButton.addClass('disabled');
-            importDataButton.addClass('disabled');
-            downloadButton.addClass('disabled');
+            setActionBusy(true);
             const result = await restoreUserData(handle, file, selection, mode);
             const diagnosticReport = buildRestoreDiagnosticReport({ handle, file, mode, selection, result });
             console.info('BACKUP_RESTORE_REPORT', diagnosticReport);
@@ -832,13 +938,9 @@ async function openBackupManager(handle, callback) {
             if (progressToast) {
                 toastr.clear(progressToast);
             }
-            restoreButton.removeClass('disabled');
-            restoreSelectButton.removeClass('disabled');
-            importDataButton.removeClass('disabled');
-            downloadButton.removeClass('disabled');
             fileInput.val('');
             selectedFileText.text(t`No ZIP selected.`);
-            updateRestoreState();
+            setActionBusy(false);
         }
     };
 
@@ -868,18 +970,11 @@ async function openBackupManager(handle, callback) {
             return;
         }
 
-        $(this).addClass('disabled');
-        restoreSelectButton.addClass('disabled');
-        restoreButton.addClass('disabled');
-        importDataButton.addClass('disabled');
-
         try {
+            setActionBusy(true);
             await backupUserData(handle, () => { }, selection);
         } finally {
-            $(this).removeClass('disabled');
-            restoreSelectButton.removeClass('disabled');
-            importDataButton.removeClass('disabled');
-            updateRestoreState();
+            setActionBusy(false);
         }
     });
 
@@ -913,7 +1008,143 @@ async function openBackupManager(handle, callback) {
         updateRestoreState();
     });
 
+    lanCreateLinkButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const selection = collectBackupSelection(template, activeCategoryKeys);
+        if (!Object.values(selection).some(Boolean)) {
+            toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
+            return;
+        }
+
+        let progressToast;
+        try {
+            progressToast = toastr.info(
+                t`Please wait...`,
+                t`LAN Migration`,
+                { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
+            );
+            setActionBusy(true);
+            const result = await createLanMigrationLink(handle, selection);
+            const link = await getShareableLanMigrationLink(String(result?.url || ''));
+            lanGeneratedLink.val(link);
+            updateLanState();
+
+            if (link) {
+                try {
+                    await copyText(link);
+                    toastr.success(t`Migration link copied to clipboard.`, t`LAN Migration`);
+                } catch {
+                    toastr.info(t`Migration link created. Copy it from the field below.`, t`LAN Migration`);
+                }
+            }
+        } catch (error) {
+            console.error('Error creating LAN migration link:', error);
+            toastr.error(String(error.message || error), t`Failed to create migration link`);
+        } finally {
+            if (progressToast) {
+                toastr.clear(progressToast);
+            }
+            setActionBusy(false);
+        }
+    });
+
+    lanCopyLinkButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const link = String(lanGeneratedLink.val() || '').trim();
+        if (!link) {
+            return;
+        }
+
+        try {
+            await copyText(link);
+            toastr.success(t`Migration link copied to clipboard.`, t`LAN Migration`);
+        } catch (error) {
+            console.error('Error copying LAN migration link:', error);
+            toastr.error(String(error.message || error), t`Failed to copy link`);
+        }
+    });
+
+    lanImportButton.on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const link = String(lanImportLink.val() || '').trim();
+        if (!link) {
+            toastr.warning(t`Paste a migration link first.`, t`Missing link`);
+            return;
+        }
+
+        const selection = collectBackupSelection(template, activeCategoryKeys);
+        if (!Object.values(selection).some(Boolean)) {
+            toastr.warning(t`Select at least one data category.`, t`Nothing selected`);
+            return;
+        }
+
+        const mode = getSelectedRestoreMode(template);
+        const confirmationMessage = mode === 'overwrite'
+            ? t`Overwrite mode will clear existing selected data before LAN migration. Continue?`
+            : t`Import data from the migration link in incremental mode and overwrite files on path conflicts?`;
+
+        const confirm = await callGenericPopup(confirmationMessage, POPUP_TYPE.CONFIRM, '', {
+            okButton: t`Start Migration`,
+            cancelButton: t`Cancel`,
+            wide: false,
+            large: false,
+        });
+
+        if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        let progressToast;
+        try {
+            progressToast = toastr.info(
+                t`Please wait...`,
+                t`LAN Migration`,
+                { timeOut: 0, extendedTimeOut: 0, closeButton: false, tapToDismiss: false },
+            );
+            setActionBusy(true);
+            const result = await importLanMigrationLink(handle, link, selection, mode);
+            const diagnosticReport = buildRestoreDiagnosticReport({
+                handle,
+                file: { name: link, size: 0, type: 'lan-migration-link' },
+                mode,
+                selection,
+                result,
+            });
+            console.info('LAN_MIGRATION_REPORT', diagnosticReport);
+            toastr.success(
+                t`Restored ${result.restoredCount} files. Skipped ${result.skippedCount}, rejected ${result.rejectedCount}.`,
+                t`LAN Migration Complete`,
+            );
+            if (hasRestoreWarnings(result)) {
+                toastr.warning(t`Migration completed with warnings. Showing diagnostic report.`, t`LAN Migration Warnings`);
+                await showRestoreDiagnosticReport(diagnosticReport);
+            }
+            callback?.(result);
+        } catch (error) {
+            console.error('Error importing LAN migration link:', error);
+            toastr.error(String(error.message || error), t`Failed to import migration link`);
+        } finally {
+            if (progressToast) {
+                toastr.clear(progressToast);
+            }
+            lanImportLink.val('');
+            setActionBusy(false);
+        }
+    });
+
+    lanImportLink.on('input change', updateLanState);
+
     updateRestoreState();
+    updateLanState();
 
     await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
         okButton: 'Close',

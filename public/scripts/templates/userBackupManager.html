@@ -106,6 +106,38 @@
         <span data-i18n="Overwrite Update clears selected categories first, then restores backup files.">Overwrite Update clears selected categories first, then restores backup files.</span>
     </div>
 
+    <hr class="sysHR marginTopBot10">
+
+    <h4 class="marginBot5" data-i18n="LAN Migration">LAN Migration</h4>
+    <div class="menu_button_note marginBot10" data-i18n="A Luker instance on one device can be accessed by all devices on the same LAN. Repeated LAN migration is not recommended when your goal is multi-device sharing.">
+        A Luker instance on one device can be accessed by all devices on the same LAN. Repeated LAN migration is not recommended when your goal is multi-device sharing.
+    </div>
+    <div class="menu_button_note marginBot10" data-i18n="LAN migration is intended for device moves. Migration links expire quickly and can only be used once.">
+        LAN migration is intended for device moves. Migration links expire quickly and can only be used once.
+    </div>
+    <div class="backupActionRow flex-container flexGap10 marginBot5">
+        <div class="backupLanCreateLinkButton menu_button menu_button_icon">
+            <i class="fa-fw fa-solid fa-link"></i>
+            <span data-i18n="Create Migration Link">Create Migration Link</span>
+        </div>
+        <div class="backupLanCopyLinkButton menu_button menu_button_icon">
+            <i class="fa-fw fa-solid fa-copy"></i>
+            <span data-i18n="Copy Link">Copy Link</span>
+        </div>
+    </div>
+    <input type="text" class="text_pole backupLanGeneratedLink marginBot10" readonly data-i18n="[placeholder]Create a one-time migration link on the source instance." placeholder="Create a one-time migration link on the source instance.">
+    <div class="backupActionRow flex-container flexGap10 marginBot5">
+        <input type="url" class="text_pole backupLanImportLink flex1" data-i18n="[placeholder]Paste a one-time migration link from another Luker instance." placeholder="Paste a one-time migration link from another Luker instance.">
+        <div class="backupLanImportButton menu_button menu_button_icon">
+            <i class="fa-fw fa-solid fa-right-left"></i>
+            <span data-i18n="Migrate from Link">Migrate from Link</span>
+        </div>
+    </div>
+    <div class="menu_button_note">
+        <span data-i18n="The current category selection is embedded into newly created migration links.">The current category selection is embedded into newly created migration links.</span><br>
+        <span data-i18n="The selected restore mode still applies when importing from a migration link.">The selected restore mode still applies when importing from a migration link.</span>
+    </div>
+
     <form hidden>
         <input type="file" class="backupRestoreFileInput" accept=".zip,application/zip">
     </form>

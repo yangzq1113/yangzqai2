@@ -7,7 +7,8 @@ import { getIpFromRequest, getRealIpFromHeader } from '../express-common.js';
 import { color, Cache, getConfigValue } from '../util.js';
 import { getAdminSettings } from '../admin-settings.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
-import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt, getAllUserHandles, getUserDirectories, ensurePublicDirectoriesExist } from '../users.js';
+import { KEY_PREFIX, getUserAvatar, toKey, getPasswordHash, getPasswordSalt, getAllUserHandles, getUserDirectories, ensurePublicDirectoriesExist, createBackupArchive } from '../users.js';
+import { consumeLanMigrationOffer } from '../lan-migration.js';
 
 const DISCREET_LOGIN = getConfigValue('enableDiscreetLogin', false, 'boolean');
 const PREFER_REAL_IP_HEADER = getConfigValue('rateLimiting.preferRealIpHeader', false, 'boolean');
@@ -204,6 +205,27 @@ function redirectToLoginWithError(response, reason) {
     const target = suffix ? `/login?${suffix}` : '/login';
     return response.redirect(target);
 }
+
+router.get('/transfer/backup/:token', async (request, response) => {
+    try {
+        const offer = consumeLanMigrationOffer(request.params.token);
+        if (!offer) {
+            return response.status(410).send('Migration link expired or already used.');
+        }
+
+        response.setHeader('Cache-Control', 'no-store');
+        response.setHeader('X-Robots-Tag', 'noindex');
+        await createBackupArchive(offer.handle, response, offer.selection, {
+            includeGlobalExtensions: Boolean(offer.includeGlobalExtensions),
+        });
+    } catch (error) {
+        console.error('LAN migration backup transfer failed:', error);
+        if (!response.headersSent) {
+            return response.sendStatus(500);
+        }
+        response.end();
+    }
+});
 
 router.post('/oauth/providers', async (_request, response) => {
     try {

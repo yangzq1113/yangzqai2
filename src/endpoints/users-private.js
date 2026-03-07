@@ -1,17 +1,22 @@
+import dns from 'node:dns/promises';
 import path from 'node:path';
 import fs from 'node:fs';
 import { promises as fsPromises } from 'node:fs';
 import crypto from 'node:crypto';
+import net from 'node:net';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import storage from 'node-persist';
 import express from 'express';
+import ipaddr from 'ipaddr.js';
 import yauzl from 'yauzl';
 
 import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey, getUserDirectories, getUserBackupTargets, normalizeUserBackupSelection } from '../users.js';
-import { SETTINGS_FILE, PUBLIC_DIRECTORIES } from '../constants.js';
+import { SETTINGS_FILE, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from '../constants.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
-import { color, Cache, ensureDirectory, normalizeZipEntryPath } from '../util.js';
+import { color, Cache, ensureDirectory, isValidUrl, normalizeZipEntryPath, trimTrailingSlash } from '../util.js';
+import { createLanMigrationOffer, LAN_MIGRATION_PATH_PREFIX } from '../lan-migration.js';
 
 const RESET_CACHE = new Cache(5 * 60 * 1000);
 const FULL_IMPORT_SELECTION = Object.freeze({
@@ -19,6 +24,7 @@ const FULL_IMPORT_SELECTION = Object.freeze({
     globalExtensions: false,
 });
 const BACKUP_CATEGORY_ORDER = Object.freeze(Object.keys(FULL_IMPORT_SELECTION));
+const LAN_MIGRATION_LINK_PATH_PATTERN = /^\/api\/users\/transfer\/backup\/[a-f0-9]{64}$/i;
 
 function sanitizeBackupSelectionForUser(selection, isAdminUser) {
     const normalized = normalizeUserBackupSelection(selection);
@@ -37,6 +43,107 @@ function parseBackupSelectionPayload(payload) {
         }
     }
     return payload;
+}
+
+function getRequestBaseUrl(request) {
+    const forwardedProto = request.get('x-forwarded-proto');
+    const protocol = forwardedProto || request.protocol || 'http';
+    const host = request.get('x-forwarded-host') || request.get('host');
+    return `${protocol}://${host}`;
+}
+
+function isLanMigrationAddress(address) {
+    try {
+        let parsed = ipaddr.parse(String(address || '').trim());
+        if (parsed.kind() === 'ipv6' && parsed instanceof ipaddr.IPv6 && parsed.isIPv4MappedAddress()) {
+            parsed = parsed.toIPv4Address();
+        }
+
+        const range = parsed.range();
+        if (parsed.kind() === 'ipv4') {
+            return ['private', 'loopback', 'linkLocal'].includes(range);
+        }
+
+        return ['uniqueLocal', 'loopback', 'linkLocal'].includes(range);
+    } catch {
+        return false;
+    }
+}
+
+async function resolveLanMigrationAddresses(hostname) {
+    const value = String(hostname || '').trim();
+    const candidate = value.replace(/^\[/, '').replace(/\]$/, '');
+    if (!value) {
+        return [];
+    }
+
+    if (candidate === 'localhost') {
+        return ['127.0.0.1', '::1'];
+    }
+
+    if (net.isIP(candidate)) {
+        return [candidate];
+    }
+
+    try {
+        const results = await dns.lookup(candidate, { all: true, verbatim: true });
+        return [...new Set(results.map(entry => String(entry?.address || '')).filter(Boolean))];
+    } catch {
+        return [];
+    }
+}
+
+async function resolveLanMigrationSourceUrl(input) {
+    if (!isValidUrl(input)) {
+        throw new Error('Migration link is not a valid URL.');
+    }
+
+    const url = new URL(String(input).trim());
+    if (!['http:', 'https:'].includes(url.protocol)) {
+        throw new Error('Migration link must use http or https.');
+    }
+
+    if (url.username || url.password) {
+        throw new Error('Migration link cannot include credentials.');
+    }
+
+    if (url.search || url.hash) {
+        throw new Error('Migration link format is invalid.');
+    }
+
+    const normalizedPath = trimTrailingSlash(url.pathname);
+    if (!LAN_MIGRATION_LINK_PATH_PATTERN.test(normalizedPath)) {
+        throw new Error('Migration link must be a one-time Luker migration link.');
+    }
+
+    const addresses = await resolveLanMigrationAddresses(url.hostname);
+    if (addresses.length === 0 || !addresses.every(isLanMigrationAddress)) {
+        throw new Error('Migration link host must resolve to a LAN or localhost address.');
+    }
+
+    url.pathname = normalizedPath;
+    return url;
+}
+
+async function downloadLanMigrationArchive(sourceUrl, destinationPath) {
+    const response = await fetch(sourceUrl, {
+        method: 'GET',
+        redirect: 'error',
+        cache: 'no-store',
+        headers: {
+            'Accept': 'application/zip, application/octet-stream;q=0.9',
+        },
+    });
+
+    if (response.status === 404 || response.status === 410) {
+        throw new Error('Migration link expired or already used.');
+    }
+
+    if (!response.ok || !response.body) {
+        throw new Error(`Failed to download migration archive (${response.status}).`);
+    }
+
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(destinationPath, { mode: 0o600 }));
 }
 
 function normalizeRestoreArchiveEntryPath(entryName) {
@@ -626,6 +733,38 @@ router.get('/backup', async (request, response) => {
     }
 });
 
+router.post('/lan-migration/offer', async (request, response) => {
+    try {
+        const handle = String(request.body?.handle || '').trim();
+        if (!handle) {
+            return response.status(400).json({ error: 'Missing required fields' });
+        }
+
+        if (handle !== request.user.profile.handle && !request.user.profile.admin) {
+            return response.status(403).json({ error: 'Unauthorized' });
+        }
+
+        const isAdminUser = Boolean(request.user?.profile?.admin);
+        const parsedSelection = parseBackupSelectionPayload(request.body.selection);
+        const selection = sanitizeBackupSelectionForUser(parsedSelection, isAdminUser);
+        if (!Object.values(selection).some(Boolean)) {
+            return response.status(400).json({ error: 'At least one backup category must be selected.' });
+        }
+
+        const { token, expiresAt } = createLanMigrationOffer({
+            handle,
+            selection,
+            includeGlobalExtensions: isAdminUser,
+        });
+        const baseUrl = trimTrailingSlash(getRequestBaseUrl(request));
+        const url = `${baseUrl}${LAN_MIGRATION_PATH_PREFIX}${token}`;
+        return response.json({ url, expiresAt });
+    } catch (error) {
+        console.error('LAN migration offer failed', error);
+        return response.sendStatus(500);
+    }
+});
+
 router.post('/restore-backup', async (request, response) => {
     let uploadPath = '';
 
@@ -683,6 +822,66 @@ router.post('/restore-backup', async (request, response) => {
     } finally {
         if (uploadPath) {
             await fsPromises.rm(uploadPath, { force: true });
+        }
+    }
+});
+
+router.post('/lan-migration/import', async (request, response) => {
+    let downloadPath = '';
+
+    try {
+        const handle = String(request.body?.handle || '').trim();
+        if (!handle) {
+            return response.status(400).json({ error: 'Missing required fields' });
+        }
+
+        if (handle !== request.user.profile.handle && !request.user.profile.admin) {
+            return response.status(403).json({ error: 'Unauthorized' });
+        }
+
+        const rawUrl = String(request.body?.url || '').trim();
+        if (!rawUrl) {
+            return response.status(400).json({ error: 'No migration link provided' });
+        }
+
+        const isAdminUser = Boolean(request.user?.profile?.admin);
+        const selection = sanitizeBackupSelectionForUser(parseBackupSelectionPayload(request.body.selection), isAdminUser);
+        if (!Object.values(selection).some(Boolean)) {
+            return response.status(400).json({ error: 'At least one restore category must be selected.' });
+        }
+
+        const mode = String(request.body.mode || 'merge').toLowerCase() === 'overwrite' ? 'overwrite' : 'merge';
+        const sourceUrl = await resolveLanMigrationSourceUrl(rawUrl);
+        const uploadsPath = path.join(globalThis.DATA_ROOT, UPLOADS_DIRECTORY);
+        ensureDirectory(uploadsPath);
+        downloadPath = path.join(uploadsPath, `lan-migration-${Date.now()}-${crypto.randomBytes(8).toString('hex')}.zip`);
+
+        await downloadLanMigrationArchive(sourceUrl.toString(), downloadPath);
+
+        const directories = handle === request.user.profile.handle ? request.user.directories : getUserDirectories(handle);
+        const restoreResult = await restoreUserBackupArchive(downloadPath, directories, selection, mode, { includeGlobalExtensions: isAdminUser });
+
+        return response.json({
+            mode,
+            source: {
+                origin: sourceUrl.origin,
+                host: sourceUrl.host,
+            },
+            ...restoreResult,
+        });
+    } catch (error) {
+        console.error('LAN migration import failed', error);
+        const message = error?.message || 'LAN migration import failed';
+        const isValidationError = message.includes('Migration link')
+            || message.includes('No migration link provided')
+            || message.includes('At least one restore category')
+            || message.includes('Archive does not match selected restore categories')
+            || message.includes('Failed to download migration archive');
+        const statusCode = isValidationError ? 400 : 500;
+        return response.status(statusCode).json({ error: message });
+    } finally {
+        if (downloadPath) {
+            await fsPromises.rm(downloadPath, { force: true });
         }
     }
 });
