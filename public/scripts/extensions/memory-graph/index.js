@@ -5143,16 +5143,37 @@ function buildLastUserAnchorFromMessages(messages) {
     }
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i];
-        if (!message || !message.is_user) {
+        if (!message || message.is_system) {
             continue;
         }
+        if (!message.is_user) {
+            continue;
+        }
+        const playableFloor = messages
+            .slice(0, i + 1)
+            .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0);
+        const assistantFloor = messages
+            .slice(0, i + 1)
+            .reduce((count, item) => count + (item && !item.is_system && !item.is_user ? 1 : 0), 0);
         const text = String(message.mes ?? '');
         return {
             floor: i + 1,
+            playableFloor,
+            assistantFloor,
             hash: String(getStringHash(text)),
         };
     }
     return null;
+}
+
+function buildLastUserAnchor(context, payloadMessages) {
+    const contextMessages = Array.isArray(context?.chat) ? context.chat : [];
+    const contextAnchor = buildLastUserAnchorFromMessages(contextMessages);
+    if (contextAnchor) {
+        return contextAnchor;
+    }
+
+    return buildLastUserAnchorFromMessages(payloadMessages);
 }
 
 function canReuseLatestRecallSnapshot(chatKey, anchor) {
@@ -5165,8 +5186,31 @@ function canReuseLatestRecallSnapshot(chatKey, anchor) {
     if (String(latestRecallSnapshot.chatKey || '') !== String(chatKey || '')) {
         return false;
     }
-    return Number(latestRecallSnapshot.anchorFloor) === Number(anchor.floor)
+    const storedFloor = Number(latestRecallSnapshot.anchorFloor);
+    const incomingFloor = Number(anchor.floor);
+    const storedPlayableFloor = Number(latestRecallSnapshot.anchorPlayableFloor);
+    const incomingPlayableFloor = Number(anchor.playableFloor);
+    const floorMatched = Number.isFinite(storedPlayableFloor) && Number.isFinite(incomingPlayableFloor)
+        ? storedPlayableFloor === incomingPlayableFloor
+        : storedFloor === incomingFloor;
+    return floorMatched
         && String(latestRecallSnapshot.anchorHash || '') === String(anchor.hash || '');
+}
+
+function shouldPreserveLatestRecallSnapshotForAssistantMutation(context, fromSeq) {
+    if (!latestRecallSnapshot || typeof latestRecallSnapshot !== 'object') {
+        return false;
+    }
+    const chatKey = getChatKey(context);
+    if (String(latestRecallSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return false;
+    }
+    const anchorAssistantFloor = Number(latestRecallSnapshot.anchorAssistantFloor);
+    const affectedAssistantSeq = Number(fromSeq);
+    return Number.isFinite(anchorAssistantFloor)
+        && anchorAssistantFloor >= 0
+        && Number.isFinite(affectedAssistantSeq)
+        && affectedAssistantSeq > anchorAssistantFloor;
 }
 
 function getNodeRecallExposure(settings, node, context = null) {
@@ -6639,7 +6683,7 @@ async function injectMemoryPrompts(context, payload) {
         return false;
     }
     const chatKey = getChatKey(context, targetHint);
-    const anchor = buildLastUserAnchorFromMessages(payload?.coreChat);
+    const anchor = buildLastUserAnchor(context, payload?.coreChat);
     throwIfAborted(payload?.signal, 'Memory recall aborted.');
     const shouldReuseSnapshot = settings.recallEnabled
         && RECALL_REUSE_GENERATION_TYPES.has(generationType)
@@ -6684,6 +6728,8 @@ async function injectMemoryPrompts(context, payload) {
         ? {
             chatKey,
             anchorFloor: anchor.floor,
+            anchorPlayableFloor: anchor.playableFloor,
+            anchorAssistantFloor: anchor.assistantFloor,
             anchorHash: anchor.hash,
             blocks: structuredClone(blocks),
             trace: structuredClone(trace),
@@ -10634,7 +10680,10 @@ jQuery(() => {
                     latestRecallSnapshot = null;
                     return;
                 }
-                latestRecallSnapshot = null;
+                const preserveLatestRecallSnapshot = shouldPreserveLatestRecallSnapshotForAssistantMutation(liveContext, task.fromSeq);
+                if (!preserveLatestRecallSnapshot) {
+                    latestRecallSnapshot = null;
+                }
                 if (extractionTimers.has(chatKey)) {
                     clearTimeout(extractionTimers.get(chatKey));
                     extractionTimers.delete(chatKey);
