@@ -20,7 +20,10 @@ const UI_BLOCK_ID = 'search_tools_settings';
 const STATUS_ID = 'search_tools_status';
 const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const MANAGED_COMMENT_PREFIX = 'SEARCH_TOOLS';
+const SEARCH_CHAT_STATE_NAMESPACE = 'luker_search_tools_state';
+const SEARCH_CHAT_STATE_VERSION = 1;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
+const REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const TOOL_NAMES = Object.freeze({
     SEARCH: 'luker_web_search',
     VISIT: 'luker_web_visit',
@@ -65,6 +68,8 @@ const DEFAULT_SETTINGS = Object.freeze({
 let activeAgentRunToken = 0;
 let activeAgentRunInfoToast = null;
 let activeAgentAbortController = null;
+let latestSearchAgentSnapshot = null;
+let loadedChatStateKey = '';
 
 function i18n(text) {
     return translate(String(text || ''));
@@ -181,6 +186,96 @@ function normalizePreviewText(text, maxChars = 240) {
         return normalized;
     }
     return `${normalized.slice(0, maxChars - 1).trim()}...`;
+}
+
+function normalizeSearchAgentSnapshot(raw) {
+    const source = raw && typeof raw === 'object' ? raw : null;
+    if (!source) {
+        return null;
+    }
+
+    const chatKey = String(source.chatKey || '').trim();
+    const anchorHash = String(source.anchorHash || '').trim();
+    if (!chatKey || !anchorHash) {
+        return null;
+    }
+
+    return {
+        chatKey,
+        anchorFloor: Number(source.anchorFloor || 0),
+        anchorPlayableFloor: Number(source.anchorPlayableFloor || 0),
+        anchorHash,
+        updatedAt: String(source.updatedAt || '').trim(),
+        summary: normalizeWhitespace(source.summary || ''),
+        mutationCount: Math.max(0, Math.floor(Number(source.mutationCount || 0))),
+        managedEntryCount: Math.max(0, Math.floor(Number(source.managedEntryCount || 0))),
+        bookName: normalizeWhitespace(source.bookName || ''),
+    };
+}
+
+function normalizeSearchToolsChatState(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return {
+        version: Number(source.version || SEARCH_CHAT_STATE_VERSION),
+        snapshot: normalizeSearchAgentSnapshot(source.snapshot),
+    };
+}
+
+function getChatKey(context) {
+    if (context.groupId) {
+        return `group:${context.groupId}`;
+    }
+
+    const avatar = context.characters?.[context.characterId]?.avatar || 'unknown_avatar';
+    const chatId = context.chatId || context.getCurrentChatId?.() || 'unknown_chat';
+    return `char:${avatar}:${chatId}`;
+}
+
+async function loadSearchToolsChatState(context, { force = false } = {}) {
+    const chatKey = getChatKey(context);
+    if (!chatKey) {
+        latestSearchAgentSnapshot = null;
+        loadedChatStateKey = '';
+        return;
+    }
+    if (!force && loadedChatStateKey === chatKey) {
+        return;
+    }
+
+    let payload = null;
+    if (typeof context?.getChatState === 'function') {
+        payload = await context.getChatState(SEARCH_CHAT_STATE_NAMESPACE, {});
+    }
+    const normalized = normalizeSearchToolsChatState(payload);
+    latestSearchAgentSnapshot = normalized.snapshot;
+    loadedChatStateKey = chatKey;
+}
+
+async function persistSearchToolsChatState(context) {
+    const chatKey = getChatKey(context);
+    if (!chatKey || typeof context?.updateChatState !== 'function') {
+        return;
+    }
+
+    loadedChatStateKey = chatKey;
+    const snapshot = normalizeSearchAgentSnapshot(latestSearchAgentSnapshot);
+    await context.updateChatState(SEARCH_CHAT_STATE_NAMESPACE, () => ({
+        version: SEARCH_CHAT_STATE_VERSION,
+        snapshot,
+    }), { maxOperations: 2000, maxRetries: 1 });
+}
+
+function clearLastSearchAgentSnapshot(context, { persist = false } = {}) {
+    const chatKey = getChatKey(context);
+    if (!latestSearchAgentSnapshot || typeof latestSearchAgentSnapshot !== 'object') {
+        return;
+    }
+    if (String(latestSearchAgentSnapshot.chatKey || '') === String(chatKey || '')) {
+        latestSearchAgentSnapshot = null;
+        if (persist) {
+            void persistSearchToolsChatState(context);
+        }
+    }
 }
 
 function getOpenAIPresetNames(context) {
@@ -1088,6 +1183,80 @@ function buildRecentChatText(messages = [], limit = 12) {
     return lines.length > 0 ? lines.join('\n\n') : '(No recent chat messages available)';
 }
 
+function extractLastUserMessage(messages) {
+    const source = Array.isArray(messages) ? messages : [];
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+        if (source[i]?.is_user) {
+            return { index: i, message: source[i] };
+        }
+    }
+    return { index: -1, message: null };
+}
+
+function buildLastUserAnchorFromMessages(messages) {
+    const { index, message } = extractLastUserMessage(messages);
+    if (index < 0 || !message) {
+        return null;
+    }
+
+    const text = String(message.mes ?? '');
+    const playableFloor = messages
+        .slice(0, index + 1)
+        .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0);
+    return {
+        floor: index + 1,
+        playableFloor,
+        hash: String(getStringHash(text)),
+    };
+}
+
+function buildLastUserAnchor(context, payloadMessages) {
+    const contextMessages = Array.isArray(context?.chat) ? context.chat : [];
+    const contextAnchor = buildLastUserAnchorFromMessages(contextMessages);
+    if (contextAnchor) {
+        return contextAnchor;
+    }
+
+    return buildLastUserAnchorFromMessages(payloadMessages);
+}
+
+function canReuseLatestSearchAgentSnapshot(chatKey, anchor) {
+    if (!latestSearchAgentSnapshot || typeof latestSearchAgentSnapshot !== 'object') {
+        return false;
+    }
+    if (!anchor || typeof anchor !== 'object') {
+        return false;
+    }
+    if (String(latestSearchAgentSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return false;
+    }
+
+    const storedFloor = Number(latestSearchAgentSnapshot.anchorFloor);
+    const incomingFloor = Number(anchor.floor);
+    const storedPlayableFloor = Number(latestSearchAgentSnapshot.anchorPlayableFloor);
+    const incomingPlayableFloor = Number(anchor.playableFloor);
+    const floorMatched = Number.isFinite(storedPlayableFloor) && Number.isFinite(incomingPlayableFloor)
+        ? storedPlayableFloor === incomingPlayableFloor
+        : storedFloor === incomingFloor;
+    return floorMatched
+        && String(latestSearchAgentSnapshot.anchorHash || '') === String(anchor.hash || '');
+}
+
+function buildSearchAgentStatusText(result, { reused = false } = {}) {
+    const summary = result?.summary ? ` ${result.summary}` : '';
+    const mutationCount = Math.max(0, Number(result?.mutationCount || 0));
+    const managedEntryCount = Math.max(0, Number(result?.managedEntryCount || 0));
+    if (reused) {
+        return mutationCount
+            ? i18n(`Search agent reused cached lorebook update (${mutationCount} changes, ${managedEntryCount} managed entries).${summary}`)
+            : i18n(`Search agent reused cached result with no lorebook changes (${managedEntryCount} managed entries).${summary}`);
+    }
+
+    return mutationCount
+        ? i18n(`Search agent updated lorebook (${mutationCount} changes, ${managedEntryCount} managed entries).${summary}`)
+        : i18n(`Search agent finished with no lorebook changes (${managedEntryCount} managed entries).${summary}`);
+}
+
 function buildManagedEntryCatalog(entries = []) {
     const normalized = Array.isArray(entries) ? entries : [];
     if (normalized.length === 0) {
@@ -1421,6 +1590,15 @@ async function maybeRunPreRequestSearchAgent(payload) {
         return;
     }
 
+    await loadSearchToolsChatState(context, { force: false });
+    const chatKey = getChatKey(context);
+    const generationType = String(payload?.type || '').trim().toLowerCase();
+    const anchor = buildLastUserAnchor(context, payload.coreChat);
+    if (REUSE_GENERATION_TYPES.has(generationType) && canReuseLatestSearchAgentSnapshot(chatKey, anchor)) {
+        updateUiStatus(buildSearchAgentStatusText(latestSearchAgentSnapshot, { reused: true }));
+        return;
+    }
+
     if (activeAgentAbortController && !activeAgentAbortController.signal.aborted) {
         activeAgentAbortController.abort();
     }
@@ -1448,12 +1626,21 @@ async function maybeRunPreRequestSearchAgent(payload) {
         if (runToken !== activeAgentRunToken) {
             return;
         }
-        const summary = result?.summary ? ` ${result.summary}` : '';
-        updateUiStatus(
-            result?.mutationCount
-                ? i18n(`Search agent updated lorebook (${result.mutationCount} changes, ${result.managedEntryCount} managed entries).${summary}`)
-                : i18n(`Search agent finished with no lorebook changes (${result.managedEntryCount} managed entries).${summary}`),
-        );
+        latestSearchAgentSnapshot = anchor
+            ? {
+                chatKey,
+                anchorFloor: Number(anchor.floor || 0),
+                anchorPlayableFloor: Number(anchor.playableFloor || 0),
+                anchorHash: String(anchor.hash || ''),
+                updatedAt: new Date().toISOString(),
+                summary: normalizeWhitespace(result?.summary || ''),
+                mutationCount: Math.max(0, Math.floor(Number(result?.mutationCount || 0))),
+                managedEntryCount: Math.max(0, Math.floor(Number(result?.managedEntryCount || 0))),
+                bookName: normalizeWhitespace(result?.bookName || ''),
+            }
+            : null;
+        await persistSearchToolsChatState(context);
+        updateUiStatus(buildSearchAgentStatusText(result));
     } catch (error) {
         if (runToken !== activeAgentRunToken) {
             return;
@@ -1473,6 +1660,34 @@ async function maybeRunPreRequestSearchAgent(payload) {
             clearAgentRunInfoToast();
         }
     }
+}
+
+function onMessageDeleted(_chatLength, details) {
+    const context = getContext();
+    if (!latestSearchAgentSnapshot || typeof latestSearchAgentSnapshot !== 'object') {
+        return;
+    }
+
+    const chatKey = getChatKey(context);
+    if (String(latestSearchAgentSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return;
+    }
+
+    const anchorPlayableFloor = Number(latestSearchAgentSnapshot.anchorPlayableFloor);
+    const deletedFrom = Number(details?.deletedPlayableSeqFrom);
+    const deletedTo = Number(details?.deletedPlayableSeqTo);
+    const deletedStrictlyAfterAnchor = Number.isFinite(anchorPlayableFloor)
+        && anchorPlayableFloor > 0
+        && Number.isFinite(deletedFrom)
+        && Number.isFinite(deletedTo)
+        && deletedFrom > anchorPlayableFloor
+        && deletedTo > anchorPlayableFloor;
+
+    if (deletedStrictlyAfterAnchor) {
+        return;
+    }
+
+    clearLastSearchAgentSnapshot(context, { persist: true });
 }
 
 function renderSettingsBlock() {
@@ -1787,6 +2002,7 @@ jQuery(() => {
     const context = getContext();
     registerTools(context);
     ensureUi();
+    void loadSearchToolsChatState(context, { force: true });
 
     const wiAfterEvent = context?.eventTypes?.GENERATION_AFTER_WORLD_INFO_SCAN;
     if (wiAfterEvent) {
@@ -1795,9 +2011,15 @@ jQuery(() => {
         });
     }
 
+    if (context?.eventTypes?.MESSAGE_DELETED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_DELETED, onMessageDeleted);
+    }
+
     if (context?.eventTypes?.CHAT_CHANGED) {
         context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
-            void refreshUiStatusForCurrentChat();
+            loadedChatStateKey = '';
+            latestSearchAgentSnapshot = null;
+            void loadSearchToolsChatState(context, { force: true }).finally(() => refreshUiStatusForCurrentChat());
         });
     }
 
