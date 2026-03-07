@@ -297,6 +297,7 @@ const defaultSettings = {
     extractSystemPrompt: DEFAULT_EXTRACT_SYSTEM_PROMPT,
     extractBatchTurns: 1,
     extractContextTurns: 2,
+    extractExcludeRecentTurns: 0,
     recallQueryMessages: 2,
     recentRawTurns: 2,
     llmVisibleRecentMessages: 5,
@@ -311,6 +312,18 @@ function i18n(text) {
 
 function i18nFormat(key, ...values) {
     return i18n(key).replace(/\$\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+}
+
+function normalizeExtractExcludeRecentTurns(value) {
+    return Math.max(0, Math.floor(Number(value) || 0));
+}
+
+function getExtractableLatestSeq(totalTurns, settings = null) {
+    const total = Math.max(0, Math.floor(Number(totalTurns || 0)));
+    const excludedRecentTurns = normalizeExtractExcludeRecentTurns(
+        settings?.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns,
+    );
+    return Math.max(0, total - excludedRecentTurns);
 }
 
 function registerLocaleData() {
@@ -337,6 +350,7 @@ function registerLocaleData() {
         'Recall query recent assistant turns': '召回查询使用最近 Assistant 回复条数',
         'Visible recent message layers for generation (0 = disabled)': '创作 LLM 仅可见最近 N 条消息（0=不裁剪）',
         'Extract batch assistant turns': '每次生成图处理的 Assistant 回复条数',
+        'Exclude latest N assistant turns from graph extraction': '生成图时排除最近 N 条 Assistant 回复',
         'Tool-call retries': '工具调用重试次数',
         'Plain-text function-call mode': '纯文本函数调用模式',
         'Extract Table Fill Prompt': '生成图提示词',
@@ -603,6 +617,7 @@ function registerLocaleData() {
         'Recall query recent assistant turns': '召回查詢使用最近 Assistant 回覆條數',
         'Visible recent message layers for generation (0 = disabled)': '創作 LLM 僅可見最近 N 條訊息（0=不裁切）',
         'Extract batch assistant turns': '每次生成圖處理的 Assistant 回覆條數',
+        'Exclude latest N assistant turns from graph extraction': '生成圖時排除最近 N 條 Assistant 回覆',
         'Tool-call retries': '工具呼叫重試次數',
         'Plain-text function-call mode': '純文字函式呼叫模式',
         'Extract Table Fill Prompt': '生成圖提示詞',
@@ -1101,6 +1116,7 @@ function ensureSettings() {
     );
     const extractBatchTurnsRaw = Number(extension_settings[MODULE_NAME].extractBatchTurns);
     const extractContextTurnsRaw = Number(extension_settings[MODULE_NAME].extractContextTurns);
+    const extractExcludeRecentTurnsRaw = Number(extension_settings[MODULE_NAME].extractExcludeRecentTurns);
     const recallQueryMessagesRaw = Number(extension_settings[MODULE_NAME].recallQueryMessages);
     const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
     const llmVisibleRecentMessagesRaw = Number(extension_settings[MODULE_NAME].llmVisibleRecentMessages);
@@ -1111,6 +1127,9 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].extractContextTurns = Math.max(
         1,
         Math.min(32, Math.floor(Number.isFinite(extractContextTurnsRaw) ? extractContextTurnsRaw : defaultSettings.extractContextTurns)),
+    );
+    extension_settings[MODULE_NAME].extractExcludeRecentTurns = normalizeExtractExcludeRecentTurns(
+        Number.isFinite(extractExcludeRecentTurnsRaw) ? extractExcludeRecentTurnsRaw : defaultSettings.extractExcludeRecentTurns,
     );
     extension_settings[MODULE_NAME].recallQueryMessages = Math.max(
         1,
@@ -1139,6 +1158,7 @@ function normalizeAdvancedSettings(source = null, fallbackSource = null) {
     const input = source && typeof source === 'object' ? source : {};
     const extractBatchTurnsRaw = Number(input.extractBatchTurns);
     const extractContextTurnsRaw = Number(input.extractContextTurns);
+    const extractExcludeRecentTurnsRaw = Number(input.extractExcludeRecentTurns);
     const recallQueryMessagesRaw = Number(input.recallQueryMessages);
     const recentRawTurnsRaw = Number(input.recentRawTurns);
     const llmVisibleRecentMessagesRaw = Number(input.llmVisibleRecentMessages);
@@ -1160,6 +1180,11 @@ function normalizeAdvancedSettings(source = null, fallbackSource = null) {
         toolCallRetryMax: Math.max(
             0,
             Math.min(10, Math.floor(Number.isFinite(toolRetryRaw) ? toolRetryRaw : Number(base.toolCallRetryMax || defaultSettings.toolCallRetryMax))),
+        ),
+        extractExcludeRecentTurns: normalizeExtractExcludeRecentTurns(
+            Number.isFinite(extractExcludeRecentTurnsRaw)
+                ? extractExcludeRecentTurnsRaw
+                : Number(base.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns),
         ),
         extractContextTurns: Math.max(
             1,
@@ -1188,6 +1213,7 @@ function applyAdvancedSettings(target, values) {
     target.llmVisibleRecentMessages = normalized.llmVisibleRecentMessages;
     target.recallMaxIterations = normalized.recallMaxIterations;
     target.toolCallRetryMax = normalized.toolCallRetryMax;
+    target.extractExcludeRecentTurns = normalized.extractExcludeRecentTurns;
     target.extractContextTurns = normalized.extractContextTurns;
     target.recallQueryMessages = normalized.recallQueryMessages;
     target.extractBatchTurns = normalized.extractBatchTurns;
@@ -4752,7 +4778,7 @@ async function runExtractionForStore(context, store, {
     rebuildCreateOnly = false,
 } = {}) {
     const settings = getEffectiveSettings(context, getSettings());
-    const window = computeExtractionWindow(context, store, startSeq);
+    const window = computeExtractionWindow(context, store, startSeq, settings);
     const frames = window.frames;
     const latestSeq = window.latestSeq;
     const coveredSeqTo = window.coveredSeqTo;
@@ -4801,12 +4827,12 @@ async function runExtractionForStore(context, store, {
     );
     const historyChatKey = String(getChatKey(context) || '').trim();
     let extractedAny = false;
-    for (let i = beginSeq - 1; i < frames.length; i += extractBatchTurns) {
+    for (let i = beginSeq - 1; i < latestSeq; i += extractBatchTurns) {
         if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
             throw new DOMException('Memory extraction aborted.', 'AbortError');
         }
         const batchStartIndex = i;
-        const batchEndIndex = Math.min(frames.length - 1, i + extractBatchTurns - 1);
+        const batchEndIndex = Math.min(latestSeq - 1, i + extractBatchTurns - 1);
         const startFrame = frames[batchStartIndex];
         const endFrame = frames[batchEndIndex];
         if (typeof onBatchStart === 'function') {
@@ -6406,9 +6432,10 @@ function getSemanticCoverageSeq(store) {
     return Number.isFinite(maxSeq) ? maxSeq : 0;
 }
 
-function computeExtractionWindow(context, store, startSeq = null) {
+function computeExtractionWindow(context, store, startSeq = null, settings = null) {
+    const effectiveSettings = settings || getEffectiveSettings(context, getSettings());
     const frames = buildPlayableFramesFromContext(context);
-    const latestSeq = Number(frames.length || 0);
+    const latestSeq = getExtractableLatestSeq(frames.length, effectiveSettings);
     const coveredSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
     const hasExplicitStartSeq = startSeq !== null
         && startSeq !== undefined
@@ -6480,12 +6507,13 @@ function truncateStoreFromSeq(store, fromSeq, chatKey = '') {
     store.seqCounter = covered;
 }
 
-function alignStoreCoverageToChat(store, context) {
+function alignStoreCoverageToChat(store, context, settings = null) {
     if (!store || typeof store !== 'object') {
         return { changed: false, latestSeq: 0 };
     }
+    const effectiveSettings = settings || getEffectiveSettings(context, getSettings());
     const frames = buildPlayableFramesFromContext(context);
-    const latestSeq = Number(frames.length || 0);
+    const latestSeq = getExtractableLatestSeq(frames.length, effectiveSettings);
     const covered = getSemanticCoverageSeq(store);
     let changed = false;
     if (covered > latestSeq) {
@@ -6520,7 +6548,8 @@ async function ensureStoreSyncedWithChat(context, targetHint = null) {
             return await rebuildStoreFromCurrentChat(context, { targetHint });
         }
     }
-    const { changed } = alignStoreCoverageToChat(store, context);
+    const settings = getEffectiveSettings(context, getSettings());
+    const { changed } = alignStoreCoverageToChat(store, context, settings);
     storeChanged = Boolean(storeChanged || changed);
     if (storeChanged) {
         const chatKey = getChatKey(context, target);
@@ -6731,9 +6760,9 @@ function scheduleExtraction(context) {
                     : { rolledBack: false };
                 if (rollbackResult.rolledBack) {
                     rolledBackByHistory = true;
-                    alignStoreCoverageToChat(store, context);
+                    alignStoreCoverageToChat(store, context, settings);
                 } else {
-                    const rebuildLatestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+                    const rebuildLatestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
                     const extractBatchTurns = Math.max(
                         1,
                         Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
@@ -6768,8 +6797,8 @@ function scheduleExtraction(context) {
                     return;
                 }
             }
-            alignStoreCoverageToChat(store, context);
-            const preview = computeExtractionWindow(context, store, null);
+            alignStoreCoverageToChat(store, context, settings);
+            const preview = computeExtractionWindow(context, store, null, settings);
             if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
                 store.lastExtractionDebug = {
                     beginSeq: preview.beginSeq,
@@ -9445,6 +9474,9 @@ function buildAdvancedSettingsPopupHtml(popupId, scopeInfo) {
     <label>${escapeHtml(i18n('Extract context assistant turns'))}
         <input id="${popupId}_extract_context_turns" class="text_pole" type="number" min="1" max="32" step="1" value="${Math.max(1, Math.min(32, Number(settings.extractContextTurns || defaultSettings.extractContextTurns)))}" />
     </label>
+    <label>${escapeHtml(i18n('Exclude latest N assistant turns from graph extraction'))}
+        <input id="${popupId}_extract_exclude_recent_turns" class="text_pole" type="number" min="0" step="1" value="${normalizeExtractExcludeRecentTurns(settings.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns)}" />
+    </label>
     <label>${escapeHtml(i18n('Recall query recent assistant turns'))}
         <input id="${popupId}_recall_query_messages" class="text_pole" type="number" min="1" max="64" step="1" value="${Math.max(1, Math.min(64, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages)))}" />
     </label>
@@ -9495,6 +9527,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         popupRoot.find(`#${popupId}_recall_iterations`).val(String(Math.max(2, Math.min(6, Number(source.recallMaxIterations ?? defaultSettings.recallMaxIterations)))));
         popupRoot.find(`#${popupId}_tool_retries`).val(String(Math.max(0, Math.min(10, Number(source.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))));
         popupRoot.find(`#${popupId}_extract_context_turns`).val(String(Math.max(1, Math.min(32, Number(source.extractContextTurns ?? defaultSettings.extractContextTurns)))));
+        popupRoot.find(`#${popupId}_extract_exclude_recent_turns`).val(String(normalizeExtractExcludeRecentTurns(source.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns)));
         popupRoot.find(`#${popupId}_recall_query_messages`).val(String(Math.max(1, Math.min(64, Number(source.recallQueryMessages ?? defaultSettings.recallQueryMessages)))));
         popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val(String(Math.max(0, Math.min(200, Number(source.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))));
         popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(1, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
@@ -9542,6 +9575,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             recallIterationsValue: Number(popupRoot.find(`#${popupId}_recall_iterations`).val()),
             toolRetriesValue: Number(popupRoot.find(`#${popupId}_tool_retries`).val()),
             extractContextTurnsValue: Number(popupRoot.find(`#${popupId}_extract_context_turns`).val()),
+            extractExcludeRecentTurnsValue: Number(popupRoot.find(`#${popupId}_extract_exclude_recent_turns`).val()),
             recallQueryMessagesValue: Number(popupRoot.find(`#${popupId}_recall_query_messages`).val()),
             llmVisibleRecentMessagesValue: Number(popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val()),
             extractBatchTurnsValue: Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val()),
@@ -9555,6 +9589,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         recallMaxIterations: values.recallIterationsValue,
         toolCallRetryMax: values.toolRetriesValue,
         extractContextTurns: values.extractContextTurnsValue,
+        extractExcludeRecentTurns: values.extractExcludeRecentTurnsValue,
         recallQueryMessages: values.recallQueryMessagesValue,
         llmVisibleRecentMessages: values.llmVisibleRecentMessagesValue,
         extractBatchTurns: values.extractBatchTurnsValue,
@@ -10019,18 +10054,18 @@ function bindUi() {
             notifyError(i18n('No active chat selected.'));
             return;
         }
-        alignStoreCoverageToChat(store, context);
+        const runtimeSettings = getEffectiveSettings(context, settings);
+        alignStoreCoverageToChat(store, context, runtimeSettings);
         const fillAbortController = new AbortController();
         activeExtractionAbortController = fillAbortController;
         try {
-            const preview = computeExtractionWindow(context, store, null);
+            const preview = computeExtractionWindow(context, store, null, runtimeSettings);
             if (preview.beginSeq > preview.latestSeq) {
                 notifySuccess(i18n('Memory graph is already up to date.'));
                 updateUiStatus(i18n('Memory graph is already up to date.'));
                 refreshUiStats();
                 return;
             }
-            const runtimeSettings = getEffectiveSettings(context, settings);
             const extractBatchTurns = Math.max(
                 1,
                 Math.floor(Number(runtimeSettings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
@@ -10112,9 +10147,10 @@ function bindUi() {
     });
 
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
+        const runtimeSettings = getEffectiveSettings(context, settings);
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
-        const rebuildLatestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+        const rebuildLatestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, runtimeSettings);
         showRuntimeInfoToast(formatExtractionRangeToast(1, Math.min(1, rebuildLatestSeq || 1), Math.max(1, rebuildLatestSeq)), {
             stopLabel: i18n('Stop'),
             onStop: () => {
@@ -10162,8 +10198,9 @@ function bindUi() {
             notifyError(i18n('No active chat selected.'));
             return;
         }
-        alignStoreCoverageToChat(store, context);
-        const latestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+        const runtimeSettings = getEffectiveSettings(context, settings);
+        alignStoreCoverageToChat(store, context, runtimeSettings);
+        const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, runtimeSettings);
         if (latestSeq <= 0) {
             notifyError(i18n('No assistant turns available to rebuild.'));
             return;
@@ -10194,7 +10231,6 @@ function bindUi() {
         truncateStoreFromSeq(store, startSeq, chatKey);
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
-        const runtimeSettings = getEffectiveSettings(context, settings);
         const extractBatchTurns = Math.max(
             1,
             Math.floor(Number(runtimeSettings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
