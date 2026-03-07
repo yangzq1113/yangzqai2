@@ -6,7 +6,7 @@ import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { escapeHtml, getStringHash } from '../../utils.js';
-import { newWorldInfoEntryTemplate, world_info_position } from '../../world-info.js';
+import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, world_info_position } from '../../world-info.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
     TOOL_PROTOCOL_STYLE,
@@ -19,9 +19,10 @@ const MODULE_NAME = 'search_tools';
 const UI_BLOCK_ID = 'search_tools_settings';
 const STATUS_ID = 'search_tools_status';
 const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
+const SHARED_LOREBOOK_NAME = '__SEARCH_TOOLS__';
 const MANAGED_COMMENT_PREFIX = 'SEARCH_TOOLS';
 const SEARCH_CHAT_STATE_NAMESPACE = 'luker_search_tools_state';
-const SEARCH_CHAT_STATE_VERSION = 1;
+const SEARCH_CHAT_STATE_VERSION = 2;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const TOOL_NAMES = Object.freeze({
@@ -69,6 +70,7 @@ let activeAgentRunToken = 0;
 let activeAgentRunInfoToast = null;
 let activeAgentAbortController = null;
 let latestSearchAgentSnapshot = null;
+let latestManagedEntries = [];
 let loadedChatStateKey = '';
 
 function i18n(text) {
@@ -213,11 +215,43 @@ function normalizeSearchAgentSnapshot(raw) {
     };
 }
 
+function normalizeStoredManagedEntries(raw) {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+
+    const output = [];
+    const seen = new Set();
+    for (const item of raw) {
+        const entryId = sanitizeEntryId(item?.entryId || item?.entry_id || '');
+        const content = normalizeMultilineText(item?.content || '');
+        if (!entryId || !content || seen.has(entryId)) {
+            continue;
+        }
+        seen.add(entryId);
+        output.push({
+            entryId,
+            title: deriveManagedEntryTitle(
+                entryId,
+                item?.title || '',
+                Array.isArray(item?.keywords) ? item.keywords : [],
+                content,
+            ),
+            keywords: normalizeKeywordDisplayList(Array.isArray(item?.keywords) ? item.keywords : []),
+            content,
+            alwaysInject: Boolean(item?.alwaysInject ?? item?.always_inject),
+        });
+    }
+
+    return output.sort((a, b) => String(a.entryId || '').localeCompare(String(b.entryId || '')));
+}
+
 function normalizeSearchToolsChatState(raw) {
     const source = raw && typeof raw === 'object' ? raw : {};
     return {
         version: Number(source.version || SEARCH_CHAT_STATE_VERSION),
         snapshot: normalizeSearchAgentSnapshot(source.snapshot),
+        managedEntries: normalizeStoredManagedEntries(source.managedEntries),
     };
 }
 
@@ -235,6 +269,7 @@ async function loadSearchToolsChatState(context, { force = false } = {}) {
     const chatKey = getChatKey(context);
     if (!chatKey) {
         latestSearchAgentSnapshot = null;
+        latestManagedEntries = [];
         loadedChatStateKey = '';
         return;
     }
@@ -248,7 +283,16 @@ async function loadSearchToolsChatState(context, { force = false } = {}) {
     }
     const normalized = normalizeSearchToolsChatState(payload);
     latestSearchAgentSnapshot = normalized.snapshot;
+    latestManagedEntries = normalized.managedEntries;
     loadedChatStateKey = chatKey;
+
+    if (latestManagedEntries.length === 0) {
+        const migratedEntries = await loadLegacyManagedEntries(context);
+        if (migratedEntries.length > 0) {
+            latestManagedEntries = migratedEntries;
+            await persistSearchToolsChatState(context);
+        }
+    }
 }
 
 async function persistSearchToolsChatState(context) {
@@ -262,6 +306,7 @@ async function persistSearchToolsChatState(context) {
     await context.updateChatState(SEARCH_CHAT_STATE_NAMESPACE, () => ({
         version: SEARCH_CHAT_STATE_VERSION,
         snapshot,
+        managedEntries: normalizeStoredManagedEntries(latestManagedEntries),
     }), { maxOperations: 2000, maxRetries: 1 });
 }
 
@@ -994,39 +1039,92 @@ function getNextLorebookUid(entries = {}) {
         .reduce((max, value) => Math.max(max, value), -1) + 1;
 }
 
-function buildChatLorebookName(context) {
-    const chatId = String(context.chatId || context.getCurrentChatId?.() || '').trim();
-    const suffix = chatId || `${context.groupId ? 'group' : 'chat'}_${Date.now()}`;
-    return `Luker Search ${suffix}`.replace(/[^a-z0-9 _-]/gi, '_');
-}
-
-async function ensureChatLorebook(context, allowCreate = true) {
-    const metadata = context.chatMetadata && typeof context.chatMetadata === 'object' ? context.chatMetadata : {};
-    const existingName = String(metadata?.[CHAT_LOREBOOK_METADATA_KEY] || '').trim();
-    if (existingName) {
-        const loaded = await context.loadWorldInfo(existingName);
-        if (loaded && typeof loaded === 'object') {
-            return { bookName: existingName, data: loaded, created: false };
-        }
+async function ensureSharedLorebook(context, allowCreate = true) {
+    const loaded = await context.loadWorldInfo(SHARED_LOREBOOK_NAME);
+    if (loaded && typeof loaded === 'object') {
+        return { bookName: SHARED_LOREBOOK_NAME, data: loaded, created: false };
     }
 
     if (!allowCreate) {
-        return { bookName: existingName, data: null, created: false };
+        return { bookName: SHARED_LOREBOOK_NAME, data: null, created: false };
     }
 
-    const newName = buildChatLorebookName(context);
-    await context.saveWorldInfo(newName, { entries: {} }, true);
+    await context.saveWorldInfo(SHARED_LOREBOOK_NAME, { entries: {} }, true);
     if (typeof context.updateWorldInfoList === 'function') {
         await context.updateWorldInfoList();
     }
-    context.updateChatMetadata({ [CHAT_LOREBOOK_METADATA_KEY]: newName });
-    await context.saveMetadata();
-    const loaded = await context.loadWorldInfo(newName);
+    const created = await context.loadWorldInfo(SHARED_LOREBOOK_NAME);
     return {
-        bookName: newName,
-        data: loaded && typeof loaded === 'object' ? loaded : { entries: {} },
+        bookName: SHARED_LOREBOOK_NAME,
+        data: created && typeof created === 'object' ? created : { entries: {} },
         created: true,
     };
+}
+
+async function loadLegacyManagedEntries(context) {
+    const metadata = context.chatMetadata && typeof context.chatMetadata === 'object' ? context.chatMetadata : {};
+    const existingName = String(metadata?.[CHAT_LOREBOOK_METADATA_KEY] || '').trim();
+    if (!existingName || existingName === SHARED_LOREBOOK_NAME) {
+        return [];
+    }
+
+    const loaded = await context.loadWorldInfo(existingName);
+    if (!loaded || typeof loaded !== 'object') {
+        return [];
+    }
+
+    return normalizeStoredManagedEntries(listManagedEntries(loaded));
+}
+
+function applyManagedEntriesToLorebook(data, settings, managedEntries = []) {
+    if (!data || typeof data !== 'object') {
+        throw new Error('Lorebook data is required.');
+    }
+
+    if (!data.entries || typeof data.entries !== 'object') {
+        data.entries = {};
+    }
+
+    const normalizedEntries = normalizeStoredManagedEntries(managedEntries);
+    const existingManagedEntries = listManagedEntries(data);
+    const existingById = new Map(existingManagedEntries.map(entry => [entry.entryId, entry]));
+    const existingRawById = new Map(existingManagedEntries.map(entry => [entry.entryId, data.entries[entry.uid]]));
+    for (const entry of existingManagedEntries) {
+        delete data.entries[entry.uid];
+    }
+
+    let nextUid = getNextLorebookUid(data.entries);
+    for (const spec of normalizedEntries) {
+        const existing = existingById.get(spec.entryId) || null;
+        const uid = existing ? Number(existing.uid) : nextUid;
+        data.entries[uid] = createManagedLorebookEntry(uid, {
+            entryId: spec.entryId,
+            title: spec.title,
+            keywords: spec.keywords,
+            content: spec.content,
+            alwaysInject: spec.alwaysInject,
+        }, settings, existing ? existingRawById.get(spec.entryId) || null : null);
+        if (!existing) {
+            nextUid += 1;
+        }
+    }
+}
+
+async function syncSharedLorebookForCurrentChat(context = getContext()) {
+    const settings = getSettings();
+    if (settings.enabled) {
+        await ensureSharedLorebook(context, true);
+        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, true);
+    } else {
+        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, false);
+        return { changed: false, bookName: SHARED_LOREBOOK_NAME };
+    }
+
+    const lorebook = await ensureSharedLorebook(context, true);
+    const data = lorebook.data && typeof lorebook.data === 'object' ? structuredClone(lorebook.data) : { entries: {} };
+    applyManagedEntriesToLorebook(data, settings, latestManagedEntries);
+    await context.saveWorldInfo(SHARED_LOREBOOK_NAME, data, true);
+    return { changed: true, bookName: SHARED_LOREBOOK_NAME };
 }
 
 function createManagedLorebookEntry(uid, spec, settings, existingEntry = null) {
@@ -1310,7 +1408,7 @@ function buildSearchAgentUserPrompt(payload, {
         '# Search Agent Task',
         `Round ${roundIndex} of ${maxRounds}.`,
         `Generation type: ${String(payload?.type || 'unknown')}.`,
-        `Chat lorebook: ${bookName || '(not bound yet)'}.`,
+        `Shared lorebook: ${bookName || '(not created yet)'}.`,
         '',
         'Decide whether persistent search-backed lorebook updates are needed before the main generation continues.',
         'If there is no meaningful gap, or the information would repeat active world info / character info / existing managed search entries, call finalize immediately.',
@@ -1489,7 +1587,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         }
 
         if (!lorebookData && !lorebookBookName) {
-            const lorebook = await ensureChatLorebook(context, false);
+            const lorebook = await ensureSharedLorebook(context, true);
             throwIfAborted(payload?.signal, 'Search agent aborted.');
             lorebookBookName = lorebook.bookName;
             lorebookData = lorebook.data && typeof lorebook.data === 'object' ? lorebook.data : null;
@@ -1544,7 +1642,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
                 throwIfAborted(payload?.signal, 'Search agent aborted.');
             } else if (callName === TOOL_NAMES.AGENT_UPSERT) {
                 if (!lorebookData) {
-                    const createdLorebook = await ensureChatLorebook(context, true);
+                    const createdLorebook = await ensureSharedLorebook(context, true);
                     throwIfAborted(payload?.signal, 'Search agent aborted.');
                     lorebookBookName = createdLorebook.bookName;
                     lorebookData = createdLorebook.data && typeof createdLorebook.data === 'object'
@@ -1593,9 +1691,10 @@ async function runPreRequestSearchAgent(context, settings, payload) {
 
     const finalLorebook = lorebookData
         ? { bookName: lorebookBookName, data: lorebookData }
-        : await ensureChatLorebook(context, false);
+        : await ensureSharedLorebook(context, true);
     throwIfAborted(payload?.signal, 'Search agent aborted.');
     const finalManagedEntries = finalLorebook?.data ? listManagedEntries(finalLorebook.data) : [];
+    latestManagedEntries = normalizeStoredManagedEntries(finalManagedEntries);
     return {
         mutationCount,
         finalized: roundStoppedByFinalize,
@@ -1625,6 +1724,7 @@ async function maybeRunPreRequestSearchAgent(payload) {
     }
 
     await loadSearchToolsChatState(context, { force: false });
+    await syncSharedLorebookForCurrentChat(context);
     const chatKey = getChatKey(context);
     const generationType = String(payload?.type || '').trim().toLowerCase();
     const anchor = buildLastUserAnchor(context, payload.coreChat);
@@ -1867,16 +1967,16 @@ async function refreshUiStatusForCurrentChat() {
         return;
     }
     try {
-        const lorebook = await ensureChatLorebook(context, false);
+        const lorebook = await ensureSharedLorebook(context, false);
         const entryCount = lorebook?.data ? listManagedEntries(lorebook.data).length : 0;
         if (!lorebook?.bookName) {
-            updateUiStatus(i18n('No chat-bound lorebook yet.'));
+            updateUiStatus(i18n('No shared search lorebook yet.'));
             return;
         }
-        updateUiStatus(i18n(`Chat lorebook: ${lorebook.bookName} | Managed search entries: ${entryCount}`));
+        updateUiStatus(i18n(`Shared lorebook: ${lorebook.bookName} | Managed search entries: ${entryCount}`));
     } catch (error) {
         console.warn(`[${MODULE_NAME}] Failed to refresh UI status`, error);
-        updateUiStatus(i18n('Failed to inspect chat lorebook.'));
+        updateUiStatus(i18n('Failed to inspect shared search lorebook.'));
     }
 }
 
@@ -1907,6 +2007,7 @@ function bindSettingsUi() {
     root.off('.searchTools');
     root.on('input.searchTools', '#search_tools_enabled', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
+        void syncSharedLorebookForCurrentChat(getContext());
         saveSettingsDebounced();
     });
     root.on('input.searchTools', '#search_tools_pre_request_enabled', function () {
@@ -2014,8 +2115,8 @@ function registerLocaleData() {
         'Search agent aborted.': '搜索 Agent 已中止。',
         'Search agent failed. Check console for details.': '搜索 Agent 失败，请查看控制台。',
         'No active chat.': '当前没有激活聊天。',
-        'No chat-bound lorebook yet.': '当前聊天还没有绑定世界书。',
-        'Failed to inspect chat lorebook.': '检查聊天世界书失败。',
+        'No shared search lorebook yet.': '当前还没有共享搜索世界书。',
+        'Failed to inspect shared search lorebook.': '检查共享搜索世界书失败。',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(missing)': '（缺失）',
@@ -2049,8 +2150,8 @@ function registerLocaleData() {
         'Search agent aborted.': '搜尋 Agent 已中止。',
         'Search agent failed. Check console for details.': '搜尋 Agent 失敗，請查看主控台。',
         'No active chat.': '目前沒有啟用聊天。',
-        'No chat-bound lorebook yet.': '目前聊天尚未綁定世界書。',
-        'Failed to inspect chat lorebook.': '檢查聊天世界書失敗。',
+        'No shared search lorebook yet.': '目前還沒有共享搜尋世界書。',
+        'Failed to inspect shared search lorebook.': '檢查共享搜尋世界書失敗。',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 設定）',
         '(missing)': '（缺失）',
@@ -2065,7 +2166,9 @@ jQuery(() => {
     const context = getContext();
     registerTools(context);
     ensureUi();
-    void loadSearchToolsChatState(context, { force: true });
+    void loadSearchToolsChatState(context, { force: true })
+        .then(() => syncSharedLorebookForCurrentChat(context))
+        .finally(() => refreshUiStatusForCurrentChat());
 
     const wiAfterEvent = context?.eventTypes?.GENERATION_AFTER_WORLD_INFO_SCAN;
     if (wiAfterEvent) {
@@ -2082,7 +2185,9 @@ jQuery(() => {
         context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
             loadedChatStateKey = '';
             latestSearchAgentSnapshot = null;
-            void loadSearchToolsChatState(context, { force: true }).finally(() => refreshUiStatusForCurrentChat());
+            void loadSearchToolsChatState(getContext(), { force: true })
+                .then(() => syncSharedLorebookForCurrentChat(getContext()))
+                .finally(() => refreshUiStatusForCurrentChat());
         });
     }
 

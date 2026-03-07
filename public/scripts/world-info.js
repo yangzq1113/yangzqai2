@@ -2499,6 +2499,80 @@ export async function updateWorldInfoList() {
     }
 }
 
+function syncGlobalWorldInfoSettingsState() {
+    Object.assign(world_info, { globalSelect: selected_world_info });
+}
+
+function syncGlobalWorldInfoSelectionUi() {
+    if (!Array.isArray(world_names)) {
+        return;
+    }
+
+    const selector = $('#world_info');
+    if (!selector.length) {
+        return;
+    }
+
+    const selectedValues = [];
+    world_names.forEach((item, index) => {
+        const option = selector.find(`option[value="${index}"]`).get(0);
+        const isSelected = selected_world_info.includes(item);
+        if (option) {
+            option.selected = isSelected;
+        }
+        if (isSelected) {
+            selectedValues.push(index.toString());
+        }
+    });
+
+    selector.val(selectedValues);
+    selector.trigger('change.select2');
+}
+
+export async function setGlobalWorldInfoSelection(worldInfoName, selected, {
+    save = true,
+    refreshList = false,
+} = {}) {
+    const name = String(worldInfoName || '').trim();
+    if (!name) {
+        return false;
+    }
+
+    if (refreshList || !Array.isArray(world_names) || (selected && !world_names.includes(name))) {
+        await updateWorldInfoList();
+    }
+
+    const existingIndex = selected_world_info.findIndex((entry) => entry === name);
+    let changed = false;
+
+    if (selected) {
+        if (!world_names?.includes(name)) {
+            return false;
+        }
+        if (existingIndex === -1) {
+            selected_world_info.push(name);
+            changed = true;
+        }
+    } else if (existingIndex !== -1) {
+        selected_world_info.splice(existingIndex, 1);
+        changed = true;
+    }
+
+    syncGlobalWorldInfoSettingsState();
+    syncGlobalWorldInfoSelectionUi();
+
+    if (!changed) {
+        return false;
+    }
+
+    requestAsyncDiffForNextSettingsSave();
+    if (save) {
+        saveSettingsDebounced();
+    }
+    await eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+    return true;
+}
+
 async function hideWorldEditor() {
     await displayWorldEntries(null, null);
 }

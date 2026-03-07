@@ -7,7 +7,7 @@ import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
-import { newWorldInfoEntryTemplate } from '../../world-info.js';
+import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection } from '../../world-info.js';
 import { notifyRuntimeRegexScriptsChanged, registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
@@ -21,7 +21,7 @@ const MODULE_NAME = 'memory_graph';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
 const UI_BLOCK_ID = 'memory_graph_settings';
 const STYLE_ID = 'memory_graph_style';
-const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
+const SHARED_LOREBOOK_NAME = '__MEMORY_GRAPH__';
 const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
 const PERSISTENT_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_PERSISTENT';
 const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
@@ -6157,36 +6157,20 @@ function createRuntimeLorebookEntry(uid, comment, content, order) {
     };
 }
 
-function getRuntimeLorebookNameFromMetadata(context) {
-    const metadata = context.chatMetadata && typeof context.chatMetadata === 'object' ? context.chatMetadata : {};
-    return String(metadata?.[CHAT_LOREBOOK_METADATA_KEY] || '').trim();
-}
-
-function buildRuntimeLorebookName(context) {
-    const chatId = String(context.chatId || context.getCurrentChatId?.() || '').trim();
-    const groupPart = context.groupId ? 'group' : 'char';
-    const suffix = chatId || `${groupPart}_${Date.now()}`;
-    return `Luker Memory ${suffix}`.replace(/[^a-z0-9 _\-]/gi, '_');
-}
-
-async function ensureRuntimeLorebook(context, settings) {
-    const overrideName = String(settings.lorebookNameOverride || '').trim();
-    const existingName = overrideName || getRuntimeLorebookNameFromMetadata(context);
-    if (existingName) {
-        const loaded = await context.loadWorldInfo(existingName);
-        if (loaded && typeof loaded === 'object') {
-            return existingName;
-        }
+async function ensureSharedLorebook(context, allowCreate = true) {
+    const loaded = await context.loadWorldInfo(SHARED_LOREBOOK_NAME);
+    if (loaded && typeof loaded === 'object') {
+        return SHARED_LOREBOOK_NAME;
+    }
+    if (!allowCreate) {
+        return '';
     }
 
-    const newName = buildRuntimeLorebookName(context);
-    await context.saveWorldInfo(newName, { entries: {} }, true);
+    await context.saveWorldInfo(SHARED_LOREBOOK_NAME, { entries: {} }, true);
     if (typeof context.updateWorldInfoList === 'function') {
         await context.updateWorldInfoList();
     }
-    context.updateChatMetadata({ [CHAT_LOREBOOK_METADATA_KEY]: newName });
-    await context.saveMetadata();
-    return newName;
+    return SHARED_LOREBOOK_NAME;
 }
 
 function getManagedLorebookEntries(data, commentPrefix) {
@@ -6253,24 +6237,20 @@ async function upsertManagedLorebookProjection(context, settings, {
     const normalizedSections = (Array.isArray(sections) ? sections : [])
         .map((section) => [String(section?.[0] || '').trim(), normalizeMultilineText(section?.[1] || '')])
         .filter(([name, text]) => Boolean(name) && Boolean(text));
-    const overrideName = String(settings?.lorebookNameOverride || '').trim();
-    const existingName = overrideName || getRuntimeLorebookNameFromMetadata(context);
-    let bookName = existingName;
+    let bookName = SHARED_LOREBOOK_NAME;
     let data = null;
-    if (bookName) {
-        const loaded = await context.loadWorldInfo(bookName);
-        if (loaded && typeof loaded === 'object') {
-            data = loaded;
-        }
+    const loaded = await context.loadWorldInfo(bookName);
+    if (loaded && typeof loaded === 'object') {
+        data = loaded;
     }
 
     if (!data) {
         if (normalizedSections.length === 0 || !allowCreate) {
-            return { changed: false, bookName: existingName };
+            return { changed: false, bookName };
         }
-        bookName = await ensureRuntimeLorebook(context, settings);
-        const loaded = await context.loadWorldInfo(bookName);
-        data = loaded && typeof loaded === 'object' ? loaded : { entries: {} };
+        bookName = await ensureSharedLorebook(context, true);
+        const created = await context.loadWorldInfo(bookName);
+        data = created && typeof created === 'object' ? created : { entries: {} };
     }
 
     if (!data.entries || typeof data.entries !== 'object') {
@@ -6353,6 +6333,37 @@ async function clearPersistentLorebookProjection(context, settings) {
 async function clearAllMemoryLorebookProjection(context, settings) {
     await clearRuntimeLorebookProjection(context, settings);
     await clearPersistentLorebookProjection(context, settings);
+}
+
+async function syncMemoryLorebookActivation(context, settings) {
+    if (settings?.enabled) {
+        await ensureSharedLorebook(context, true);
+        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, true);
+        return;
+    }
+
+    await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, false);
+}
+
+async function syncPersistentProjectionForCurrentChat(context = getContext()) {
+    try {
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        await syncMemoryLorebookActivation(context, effectiveSettings);
+        if (!effectiveSettings.enabled) {
+            refreshUiStats();
+            return;
+        }
+        const store = await ensureStoreSyncedWithChat(context);
+        if (!store) {
+            refreshUiStats();
+            return;
+        }
+        await syncPersistentLorebookProjection(context, effectiveSettings, store);
+        refreshUiStats();
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to sync persistent lorebook projection on chat open`, error);
+        refreshUiStats();
+    }
 }
 
 async function runLLMDrivenRecall(context, store, payload) {
@@ -10217,6 +10228,10 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_enabled').off('input').on('input', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
+        void syncMemoryLorebookActivation(getContext(), settings);
+        if (settings.enabled) {
+            void syncPersistentProjectionForCurrentChat(getContext());
+        }
         saveSettingsDebounced();
     });
 
@@ -10751,27 +10766,6 @@ jQuery(() => {
     registerRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID, getGenerationVisibleHistoryRuntimeRegexScripts);
     saveSettingsDebounced();
     ensureUi();
-    const syncPersistentProjectionForCurrentChat = async () => {
-        const runtimeContext = getContext();
-        try {
-            const store = await ensureStoreSyncedWithChat(runtimeContext);
-            if (!store) {
-                refreshUiStats();
-                return;
-            }
-            const effectiveSettings = getEffectiveSettings(runtimeContext, getSettings());
-            if (!effectiveSettings.enabled) {
-                await clearAllMemoryLorebookProjection(runtimeContext, effectiveSettings);
-                refreshUiStats();
-                return;
-            }
-            await syncPersistentLorebookProjection(runtimeContext, effectiveSettings, store);
-            refreshUiStats();
-        } catch (error) {
-            console.warn(`[${MODULE_NAME}] Failed to sync persistent lorebook projection on chat open`, error);
-            refreshUiStats();
-        }
-    };
     void syncPersistentProjectionForCurrentChat();
 
     const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
