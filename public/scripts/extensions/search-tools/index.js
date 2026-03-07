@@ -658,11 +658,13 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     runtimeWorldInfo = null,
     forceWorldInfoResimulate = false,
     worldInfoType = 'quiet',
+    abortSignal = null,
 } = {}) {
     const systemText = String(systemPrompt || '').trim() || 'Use tool calls only.';
     const userText = String(userPrompt || '').trim() || 'Use tool calls only.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    throwIfAborted(abortSignal, 'Search agent aborted.');
     let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
         ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
         : null;
@@ -673,6 +675,7 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
             fallbackToCurrentChat: false,
             postActivationHook: rewriteDepthWorldInfoToAfter,
         });
+        throwIfAborted(abortSignal, 'Search agent aborted.');
     } else if (resolvedRuntimeWorldInfo) {
         resolvedRuntimeWorldInfo = normalizeRuntimeWorldInfo(rewriteDepthWorldInfoToAfter({
             ...resolvedRuntimeWorldInfo,
@@ -685,6 +688,7 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
         }));
     }
 
+    throwIfAborted(abortSignal, 'Search agent aborted.');
     return context.buildPresetAwarePromptMessages({
         messages: [
             { role: 'system', content: systemText },
@@ -709,6 +713,22 @@ function isAbortError(error, signal = null) {
         return true;
     }
     return Boolean(signal?.aborted);
+}
+
+function createAbortError(message = 'Operation aborted.') {
+    try {
+        return new DOMException(String(message || 'Operation aborted.'), 'AbortError');
+    } catch {
+        const error = new Error(String(message || 'Operation aborted.'));
+        error.name = 'AbortError';
+        return error;
+    }
+}
+
+function throwIfAborted(signal, message = 'Operation aborted.') {
+    if (isAbortSignalLike(signal) && signal.aborted) {
+        throw createAbortError(message);
+    }
 }
 
 function linkAbortSignals(...signals) {
@@ -765,6 +785,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
         try {
+            throwIfAborted(abortSignal, 'Search agent aborted.');
             const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools,
                 toolChoice: 'auto',
@@ -777,6 +798,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             });
+            throwIfAborted(abortSignal, 'Search agent aborted.');
             const assistantText = getResponseMessageContent(responseData);
             const calls = extractAllFunctionCalls(responseData, allowedNames);
             const validationError = validateParsedToolCalls(calls, tools);
@@ -1442,6 +1464,7 @@ async function flushLorebookChanges(context, payload, bookName, data) {
 }
 
 async function runPreRequestSearchAgent(context, settings, payload) {
+    throwIfAborted(payload?.signal, 'Search agent aborted.');
     const resolvedApiPresetName = String(settings.agentApiPresetName || '').trim();
     const profileResolution = resolveChatCompletionRequestProfile({
         profileName: resolvedApiPresetName,
@@ -1467,6 +1490,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
 
         if (!lorebookData && !lorebookBookName) {
             const lorebook = await ensureChatLorebook(context, false);
+            throwIfAborted(payload?.signal, 'Search agent aborted.');
             lorebookBookName = lorebook.bookName;
             lorebookData = lorebook.data && typeof lorebook.data === 'object' ? lorebook.data : null;
         }
@@ -1488,8 +1512,10 @@ async function runPreRequestSearchAgent(context, settings, payload) {
                 runtimeWorldInfo: internalRuntimeWorldInfo,
                 forceWorldInfoResimulate: false,
                 worldInfoType: 'quiet',
+                abortSignal: payload?.signal || null,
             },
         );
+        throwIfAborted(payload?.signal, 'Search agent aborted.');
         const requestMessages = [...promptMessages, ...toolHistoryMessages];
         const response = await requestToolCallsWithRetry(settings, requestMessages, {
             tools,
@@ -1498,23 +1524,28 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             apiSettingsOverride,
             abortSignal: payload?.signal || null,
         });
+        throwIfAborted(payload?.signal, 'Search agent aborted.');
 
         const executedCalls = [];
         let lorebookDirty = false;
         let shouldFinalize = false;
 
         for (const call of Array.isArray(response.toolCalls) ? response.toolCalls : []) {
+            throwIfAborted(payload?.signal, 'Search agent aborted.');
             const callName = String(call?.name || '').trim();
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
             let result = null;
 
             if (callName === TOOL_NAMES.AGENT_SEARCH) {
                 result = await searchWeb(args, { abortSignal: payload?.signal || null });
+                throwIfAborted(payload?.signal, 'Search agent aborted.');
             } else if (callName === TOOL_NAMES.AGENT_VISIT) {
                 result = await visitWebPage(args, { abortSignal: payload?.signal || null });
+                throwIfAborted(payload?.signal, 'Search agent aborted.');
             } else if (callName === TOOL_NAMES.AGENT_UPSERT) {
                 if (!lorebookData) {
                     const createdLorebook = await ensureChatLorebook(context, true);
+                    throwIfAborted(payload?.signal, 'Search agent aborted.');
                     lorebookBookName = createdLorebook.bookName;
                     lorebookData = createdLorebook.data && typeof createdLorebook.data === 'object'
                         ? createdLorebook.data
@@ -1547,7 +1578,9 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         }
 
         if (lorebookDirty && lorebookBookName && lorebookData) {
+            throwIfAborted(payload?.signal, 'Search agent aborted.');
             internalRuntimeWorldInfo = await flushLorebookChanges(context, payload, lorebookBookName, lorebookData);
+            throwIfAborted(payload?.signal, 'Search agent aborted.');
         }
 
         appendStandardToolRoundMessages(toolHistoryMessages, executedCalls, response.assistantText || '');
@@ -1561,6 +1594,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
     const finalLorebook = lorebookData
         ? { bookName: lorebookBookName, data: lorebookData }
         : await ensureChatLorebook(context, false);
+    throwIfAborted(payload?.signal, 'Search agent aborted.');
     const finalManagedEntries = finalLorebook?.data ? listManagedEntries(finalLorebook.data) : [];
     return {
         mutationCount,
@@ -1610,19 +1644,48 @@ async function maybeRunPreRequestSearchAgent(payload) {
     const effectivePayload = linkedAbort.signal && linkedAbort.signal !== payload?.signal
         ? { ...payload, signal: linkedAbort.signal }
         : payload;
+    let stopRequestedByUser = false;
+    let resolveStopRequest = null;
+    const stopRequestPromise = new Promise((resolve) => {
+        resolveStopRequest = () => {
+            if (stopRequestedByUser) {
+                return;
+            }
+            stopRequestedByUser = true;
+            if (!pluginAbortController.signal.aborted) {
+                pluginAbortController.abort();
+            }
+            resolve({ stopped: true });
+        };
+    });
 
     updateUiStatus(i18n('Search agent running...'));
     showAgentRunInfoToast(i18n('Search agent running...'), {
         stopLabel: i18n('Stop'),
         onStop: () => {
-            if (!pluginAbortController.signal.aborted) {
-                pluginAbortController.abort();
-            }
+            resolveStopRequest?.();
         },
     });
 
     try {
-        const result = await runPreRequestSearchAgent(context, settings, effectivePayload);
+        const agentTask = runPreRequestSearchAgent(context, settings, effectivePayload);
+        void agentTask.catch((error) => {
+            if (!stopRequestedByUser) {
+                return;
+            }
+            if (!isAbortError(error, effectivePayload?.signal || null)) {
+                console.warn(`[${MODULE_NAME}] Search agent finished after user stop`, error);
+            }
+        });
+        const raced = await Promise.race([
+            agentTask.then(result => ({ stopped: false, result })),
+            stopRequestPromise,
+        ]);
+        if (raced?.stopped) {
+            updateUiStatus(i18n('Search agent aborted.'));
+            return;
+        }
+        const result = raced?.result;
         if (runToken !== activeAgentRunToken) {
             return;
         }

@@ -1272,6 +1272,22 @@ function isAbortError(error, abortSignal = null) {
     return message.includes('aborted') || message.includes('abort');
 }
 
+function createAbortError(message = 'Operation aborted.') {
+    try {
+        return new DOMException(String(message || 'Operation aborted.'), 'AbortError');
+    } catch {
+        const error = new Error(String(message || 'Operation aborted.'));
+        error.name = 'AbortError';
+        return error;
+    }
+}
+
+function throwIfAborted(abortSignal, message = 'Operation aborted.') {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        throw createAbortError(message);
+    }
+}
+
 function isNoToolCallExtractionError(error) {
     const message = String(error?.message || error || '').toLowerCase();
     if (!message) {
@@ -1386,6 +1402,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             timeoutMs,
         );
         try {
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
             const requestOptions = {
                 tools,
                 toolChoice,
@@ -1402,6 +1419,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             const responseData = await sendOpenAIRequest('quiet', promptMessages, attemptController.signal, {
                 ...requestOptions,
             });
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
             const calls = extractAllFunctionCalls(responseData, [fnName]);
             const validationError = validateParsedToolCalls(calls, tools);
             if (validationError) {
@@ -1462,6 +1480,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             timeoutMs,
         );
         try {
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
             const requestOptions = {
                 tools,
                 toolChoice,
@@ -1477,6 +1496,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             const responseData = await sendOpenAIRequest('quiet', promptMessages, attemptController.signal, {
                 ...requestOptions,
             });
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
             const assistantText = getResponseMessageContent(responseData);
             let calls = [];
             try {
@@ -1760,11 +1780,13 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     runtimeWorldInfo = null,
     forceWorldInfoResimulate = false,
     worldInfoType = 'quiet',
+    abortSignal = null,
 } = {}) {
     const systemText = String(systemPrompt || '').trim() || 'Return concise guidance through function-call fields.';
     const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    throwIfAborted(abortSignal, 'Orchestration aborted.');
     let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
         ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
         : null;
@@ -1775,8 +1797,10 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
             fallbackToCurrentChat: false,
             postActivationHook: rewriteDepthWorldInfoToAfter,
         });
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
     }
 
+    throwIfAborted(abortSignal, 'Orchestration aborted.');
     return context.buildPresetAwarePromptMessages({
         messages: [
             { role: 'system', content: systemText },
@@ -1959,6 +1983,7 @@ function appendStandardToolRoundMessages(targetMessages, executedCalls, assistan
 }
 
 async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
+    throwIfAborted(abortSignal, 'Orchestration aborted.');
     const isFinalStage = Boolean(options?.isFinalStage);
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
@@ -2011,6 +2036,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     const runtimeToolMessages = [];
 
     for (let round = 1; round <= maxRounds; round++) {
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
         const iterationPrompt = [
             autoInjectedPrelude,
             baseUserPrompt,
@@ -2031,8 +2057,10 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
                 worldInfoType: String(payload?.type || 'quiet'),
                 runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
                 forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+                abortSignal,
             },
         );
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
         const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
 
         const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
@@ -2045,6 +2073,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
             allowNoToolCalls: false,
             applyAgentTimeout: true,
         });
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
         const calls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
         if (calls.length === 0) {
             throw new Error(`Node '${nodeSpec.id}' did not return tool calls.`);
@@ -2093,11 +2122,10 @@ async function runOrchestration(context, payload, messages, profile) {
     const stageOutputs = [];
     const previousNodeOutputs = new Map();
     const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
+    throwIfAborted(abortSignal, 'Orchestration aborted.');
 
     for (const stage of stages) {
-        if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
-            throw new DOMException('Orchestration aborted.', 'AbortError');
-        }
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
         const mode = String(stage?.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
         const isFinalStage = Number(stageOutputs.length) === Number(stages.length - 1);
         const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
@@ -2113,6 +2141,7 @@ async function runOrchestration(context, payload, messages, profile) {
                     }),
                 };
             }));
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
             nodeOutputs.push(...outputs);
         } else {
             for (const rawNode of nodes) {
@@ -2123,6 +2152,7 @@ async function runOrchestration(context, payload, messages, profile) {
                         isFinalStage,
                     }),
                 });
+                throwIfAborted(abortSignal, 'Orchestration aborted.');
             }
         }
 
@@ -2251,11 +2281,30 @@ async function onWorldInfoFinalized(payload) {
     activeOrchRunAbortController = pluginAbortController;
     const linkedAbort = linkAbortSignals(payload?.signal, pluginAbortController.signal);
     const orchestrationPayload = linkedAbort.signal && linkedAbort.signal !== payload?.signal
-        ? { ...payload, signal: linkedAbort.signal }
+        ? {
+            ...payload,
+            signal: linkedAbort.signal,
+            __lukerOrchGenerationSignal: payload?.signal || null,
+        }
         : payload;
+    let stopRequestedByUser = false;
+    let resolveStopRequest = null;
+    const stopRequestPromise = new Promise((resolve) => {
+        resolveStopRequest = () => {
+            if (stopRequestedByUser) {
+                return;
+            }
+            stopRequestedByUser = true;
+            if (!pluginAbortController.signal.aborted) {
+                pluginAbortController.abort();
+            }
+            resolve({ stopped: true });
+        };
+    });
 
     try {
         await loadOrchestratorChatState(context, { force: false });
+        throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
         const profile = getEffectiveProfile(context);
         const messages = structuredClone(getCoreMessages(payload));
         if (messages.length === 0) {
@@ -2277,6 +2326,7 @@ async function onWorldInfoFinalized(payload) {
                     targetLayer: getTargetAssistantLayer(payload),
                 };
                 await persistOrchestratorChatState(context);
+                throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
                 updateUiStatus(i18n('Orchestrator completed.'));
                 clearRunInfoToast();
                 return;
@@ -2286,15 +2336,34 @@ async function onWorldInfoFinalized(payload) {
         showRunInfoToast(i18n('Orchestrator running...'), {
             stopLabel: i18n('Stop'),
             onStop: () => {
-                if (!pluginAbortController.signal.aborted) {
-                    pluginAbortController.abort();
-                }
+                resolveStopRequest?.();
             },
         });
 
-        const finalRun = await runOrchestration(context, orchestrationPayload, messages, profile);
+        const orchestrationTask = runOrchestration(context, orchestrationPayload, messages, profile);
+        void orchestrationTask.catch((error) => {
+            if (!stopRequestedByUser) {
+                return;
+            }
+            if (!isAbortError(error, orchestrationPayload?.signal)) {
+                console.warn(`[${MODULE_NAME}] Orchestration finished after user stop`, error);
+            }
+        });
+        const raced = await Promise.race([
+            orchestrationTask.then(finalRun => ({ stopped: false, finalRun })),
+            stopRequestPromise,
+        ]);
+        if (raced?.stopped) {
+            clearCapsulePrompt(context);
+            clearLastOrchestrationSnapshot(context, { persist: true });
+            updateUiStatus(i18n('Orchestrator cancelled by user.'));
+            return;
+        }
+        const finalRun = raced?.finalRun;
+        throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
 
         const capsuleText = buildCapsule(finalRun.stageOutputs || []);
+        throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
         injectCapsule(context, capsuleText);
         latestOrchestrationSnapshot = {
             chatKey,
@@ -2307,6 +2376,7 @@ async function onWorldInfoFinalized(payload) {
             stageOutputs: compactStageOutputs(finalRun.stageOutputs || []),
         };
         await persistOrchestratorChatState(context);
+        throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
     } catch (error) {
