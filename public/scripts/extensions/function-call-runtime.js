@@ -225,6 +225,135 @@ export function findLastTriggerSignalOutsideThought(text, triggerSignal) {
     return lastPos;
 }
 
+function buildReasoningTagLiterals(tagNames = DEFAULT_REASONING_TAGS) {
+    return normalizeReasoningTagNames(tagNames).flatMap(tagName => ([
+        { literal: `<${tagName}>`, delta: 1 },
+        { literal: `</${tagName}>`, delta: -1 },
+    ]));
+}
+
+export class PlainTextFunctionCallStreamDetector {
+    #triggerSignal;
+    #reasoningTagLiterals;
+    #pending = '';
+    #hidden = '';
+    #raw = '';
+    #reasoningDepth = 0;
+    #detected = false;
+
+    constructor({ triggerSignal = '', reasoningTagNames = DEFAULT_REASONING_TAGS } = {}) {
+        this.#triggerSignal = String(triggerSignal || '').trim();
+        this.#reasoningTagLiterals = buildReasoningTagLiterals(reasoningTagNames);
+    }
+
+    get hasDetectedToolCall() {
+        return this.#detected;
+    }
+
+    get rawText() {
+        return this.#raw;
+    }
+
+    processTextDelta(text) {
+        const delta = String(text || '');
+        if (!delta) {
+            return { displayDelta: '', detected: this.#detected };
+        }
+
+        this.#raw += delta;
+        if (this.#detected) {
+            this.#hidden += delta;
+            return { displayDelta: '', detected: true };
+        }
+
+        this.#pending += delta;
+        let displayDelta = '';
+        let index = 0;
+
+        while (index < this.#pending.length) {
+            const matchedTag = this.#matchReasoningTag(index);
+            if (matchedTag) {
+                displayDelta += matchedTag.literal;
+                this.#reasoningDepth = Math.max(0, this.#reasoningDepth + matchedTag.delta);
+                index += matchedTag.literal.length;
+                continue;
+            }
+
+            if (!this.#isInsideReasoning() && this.#triggerSignal) {
+                if (this.#pending.startsWith(this.#triggerSignal, index)) {
+                    this.#detected = true;
+                    this.#hidden = this.#pending.slice(index);
+                    this.#pending = '';
+                    return { displayDelta, detected: true };
+                }
+
+                if (this.#isCandidatePrefix(this.#pending.slice(index))) {
+                    break;
+                }
+            } else if (this.#isCandidatePrefix(this.#pending.slice(index))) {
+                break;
+            }
+
+            displayDelta += this.#pending[index];
+            index += 1;
+        }
+
+        this.#pending = this.#pending.slice(index);
+        return { displayDelta, detected: this.#detected };
+    }
+
+    finalize() {
+        if (this.#detected) {
+            if (this.#pending) {
+                this.#hidden += this.#pending;
+                this.#pending = '';
+            }
+            return {
+                displayDelta: '',
+                hiddenText: this.#hidden,
+                rawText: this.#raw,
+                detected: true,
+            };
+        }
+
+        const displayDelta = this.#pending;
+        this.#pending = '';
+        return {
+            displayDelta,
+            hiddenText: '',
+            rawText: this.#raw,
+            detected: false,
+        };
+    }
+
+    #isInsideReasoning() {
+        return this.#reasoningDepth > 0;
+    }
+
+    #matchReasoningTag(index) {
+        const source = this.#pending.slice(index);
+        for (const tag of this.#reasoningTagLiterals) {
+            if (source.startsWith(tag.literal)) {
+                return tag;
+            }
+        }
+        return null;
+    }
+
+    #isCandidatePrefix(source) {
+        if (!source) {
+            return false;
+        }
+
+        const candidates = [this.#triggerSignal]
+            .concat(this.#reasoningTagLiterals.map(tag => tag.literal))
+            .filter(Boolean);
+        return candidates.some((candidate) =>
+            source.length < candidate.length && candidate.startsWith(source),
+        );
+    }
+}
+
 export function getResponseMessageContent(responseData) {
     if (typeof responseData === 'string') {
         return extractSseTextContent(responseData);

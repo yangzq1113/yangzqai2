@@ -83,6 +83,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
 import {
+    PlainTextFunctionCallStreamDetector,
     TOOL_PROTOCOL_STYLE,
     buildPlainTextToolProtocolMessage,
     buildStrictThoughtAndFunctionOnlyAddendum,
@@ -3423,11 +3424,68 @@ async function sendOpenAIRequest(type, messages, signal, {
             const swipes = [];
             const toolCalls = [];
             const state = { reasoning: '', images: [], signature: '', toolSignatures: {} };
+            const plainTextToolCallDetector = runtimeFunctionCallContext
+                ? new PlainTextFunctionCallStreamDetector({ triggerSignal: runtimeFunctionCallContext.triggerSignal })
+                : null;
+            let plainTextToolCallFinalized = false;
+            const finalizePlainTextToolCalls = () => {
+                if (!plainTextToolCallDetector || plainTextToolCallFinalized) {
+                    return false;
+                }
+
+                plainTextToolCallFinalized = true;
+                const finalState = plainTextToolCallDetector.finalize();
+                let changed = false;
+
+                if (finalState.displayDelta) {
+                    text += finalState.displayDelta;
+                    changed = true;
+                }
+
+                if (finalState.detected) {
+                    try {
+                        const parsedCalls = extractAllFunctionCallsFromText(finalState.rawText, null, {
+                            triggerSignal: runtimeFunctionCallContext.triggerSignal,
+                            triggerRequired: Boolean(runtimeFunctionCallContext.triggerSignal),
+                        });
+                        const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext.tools);
+                        if (validationError) {
+                            throw new Error(validationError);
+                        }
+
+                        toolCalls[0] = parsedCalls.map((call) => ({
+                            id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
+                            type: 'function',
+                            function: {
+                                name: String(call?.name || ''),
+                                arguments: JSON.stringify(call?.args ?? {}),
+                            },
+                        }));
+                        changed = true;
+                    } catch (error) {
+                        console.warn('[openai] Failed to parse plain-text function calls from streaming response', error);
+                        if (finalState.hiddenText) {
+                            text += finalState.hiddenText;
+                            changed = true;
+                        }
+                    }
+                }
+
+                return changed;
+            };
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) return;
+                if (done) {
+                    if (finalizePlainTextToolCalls()) {
+                        yield { text, swipes: swipes, logprobs: null, toolCalls: toolCalls, state: state };
+                    }
+                    return;
+                }
                 const rawData = value.data;
                 if (rawData === '[DONE]') {
+                    if (finalizePlainTextToolCalls()) {
+                        yield { text, swipes: swipes, logprobs: null, toolCalls: toolCalls, state: state };
+                    }
                     continue;
                 }
                 tryParseStreamingError(response, rawData);
@@ -3449,7 +3507,13 @@ async function sendOpenAIRequest(type, messages, signal, {
                     // FIXME: state.reasoning should be an array to support multi-swipe
                     swipes[swipeIndex] = (swipes[swipeIndex] || '') + getStreamingReply(parsed, state, { overrideShowThoughts: false });
                 } else {
-                    text += getStreamingReply(parsed, state);
+                    const replyDelta = getStreamingReply(parsed, state);
+                    if (plainTextToolCallDetector) {
+                        const processed = plainTextToolCallDetector.processTextDelta(replyDelta);
+                        text += processed.displayDelta;
+                    } else {
+                        text += replyDelta;
+                    }
                 }
 
                 ToolManager.parseToolCalls(toolCalls, parsed, state.toolSignatures);
