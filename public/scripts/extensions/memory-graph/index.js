@@ -872,6 +872,7 @@ const pendingMutationInvalidations = new Map();
 let activeRuntimeInfoToast = null;
 let activeRecallAbortController = null;
 let activeExtractionAbortController = null;
+let activeRecallRunToken = 0;
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 let latestRecallSnapshot = null;
@@ -2585,13 +2586,14 @@ async function buildPresetAwareLLMMessages(
         forceWorldInfoResimulate = false,
         worldInfoType = 'quiet',
         abortSignal = null,
+        recallRunToken = 0,
     } = {},
 ) {
     const systemText = String(systemPrompt || '').trim();
     const userText = String(userPrompt || '').trim();
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
-    throwIfAborted(abortSignal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
     let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
         ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
         : null;
@@ -2602,10 +2604,10 @@ async function buildPresetAwareLLMMessages(
             fallbackToCurrentChat: false,
             postActivationHook: rewriteDepthWorldInfoToAfter,
         });
-        throwIfAborted(abortSignal, 'Memory recall aborted.');
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
     }
 
-    throwIfAborted(abortSignal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
     return context.buildPresetAwarePromptMessages({
         messages: [
             { role: 'system', content: systemText },
@@ -2788,6 +2790,14 @@ function throwIfAborted(abortSignal, message = 'Operation aborted.') {
     }
 }
 
+function throwIfRecallRunInvalid(runToken, abortSignal, message = 'Memory recall aborted.') {
+    throwIfAborted(abortSignal, message);
+    const normalizedRunToken = Number(runToken);
+    if (Number.isFinite(normalizedRunToken) && normalizedRunToken > 0 && normalizedRunToken !== activeRecallRunToken) {
+        throw createAbortError(message);
+    }
+}
+
 function linkAbortSignals(...signals) {
     const validSignals = signals.filter(isAbortSignalLike);
     if (validSignals.length === 0) {
@@ -2829,6 +2839,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     llmPresetName = '',
     apiSettingsOverride = null,
     abortSignal = null,
+    recallRunToken = 0,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
@@ -2851,7 +2862,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            throwIfAborted(abortSignal, 'Memory recall aborted.');
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
             const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools,
                 toolChoice,
@@ -2865,7 +2876,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             });
-            throwIfAborted(abortSignal, 'Memory recall aborted.');
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
             const calls = extractAllFunctionCalls(responseData, [fnName]);
             const validationError = validateParsedToolCalls(calls, tools);
             if (validationError) {
@@ -2880,6 +2891,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
             if (isAbortError(error, abortSignal)) {
                 throw error;
             }
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
             lastError = error;
             if (attempt >= retries) {
                 throw error;
@@ -2898,6 +2910,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     apiSettingsOverride = null,
     retriesOverride = null,
     abortSignal = null,
+    recallRunToken = 0,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         throw new Error('Tools are required.');
@@ -2911,7 +2924,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            throwIfAborted(abortSignal, 'Memory recall aborted.');
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
             const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
                 tools,
                 toolChoice,
@@ -2924,7 +2937,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             });
-            throwIfAborted(abortSignal, 'Memory recall aborted.');
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
             const calls = extractAllFunctionCalls(responseData, allowedNames);
             const validationError = validateParsedToolCalls(calls, tools);
             if (validationError) {
@@ -2935,6 +2948,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
             if (isAbortError(error, abortSignal)) {
                 throw error;
             }
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
             lastError = error;
             if (attempt >= retries) {
                 throw error;
@@ -2959,12 +2973,13 @@ async function runFunctionCallTask(context, settings, {
     functionDescription = '',
     parameters = {},
     abortSignal = null,
+    recallRunToken = 0,
 } = {}) {
     const fnName = String(functionName || '').trim();
     if (!fnName) {
         throw new Error('Function name is required.');
     }
-    throwIfAborted(abortSignal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
 
     const resolvedApiPresetName = String(apiPresetName || '').trim();
     const profileResolution = resolveChatCompletionRequestProfile({
@@ -2984,8 +2999,9 @@ async function runFunctionCallTask(context, settings, {
         forceWorldInfoResimulate,
         worldInfoType,
         abortSignal,
+        recallRunToken,
     });
-    throwIfAborted(abortSignal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
 
     const apiSettingsOverride = profileResolution.apiSettingsOverride;
 
@@ -2996,6 +3012,7 @@ async function runFunctionCallTask(context, settings, {
         llmPresetName: String(promptPresetName || '').trim(),
         apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
         abortSignal,
+        recallRunToken,
     });
 }
 
@@ -5509,6 +5526,7 @@ async function chooseRecallRoute(context, settings, recallState) {
                 additionalProperties: true,
             },
             abortSignal: recallState?.abortSignal || null,
+            recallRunToken: Number(recallState?.recallRunToken || 0),
         });
         return {
             action: String(parsed?.action || '').toLowerCase() === 'drill' ? 'drill' : 'finalize',
@@ -5688,6 +5706,7 @@ async function chooseFocusNodes(context, settings, recallState) {
                 additionalProperties: true,
             },
             abortSignal: recallState?.abortSignal || null,
+            recallRunToken: Number(recallState?.recallRunToken || 0),
         });
 
         const selectedIds = Array.isArray(parsed?.selected_node_ids)
@@ -6229,7 +6248,8 @@ async function runLLMDrivenRecall(context, store, payload) {
         return { selectedNodes: [], alwaysInjectNodes: [], trace: [], query: '' };
     }
     const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
-    throwIfAborted(abortSignal, 'Memory recall aborted.');
+    const recallRunToken = Number(payload?.__lukerRpgMemoryRecallRunToken || 0);
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
 
     const queryBundle = getRecallQueryBundle(payload, context, settings);
     const query = normalizeText(queryBundle.fullText || '');
@@ -6277,7 +6297,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     const drillBudget = Math.max(0, maxIterations - 1);
 
     for (let pass = 1; pass <= drillBudget; pass++) {
-        throwIfAborted(abortSignal, 'Memory recall aborted.');
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
         const route = await chooseRecallRoute(context, settings, {
             store,
             query,
@@ -6288,8 +6308,9 @@ async function runLLMDrivenRecall(context, store, payload) {
             runtimeWorldInfo,
             forceWorldInfoResimulate,
             abortSignal,
+            recallRunToken,
         });
-        throwIfAborted(abortSignal, 'Memory recall aborted.');
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
         latestRoute = route;
         trace.push({
             step: `plan_pass_${pass}`,
@@ -6341,7 +6362,7 @@ async function runLLMDrivenRecall(context, store, payload) {
     }
 
     if (!earlyFinalized) {
-        throwIfAborted(abortSignal, 'Memory recall aborted.');
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
         const selectedRaw = await chooseFocusNodes(context, settings, {
             store,
             query,
@@ -6353,8 +6374,9 @@ async function runLLMDrivenRecall(context, store, payload) {
             runtimeWorldInfo,
             forceWorldInfoResimulate,
             abortSignal,
+            recallRunToken,
         });
-        throwIfAborted(abortSignal, 'Memory recall aborted.');
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
         selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
         trace.push({
             step: 'finalize_pass',
@@ -6641,6 +6663,7 @@ async function injectMemoryPrompts(context, payload) {
     const generationAbortSignal = isAbortSignalLike(payload?.__lukerRpgMemoryGenerationSignal)
         ? payload.__lukerRpgMemoryGenerationSignal
         : payload?.signal;
+    const recallRunToken = Number(payload?.__lukerRpgMemoryRecallRunToken || 0);
     if (payload && typeof payload === 'object') {
         payload.__lukerRpgMemoryNeedRescan = false;
     }
@@ -6672,9 +6695,9 @@ async function injectMemoryPrompts(context, payload) {
         updateUiStatus(i18n('Memory store unavailable for current chat.'));
         return false;
     }
-    throwIfAborted(payload?.signal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     const persistentSync = await syncPersistentLorebookProjection(context, settings, store);
-    throwIfAborted(payload?.signal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     const corePacket = normalizeMultilineText(persistentSync.corePacket || '');
     if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
         updateUiStatus(isAbortSignalLike(generationAbortSignal) && generationAbortSignal.aborted
@@ -6684,7 +6707,7 @@ async function injectMemoryPrompts(context, payload) {
     }
     const chatKey = getChatKey(context, targetHint);
     const anchor = buildLastUserAnchor(context, payload?.coreChat);
-    throwIfAborted(payload?.signal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     const shouldReuseSnapshot = settings.recallEnabled
         && RECALL_REUSE_GENERATION_TYPES.has(generationType)
         && canReuseLatestRecallSnapshot(chatKey, anchor);
@@ -6698,7 +6721,7 @@ async function injectMemoryPrompts(context, payload) {
             blocks,
         };
         await persistMemoryStoreByChatKey(context, chatKey, store);
-        throwIfAborted(payload?.signal, 'Memory recall aborted.');
+        throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
         if (payload && typeof payload === 'object') {
             payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed);
         }
@@ -6707,7 +6730,7 @@ async function injectMemoryPrompts(context, payload) {
     }
 
     const { selectedNodes, trace } = await runLLMDrivenRecall(context, store, payload);
-    throwIfAborted(payload?.signal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     store.lastRecallTrace = trace;
 
     const blocks = {
@@ -6720,7 +6743,7 @@ async function injectMemoryPrompts(context, payload) {
         blocks,
     };
     await persistMemoryStoreByChatKey(context, chatKey, store);
-    throwIfAborted(payload?.signal, 'Memory recall aborted.');
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     if (payload && typeof payload === 'object') {
         payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed);
     }
@@ -6749,6 +6772,10 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
         && payload?.dryRun !== true
         && generationType !== 'quiet'
         && Array.isArray(payload?.coreChat);
+    if (activeRecallAbortController && !activeRecallAbortController.signal.aborted) {
+        activeRecallAbortController.abort();
+    }
+    const recallRunToken = ++activeRecallRunToken;
     const recallAbortController = shouldShowRuntimeToast ? new AbortController() : null;
     if (recallAbortController) {
         activeRecallAbortController = recallAbortController;
@@ -6759,8 +6786,12 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
             ...payload,
             signal: linkedAbort.signal,
             __lukerRpgMemoryGenerationSignal: payload?.signal || null,
+            __lukerRpgMemoryRecallRunToken: recallRunToken,
         }
-        : payload;
+        : {
+            ...payload,
+            __lukerRpgMemoryRecallRunToken: recallRunToken,
+        };
     let stopRequestedByUser = false;
     let resolveStopRequest = null;
     const stopRequestPromise = shouldShowRuntimeToast
@@ -6770,6 +6801,9 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
                     return;
                 }
                 stopRequestedByUser = true;
+                if (activeRecallRunToken === recallRunToken) {
+                    activeRecallRunToken += 1;
+                }
                 if (recallAbortController && !recallAbortController.signal.aborted) {
                     recallAbortController.abort();
                 }
