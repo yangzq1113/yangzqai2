@@ -539,6 +539,15 @@ async function createUser(form, callback) {
  */
 async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELECTION) {
     let progressToast;
+    const clearProgressToast = () => {
+        if (!progressToast) {
+            return;
+        }
+
+        toastr.clear(progressToast);
+        progressToast = null;
+    };
+
     try {
         progressToast = toastr.info(
             t`Please wait for the download to start.`,
@@ -552,6 +561,7 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
                 handle: String(handle),
                 selection: JSON.stringify(selection),
             });
+            clearProgressToast();
             androidBridge.downloadFileFromUrl(`/api/users/backup?${query.toString()}`);
             callback?.();
             return;
@@ -577,15 +587,14 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
+        clearProgressToast();
         a.click();
         URL.revokeObjectURL(url);
         callback?.();
     } catch (error) {
         console.error('Error backing up user data:', error);
     } finally {
-        if (progressToast) {
-            toastr.clear(progressToast);
-        }
+        clearProgressToast();
     }
 }
 
