@@ -361,23 +361,63 @@ export async function completeGenerationJobFromPayload(request, job, payload, mo
 export function bindRequestCloseAbort(request, controller, options = {}) {
     const onAbortClose = typeof options.onAbortClose === 'function' ? options.onAbortClose : null;
     const keepAliveWhenJob = options.keepAliveWhenJob !== false;
+    const response = options.response && typeof options.response === 'object'
+        ? options.response
+        : request?.res;
     const job = getJobFromRequest(request);
     const hasJob = keepAliveWhenJob && Boolean(job);
+    let handled = false;
 
     if (job) {
         job.abortController = controller || null;
     }
 
-    request.socket.removeAllListeners('close');
-    request.socket.on('close', async function () {
+    const cleanup = () => {
+        request?.removeListener?.('aborted', handleAbort);
+        request?.socket?.removeListener?.('close', handleSocketClose);
+        response?.removeListener?.('close', handleResponseClose);
+    };
+
+    const abortUpstream = async () => {
+        if (handled) {
+            return;
+        }
+        handled = true;
+        cleanup();
         if (hasJob) {
             return;
         }
         if (onAbortClose) {
             await onAbortClose();
         }
-        controller.abort();
-    });
+        if (controller && !controller.signal?.aborted) {
+            controller.abort();
+        }
+    };
+
+    const handleAbort = () => {
+        void abortUpstream();
+    };
+
+    const handleSocketClose = () => {
+        if (response?.writableEnded || response?.finished) {
+            cleanup();
+            return;
+        }
+        void abortUpstream();
+    };
+
+    const handleResponseClose = () => {
+        if (response?.writableEnded || response?.finished) {
+            cleanup();
+            return;
+        }
+        void abortUpstream();
+    };
+
+    request?.on?.('aborted', handleAbort);
+    request?.socket?.on?.('close', handleSocketClose);
+    response?.on?.('close', handleResponseClose);
 }
 
 export function cancelGenerationJobForRequest(request, jobId, reason = 'Cancelled by user') {
