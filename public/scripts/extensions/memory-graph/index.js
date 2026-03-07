@@ -5432,6 +5432,9 @@ async function chooseRecallRoute(context, settings, recallState) {
             reason: String(parsed?.reason || ''),
         };
     } catch (error) {
+        if (isAbortError(error, recallState?.abortSignal || null)) {
+            throw error;
+        }
         console.warn(`[${MODULE_NAME}] recall route failed`, error);
         return {
             action: 'finalize',
@@ -5598,6 +5601,9 @@ async function chooseFocusNodes(context, settings, recallState) {
             reason: String(parsed?.reason || ''),
         };
     } catch (error) {
+        if (isAbortError(error, recallState?.abortSignal || null)) {
+            throw error;
+        }
         console.warn(`[${MODULE_NAME}] recall select failed`, error);
         return {
             selected_node_ids: recallState.candidates.map(node => node.id),
@@ -6558,6 +6564,10 @@ async function injectMemoryPrompts(context, payload) {
     }
     const persistentSync = await syncPersistentLorebookProjection(context, settings, store);
     const corePacket = normalizeMultilineText(persistentSync.corePacket || '');
+    if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        updateUiStatus(i18n('Generation aborted. Skipped memory recall.'));
+        return false;
+    }
     const chatKey = getChatKey(context, targetHint);
     const anchor = buildLastUserAnchorFromMessages(payload?.coreChat);
     const shouldReuseSnapshot = settings.recallEnabled
@@ -6645,6 +6655,10 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
         return Boolean(injected);
     } catch (error) {
         if (isAbortError(error, effectivePayload?.signal)) {
+            if (payload && typeof payload === 'object') {
+                payload.__lukerRpgMemoryNeedRescan = false;
+                payload.requestRescan = false;
+            }
             const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
             updateUiStatus(generationAborted
                 ? i18n('Generation aborted. Skipped memory recall.')
@@ -10445,6 +10459,13 @@ jQuery(() => {
         context.eventSource.on(wiAfterEvent, async (payload) => {
             const runtimeContext = getContext();
             await safeInjectMemoryPrompts(runtimeContext, payload, 'after_world_info_scan');
+            if (payload?.signal?.aborted) {
+                if (payload && typeof payload === 'object') {
+                    payload.__lukerRpgMemoryNeedRescan = false;
+                    payload.requestRescan = false;
+                }
+                return;
+            }
             if (payload && typeof payload === 'object' && payload.__lukerRpgMemoryNeedRescan) {
                 payload.requestRescan = true;
             }

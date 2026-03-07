@@ -5580,6 +5580,25 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         abortController = new AbortController();
     }
 
+    const isGenerationAborted = () => Boolean(
+        abortController?.signal?.aborted
+        || (signal && typeof signal === 'object' && 'aborted' in signal && signal.aborted),
+    );
+
+    const exitAbortedGenerationIfNeeded = () => {
+        if (!isGenerationAborted()) {
+            return false;
+        }
+
+        setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
+
+        if (!dryRun && type !== 'quiet') {
+            unblockGeneration(type);
+        }
+
+        return true;
+    };
+
     // OpenAI doesn't need instruct mode. Use OAI main prompt instead.
     const isInstruct = power_user.instruct.enabled && main_api !== 'openai';
     const isImpersonate = type == 'impersonate';
@@ -5980,6 +5999,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         simulateWorldInfo: async (overrides = {}) => await runWIScan(overrides),
     };
     await eventSource.emit(event_types.GENERATION_BEFORE_WORLD_INFO_SCAN, wiScanPayload);
+    if (exitAbortedGenerationIfNeeded()) {
+        return Promise.resolve();
+    }
     if (Array.isArray(wiScanPayload.coreChat)) {
         coreChat = wiScanPayload.coreChat;
     }
@@ -5996,6 +6018,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }
 
     const initialWorldInfoResult = await runWIScan();
+    if (exitAbortedGenerationIfNeeded()) {
+        return Promise.resolve();
+    }
     chatForWI = initialWorldInfoResult.chatForWI;
     this_max_context = initialWorldInfoResult.maxContext;
     globalScanData = initialWorldInfoResult.globalScanData;
@@ -6018,6 +6043,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         worldInfoAfter: String(wiAfterPayload.worldInfoAfter || ''),
     });
     await eventSource.emit(event_types.GENERATION_AFTER_WORLD_INFO_SCAN, wiAfterPayload);
+    if (exitAbortedGenerationIfNeeded()) {
+        return Promise.resolve();
+    }
 
     if (Array.isArray(wiAfterPayload.coreChat)) {
         coreChat = wiAfterPayload.coreChat;
@@ -6039,6 +6067,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         worldInfoResolution = wiAfterPayload.worldInfoResolutionOverride;
     } else if (wiAfterPayload.requestRescan === true) {
         worldInfoResolution = await runWIScan();
+        if (exitAbortedGenerationIfNeeded()) {
+            return Promise.resolve();
+        }
         chatForWI = Array.isArray(worldInfoResolution.chatForWI) ? worldInfoResolution.chatForWI : chatForWI;
         this_max_context = Number.isFinite(worldInfoResolution.maxContext) ? Number(worldInfoResolution.maxContext) : this_max_context;
         globalScanData = worldInfoResolution.globalScanData && typeof worldInfoResolution.globalScanData === 'object'
@@ -6080,6 +6111,9 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         worldInfoResolution,
         rescanned: worldInfoRescanned,
     });
+    if (exitAbortedGenerationIfNeeded()) {
+        return Promise.resolve();
+    }
     setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
 
     // Add message example WI
