@@ -7,7 +7,7 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { escapeHtml, getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate, world_info_position } from '../../world-info.js';
-import { resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
+import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
     TOOL_PROTOCOL_STYLE,
     extractAllFunctionCalls,
@@ -179,6 +179,63 @@ function normalizePreviewText(text, maxChars = 240) {
         return normalized;
     }
     return `${normalized.slice(0, maxChars - 1).trim()}...`;
+}
+
+function getOpenAIPresetNames(context) {
+    const manager = context.getPresetManager?.('openai');
+    if (!manager || typeof manager.getAllPresets !== 'function') {
+        return [];
+    }
+    const names = manager.getAllPresets();
+    if (!Array.isArray(names)) {
+        return [];
+    }
+    return [...new Set(names.map(name => String(name || '').trim()).filter(Boolean))];
+}
+
+function renderOpenAIPresetOptions(context, selectedName = '') {
+    const selected = String(selectedName || '').trim();
+    const names = getOpenAIPresetNames(context);
+    const options = [`<option value="">${escapeHtml(i18n('(Current preset)'))}</option>`];
+    for (const name of names) {
+        options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+    }
+    if (selected && !names.includes(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function renderConnectionProfileOptions(selectedName = '') {
+    const selected = String(selectedName || '').trim();
+    const names = getChatCompletionConnectionProfiles()
+        .map(profile => String(profile?.name || '').trim())
+        .filter(Boolean);
+    const options = [`<option value="">${escapeHtml(i18n('(Current API config)'))}</option>`];
+    for (const name of names) {
+        options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+    }
+    if (selected && !names.includes(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function refreshAgentPresetSelectors(root, context, settings) {
+    const selectorValues = [
+        ['#search_tools_agent_api_preset_name', settings.agentApiPresetName],
+        ['#search_tools_agent_preset_name', settings.agentPresetName],
+    ];
+
+    for (const [selector, value] of selectorValues) {
+        const select = root.find(selector);
+        if (!select.length) {
+            continue;
+        }
+        const isConnectionSelector = selector.endsWith('_api_preset_name');
+        select.html(isConnectionSelector ? renderConnectionProfileOptions(value) : renderOpenAIPresetOptions(context, value));
+        select.val(String(value || '').trim());
+    }
 }
 
 function fallbackStripHtml(html) {
@@ -1378,10 +1435,10 @@ function renderSettingsBlock() {
         </select>
         <label for="search_tools_default_visit_max_chars">${escapeHtml(i18n('Default page excerpt max chars (0 = no truncation)'))}</label>
         <input id="search_tools_default_visit_max_chars" class="text_pole" type="number" min="0" max="50000" step="100" />
-        <label for="search_tools_agent_api_preset_name">${escapeHtml(i18n('Agent connection profile name'))}</label>
-        <input id="search_tools_agent_api_preset_name" class="text_pole" type="text" />
-        <label for="search_tools_agent_preset_name">${escapeHtml(i18n('Agent prompt preset name'))}</label>
-        <input id="search_tools_agent_preset_name" class="text_pole" type="text" />
+        <label for="search_tools_agent_api_preset_name">${escapeHtml(i18n('Agent API preset (Connection profile, empty = current)'))}</label>
+        <select id="search_tools_agent_api_preset_name" class="text_pole"></select>
+        <label for="search_tools_agent_preset_name">${escapeHtml(i18n('Agent preset (params + prompt, empty = current)'))}</label>
+        <select id="search_tools_agent_preset_name" class="text_pole"></select>
         <label for="search_tools_agent_max_rounds">${escapeHtml(i18n('Agent max rounds'))}</label>
         <input id="search_tools_agent_max_rounds" class="text_pole" type="number" min="1" max="8" step="1" />
         <label for="search_tools_tool_call_retry_max">${escapeHtml(i18n('Tool call retry count'))}</label>
@@ -1437,7 +1494,9 @@ function bindSettingsUi() {
         return;
     }
 
+    const context = getContext();
     const settings = getSettings();
+    refreshAgentPresetSelectors(root, context, settings);
     root.find('#search_tools_enabled').prop('checked', Boolean(settings.enabled));
     root.find('#search_tools_pre_request_enabled').prop('checked', Boolean(settings.preRequestEnabled));
     root.find('#search_tools_provider').val(String(settings.provider || 'ddg'));
@@ -1547,8 +1606,8 @@ function registerLocaleData() {
         'Moderate': '中等',
         'Strict': '严格',
         'Default page excerpt max chars (0 = no truncation)': '默认网页摘录最大字符数（0=不截断）',
-        'Agent connection profile name': 'Agent 连接配置名',
-        'Agent prompt preset name': 'Agent 提示词预设名',
+        'Agent API preset (Connection profile, empty = current)': 'Agent API 预设（连接配置，留空=当前）',
+        'Agent preset (params + prompt, empty = current)': 'Agent 预设（参数+提示词，留空=当前）',
         'Agent max rounds': 'Agent 最大轮数',
         'Tool call retry count': '工具调用重试次数',
         'New entry default depth': '新条目默认深度',
@@ -1564,6 +1623,9 @@ function registerLocaleData() {
         'No active chat.': '当前没有激活聊天。',
         'No chat-bound lorebook yet.': '当前聊天还没有绑定世界书。',
         'Failed to inspect chat lorebook.': '检查聊天世界书失败。',
+        '(Current preset)': '（当前预设）',
+        '(Current API config)': '（当前 API 配置）',
+        '(missing)': '（缺失）',
     });
 
     addLocaleData('zh-tw', {
@@ -1578,8 +1640,8 @@ function registerLocaleData() {
         'Moderate': '中等',
         'Strict': '嚴格',
         'Default page excerpt max chars (0 = no truncation)': '預設網頁摘錄最大字元數（0=不截斷）',
-        'Agent connection profile name': 'Agent 連線設定名稱',
-        'Agent prompt preset name': 'Agent 提示詞預設名稱',
+        'Agent API preset (Connection profile, empty = current)': 'Agent API 預設（連線設定，留空=目前）',
+        'Agent preset (params + prompt, empty = current)': 'Agent 預設（參數+提示詞，留空=目前）',
         'Agent max rounds': 'Agent 最大輪數',
         'Tool call retry count': '工具呼叫重試次數',
         'New entry default depth': '新條目預設深度',
@@ -1595,6 +1657,9 @@ function registerLocaleData() {
         'No active chat.': '目前沒有啟用聊天。',
         'No chat-bound lorebook yet.': '目前聊天尚未綁定世界書。',
         'Failed to inspect chat lorebook.': '檢查聊天世界書失敗。',
+        '(Current preset)': '（目前預設）',
+        '(Current API config)': '（目前 API 設定）',
+        '(missing)': '（缺失）',
     });
 }
 
@@ -1618,5 +1683,23 @@ jQuery(() => {
         context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
             void refreshUiStatusForCurrentChat();
         });
+    }
+
+    if (context?.eventTypes?.PRESET_CHANGED) {
+        context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
+            if (String(event?.apiId || '') === 'openai') {
+                ensureUi();
+            }
+        });
+    }
+
+    const connectionProfileEvents = [
+        context?.eventTypes?.CONNECTION_PROFILE_LOADED,
+        context?.eventTypes?.CONNECTION_PROFILE_CREATED,
+        context?.eventTypes?.CONNECTION_PROFILE_DELETED,
+        context?.eventTypes?.CONNECTION_PROFILE_UPDATED,
+    ].filter(Boolean);
+    for (const eventName of connectionProfileEvents) {
+        context.eventSource.on(eventName, () => ensureUi());
     }
 });
