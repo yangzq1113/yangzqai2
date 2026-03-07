@@ -19,6 +19,7 @@ import {
 
 const MODULE_NAME = 'memory_graph';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
+const PERSISTED_STORE_VERSION = 6;
 const UI_BLOCK_ID = 'memory_graph_settings';
 const STYLE_ID = 'memory_graph_style';
 const SHARED_LOREBOOK_NAME = '__MEMORY_GRAPH__';
@@ -865,6 +866,7 @@ function registerLocaleData() {
 
 const extractionTimers = new Map();
 const memoryStoreCache = new Map();
+const memoryStateCache = new Map();
 const memoryStoreTargets = new Map();
 const memoryLoadTasks = new Map();
 const rollbackHistoryCache = new Map();
@@ -1568,7 +1570,12 @@ async function loadMemoryStoreByTarget(context, target) {
         throw new Error('Chat state API is unavailable in extension context.');
     }
     const data = await context.getChatState(CHAT_STATE_NAMESPACE, { target });
-    return normalizeStoreForRuntime(data || createEmptyStore());
+    const { state, migrated } = normalizePersistedMemoryState(data, context);
+    return {
+        state,
+        store: buildRuntimeStoreFromPersistedState(state),
+        migrated,
+    };
 }
 
 async function deleteMemoryStoreByTarget(context, target) {
@@ -1587,9 +1594,20 @@ function createEmptyStore() {
         nodeSeq: 0,
         seqCounter: 0,
         appliedSeqTo: 0,
+        loggedSeqTo: 0,
         pendingFullRebuild: false,
         nodes: {},
         edges: [],
+        lastRecallTrace: [],
+        lastRecallProjection: null,
+        sourceMessageCount: 0,
+    };
+}
+
+function createEmptyPersistedMemoryState() {
+    return {
+        version: PERSISTED_STORE_VERSION,
+        opLog: [],
         lastRecallTrace: [],
         lastRecallProjection: null,
         sourceMessageCount: 0,
@@ -1602,6 +1620,7 @@ function normalizeStoreForRuntime(store) {
     }
     const normalized = createEmptyStore();
     normalized.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
+    normalized.loggedSeqTo = Math.max(0, Math.floor(Number(store.loggedSeqTo || 0)));
     normalized.pendingFullRebuild = Boolean(store.pendingFullRebuild);
     normalized.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
     normalized.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
@@ -1678,7 +1697,364 @@ function normalizeStoreForRuntime(store) {
             Math.floor(Number.isFinite(Number(store.appliedSeqTo)) ? Number(store.appliedSeqTo) : normalized.seqCounter),
         ),
     );
+    normalized.loggedSeqTo = Math.max(normalized.loggedSeqTo, normalized.appliedSeqTo);
     return normalized;
+}
+
+function normalizeMemoryLogOperation(raw) {
+    const type = String(raw?.type || '').trim().toLowerCase();
+    if (type === 'upsert_node') {
+        const node = cloneRollbackNodeSnapshot(raw?.node);
+        return node ? { type, node } : null;
+    }
+    if (type === 'delete_node') {
+        const nodeId = String(raw?.nodeId || raw?.id || '').trim();
+        return nodeId ? { type, nodeId } : null;
+    }
+    if (type === 'upsert_edge' || type === 'delete_edge') {
+        const edge = cloneRollbackEdgeSnapshot(raw?.edge || raw);
+        return edge ? { type, edge } : null;
+    }
+    return null;
+}
+
+function normalizeMemoryLogEntry(raw) {
+    if (!raw || typeof raw !== 'object') {
+        return null;
+    }
+    const seq = Math.max(0, Math.floor(Number(raw.seq || 0)));
+    const ops = Array.isArray(raw.ops)
+        ? raw.ops.map(normalizeMemoryLogOperation).filter(Boolean)
+        : [];
+    if (seq <= 0 && ops.length === 0) {
+        return null;
+    }
+    return { seq, ops };
+}
+
+function getLatestLoggedSeq(stateOrLog) {
+    const log = Array.isArray(stateOrLog)
+        ? stateOrLog
+        : (Array.isArray(stateOrLog?.opLog) ? stateOrLog.opLog : []);
+    return log.reduce((maxSeq, entry) => Math.max(maxSeq, Math.max(0, Math.floor(Number(entry?.seq || 0)))), 0);
+}
+
+function normalizePersistedStateBase(raw) {
+    const normalized = createEmptyPersistedMemoryState();
+    if (!raw || typeof raw !== 'object') {
+        return normalized;
+    }
+    normalized.sourceMessageCount = Math.max(0, Number(raw.sourceMessageCount || 0));
+    normalized.lastRecallTrace = Array.isArray(raw.lastRecallTrace) ? structuredClone(raw.lastRecallTrace) : [];
+    normalized.lastRecallProjection = raw.lastRecallProjection && typeof raw.lastRecallProjection === 'object'
+        ? structuredClone(raw.lastRecallProjection)
+        : null;
+    normalized.opLog = Array.isArray(raw.opLog)
+        ? raw.opLog.map(normalizeMemoryLogEntry).filter(Boolean)
+        : [];
+    return normalized;
+}
+
+function buildMemoryLogOpsFromStore(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    const ops = [];
+    const nodes = Object.values(normalized.nodes || {}).sort(compareNodesByTimeline);
+    for (const node of nodes) {
+        const snapshot = cloneRollbackNodeSnapshot(node);
+        if (snapshot) {
+            ops.push({ type: 'upsert_node', node: snapshot });
+        }
+    }
+    for (const edge of Array.isArray(normalized.edges) ? normalized.edges : []) {
+        const snapshot = cloneRollbackEdgeSnapshot(edge);
+        if (snapshot) {
+            ops.push({ type: 'upsert_edge', edge: snapshot });
+        }
+    }
+    return ops;
+}
+
+function buildLegacyMigrationSeq(context, legacyStore) {
+    const currentAssistantCount = Math.max(0, Number(computeChatSourceState(context)?.messageCount || 0));
+    if (currentAssistantCount > 0) {
+        return currentAssistantCount;
+    }
+    return Math.max(
+        0,
+        Number(legacyStore?.sourceMessageCount || 0),
+        Number(legacyStore?.appliedSeqTo || 0),
+        Number(getSemanticCoverageSeq(legacyStore) || 0),
+    );
+}
+
+function buildPersistedStateFromLegacyStore(raw, context) {
+    const normalized = createEmptyPersistedMemoryState();
+    const legacyStore = normalizeStoreForRuntime(raw || createEmptyStore());
+    normalized.sourceMessageCount = Math.max(0, Number(legacyStore.sourceMessageCount || 0));
+    normalized.lastRecallTrace = structuredClone(Array.isArray(legacyStore.lastRecallTrace) ? legacyStore.lastRecallTrace : []);
+    normalized.lastRecallProjection = legacyStore.lastRecallProjection && typeof legacyStore.lastRecallProjection === 'object'
+        ? structuredClone(legacyStore.lastRecallProjection)
+        : null;
+
+    const hasLegacyPayload = Object.keys(legacyStore.nodes || {}).length > 0
+        || (Array.isArray(legacyStore.edges) && legacyStore.edges.length > 0)
+        || normalized.sourceMessageCount > 0
+        || normalized.lastRecallTrace.length > 0
+        || Boolean(normalized.lastRecallProjection);
+    if (hasLegacyPayload) {
+        const seq = buildLegacyMigrationSeq(context, legacyStore);
+        const ops = buildMemoryLogOpsFromStore(legacyStore);
+        if (seq > 0 || ops.length > 0) {
+            normalized.opLog = [{ seq: Math.max(0, seq), ops }];
+        }
+    }
+    return { state: normalized, migrated: hasLegacyPayload };
+}
+
+function normalizePersistedMemoryState(raw, context) {
+    if (raw && typeof raw === 'object' && Array.isArray(raw.opLog)) {
+        return {
+            state: normalizePersistedStateBase(raw),
+            migrated: Number(raw.version || 0) !== PERSISTED_STORE_VERSION,
+        };
+    }
+    if (raw && typeof raw === 'object') {
+        return buildPersistedStateFromLegacyStore(raw, context);
+    }
+    return {
+        state: createEmptyPersistedMemoryState(),
+        migrated: false,
+    };
+}
+
+function applyLoggedNodeSnapshot(store, node) {
+    const snapshot = cloneRollbackNodeSnapshot(node);
+    if (!snapshot) {
+        return;
+    }
+    store.nodes[snapshot.id] = snapshot;
+    const extractedNodeSeq = Number(String(snapshot.id || '').replace(/^n_/, ''));
+    if (Number.isFinite(extractedNodeSeq)) {
+        store.nodeSeq = Math.max(store.nodeSeq, extractedNodeSeq);
+    }
+    store.seqCounter = Math.max(store.seqCounter, Math.max(0, Number(snapshot.seqTo || 0)));
+}
+
+function removeLoggedEdge(store, edge) {
+    const key = getRollbackEdgeKey(edge);
+    if (!key) {
+        return;
+    }
+    store.edges = (Array.isArray(store.edges) ? store.edges : []).filter(item => getRollbackEdgeKey(item) !== key);
+}
+
+function applyMemoryLogEntryToStore(store, entry) {
+    if (!store || typeof store !== 'object' || !entry || typeof entry !== 'object') {
+        return;
+    }
+    for (const operation of Array.isArray(entry.ops) ? entry.ops : []) {
+        const type = String(operation?.type || '').trim().toLowerCase();
+        if (type === 'delete_edge') {
+            removeLoggedEdge(store, operation.edge);
+            continue;
+        }
+        if (type === 'delete_node') {
+            const nodeId = String(operation?.nodeId || '').trim();
+            if (nodeId) {
+                dropNode(store, nodeId, true);
+            }
+            continue;
+        }
+        if (type === 'upsert_node') {
+            applyLoggedNodeSnapshot(store, operation.node);
+            continue;
+        }
+        if (type === 'upsert_edge') {
+            const edge = cloneRollbackEdgeSnapshot(operation.edge);
+            if (edge) {
+                addEdge(store, edge.from, edge.to, edge.type);
+            }
+        }
+    }
+    repairStoreAfterRollback(store);
+    store.loggedSeqTo = Math.max(store.loggedSeqTo, Math.max(0, Math.floor(Number(entry.seq || 0))));
+    store.seqCounter = Math.max(store.seqCounter, store.loggedSeqTo);
+    store.appliedSeqTo = getSemanticCoverageSeq(store);
+}
+
+function buildRuntimeStoreFromPersistedState(state) {
+    const normalizedState = normalizePersistedStateBase(state);
+    const runtimeStore = createEmptyStore();
+    for (const entry of normalizedState.opLog) {
+        applyMemoryLogEntryToStore(runtimeStore, entry);
+    }
+    runtimeStore.loggedSeqTo = Math.max(runtimeStore.loggedSeqTo, getLatestLoggedSeq(normalizedState));
+    runtimeStore.seqCounter = Math.max(runtimeStore.seqCounter, runtimeStore.loggedSeqTo);
+    runtimeStore.appliedSeqTo = getSemanticCoverageSeq(runtimeStore);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(normalizedState.lastRecallTrace) ? normalizedState.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = normalizedState.lastRecallProjection && typeof normalizedState.lastRecallProjection === 'object'
+        ? structuredClone(normalizedState.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(normalizedState.sourceMessageCount || 0));
+    return runtimeStore;
+}
+
+function getMemoryState(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return createEmptyPersistedMemoryState();
+    }
+    if (!memoryStateCache.has(key)) {
+        memoryStateCache.set(key, createEmptyPersistedMemoryState());
+    }
+    return memoryStateCache.get(key);
+}
+
+function updatePersistedStateMetadataFromStore(chatKey, store) {
+    const state = getMemoryState(chatKey);
+    state.sourceMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
+    state.lastRecallTrace = structuredClone(Array.isArray(store?.lastRecallTrace) ? store.lastRecallTrace : []);
+    state.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? structuredClone(store.lastRecallProjection)
+        : null;
+    memoryStateCache.set(chatKey, state);
+    return state;
+}
+
+function rematerializeStoreForChatKey(chatKey) {
+    const state = getMemoryState(chatKey);
+    const store = buildRuntimeStoreFromPersistedState(state);
+    memoryStoreCache.set(chatKey, store);
+    return store;
+}
+
+function trimPersistedOpLogFromSeq(chatKey, fromSeq) {
+    const key = String(chatKey || '').trim();
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    const state = getMemoryState(key);
+    const nextLog = state.opLog.filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < startSeq);
+    if (nextLog.length === state.opLog.length) {
+        return {
+            changed: false,
+            store: memoryStoreCache.get(key) || buildRuntimeStoreFromPersistedState(state),
+        };
+    }
+    state.opLog = nextLog;
+    memoryStateCache.set(key, state);
+    return {
+        changed: true,
+        store: rematerializeStoreForChatKey(key),
+    };
+}
+
+function captureStoreDiffSnapshot(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    return {
+        nodes: Object.fromEntries(
+            Object.entries(normalized.nodes || {}).map(([id, node]) => [id, cloneRollbackNodeSnapshot(node)]),
+        ),
+        edges: (Array.isArray(normalized.edges) ? normalized.edges : []).map(cloneRollbackEdgeSnapshot).filter(Boolean),
+    };
+}
+
+function buildMemoryLogDiffOps(beforeStore, afterStore) {
+    const beforeSnapshot = captureStoreDiffSnapshot(beforeStore);
+    const afterSnapshot = captureStoreDiffSnapshot(afterStore);
+    const operations = [];
+    const beforeNodeIds = new Set(Object.keys(beforeSnapshot.nodes || {}));
+    const afterNodeIds = new Set(Object.keys(afterSnapshot.nodes || {}));
+
+    for (const nodeId of [...beforeNodeIds].sort((a, b) => a.localeCompare(b))) {
+        if (!afterNodeIds.has(nodeId)) {
+            operations.push({ type: 'delete_node', nodeId });
+        }
+    }
+
+    for (const nodeId of [...afterNodeIds].sort((a, b) => a.localeCompare(b))) {
+        const beforeNode = beforeSnapshot.nodes?.[nodeId] ?? null;
+        const afterNode = afterSnapshot.nodes?.[nodeId] ?? null;
+        if (JSON.stringify(beforeNode) === JSON.stringify(afterNode)) {
+            continue;
+        }
+        const node = cloneRollbackNodeSnapshot(afterNode);
+        if (node) {
+            operations.push({ type: 'upsert_node', node });
+        }
+    }
+
+    const beforeEdges = new Map(beforeSnapshot.edges.map(edge => [getRollbackEdgeKey(edge), edge]));
+    const afterEdges = new Map(afterSnapshot.edges.map(edge => [getRollbackEdgeKey(edge), edge]));
+
+    for (const key of [...beforeEdges.keys()].sort((a, b) => a.localeCompare(b))) {
+        if (!afterEdges.has(key)) {
+            const edge = cloneRollbackEdgeSnapshot(beforeEdges.get(key));
+            if (edge) {
+                operations.push({ type: 'delete_edge', edge });
+            }
+        }
+    }
+
+    for (const key of [...afterEdges.keys()].sort((a, b) => a.localeCompare(b))) {
+        if (!beforeEdges.has(key)) {
+            const edge = cloneRollbackEdgeSnapshot(afterEdges.get(key));
+            if (edge) {
+                operations.push({ type: 'upsert_edge', edge });
+            }
+        }
+    }
+
+    return operations;
+}
+
+function appendPersistedDiffEntry(chatKey, beforeStore, afterStore, seq) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return false;
+    }
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || 0)));
+    const state = getMemoryState(key);
+    const ops = buildMemoryLogDiffOps(beforeStore, afterStore);
+    if (ops.length === 0) {
+        return false;
+    }
+    state.opLog.push({ seq: normalizedSeq, ops });
+    memoryStateCache.set(key, state);
+    afterStore.loggedSeqTo = Math.max(Number(afterStore?.loggedSeqTo || 0), getLatestLoggedSeq(state));
+    const runtimeStore = normalizeStoreForRuntime(afterStore);
+    runtimeStore.loggedSeqTo = Math.max(getLatestLoggedSeq(state), runtimeStore.loggedSeqTo);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(afterStore?.lastRecallTrace) ? afterStore.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = afterStore?.lastRecallProjection && typeof afterStore.lastRecallProjection === 'object'
+        ? structuredClone(afterStore.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(afterStore?.sourceMessageCount || 0));
+    memoryStoreCache.set(key, runtimeStore);
+    updatePersistedStateMetadataFromStore(key, runtimeStore);
+    return true;
+}
+
+function replacePersistedGraphWithStore(chatKey, store, seq) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return null;
+    }
+    const normalizedStore = normalizeStoreForRuntime(store);
+    const state = getMemoryState(key);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedStore.appliedSeqTo || getSemanticCoverageSeq(normalizedStore) || 0)));
+    const ops = buildMemoryLogOpsFromStore(normalizedStore);
+    state.opLog = (normalizedSeq > 0 || ops.length > 0)
+        ? [{ seq: normalizedSeq, ops }]
+        : [];
+    memoryStateCache.set(key, state);
+    store.loggedSeqTo = Math.max(Number(store?.loggedSeqTo || 0), getLatestLoggedSeq(state));
+    const runtimeStore = buildRuntimeStoreFromPersistedState(state);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(normalizedStore.lastRecallTrace) ? normalizedStore.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = normalizedStore.lastRecallProjection && typeof normalizedStore.lastRecallProjection === 'object'
+        ? structuredClone(normalizedStore.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(normalizedStore.sourceMessageCount || 0));
+    updatePersistedStateMetadataFromStore(key, runtimeStore);
+    memoryStoreCache.set(key, runtimeStore);
+    return runtimeStore;
 }
 
 async function ensureMemoryStoreLoaded(context, { force = false, targetHint = null } = {}) {
@@ -1699,8 +2075,12 @@ async function ensureMemoryStoreLoaded(context, { force = false, targetHint = nu
 
     const task = (async () => {
         const loaded = await loadMemoryStoreByTarget(context, target);
-        memoryStoreCache.set(chatKey, loaded);
-        return loaded;
+        memoryStateCache.set(chatKey, loaded.state);
+        memoryStoreCache.set(chatKey, loaded.store);
+        if (loaded.migrated) {
+            await persistMemoryStoreByChatKey(context, chatKey, loaded.store);
+        }
+        return loaded.store;
     })();
     memoryLoadTasks.set(chatKey, task);
 
@@ -1725,9 +2105,11 @@ async function persistMemoryStoreByChatKey(context, chatKey, store, { syncPersis
         throw new Error('Chat state update API is unavailable in extension context.');
     }
     const nextStore = normalizeStoreForRuntime(store);
+    memoryStoreCache.set(chatKey, nextStore);
+    const nextState = updatePersistedStateMetadataFromStore(chatKey, nextStore);
     const result = await context.updateChatState(
         CHAT_STATE_NAMESPACE,
-        () => nextStore,
+        () => normalizePersistedStateBase(nextState),
         { target, maxOperations: 16000 },
     );
     if (!result?.ok) {
@@ -2301,15 +2683,12 @@ function findAffectedAssistantSeqFromMessageIndex(context, messageIndex) {
 
 function getStoreSourceSyncState(store, context) {
     const sourceState = computeChatSourceState(context);
-    const storedMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
+    const storedMessageCount = Math.max(0, Number(store?.loggedSeqTo || 0));
     const currentMessageCount = Math.max(0, Number(sourceState.messageCount || 0));
     let requiresFullRebuild = false;
     let reason = '';
 
-    if (Boolean(store?.pendingFullRebuild)) {
-        requiresFullRebuild = true;
-        reason = 'pending_full_rebuild';
-    } else if (currentMessageCount < storedMessageCount) {
+    if (currentMessageCount < storedMessageCount) {
         requiresFullRebuild = true;
         reason = 'source_count_decreased';
     }
@@ -6593,9 +6972,13 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
     });
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
-    memoryStoreCache.set(chatKey, rebuilt);
-    await persistMemoryStoreByChatKey(context, chatKey, rebuilt, { syncPersistentProjection: true });
-    return rebuilt;
+    const persistedStore = replacePersistedGraphWithStore(
+        chatKey,
+        rebuilt,
+        Number(rebuilt?.lastExtractionDebug?.latestSeq || getSemanticCoverageSeq(rebuilt) || 0),
+    ) || rebuilt;
+    await persistMemoryStoreByChatKey(context, chatKey, persistedStore, { syncPersistentProjection: true });
+    return persistedStore;
 }
 
 function buildPlayableFramesFromContext(context) {
@@ -6751,7 +7134,7 @@ function alignStoreCoverageToChat(store, context, settings = null) {
 
 async function ensureStoreSyncedWithChat(context, targetHint = null) {
     const loaded = await ensureMemoryStoreLoaded(context, { targetHint });
-    const store = getMemoryStore(context, targetHint) || loaded || null;
+    let store = getMemoryStore(context, targetHint) || loaded || null;
     if (!store) {
         return null;
     }
@@ -6759,22 +7142,33 @@ async function ensureStoreSyncedWithChat(context, targetHint = null) {
     if (!target) {
         return store;
     }
+    const chatKey = getChatKey(context, target);
     const syncState = getStoreSourceSyncState(store, context);
-    let storeChanged = false;
+    let trimmedForSourceDecrease = false;
+    let trimmedForLatestSeq = false;
     if (syncState.requiresFullRebuild) {
-        const rollbackResult = syncState.reason === 'source_count_decreased'
-            ? rollbackStoreUsingHistory(store, getChatKey(context, target), Number(syncState.currentMessageCount || 0) + 1)
-            : { rolledBack: false };
-        storeChanged = Boolean(rollbackResult.rolledBack);
-        if (!rollbackResult.rolledBack) {
-            return await rebuildStoreFromCurrentChat(context, { targetHint });
+        const trimResult = trimPersistedOpLogFromSeq(chatKey, Number(syncState.currentMessageCount || 0) + 1);
+        if (trimResult.changed) {
+            trimmedForSourceDecrease = true;
+            store = trimResult.store;
+            store.lastRecallTrace = [];
+            store.lastRecallProjection = null;
         }
     }
     const settings = getEffectiveSettings(context, getSettings());
-    const { changed } = alignStoreCoverageToChat(store, context, settings);
-    storeChanged = Boolean(storeChanged || changed);
-    if (storeChanged) {
-        const chatKey = getChatKey(context, target);
+    const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
+    if (store.loggedSeqTo > latestSeq) {
+        const trimResult = trimPersistedOpLogFromSeq(chatKey, latestSeq + 1);
+        if (trimResult.changed) {
+            trimmedForLatestSeq = true;
+            store = trimResult.store;
+            store.lastRecallTrace = [];
+            store.lastRecallProjection = null;
+        }
+    }
+    const previousSourceMessageCount = Number(store.sourceMessageCount || 0);
+    updateStoreSourceState(store, context);
+    if (trimmedForSourceDecrease || trimmedForLatestSeq || previousSourceMessageCount !== Number(store.sourceMessageCount || 0)) {
         await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
     }
     return store;
@@ -7039,7 +7433,7 @@ function scheduleExtraction(context) {
 
     const timer = setTimeout(async () => {
         extractionTimers.delete(chatKey);
-        const store = memoryStoreCache.get(chatKey);
+        let store = await ensureStoreSyncedWithChat(context);
         if (!store) {
             return;
         }
@@ -7047,51 +7441,6 @@ function scheduleExtraction(context) {
         activeExtractionAbortController = extractionAbortController;
         try {
             const settings = getEffectiveSettings(context, getSettings());
-            const syncState = getStoreSourceSyncState(store, context);
-            let rolledBackByHistory = false;
-            if (syncState.requiresFullRebuild) {
-                const rollbackResult = syncState.reason === 'source_count_decreased'
-                    ? rollbackStoreUsingHistory(store, chatKey, Number(syncState.currentMessageCount || 0) + 1)
-                    : { rolledBack: false };
-                if (rollbackResult.rolledBack) {
-                    rolledBackByHistory = true;
-                    alignStoreCoverageToChat(store, context, settings);
-                } else {
-                    const rebuildLatestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
-                    const extractBatchTurns = Math.max(
-                        1,
-                        Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
-                    );
-                    const initialEndSeq = Math.min(
-                        Math.max(1, rebuildLatestSeq),
-                        extractBatchTurns,
-                    );
-                    showRuntimeInfoToast(formatExtractionRangeToast(1, initialEndSeq, Math.max(1, rebuildLatestSeq)), {
-                        stopLabel: i18n('Stop'),
-                        onStop: () => {
-                            if (!extractionAbortController.signal.aborted) {
-                                extractionAbortController.abort();
-                            }
-                        },
-                    });
-                    const rebuilt = await rebuildStoreFromCurrentChat(context, {
-                        abortSignal: extractionAbortController.signal,
-                        onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
-                            updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
-                        },
-                    });
-                    const debug = rebuilt?.lastExtractionDebug || {};
-                    updateUiStatus(i18nFormat(
-                        'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
-                        debug.extracted ? 'ok' : 'skip',
-                        Number(debug.beginSeq || 0),
-                        Number(debug.latestSeq || 0),
-                        Number(debug.coveredSeqTo || 0),
-                    ));
-                    refreshUiStats();
-                    return;
-                }
-            }
             alignStoreCoverageToChat(store, context, settings);
             const preview = computeExtractionWindow(context, store, null, settings);
             if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
@@ -7111,12 +7460,10 @@ function scheduleExtraction(context) {
                     Number(debug.latestSeq || 0),
                     Number(debug.coveredSeqTo || 0),
                 ));
-                if (rolledBackByHistory) {
-                    await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
-                }
                 refreshUiStats();
                 return;
             }
+            const beforeStore = normalizeStoreForRuntime(store);
             const extractBatchTurns = Math.max(
                 1,
                 Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
@@ -7139,6 +7486,7 @@ function scheduleExtraction(context) {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
                 },
             });
+            appendPersistedDiffEntry(chatKey, beforeStore, store, Number(preview.latestSeq || 0));
             await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
             const debug = store.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
@@ -7796,9 +8144,21 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         }
         slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18n('Select a node or edge to edit.'))}</div>`);
     };
-    const persistLatest = async (latest, successText, statusText) => {
+    const persistLatest = async (latest, successText, statusText, { beforeStore = null, replaceGraph = false, seq = null } = {}) => {
         memoryStoreCache.set(chatKey, latest);
         clearRollbackHistory(chatKey);
+        const effectiveSeq = Number.isFinite(Number(seq))
+            ? Math.max(0, Math.floor(Number(seq)))
+            : Math.max(
+                0,
+                Math.floor(Number(latest?.loggedSeqTo || 0)),
+                Math.floor(Number(getSemanticCoverageSeq(latest) || 0)),
+            );
+        if (replaceGraph) {
+            replacePersistedGraphWithStore(chatKey, latest, effectiveSeq);
+        } else if (beforeStore) {
+            appendPersistedDiffEntry(chatKey, beforeStore, latest, effectiveSeq);
+        }
         await persistMemoryStoreByChatKey(context, chatKey, latest, { syncPersistentProjection: true });
         refreshUiStats();
         if (statusText) {
@@ -8116,6 +8476,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                 to,
                 type,
             };
+            const beforeStore = normalizeStoreForRuntime(latest);
 
             if (isEdit) {
                 latest.edges[edgeIndex] = next;
@@ -8124,6 +8485,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                     latest,
                     i18nFormat('Edge updated (#${0})', edgeIndex),
                     i18nFormat('Updated edge #${0}.', edgeIndex),
+                    { beforeStore },
                 );
             } else {
                 latest.edges.push(next);
@@ -8132,6 +8494,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                     latest,
                     i18n('Edge created.'),
                     i18nFormat('Created edge #${0}.', selectedEdgeIndex),
+                    { beforeStore },
                 );
             }
             await rerender();
@@ -8161,6 +8524,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (willCreateParentCycle(latest, nodeId, parsedParentId)) {
             throw new Error(i18n('Parent selection would create a cycle'));
         }
+        const beforeStore = normalizeStoreForRuntime(latest);
 
         const target = latest.nodes[nodeId];
         const oldParentId = String(target.parentId || '').trim();
@@ -8199,6 +8563,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             latest,
             i18nFormat('Node updated: ${0}', nodeId),
             i18nFormat('Updated node ${0}.', nodeId),
+            { beforeStore },
         );
         await rerender();
     };
@@ -8227,6 +8592,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (from === to) {
             throw new Error(i18n('From and To cannot be the same node'));
         }
+        const beforeStore = normalizeStoreForRuntime(latest);
 
         latest.edges[edgeIndex] = {
             from,
@@ -8239,6 +8605,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             latest,
             i18nFormat('Edge updated (#${0})', edgeIndex),
             i18nFormat('Updated edge #${0}.', edgeIndex),
+            { beforeStore },
         );
         await rerender();
     };
@@ -8270,11 +8637,13 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
         }
+        const beforeStore = normalizeStoreForRuntime(latest);
         dropNode(latest, nodeId, true);
         await persistLatest(
             latest,
             i18nFormat('Deleted node ${0}.', nodeId),
             i18n('Deleted selected node.'),
+            { beforeStore },
         );
         selectedNodeId = '';
         if (!latest.edges?.[selectedEdgeIndex]) {
@@ -8451,11 +8820,13 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             return;
         }
 
+        const beforeStore = normalizeStoreForRuntime(latest);
         latest.edges.splice(selectedEdgeIndex, 1);
         await persistLatest(
             latest,
             i18nFormat('Deleted edge #${0}.', selectedEdgeIndex),
             i18n('Deleted selected edge.'),
+            { beforeStore },
         );
         selectedEdgeIndex = -1;
         await rerender();
@@ -8502,7 +8873,11 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             const parsed = JSON.parse(raw);
             const migrated = normalizeStoreForRuntime(parsed);
             updateStoreSourceState(migrated, context);
-            memoryStoreCache.set(chatKey, migrated);
+            replacePersistedGraphWithStore(
+                chatKey,
+                migrated,
+                Math.max(0, Number(migrated?.loggedSeqTo || 0), Number(getSemanticCoverageSeq(migrated) || 0)),
+            );
             clearRollbackHistory(chatKey);
             await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
             refreshUiStats();
@@ -10144,6 +10519,7 @@ async function openManualCompressionPopup(context, settings) {
     const beforeNodes = Object.values(store.nodes || {});
     const beforeNodeCount = beforeNodes.length;
     const beforeArchivedCount = beforeNodes.filter(node => Boolean(node?.archived)).length;
+    const beforeStore = normalizeStoreForRuntime(store);
     const compressionStats = createCompressionStats();
     const compressionAbortController = new AbortController();
     activeExtractionAbortController = compressionAbortController;
@@ -10173,6 +10549,12 @@ async function openManualCompressionPopup(context, settings) {
         const afterArchivedCount = afterNodes.filter(node => Boolean(node?.archived)).length;
         const createdDelta = Math.max(0, afterNodeCount - beforeNodeCount);
         const archivedDelta = Math.max(0, afterArchivedCount - beforeArchivedCount);
+        appendPersistedDiffEntry(
+            getChatKey(context),
+            beforeStore,
+            store,
+            Math.max(0, Number(store?.loggedSeqTo || 0), Number(getSemanticCoverageSeq(store) || 0)),
+        );
         await persistMemoryStoreByChatKey(context, getChatKey(context), store, { syncPersistentProjection: true });
         refreshUiStats();
         const summary = i18nFormat('Manual compression completed. Created=${0}, archived=${1}', createdDelta, archivedDelta);
@@ -10381,6 +10763,7 @@ function bindUi() {
                     }
                 },
             });
+            const beforeStore = normalizeStoreForRuntime(store);
             await runExtractionForStore(context, store, {
                 force: true,
                 abortSignal: fillAbortController.signal,
@@ -10388,6 +10771,7 @@ function bindUi() {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
                 },
             });
+            appendPersistedDiffEntry(chatKey, beforeStore, store, Number(preview.latestSeq || 0));
             await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
             const debug = store.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
@@ -10492,7 +10876,7 @@ function bindUi() {
     root.find('#luker_rpg_memory_rebuild_recent').off('click').on('click', async function () {
         await ensureMemoryStoreLoaded(context);
         const chatKey = getChatKey(context);
-        const store = memoryStoreCache.get(chatKey);
+        let store = memoryStoreCache.get(chatKey);
         if (!store) {
             notifyError(i18n('No active chat selected.'));
             return;
@@ -10527,7 +10911,9 @@ function bindUi() {
         }
 
         const startSeq = Math.max(1, latestSeq - recentTurns + 1);
-        truncateStoreFromSeq(store, startSeq, chatKey);
+        const trimResult = trimPersistedOpLogFromSeq(chatKey, startSeq);
+        store = trimResult.store || store;
+        updateStoreSourceState(store, context);
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
         const extractBatchTurns = Math.max(
@@ -10547,6 +10933,7 @@ function bindUi() {
             },
         });
         try {
+            const beforeStore = normalizeStoreForRuntime(store);
             await runExtractionForStore(context, store, {
                 force: true,
                 startSeq,
@@ -10555,6 +10942,7 @@ function bindUi() {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latest));
                 },
             });
+            appendPersistedDiffEntry(chatKey, beforeStore, store, Number(latestSeq || 0));
             await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} assistant turn(s).', recentTurns));
@@ -10594,6 +10982,7 @@ function bindUi() {
             memoryStoreTargets.set(chatKey, target);
         }
         memoryStoreCache.set(chatKey, createEmptyStore());
+        memoryStateCache.set(chatKey, createEmptyPersistedMemoryState());
         clearRollbackHistory(chatKey);
         if (target) {
             await deleteMemoryStoreByTarget(context, target);
@@ -10648,7 +11037,11 @@ function bindUi() {
             const migrated = normalizeStoreForRuntime(parsed);
             rebaseStoreToChatBaseline(migrated, context);
             updateStoreSourceState(migrated, context);
-            memoryStoreCache.set(chatKey, migrated);
+            replacePersistedGraphWithStore(
+                chatKey,
+                migrated,
+                Math.max(0, Number(computeChatSourceState(context)?.messageCount || 0)),
+            );
             clearRollbackHistory(chatKey);
             latestRecallSnapshot = null;
             await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
@@ -10819,7 +11212,7 @@ jQuery(() => {
                 pendingMutationInvalidations.delete(chatKey);
                 const liveContext = getContext();
                 const isCurrentChat = getChatKey(liveContext) === chatKey;
-                const store = memoryStoreCache.get(chatKey);
+                let store = memoryStoreCache.get(chatKey);
                 if (!store) {
                     latestRecallSnapshot = null;
                     return;
@@ -10835,20 +11228,14 @@ jQuery(() => {
                 if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
                     activeExtractionAbortController.abort();
                 }
-                let rolledBack = false;
                 const hasAffectedSeq = Number.isFinite(task.fromSeq) && task.fromSeq > 0;
-                if (hasAffectedSeq) {
-                    const rollbackResult = rollbackStoreUsingHistory(store, chatKey, task.fromSeq);
-                    rolledBack = Boolean(rollbackResult.rolledBack);
-                }
                 if (!hasAffectedSeq) {
                     return;
                 }
-                if (!rolledBack) {
-                    store.pendingFullRebuild = true;
-                } else {
-                    alignStoreCoverageToChat(store, liveContext);
-                }
+                const trimResult = trimPersistedOpLogFromSeq(chatKey, task.fromSeq);
+                store = trimResult.store || store;
+                updateStoreSourceState(store, liveContext);
+                store.lastRecallTrace = [];
                 store.lastRecallProjection = null;
                 try {
                     await persistMemoryStoreByChatKey(liveContext, chatKey, store);
@@ -10867,7 +11254,7 @@ jQuery(() => {
                         }, 0);
                     }
                 } catch (error) {
-                    console.warn(`[${MODULE_NAME}] Failed to apply memory graph mutation rollback for ${chatKey}`, error);
+                    console.warn(`[${MODULE_NAME}] Failed to trim memory graph op log for ${chatKey}`, error);
                     if (isCurrentChat) {
                         updateUiStatus(mutationStatusText);
                     }
