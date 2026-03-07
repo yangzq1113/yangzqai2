@@ -873,6 +873,8 @@ let activeRuntimeInfoToast = null;
 let activeRecallAbortController = null;
 let activeExtractionAbortController = null;
 let activeRecallRunToken = 0;
+let nextActiveRecallRequestId = 0;
+const activeRecallRequestStates = new Map();
 let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 let latestRecallSnapshot = null;
@@ -2832,6 +2834,107 @@ function linkAbortSignals(...signals) {
     };
 }
 
+function createLinkedAbortController(...signals) {
+    const validSignals = signals.filter(isAbortSignalLike);
+    const controller = new AbortController();
+    if (validSignals.length === 0) {
+        return {
+            controller,
+            signal: controller.signal,
+            cleanup: () => {},
+        };
+    }
+
+    const onAbort = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    for (const signal of validSignals) {
+        if (signal.aborted) {
+            onAbort();
+            break;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return {
+        controller,
+        signal: controller.signal,
+        cleanup: () => {
+            for (const signal of validSignals) {
+                signal.removeEventListener('abort', onAbort);
+            }
+        },
+    };
+}
+
+function registerActiveRecallRequest(runToken, controller) {
+    const normalizedRunToken = Number(runToken);
+    if (!Number.isFinite(normalizedRunToken) || normalizedRunToken <= 0 || !controller) {
+        return null;
+    }
+
+    let resolveSettled = null;
+    const settledPromise = new Promise((resolve) => {
+        resolveSettled = resolve;
+    });
+    const state = {
+        id: ++nextActiveRecallRequestId,
+        runToken: normalizedRunToken,
+        controller,
+        settledPromise,
+        settled: false,
+        resolveSettled: typeof resolveSettled === 'function' ? resolveSettled : (() => {}),
+    };
+    activeRecallRequestStates.set(state.id, state);
+    return state;
+}
+
+function finishActiveRecallRequest(state) {
+    if (!state || typeof state !== 'object' || state.settled) {
+        return;
+    }
+    state.settled = true;
+    state.resolveSettled();
+    activeRecallRequestStates.delete(state.id);
+}
+
+function listActiveRecallRequests(runToken) {
+    const normalizedRunToken = Number(runToken);
+    if (!Number.isFinite(normalizedRunToken) || normalizedRunToken <= 0) {
+        return [];
+    }
+    return Array.from(activeRecallRequestStates.values())
+        .filter(state => Number(state?.runToken || 0) === normalizedRunToken);
+}
+
+async function abortActiveRecallRequests(runToken, timeoutMs = 400) {
+    const requests = listActiveRecallRequests(runToken);
+    if (requests.length === 0) {
+        return;
+    }
+
+    for (const state of requests) {
+        if (!state?.controller?.signal?.aborted) {
+            state.controller.abort();
+        }
+    }
+
+    const waitForSettlement = Promise.allSettled(requests.map(state => state.settledPromise));
+    const numericTimeout = Number(timeoutMs);
+    if (!Number.isFinite(numericTimeout) || numericTimeout <= 0) {
+        await waitForSettlement;
+        return;
+    }
+
+    await Promise.race([
+        waitForSettlement,
+        new Promise((resolve) => setTimeout(resolve, numericTimeout)),
+    ]);
+}
+
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
@@ -2861,9 +2964,11 @@ async function requestToolCallWithRetry(settings, promptMessages, {
     };
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
+        const requestController = createLinkedAbortController(isAbortSignalLike(abortSignal) ? abortSignal : null);
+        const activeRequestState = registerActiveRecallRequest(recallRunToken, requestController.controller);
         try {
             throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, requestController.signal, {
                 tools,
                 toolChoice,
                 replaceTools: true,
@@ -2897,6 +3002,9 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 throw error;
             }
             console.warn(`[${MODULE_NAME}] Tool call '${fnName}' failed. Retrying (${attempt + 1}/${retries})...`, error);
+        } finally {
+            finishActiveRecallRequest(activeRequestState);
+            requestController.cleanup();
         }
     }
 
@@ -2923,9 +3031,11 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     const toolChoice = 'auto';
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
+        const requestController = createLinkedAbortController(isAbortSignalLike(abortSignal) ? abortSignal : null);
+        const activeRequestState = registerActiveRecallRequest(recallRunToken, requestController.controller);
         try {
             throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, isAbortSignalLike(abortSignal) ? abortSignal : null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, requestController.signal, {
                 tools,
                 toolChoice,
                 replaceTools: true,
@@ -2954,6 +3064,9 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 throw error;
             }
             console.warn(`[${MODULE_NAME}] Multi tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
+        } finally {
+            finishActiveRecallRequest(activeRequestState);
+            requestController.cleanup();
         }
     }
 
@@ -6804,10 +6917,13 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
                 if (activeRecallRunToken === recallRunToken) {
                     activeRecallRunToken += 1;
                 }
-                if (recallAbortController && !recallAbortController.signal.aborted) {
-                    recallAbortController.abort();
-                }
-                resolve({ stopped: true });
+                void (async () => {
+                    if (recallAbortController && !recallAbortController.signal.aborted) {
+                        recallAbortController.abort();
+                    }
+                    await abortActiveRecallRequests(recallRunToken);
+                    resolve({ stopped: true });
+                })();
             };
         })
         : null;
