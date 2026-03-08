@@ -183,6 +183,7 @@ Module path:
 ```js
 import {
   registerRegexProvider,
+  registerManagedRegexProvider,
   unregisterRegexProvider,
   notifyRuntimeRegexScriptsChanged,
   regex_placement,
@@ -197,13 +198,39 @@ registerRegexProvider(
   owner: string,
   provider: (options?: { allowedOnly?: boolean }) => RegexScript[] | null | undefined,
   options?: { reloadOnChange?: boolean }   // default: false
-): void
+): {
+  owner: string,
+  refresh(options?: { requestReload?: boolean }): void,
+  unregister(): void,
+} | null
 ```
 
 - Registers an in-memory provider keyed by `owner`.
 - Re-registering with the same `owner` replaces the previous provider.
 - Runtime scripts are never persisted to settings/character/preset files.
 - `reloadOnChange=true` dispatches a runtime event requesting chat reload.
+- The returned handle lets provider owners refresh the regex UI/runtime list without reaching for a separate global notify helper.
+
+```ts
+registerManagedRegexProvider(
+  owner: string,
+  options?: { reloadOnChange?: boolean }   // default: false
+): {
+  owner: string,
+  refresh(options?: { requestReload?: boolean }): void,
+  unregister(): void,
+  upsertScript(script: RegexScript, options?: { requestReload?: boolean }): boolean,
+  removeScript(scriptId: string, options?: { requestReload?: boolean }): boolean,
+  setScripts(scripts: RegexScript[] | null | undefined, options?: { requestReload?: boolean }): void,
+  clearScripts(options?: { requestReload?: boolean }): void,
+  getScripts(): RegexScript[],
+} | null
+```
+
+- Creates and registers an engine-managed runtime regex collection keyed by `owner`.
+- Use this when your plugin wants `upsert/remove/set/clear` semantics instead of a pure callback provider.
+- Managed scripts are never persisted to settings/character/preset files.
+- Managed scripts require stable `id` values.
 
 ```ts
 unregisterRegexProvider(owner: string): void
@@ -258,10 +285,11 @@ substitute_find_regex = {
 }
 ```
 
-Minimal provider example:
+Provider example:
 
 ```js
 const OWNER = 'my-plugin:visible-window';
+const runtimeRegex = registerRegexProvider(OWNER, () => buildRuntimeRegexScripts(), { reloadOnChange: false });
 
 function buildRuntimeRegexScripts() {
   const n = Number(extension_settings.my_plugin?.visibleAssistantTurns ?? 0);
@@ -283,19 +311,57 @@ function buildRuntimeRegexScripts() {
   }];
 }
 
-registerRegexProvider(OWNER, () => buildRuntimeRegexScripts(), { reloadOnChange: false });
-
 // Later, when plugin settings changed:
-notifyRuntimeRegexScriptsChanged({ requestReload: false });
+runtimeRegex?.refresh({ requestReload: false });
 
 // On plugin teardown:
-unregisterRegexProvider(OWNER);
+runtimeRegex?.unregister();
+```
+
+Managed collection example:
+
+```js
+const OWNER = 'my-plugin:visible-window';
+const runtimeRegex = registerManagedRegexProvider(OWNER, { reloadOnChange: false });
+
+function syncVisibleWindowRegex() {
+  const n = Number(extension_settings.my_plugin?.visibleAssistantTurns ?? 0);
+  if (!runtimeRegex) return;
+
+  if (n <= 0) {
+    runtimeRegex.clearScripts();
+    return;
+  }
+
+  runtimeRegex.upsertScript({
+    id: `${OWNER}:mask`,
+    scriptName: `My Plugin Visible Window (${n})`,
+    findRegex: '/[\\s\\S]*/g',
+    replaceString: '',
+    trimStrings: [],
+    placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
+    disabled: false,
+    markdownOnly: false,
+    promptOnly: true,
+    runOnEdit: false,
+    substituteRegex: substitute_find_regex.NONE,
+    minDepth: n,
+    maxDepth: 999999,
+  });
+}
+
+syncVisibleWindowRegex();
+
+// On plugin teardown:
+runtimeRegex?.unregister();
 ```
 
 Best practices:
 
 - Keep provider pure and deterministic from current plugin state.
+- Prefer `registerManagedRegexProvider(...)` when plugin state naturally maps to a small mutable set of runtime scripts.
 - Use stable `owner` IDs and stable `scriptName` values.
+- Use stable runtime script `id` values when using the managed collection API.
 - Prefer `reloadOnChange=false` unless UI rendering must update immediately.
 - Prefer runtime providers for plugin-temporary behavior; use persisted regex storage only for user-managed rules.
 

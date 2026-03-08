@@ -40,7 +40,29 @@ let shownInvalidPlacementToast = false;
  * @property {boolean} [reloadOnChange=false] Request chat reload when provider is registered/unregistered.
  */
 
-/** @type {Map<string, { provider: (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined, reloadOnChange: boolean }>} */
+/**
+ * @typedef {object} RuntimeRegexScriptsChangedOptions
+ * @property {boolean} [requestReload=false]
+ */
+
+/**
+ * @typedef {object} RuntimeRegexProviderRegistration
+ * @property {string} owner
+ * @property {(options?: RuntimeRegexScriptsChangedOptions) => void} refresh Notify listeners that provider output changed
+ * @property {() => void} unregister Remove the provider registration
+ */
+
+/**
+ * @typedef {RuntimeRegexProviderRegistration & {
+ *   upsertScript: (script: RegexScript, options?: RuntimeRegexScriptsChangedOptions) => boolean,
+ *   removeScript: (scriptId: string, options?: RuntimeRegexScriptsChangedOptions) => boolean,
+ *   setScripts: (scripts: RegexScript[] | null | undefined, options?: RuntimeRegexScriptsChangedOptions) => void,
+ *   clearScripts: (options?: RuntimeRegexScriptsChangedOptions) => void,
+ *   getScripts: () => RegexScript[],
+ * }} ManagedRuntimeRegexProviderRegistration
+ */
+
+/** @type {Map<string, { provider: (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined, reloadOnChange: boolean, managedScripts?: Map<string, RegexScript> }>} */
 const runtimeRegexProviders = new Map();
 export const REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT = 'luker:regex-runtime-scripts-changed';
 
@@ -60,6 +82,146 @@ export function notifyRuntimeRegexScriptsChanged(options = {}) {
             requestReload: Boolean(options?.requestReload),
         },
     }));
+}
+
+/**
+ * @param {string} ownerId
+ * @param {{ provider: (options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined, reloadOnChange: boolean, managedScripts?: Map<string, RegexScript> }} entry
+ * @returns {RuntimeRegexProviderRegistration}
+ */
+function createRuntimeRegexProviderRegistration(ownerId, entry) {
+    return {
+        owner: ownerId,
+        refresh(options = {}) {
+            if (runtimeRegexProviders.get(ownerId) !== entry) {
+                return;
+            }
+            notifyRuntimeRegexScriptsChanged({ requestReload: Boolean(options?.requestReload) });
+        },
+        unregister() {
+            if (runtimeRegexProviders.get(ownerId) !== entry) {
+                return;
+            }
+            runtimeRegexProviders.delete(ownerId);
+            notifyRuntimeRegexScriptsChanged({ requestReload: entry.reloadOnChange });
+        },
+    };
+}
+
+/**
+ * @param {RegexScript} script
+ * @param {string} ownerId
+ * @returns {RegexScript | null}
+ */
+function normalizeManagedRuntimeRegexScript(script, ownerId) {
+    if (!script || typeof script !== 'object') {
+        console.warn(`registerManagedRegexProvider: owner "${ownerId}" received a non-object script; skipped.`);
+        return null;
+    }
+    const scriptId = String(script.id || '').trim();
+    if (!scriptId) {
+        console.warn(`registerManagedRegexProvider: owner "${ownerId}" received a script without id; skipped.`);
+        return null;
+    }
+    const scriptName = String(script.scriptName || '').trim();
+    if (!scriptName) {
+        console.warn(`registerManagedRegexProvider: owner "${ownerId}" received a script without scriptName; skipped.`);
+        return null;
+    }
+    return {
+        ...script,
+        id: scriptId,
+        scriptName,
+    };
+}
+
+/**
+ * Creates and registers a managed runtime regex provider backed by engine-owned script storage.
+ * This is useful for plugins that want `upsert/remove/set/clear` semantics instead of a pure callback provider.
+ *
+ * @param {string} owner Unique owner id, usually plugin/module name
+ * @param {RuntimeRegexProviderOptions} [options] Provider options
+ * @returns {ManagedRuntimeRegexProviderRegistration | null}
+ */
+export function registerManagedRegexProvider(owner, options = {}) {
+    const ownerId = String(owner || '').trim();
+    if (!ownerId) {
+        console.warn('registerManagedRegexProvider: owner is empty');
+        return null;
+    }
+    const reloadOnChange = Boolean(options?.reloadOnChange);
+    const managedScripts = new Map();
+    const entry = {
+        managedScripts,
+        reloadOnChange,
+        provider() {
+            return Array.from(managedScripts.values(), script => ({ ...script }));
+        },
+    };
+    runtimeRegexProviders.set(ownerId, entry);
+    notifyRuntimeRegexScriptsChanged({ requestReload: reloadOnChange });
+
+    const baseRegistration = createRuntimeRegexProviderRegistration(ownerId, entry);
+    return {
+        ...baseRegistration,
+        upsertScript(script, changeOptions = {}) {
+            if (runtimeRegexProviders.get(ownerId) !== entry) {
+                return false;
+            }
+            const normalizedScript = normalizeManagedRuntimeRegexScript(script, ownerId);
+            if (!normalizedScript) {
+                return false;
+            }
+            managedScripts.set(normalizedScript.id, normalizedScript);
+            notifyRuntimeRegexScriptsChanged({ requestReload: Boolean(changeOptions?.requestReload) });
+            return true;
+        },
+        removeScript(scriptId, changeOptions = {}) {
+            if (runtimeRegexProviders.get(ownerId) !== entry) {
+                return false;
+            }
+            const normalizedId = String(scriptId || '').trim();
+            if (!normalizedId) {
+                return false;
+            }
+            const removed = managedScripts.delete(normalizedId);
+            if (removed) {
+                notifyRuntimeRegexScriptsChanged({ requestReload: Boolean(changeOptions?.requestReload) });
+            }
+            return removed;
+        },
+        setScripts(scripts, changeOptions = {}) {
+            if (runtimeRegexProviders.get(ownerId) !== entry) {
+                return;
+            }
+            const nextManagedScripts = new Map();
+            for (const script of Array.isArray(scripts) ? scripts : []) {
+                const normalizedScript = normalizeManagedRuntimeRegexScript(script, ownerId);
+                if (!normalizedScript) {
+                    continue;
+                }
+                nextManagedScripts.set(normalizedScript.id, normalizedScript);
+            }
+            managedScripts.clear();
+            for (const [scriptId, normalizedScript] of nextManagedScripts.entries()) {
+                managedScripts.set(scriptId, normalizedScript);
+            }
+            notifyRuntimeRegexScriptsChanged({ requestReload: Boolean(changeOptions?.requestReload) });
+        },
+        clearScripts(changeOptions = {}) {
+            if (runtimeRegexProviders.get(ownerId) !== entry || managedScripts.size === 0) {
+                return;
+            }
+            managedScripts.clear();
+            notifyRuntimeRegexScriptsChanged({ requestReload: Boolean(changeOptions?.requestReload) });
+        },
+        getScripts() {
+            if (runtimeRegexProviders.get(ownerId) !== entry) {
+                return [];
+            }
+            return Array.from(managedScripts.values(), script => ({ ...script }));
+        },
+    };
 }
 
 /**
@@ -145,21 +307,23 @@ export class RegexProvider {
  * @param {string} owner Unique owner id, usually plugin/module name
  * @param {(options?: GetRegexScriptsOptions) => RegexScript[] | null | undefined} provider Script provider callback
  * @param {RuntimeRegexProviderOptions} [options] Provider options
- * @returns {void}
+ * @returns {RuntimeRegexProviderRegistration | null}
  */
 export function registerRegexProvider(owner, provider, options = {}) {
     const ownerId = String(owner || '').trim();
     if (!ownerId) {
         console.warn('registerRegexProvider: owner is empty');
-        return;
+        return null;
     }
     if (typeof provider !== 'function') {
         console.warn(`registerRegexProvider: provider for "${ownerId}" is not a function`);
-        return;
+        return null;
     }
     const reloadOnChange = Boolean(options?.reloadOnChange);
-    runtimeRegexProviders.set(ownerId, { provider, reloadOnChange });
+    const entry = { provider, reloadOnChange };
+    runtimeRegexProviders.set(ownerId, entry);
     notifyRuntimeRegexScriptsChanged({ requestReload: reloadOnChange });
+    return createRuntimeRegexProviderRegistration(ownerId, entry);
 }
 
 /**
