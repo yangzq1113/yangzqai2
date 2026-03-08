@@ -910,6 +910,9 @@ let generationInProgress = false;
 function getGenerationVisibleHistoryRuntimeRegexScripts() {
     const context = getContext();
     const settings = getEffectiveSettings(context, getSettings());
+    if (!settings?.enabled) {
+        return [];
+    }
     const visibleLayers = Math.max(0, Math.min(200, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages))));
     if (visibleLayers <= 0) {
         return [];
@@ -10846,6 +10849,7 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_enabled').off('input').on('input', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
+        notifyRuntimeRegexScriptsChanged();
         void syncMemoryLorebookActivation(getContext(), settings);
         if (settings.enabled) {
             void syncPersistentProjectionForCurrentChat(getContext());
