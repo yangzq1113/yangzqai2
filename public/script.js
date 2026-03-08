@@ -6094,7 +6094,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         worldInfoAfter,
     });
 
-    await eventSource.emit(event_types.GENERATION_WORLD_INFO_FINALIZED, {
+    const wiFinalizedPayload = {
         ...wiAfterPayload,
         coreChat,
         chatForWI,
@@ -6110,10 +6110,47 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         outletEntries,
         worldInfoResolution,
         rescanned: worldInfoRescanned,
-    });
+    };
+    await eventSource.emit(event_types.GENERATION_WORLD_INFO_FINALIZED, wiFinalizedPayload);
     if (exitAbortedGenerationIfNeeded()) {
         return Promise.resolve();
     }
+
+    if (Array.isArray(wiFinalizedPayload.coreChat)) {
+        coreChat = wiFinalizedPayload.coreChat;
+    }
+    if (Array.isArray(wiFinalizedPayload.chatForWI)) {
+        chatForWI = wiFinalizedPayload.chatForWI;
+    }
+    if (Number.isFinite(wiFinalizedPayload.maxContext) && Number(wiFinalizedPayload.maxContext) > 0) {
+        this_max_context = Number(wiFinalizedPayload.maxContext);
+    }
+    if (wiFinalizedPayload.globalScanData && typeof wiFinalizedPayload.globalScanData === 'object') {
+        globalScanData = wiFinalizedPayload.globalScanData;
+    }
+    if (wiFinalizedPayload.worldInfoResolution && typeof wiFinalizedPayload.worldInfoResolution === 'object') {
+        worldInfoResolution = wiFinalizedPayload.worldInfoResolution;
+    }
+
+    ({
+        worldInfoString,
+        worldInfoBefore,
+        worldInfoAfter,
+        worldInfoExamples,
+        worldInfoDepth,
+        outletEntries,
+        anBefore,
+        anAfter,
+    } = normalizeWorldInfoResolutionData({
+        ...worldInfoResolution,
+        ...wiFinalizedPayload,
+    }));
+
+    setActiveWorldInfoPromptSnapshot({
+        worldInfoBefore,
+        worldInfoAfter,
+    });
+
     setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
 
     // Add message example WI
