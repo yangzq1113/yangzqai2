@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 
-import { extension_prompt_roles, getRequestHeaders, saveSettingsDebounced } from '../../../script.js';
+import { extension_prompt_roles, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
@@ -100,7 +100,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
     agentFinalStagePrompt: DEFAULT_AGENT_FINAL_STAGE_PROMPT,
     agentMaxRounds: 3,
-    toolCallRetryMax: 1,
+    toolCallRetryMax: 2,
     lorebookPosition: world_info_position.atDepth,
     lorebookDepth: 9999,
     lorebookRole: extension_prompt_roles.SYSTEM,
@@ -241,6 +241,10 @@ function getSettings() {
 
 function isToolEnabled() {
     return Boolean(getSettings().enabled);
+}
+
+function shouldActivateSharedLorebook(settings = getSettings()) {
+    return Boolean(settings?.enabled || settings?.preRequestEnabled);
 }
 
 function normalizeWhitespace(text) {
@@ -717,7 +721,9 @@ function rewriteDepthWorldInfoToAfter(payload = {}) {
     if (!payload || typeof payload !== 'object') {
         return payload;
     }
-    const depthEntries = Array.isArray(payload.worldInfoDepth) ? payload.worldInfoDepth : [];
+    /** @type {{ worldInfoDepth?: any[]; worldInfoAfter?: string }} */
+    const target = payload;
+    const depthEntries = Array.isArray(target.worldInfoDepth) ? target.worldInfoDepth : [];
     if (depthEntries.length === 0) {
         return payload;
     }
@@ -733,13 +739,13 @@ function rewriteDepthWorldInfoToAfter(payload = {}) {
         }
     }
 
-    payload.worldInfoDepth = [];
+    target.worldInfoDepth = [];
     if (blocks.length === 0) {
         return payload;
     }
 
     const mergedDepthText = blocks.join('\n\n').trim();
-    payload.worldInfoAfter = [String(payload.worldInfoAfter || '').trim(), mergedDepthText]
+    target.worldInfoAfter = [String(target.worldInfoAfter || '').trim(), mergedDepthText]
         .filter(Boolean)
         .join('\n\n')
         .trim();
@@ -784,6 +790,35 @@ function buildRuntimeWorldInfoFromPayload(payload = null) {
         anAfter: Array.isArray(payload?.anAfter) ? payload.anAfter : [],
     });
     return hasEffectiveRuntimeWorldInfo(candidate) ? candidate : null;
+}
+
+function syncMutableGenerationPayloadState(target, source) {
+    if (!target || typeof target !== 'object' || !source || typeof source !== 'object' || target === source) {
+        return;
+    }
+
+    const mutableKeys = [
+        'requestRescan',
+        'worldInfoResolution',
+        'worldInfoResolutionOverride',
+        'worldInfoBefore',
+        'worldInfoAfter',
+        'worldInfoDepth',
+        'worldInfoExamples',
+        'anBefore',
+        'anAfter',
+        'outletEntries',
+        'globalScanData',
+        'chatForWI',
+        'maxContext',
+        'useCustomChatForWI',
+    ];
+
+    for (const key of mutableKeys) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+            target[key] = source[key];
+        }
+    }
 }
 
 async function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
@@ -1151,6 +1186,22 @@ async function ensureSharedLorebook(context, allowCreate = true) {
     };
 }
 
+async function refreshSharedLorebookVisibilityAndSelection(context, selected) {
+    if (typeof context?.updateWorldInfoList === 'function') {
+        await context.updateWorldInfoList();
+    }
+
+    if (typeof selected === 'boolean') {
+        const changed = await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, selected, {
+            refreshList: true,
+            save: false,
+        });
+        if (changed) {
+            await saveSettings();
+        }
+    }
+}
+
 async function loadLegacyManagedEntries(context) {
     const metadata = context.chatMetadata && typeof context.chatMetadata === 'object' ? context.chatMetadata : {};
     const existingName = String(metadata?.[CHAT_LOREBOOK_METADATA_KEY] || '').trim();
@@ -1202,11 +1253,8 @@ function applyManagedEntriesToLorebook(data, settings, managedEntries = []) {
 
 async function syncSharedLorebookForCurrentChat(context = getContext()) {
     const settings = getSettings();
-    if (settings.enabled) {
-        await ensureSharedLorebook(context, true);
-        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, true);
-    } else {
-        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, false);
+    if (!shouldActivateSharedLorebook(settings)) {
+        await refreshSharedLorebookVisibilityAndSelection(context, false);
         return { changed: false, bookName: SHARED_LOREBOOK_NAME };
     }
 
@@ -1214,6 +1262,7 @@ async function syncSharedLorebookForCurrentChat(context = getContext()) {
     const data = lorebook.data && typeof lorebook.data === 'object' ? structuredClone(lorebook.data) : { entries: {} };
     applyManagedEntriesToLorebook(data, settings, latestManagedEntries);
     await context.saveWorldInfo(SHARED_LOREBOOK_NAME, data, true);
+    await refreshSharedLorebookVisibilityAndSelection(context, true);
     return { changed: true, bookName: SHARED_LOREBOOK_NAME };
 }
 
@@ -1674,6 +1723,9 @@ function updatePayloadWorldInfoFromResolution(payload, resolution) {
 
 async function flushLorebookChanges(context, payload, bookName, data) {
     await context.saveWorldInfo(bookName, data, true);
+    if (String(bookName || '').trim() === SHARED_LOREBOOK_NAME) {
+        await refreshSharedLorebookVisibilityAndSelection(context, shouldActivateSharedLorebook(getSettings()));
+    }
     payload.requestRescan = true;
     if (typeof payload?.simulateWorldInfo === 'function') {
         const resolution = await payload.simulateWorldInfo();
@@ -1912,9 +1964,11 @@ async function maybeRunPreRequestSearchAgent(payload) {
             stopRequestPromise,
         ]);
         if (raced?.stopped) {
+            syncMutableGenerationPayloadState(payload, effectivePayload);
             updateUiStatus(i18n('Search agent aborted.'));
             return;
         }
+        syncMutableGenerationPayloadState(payload, effectivePayload);
         const result = raced?.result;
         if (runToken !== activeAgentRunToken) {
             return;
@@ -1935,6 +1989,7 @@ async function maybeRunPreRequestSearchAgent(payload) {
         await persistSearchToolsChatState(context);
         updateUiStatus(buildSearchAgentStatusText(result));
     } catch (error) {
+        syncMutableGenerationPayloadState(payload, effectivePayload);
         if (runToken !== activeAgentRunToken) {
             return;
         }
@@ -2160,6 +2215,7 @@ function bindSettingsUi() {
     });
     root.on('input.searchTools', '#search_tools_pre_request_enabled', function () {
         settings.preRequestEnabled = Boolean(jQuery(this).prop('checked'));
+        void syncSharedLorebookForCurrentChat(getContext());
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_provider', function () {

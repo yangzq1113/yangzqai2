@@ -1144,67 +1144,6 @@ function appendUniqueWorldInfoExample(payload, anchorPosition, block) {
     return true;
 }
 
-function injectRecallFocusPacketToPayload(payload, settings, focusPacket) {
-    if (!payload || typeof payload !== 'object') {
-        return false;
-    }
-    const packet = normalizeMultilineText(focusPacket || '');
-    if (!packet) {
-        return false;
-    }
-    const position = normalizeRecallInjectPosition(settings?.recallInjectPosition);
-    if (position === world_info_position.before) {
-        const next = appendUniqueWorldInfoBlock(payload.worldInfoBefore, packet);
-        payload.worldInfoBefore = next.text;
-        return next.changed;
-    }
-    if (position === world_info_position.after) {
-        const next = appendUniqueWorldInfoBlock(payload.worldInfoAfter, packet);
-        payload.worldInfoAfter = next.text;
-        return next.changed;
-    }
-    if (position === world_info_position.ANTop) {
-        if (!Array.isArray(payload.anBefore)) {
-            payload.anBefore = [];
-        }
-        return appendUniqueNoteEntry(payload.anBefore, packet);
-    }
-    if (position === world_info_position.ANBottom) {
-        if (!Array.isArray(payload.anAfter)) {
-            payload.anAfter = [];
-        }
-        return appendUniqueNoteEntry(payload.anAfter, packet);
-    }
-    if (position === world_info_position.EMTop) {
-        return appendUniqueWorldInfoExample(payload, wi_anchor_position.before, packet);
-    }
-    if (position === world_info_position.EMBottom) {
-        return appendUniqueWorldInfoExample(payload, wi_anchor_position.after, packet);
-    }
-
-    const depth = normalizeRecallInjectDepth(settings?.recallInjectDepth);
-    const role = mapPromptRoleToWorldInfoRole(settings?.recallInjectRole);
-    if (!Array.isArray(payload.worldInfoDepth)) {
-        payload.worldInfoDepth = [];
-    }
-    let target = payload.worldInfoDepth.find((entry) => {
-        const entryDepth = Math.max(0, Math.floor(Number(entry?.depth) || 0));
-        const entryRole = String(entry?.role || '').trim().toLowerCase();
-        return entryDepth === depth && entryRole === role;
-    });
-    if (!target) {
-        target = { depth, role, entries: [] };
-        payload.worldInfoDepth.push(target);
-    } else if (!Array.isArray(target.entries)) {
-        target.entries = [];
-    }
-    if (target.entries.includes(packet)) {
-        return false;
-    }
-    target.entries.push(packet);
-    return true;
-}
-
 function ensureSettings() {
     if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
         extension_settings[MODULE_NAME] = {};
@@ -6832,6 +6771,37 @@ function createRuntimeLorebookEntry(uid, comment, content, order) {
     };
 }
 
+function syncMutableGenerationPayloadState(target, source) {
+    if (!target || typeof target !== 'object' || !source || typeof source !== 'object' || target === source) {
+        return;
+    }
+
+    const mutableKeys = [
+        'requestRescan',
+        '__lukerRpgMemoryNeedRescan',
+        '__lukerRpgMemoryInjected',
+        'worldInfoResolution',
+        'worldInfoResolutionOverride',
+        'worldInfoBefore',
+        'worldInfoAfter',
+        'worldInfoDepth',
+        'worldInfoExamples',
+        'anBefore',
+        'anAfter',
+        'outletEntries',
+        'globalScanData',
+        'chatForWI',
+        'maxContext',
+        'useCustomChatForWI',
+    ];
+
+    for (const key of mutableKeys) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+            target[key] = source[key];
+        }
+    }
+}
+
 async function ensureSharedLorebook(context, allowCreate = true) {
     const loaded = await context.loadWorldInfo(SHARED_LOREBOOK_NAME);
     if (loaded && typeof loaded === 'object') {
@@ -6846,6 +6816,16 @@ async function ensureSharedLorebook(context, allowCreate = true) {
         await context.updateWorldInfoList();
     }
     return SHARED_LOREBOOK_NAME;
+}
+
+async function refreshSharedLorebookVisibilityAndSelection(context, selected) {
+    if (typeof context?.updateWorldInfoList === 'function') {
+        await context.updateWorldInfoList();
+    }
+
+    if (typeof selected === 'boolean') {
+        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, selected, { refreshList: true });
+    }
 }
 
 function getManagedLorebookEntries(data, commentPrefix) {
@@ -6955,6 +6935,9 @@ async function upsertManagedLorebookProjection(context, settings, {
     }
 
     await context.saveWorldInfo(bookName, data, true);
+    if (bookName === SHARED_LOREBOOK_NAME) {
+        await refreshSharedLorebookVisibilityAndSelection(context, Boolean(settings?.enabled));
+    }
     return { changed: true, bookName };
 }
 
@@ -6986,13 +6969,23 @@ async function syncPersistentLorebookProjection(context, settings, store) {
     };
 }
 
-async function clearRuntimeLorebookProjection(context, settings) {
+async function syncRuntimeLorebookProjection(context, settings, store) {
+    const projection = getLastRecallProjection(store);
+    const focusPacket = normalizeMultilineText(projection?.blocks?.focusPacket || projection?.focusPacket || '');
     const result = await upsertManagedLorebookProjection(context, settings, {
         commentPrefix: RUNTIME_LOREBOOK_COMMENT_PREFIX,
-        sections: [],
+        sections: focusPacket ? [['FOCUS_PACKET', focusPacket]] : [],
         orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)) + 50,
-        allowCreate: false,
+        allowCreate: Boolean(focusPacket),
     });
+    return {
+        changed: Boolean(result?.changed),
+        focusPacket,
+    };
+}
+
+async function clearRuntimeLorebookProjection(context, settings) {
+    const result = await syncRuntimeLorebookProjection(context, settings, { lastRecallProjection: null });
     return Boolean(result?.changed);
 }
 
@@ -7014,7 +7007,7 @@ async function clearAllMemoryLorebookProjection(context, settings) {
 async function syncMemoryLorebookActivation(context, settings) {
     if (settings?.enabled) {
         await ensureSharedLorebook(context, true);
-        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, true);
+        await refreshSharedLorebookVisibilityAndSelection(context, true);
         return;
     }
 
@@ -7547,7 +7540,6 @@ async function injectMemoryPrompts(context, payload) {
     if (shouldReuseSnapshot) {
         const focusPacket = normalizeMultilineText(latestRecallSnapshot?.blocks?.focusPacket || '');
         const blocks = { corePacket, focusPacket };
-        const payloadInjected = injectRecallFocusPacketToPayload(payload, settings, blocks.focusPacket);
         store.lastRecallTrace = structuredClone(Array.isArray(latestRecallSnapshot.trace) ? latestRecallSnapshot.trace : []);
         store.lastRecallProjection = {
             at: Date.now(),
@@ -7555,11 +7547,13 @@ async function injectMemoryPrompts(context, payload) {
         };
         await persistMemoryStoreByChatKey(context, chatKey, store);
         throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+        const runtimeSync = await syncRuntimeLorebookProjection(context, settings, store);
+        throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
         if (payload && typeof payload === 'object') {
-            payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed);
+            payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed || runtimeSync.changed);
         }
         updateUiStatus(i18nFormat('Recall ready. selected=${0}', Math.max(0, Number(latestRecallSnapshot.selectedCount || 0))));
-        return Boolean(payloadInjected || persistentSync.changed);
+        return Boolean(persistentSync.changed || runtimeSync.changed);
     }
 
     const { selectedNodes, trace } = await runLLMDrivenRecall(context, store, payload);
@@ -7570,15 +7564,16 @@ async function injectMemoryPrompts(context, payload) {
         corePacket,
         focusPacket: normalizeMultilineText(buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }, context)),
     };
-    const payloadInjected = injectRecallFocusPacketToPayload(payload, settings, blocks.focusPacket);
     store.lastRecallProjection = {
         at: Date.now(),
         blocks,
     };
     await persistMemoryStoreByChatKey(context, chatKey, store);
     throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    const runtimeSync = await syncRuntimeLorebookProjection(context, settings, store);
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     if (payload && typeof payload === 'object') {
-        payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed);
+        payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed || runtimeSync.changed);
     }
     latestRecallSnapshot = anchor
         ? {
@@ -7593,7 +7588,7 @@ async function injectMemoryPrompts(context, payload) {
         }
         : null;
     updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
-    return Boolean(payloadInjected || persistentSync.changed);
+    return Boolean(persistentSync.changed || runtimeSync.changed);
 }
 
 async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_info_scan') {
@@ -7674,6 +7669,7 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
             ? await Promise.race([injectTask, stopRequestPromise])
             : await injectTask;
         if (result?.stopped) {
+            syncMutableGenerationPayloadState(payload, effectivePayload);
             if (payload && typeof payload === 'object') {
                 payload.__lukerRpgMemoryNeedRescan = false;
                 payload.requestRescan = false;
@@ -7681,12 +7677,14 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
             updateUiStatus(i18n('Memory recall cancelled by user.'));
             return false;
         }
+        syncMutableGenerationPayloadState(payload, effectivePayload);
         const injected = Boolean(result?.injected);
         if (injected && payload && typeof payload === 'object') {
             payload.__lukerRpgMemoryInjected = true;
         }
         return Boolean(injected);
     } catch (error) {
+        syncMutableGenerationPayloadState(payload, effectivePayload);
         if (isAbortError(error, effectivePayload?.signal)) {
             if (payload && typeof payload === 'object') {
                 payload.__lukerRpgMemoryNeedRescan = false;
