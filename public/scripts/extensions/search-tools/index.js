@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 
-import { extension_prompt_roles, extension_prompt_types, getRequestHeaders, saveSettingsDebounced } from '../../../script.js';
+import { extension_prompt_roles, getRequestHeaders, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
@@ -81,11 +81,21 @@ const DEFAULT_SETTINGS = Object.freeze({
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
     agentMaxRounds: 3,
     toolCallRetryMax: 1,
-    lorebookPosition: extension_prompt_types.IN_CHAT,
+    lorebookPosition: world_info_position.atDepth,
     lorebookDepth: 9999,
     lorebookRole: extension_prompt_roles.SYSTEM,
     lorebookEntryOrder: 9800,
 });
+const LOREBOOK_POSITION_SCHEMA_VERSION = 2;
+const SUPPORTED_WORLD_INFO_POSITIONS = Object.freeze([
+    world_info_position.before,
+    world_info_position.after,
+    world_info_position.ANTop,
+    world_info_position.ANBottom,
+    world_info_position.EMTop,
+    world_info_position.EMBottom,
+    world_info_position.atDepth,
+]);
 
 let activeAgentRunToken = 0;
 let activeAgentRunInfoToast = null;
@@ -126,19 +136,20 @@ function normalizeLorebookRole(value) {
 
 function normalizeLorebookPosition(value) {
     const numeric = Number(value);
-    const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
-    return allowed.includes(numeric) ? numeric : DEFAULT_SETTINGS.lorebookPosition;
+    return SUPPORTED_WORLD_INFO_POSITIONS.includes(numeric) ? numeric : DEFAULT_SETTINGS.lorebookPosition;
 }
 
-function mapLorebookPositionToWorldInfoPosition(value) {
-    const normalized = normalizeLorebookPosition(value);
-    if (normalized === extension_prompt_types.BEFORE_PROMPT) {
-        return world_info_position.before;
+function migrateLegacyPromptInjectionPosition(value) {
+    switch (Number(value)) {
+        case 2:
+            return world_info_position.before;
+        case 0:
+            return world_info_position.after;
+        case 1:
+            return world_info_position.atDepth;
+        default:
+            return DEFAULT_SETTINGS.lorebookPosition;
     }
-    if (normalized === extension_prompt_types.IN_PROMPT) {
-        return world_info_position.after;
-    }
-    return world_info_position.atDepth;
 }
 
 function ensureSettings() {
@@ -180,7 +191,12 @@ function ensureSettings() {
         5,
         DEFAULT_SETTINGS.toolCallRetryMax,
     );
+    const hasLorebookPositionSchemaVersion = Object.prototype.hasOwnProperty.call(settings, 'lorebookPositionSchemaVersion');
+    if (!hasLorebookPositionSchemaVersion) {
+        settings.lorebookPosition = migrateLegacyPromptInjectionPosition(settings.lorebookPosition ?? DEFAULT_SETTINGS.lorebookPosition);
+    }
     settings.lorebookPosition = normalizeLorebookPosition(settings.lorebookPosition ?? DEFAULT_SETTINGS.lorebookPosition);
+    settings.lorebookPositionSchemaVersion = LOREBOOK_POSITION_SCHEMA_VERSION;
     settings.lorebookDepth = clampInteger(
         settings.lorebookDepth ?? DEFAULT_SETTINGS.lorebookDepth,
         0,
@@ -1196,7 +1212,7 @@ function createManagedLorebookEntry(uid, spec, settings, existingEntry = null) {
     entry.constant = Boolean(spec.alwaysInject);
     entry.selective = false;
 
-    entry.position = mapLorebookPositionToWorldInfoPosition(settings.lorebookPosition);
+    entry.position = normalizeLorebookPosition(settings.lorebookPosition);
     entry.depth = Number(settings.lorebookDepth);
     entry.role = Number(settings.lorebookRole);
     entry.order = Number(settings.lorebookEntryOrder);
@@ -1957,13 +1973,17 @@ function renderSettingsBlock() {
         <input id="search_tools_tool_call_retry_max" class="text_pole" type="number" min="0" max="5" step="1" />
         <label for="search_tools_lorebook_position">${escapeHtml(i18n('Injection position'))}</label>
         <select id="search_tools_lorebook_position" class="text_pole">
-            <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
-            <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
-            <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
+            <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>
+            <option value="${world_info_position.after}">${escapeHtml(i18n('After Character Definitions'))}</option>
+            <option value="${world_info_position.ANTop}">${escapeHtml(i18n("Before Author's Note"))}</option>
+            <option value="${world_info_position.ANBottom}">${escapeHtml(i18n("After Author's Note"))}</option>
+            <option value="${world_info_position.EMTop}">${escapeHtml(i18n('Before Example Messages'))}</option>
+            <option value="${world_info_position.EMBottom}">${escapeHtml(i18n('After Example Messages'))}</option>
+            <option value="${world_info_position.atDepth}">${escapeHtml(i18n('At Chat Depth'))}</option>
         </select>
-        <label for="search_tools_lorebook_depth">${escapeHtml(i18n('Injection depth (IN_CHAT only)'))}</label>
+        <label for="search_tools_lorebook_depth">${escapeHtml(i18n('Injection depth (At Chat Depth only)'))}</label>
         <input id="search_tools_lorebook_depth" class="text_pole" type="number" min="0" max="9999" step="1" />
-        <label for="search_tools_lorebook_role">${escapeHtml(i18n('Injection role (IN_CHAT only)'))}</label>
+        <label for="search_tools_lorebook_role">${escapeHtml(i18n('Injection role (At Chat Depth only)'))}</label>
         <select id="search_tools_lorebook_role" class="text_pole">
             <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
             <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
@@ -2198,8 +2218,15 @@ function registerLocaleData() {
         'Agent max rounds': 'Agent 最大轮数',
         'Tool call retry count': '工具调用重试次数',
         'Injection position': '注入位置',
-        'Injection depth (IN_CHAT only)': '注入深度（仅聊天内）',
-        'Injection role (IN_CHAT only)': '注入角色（仅聊天内）',
+        'Before Character Definitions': '角色定义前',
+        'After Character Definitions': '角色定义后',
+        "Before Author's Note": '作者注释前',
+        "After Author's Note": '作者注释后',
+        'Before Example Messages': '示例消息前',
+        'After Example Messages': '示例消息后',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（仅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（仅聊天深度位置）',
         'Injection order': '注入顺序',
         'Search agent system prompt': '搜索 Agent 系统提示词',
         'Reset search agent prompt': '重置搜索 Agent 提示词',
@@ -2236,8 +2263,15 @@ function registerLocaleData() {
         'Agent max rounds': 'Agent 最大輪數',
         'Tool call retry count': '工具呼叫重試次數',
         'Injection position': '注入位置',
-        'Injection depth (IN_CHAT only)': '注入深度（僅聊天內）',
-        'Injection role (IN_CHAT only)': '注入角色（僅聊天內）',
+        'Before Character Definitions': '角色定義前',
+        'After Character Definitions': '角色定義後',
+        "Before Author's Note": '作者註釋前',
+        "After Author's Note": '作者註釋後',
+        'Before Example Messages': '示例訊息前',
+        'After Example Messages': '示例訊息後',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（僅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（僅聊天深度位置）',
         'Injection order': '注入順序',
         'Search agent system prompt': '搜尋 Agent 系統提示詞',
         'Reset search agent prompt': '重置搜尋 Agent 提示詞',

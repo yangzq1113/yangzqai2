@@ -7,6 +7,7 @@ import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
+import { wi_anchor_position, world_info_position } from '../../world-info.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
     TOOL_PROTOCOL_STYLE,
@@ -52,6 +53,16 @@ const AUTO_INJECTED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${AUTO_INJECTED_CONTE
 const LEGACY_REMOVED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${LEGACY_REMOVED_CONTEXT_VARS.join('|')})\\s*}}`, 'gi');
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const ORCH_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
+const CAPSULE_INJECT_POSITION_SCHEMA_VERSION = 2;
+const SUPPORTED_WORLD_INFO_POSITIONS = Object.freeze([
+    world_info_position.before,
+    world_info_position.after,
+    world_info_position.ANTop,
+    world_info_position.ANBottom,
+    world_info_position.EMTop,
+    world_info_position.EMBottom,
+    world_info_position.atDepth,
+]);
 const REQUIRED_AI_BUILD_NODE_IDS = ['lorebook_reader', 'anti_data_guard'];
 const ANTI_DATA_BLOCKED_LEXICON = [
     '观察', '分析', '评估', '统计', '监测', '检测', '实验', '推测', '记录', '汇报',
@@ -175,7 +186,7 @@ const defaultSettings = {
     toolCallRetryMax: 2,
     agentTimeoutSeconds: 0,
     maxRecentMessages: 14,
-    capsuleInjectPosition: extension_prompt_types.IN_CHAT,
+    capsuleInjectPosition: world_info_position.atDepth,
     capsuleInjectDepth: 9999,
     capsuleInjectRole: extension_prompt_roles.SYSTEM,
     capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
@@ -193,6 +204,139 @@ function i18n(text) {
 
 function i18nFormat(key, ...values) {
     return i18n(key).replace(/\$\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+}
+
+function normalizeCapsuleInjectPosition(value) {
+    const numeric = Number(value);
+    return SUPPORTED_WORLD_INFO_POSITIONS.includes(numeric) ? numeric : world_info_position.atDepth;
+}
+
+function migrateLegacyCapsuleInjectPosition(value) {
+    switch (Number(value)) {
+        case extension_prompt_types.BEFORE_PROMPT:
+            return world_info_position.before;
+        case extension_prompt_types.IN_PROMPT:
+            return world_info_position.after;
+        case extension_prompt_types.IN_CHAT:
+            return world_info_position.atDepth;
+        default:
+            return world_info_position.atDepth;
+    }
+}
+
+function appendUniqueWorldInfoBlock(text, block) {
+    const existing = String(text || '').trim();
+    const incoming = String(block || '').trim();
+    if (!incoming) {
+        return { text: existing, changed: false };
+    }
+    if (existing.includes(incoming)) {
+        return { text: existing, changed: false };
+    }
+    return {
+        text: [existing, incoming].filter(Boolean).join('\n\n').trim(),
+        changed: true,
+    };
+}
+
+function appendUniqueNoteEntry(targetList, block) {
+    const incoming = String(block || '').trim();
+    if (!incoming || !Array.isArray(targetList)) {
+        return false;
+    }
+    if (targetList.includes(incoming)) {
+        return false;
+    }
+    targetList.push(incoming);
+    return true;
+}
+
+function appendUniqueWorldInfoExample(payload, anchorPosition, block) {
+    const incoming = String(block || '').trim();
+    if (!incoming) {
+        return false;
+    }
+    if (!Array.isArray(payload.worldInfoExamples)) {
+        payload.worldInfoExamples = [];
+    }
+    const normalizedPosition = Number(anchorPosition) === Number(wi_anchor_position.before)
+        ? wi_anchor_position.before
+        : wi_anchor_position.after;
+    if (payload.worldInfoExamples.some((entry) => (
+        Number(entry?.position) === Number(normalizedPosition)
+        && String(entry?.content || '').trim() === incoming
+    ))) {
+        return false;
+    }
+    payload.worldInfoExamples.push({
+        position: normalizedPosition,
+        content: incoming,
+    });
+    return true;
+}
+
+function injectCapsuleToPayload(payload, text, settings = extension_settings[MODULE_NAME]) {
+    if (!payload || typeof payload !== 'object') {
+        return false;
+    }
+    const packet = String(text || '').trim();
+    if (!packet) {
+        return false;
+    }
+    const position = normalizeCapsuleInjectPosition(settings?.capsuleInjectPosition);
+    if (position === world_info_position.before) {
+        const next = appendUniqueWorldInfoBlock(payload.worldInfoBefore, packet);
+        payload.worldInfoBefore = next.text;
+        return next.changed;
+    }
+    if (position === world_info_position.after) {
+        const next = appendUniqueWorldInfoBlock(payload.worldInfoAfter, packet);
+        payload.worldInfoAfter = next.text;
+        return next.changed;
+    }
+    if (position === world_info_position.ANTop) {
+        if (!Array.isArray(payload.anBefore)) {
+            payload.anBefore = [];
+        }
+        return appendUniqueNoteEntry(payload.anBefore, packet);
+    }
+    if (position === world_info_position.ANBottom) {
+        if (!Array.isArray(payload.anAfter)) {
+            payload.anAfter = [];
+        }
+        return appendUniqueNoteEntry(payload.anAfter, packet);
+    }
+    if (position === world_info_position.EMTop) {
+        return appendUniqueWorldInfoExample(payload, wi_anchor_position.before, packet);
+    }
+    if (position === world_info_position.EMBottom) {
+        return appendUniqueWorldInfoExample(payload, wi_anchor_position.after, packet);
+    }
+    const depth = Math.max(0, Math.min(10000, Math.floor(Number(settings?.capsuleInjectDepth) || 0)));
+    const roleValue = Number(settings?.capsuleInjectRole);
+    const role = roleValue === extension_prompt_roles.USER
+        ? 'user'
+        : roleValue === extension_prompt_roles.ASSISTANT
+            ? 'assistant'
+            : 'system';
+    if (!Array.isArray(payload.worldInfoDepth)) {
+        payload.worldInfoDepth = [];
+    }
+    let target = payload.worldInfoDepth.find((entry) => (
+        Math.max(0, Math.floor(Number(entry?.depth) || 0)) === depth
+        && String(entry?.role || '').trim().toLowerCase() === role
+    ));
+    if (!target) {
+        target = { depth, role, entries: [] };
+        payload.worldInfoDepth.push(target);
+    } else if (!Array.isArray(target.entries)) {
+        target.entries = [];
+    }
+    if (target.entries.includes(packet)) {
+        return false;
+    }
+    target.entries.push(packet);
+    return true;
 }
 
 function registerLocaleData() {
@@ -216,11 +360,15 @@ function registerLocaleData() {
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
         'Injection position': '注入位置',
-        'In-Chat': '聊天内',
-        'In-Prompt (system block)': '提示词内（系统块）',
-        'Before-Prompt': '提示词前',
-        'Injection depth (IN_CHAT only)': '注入深度（仅聊天内）',
-        'Injection role (IN_CHAT only)': '注入角色（仅聊天内）',
+        'Before Character Definitions': '角色定义前',
+        'After Character Definitions': '角色定义后',
+        "Before Author's Note": '作者注释前',
+        "After Author's Note": '作者注释后',
+        'Before Example Messages': '示例消息前',
+        'After Example Messages': '示例消息后',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（仅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（仅聊天深度位置）',
         'Custom orchestration result instruction (prepended before analysis)': '自定义编排结果指令（会放在分析结果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指导，再用角色语气完成最终回复。',
         'System': 'System',
@@ -406,11 +554,15 @@ function registerLocaleData() {
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
         'Injection position': '注入位置',
-        'In-Chat': '聊天內',
-        'In-Prompt (system block)': '提示詞內（系統區塊）',
-        'Before-Prompt': '提示詞前',
-        'Injection depth (IN_CHAT only)': '注入深度（僅聊天內）',
-        'Injection role (IN_CHAT only)': '注入角色（僅聊天內）',
+        'Before Character Definitions': '角色定義前',
+        'After Character Definitions': '角色定義後',
+        "Before Author's Note": '作者註釋前',
+        "After Author's Note": '作者註釋後',
+        'Before Example Messages': '示例訊息前',
+        'After Example Messages': '示例訊息後',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（僅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（僅聊天深度位置）',
         'Custom orchestration result instruction (prepended before analysis)': '自訂編排結果指令（會放在分析結果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指導，再以角色語氣完成最終回覆。',
         'System': 'System',
@@ -697,13 +849,19 @@ function ensureSettings() {
     delete extension_settings[MODULE_NAME].aiSuggestPromptPresetName;
     delete extension_settings[MODULE_NAME].maxCapsuleChars;
     delete extension_settings[MODULE_NAME].saveTarget;
-    {
-        const value = Number(extension_settings[MODULE_NAME].capsuleInjectPosition);
-        const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
-        extension_settings[MODULE_NAME].capsuleInjectPosition = allowed.includes(value)
-            ? value
-            : extension_prompt_types.IN_CHAT;
+    const hasCapsuleInjectPositionSchemaVersion = Object.prototype.hasOwnProperty.call(
+        extension_settings[MODULE_NAME],
+        'capsuleInjectPositionSchemaVersion',
+    );
+    if (!hasCapsuleInjectPositionSchemaVersion) {
+        extension_settings[MODULE_NAME].capsuleInjectPosition = migrateLegacyCapsuleInjectPosition(
+            extension_settings[MODULE_NAME].capsuleInjectPosition,
+        );
     }
+    extension_settings[MODULE_NAME].capsuleInjectPosition = normalizeCapsuleInjectPosition(
+        extension_settings[MODULE_NAME].capsuleInjectPosition,
+    );
+    extension_settings[MODULE_NAME].capsuleInjectPositionSchemaVersion = CAPSULE_INJECT_POSITION_SCHEMA_VERSION;
     extension_settings[MODULE_NAME].capsuleInjectDepth = Math.max(
         0,
         Math.min(10000, Math.floor(Number(extension_settings[MODULE_NAME].capsuleInjectDepth) || 0)),
@@ -963,7 +1121,7 @@ async function editLastOrchestrationResult(context) {
         capsuleText: nextText,
         updatedAt: new Date().toISOString(),
     };
-    injectCapsule(context, nextText);
+    clearCapsulePrompt(context);
     await persistOrchestratorChatState(context);
     notifySuccess(i18n('Saved latest orchestration result.'));
     updateUiStatus(i18n('Saved latest orchestration result.'));
@@ -2251,21 +2409,6 @@ function buildCapsule(stageOutputs) {
     return `${customInstruction}\n\n${body}`;
 }
 
-function injectCapsule(context, text) {
-    const settings = extension_settings[MODULE_NAME];
-    const position = Number(settings.capsuleInjectPosition);
-    const depth = Math.max(0, Math.min(10000, Math.floor(Number(settings.capsuleInjectDepth) || 0)));
-    const role = Number(settings.capsuleInjectRole);
-    context.setExtensionPrompt(
-        CAPSULE_PROMPT_KEY,
-        text,
-        position,
-        depth,
-        true,
-        role,
-    );
-}
-
 function reapplyLatestCapsuleInjection(context) {
     const chatKey = getChatKey(context);
     if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
@@ -2276,7 +2419,13 @@ function reapplyLatestCapsuleInjection(context) {
     }
     const rebuiltText = buildCapsule(Array.isArray(latestOrchestrationSnapshot.stageOutputs) ? latestOrchestrationSnapshot.stageOutputs : []);
     const nextText = String(rebuiltText || latestOrchestrationSnapshot.capsuleText || '').trim();
-    injectCapsule(context, nextText);
+    latestOrchestrationSnapshot = {
+        ...latestOrchestrationSnapshot,
+        capsuleText: nextText,
+        updatedAt: new Date().toISOString(),
+    };
+    clearCapsulePrompt(context);
+    void persistOrchestratorChatState(context);
 }
 
 async function onWorldInfoFinalized(payload) {
@@ -2341,7 +2490,7 @@ async function onWorldInfoFinalized(payload) {
         if (ORCH_REUSE_GENERATION_TYPES.has(generationType) && canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
-                injectCapsule(context, capsuleText);
+                injectCapsuleToPayload(payload, capsuleText, settings);
                 latestOrchestrationSnapshot = {
                     ...latestOrchestrationSnapshot,
                     chatKey,
@@ -2387,7 +2536,7 @@ async function onWorldInfoFinalized(payload) {
 
         const capsuleText = buildCapsule(finalRun.stageOutputs || []);
         throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
-        injectCapsule(context, capsuleText);
+        injectCapsuleToPayload(payload, capsuleText, settings);
         latestOrchestrationSnapshot = {
             chatKey,
             anchorFloor: Number(anchor?.floor || 0),
@@ -5926,16 +6075,13 @@ function bindUi() {
     });
 
     root.on('change.lukerOrch', '#luker_orch_capsule_position', function () {
-        const value = Number(jQuery(this).val());
-        const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
-        settings.capsuleInjectPosition = allowed.includes(value) ? value : extension_prompt_types.IN_CHAT;
-        reapplyLatestCapsuleInjection(getContext());
+        settings.capsuleInjectPosition = normalizeCapsuleInjectPosition(jQuery(this).val());
+        jQuery(this).val(String(settings.capsuleInjectPosition));
         saveSettingsDebounced();
     });
 
     root.on('change.lukerOrch', '#luker_orch_capsule_depth', function () {
         settings.capsuleInjectDepth = Math.max(0, Math.min(10000, Math.floor(Number(jQuery(this).val()) || 0)));
-        reapplyLatestCapsuleInjection(getContext());
         saveSettingsDebounced();
     });
 
@@ -5943,7 +6089,6 @@ function bindUi() {
         const value = Number(jQuery(this).val());
         const allowedRoles = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
         settings.capsuleInjectRole = allowedRoles.includes(value) ? value : extension_prompt_roles.SYSTEM;
-        reapplyLatestCapsuleInjection(getContext());
         saveSettingsDebounced();
     });
 
@@ -7067,13 +7212,17 @@ function ensureUi() {
             <input id="luker_orch_agent_timeout" class="text_pole" type="number" min="0" max="3600" step="1" />
             <label for="luker_orch_capsule_position">${escapeHtml(i18n('Injection position'))}</label>
             <select id="luker_orch_capsule_position" class="text_pole">
-                <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
-                <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
-                <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
+                <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>
+                <option value="${world_info_position.after}">${escapeHtml(i18n('After Character Definitions'))}</option>
+                <option value="${world_info_position.ANTop}">${escapeHtml(i18n("Before Author's Note"))}</option>
+                <option value="${world_info_position.ANBottom}">${escapeHtml(i18n("After Author's Note"))}</option>
+                <option value="${world_info_position.EMTop}">${escapeHtml(i18n('Before Example Messages'))}</option>
+                <option value="${world_info_position.EMBottom}">${escapeHtml(i18n('After Example Messages'))}</option>
+                <option value="${world_info_position.atDepth}">${escapeHtml(i18n('At Chat Depth'))}</option>
             </select>
-            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Injection depth (IN_CHAT only)'))}</label>
+            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Injection depth (At Chat Depth only)'))}</label>
             <input id="luker_orch_capsule_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
-            <label for="luker_orch_capsule_role">${escapeHtml(i18n('Injection role (IN_CHAT only)'))}</label>
+            <label for="luker_orch_capsule_role">${escapeHtml(i18n('Injection role (At Chat Depth only)'))}</label>
             <select id="luker_orch_capsule_role" class="text_pole">
                 <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
                 <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>

@@ -7,7 +7,7 @@ import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
-import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection } from '../../world-info.js';
+import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, wi_anchor_position, world_info_position } from '../../world-info.js';
 import { notifyRuntimeRegexScriptsChanged, registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
@@ -31,6 +31,16 @@ const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
 const CHARACTER_ADVANCED_OVERRIDE_KEY = 'advancedOverride';
 const GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID = `${MODULE_NAME}_generation_visible_history`;
 const GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID = `${MODULE_NAME}_generation_visible_history_runtime_script`;
+const RECALL_INJECT_POSITION_SCHEMA_VERSION = 2;
+const SUPPORTED_WORLD_INFO_POSITIONS = Object.freeze([
+    world_info_position.before,
+    world_info_position.after,
+    world_info_position.ANTop,
+    world_info_position.ANBottom,
+    world_info_position.EMTop,
+    world_info_position.EMBottom,
+    world_info_position.atDepth,
+]);
 
 const LEVEL = {
     SEMANTIC: 'semantic',
@@ -308,7 +318,7 @@ const defaultSettings = {
     updateEvery: 1,
     maxTurns: 900,
     recallEnabled: true,
-    recallInjectPosition: extension_prompt_types.IN_CHAT,
+    recallInjectPosition: world_info_position.atDepth,
     recallInjectDepth: 9999,
     recallInjectRole: extension_prompt_roles.SYSTEM,
     recallApiPresetName: '',
@@ -357,11 +367,15 @@ function registerLocaleData() {
         'Enabled': '启用',
         'Enable recall injection': '启用记忆召回注入',
         'Injection position': '注入位置',
-        'In-Chat': '聊天内',
-        'In-Prompt (system block)': '提示词内（系统块）',
-        'Before-Prompt': '提示词前',
-        'Injection depth (IN_CHAT only)': '注入深度（仅聊天内）',
-        'Injection role (IN_CHAT only)': '注入角色（仅聊天内）',
+        'Before Character Definitions': '角色定义前',
+        'After Character Definitions': '角色定义后',
+        "Before Author's Note": '作者注释前',
+        "After Author's Note": '作者注释后',
+        'Before Example Messages': '示例消息前',
+        'After Example Messages': '示例消息后',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（仅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（仅聊天深度位置）',
         'System': 'System',
         'User': 'User',
         'Assistant': 'Assistant',
@@ -625,11 +639,15 @@ function registerLocaleData() {
         'Enabled': '啟用',
         'Enable recall injection': '啟用記憶召回注入',
         'Injection position': '注入位置',
-        'In-Chat': '聊天內',
-        'In-Prompt (system block)': '提示詞內（系統區塊）',
-        'Before-Prompt': '提示詞前',
-        'Injection depth (IN_CHAT only)': '注入深度（僅聊天內）',
-        'Injection role (IN_CHAT only)': '注入角色（僅聊天內）',
+        'Before Character Definitions': '角色定義前',
+        'After Character Definitions': '角色定義後',
+        "Before Author's Note": '作者註釋前',
+        "After Author's Note": '作者註釋後',
+        'Before Example Messages': '示例訊息前',
+        'After Example Messages': '示例訊息後',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（僅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（僅聊天深度位置）',
         'System': 'System',
         'User': 'User',
         'Assistant': 'Assistant',
@@ -1037,9 +1055,21 @@ function normalizeNodeTypeSchema(schema) {
 }
 
 function normalizeRecallInjectPosition(value) {
-    const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
     const numeric = Number(value);
-    return allowed.includes(numeric) ? numeric : extension_prompt_types.IN_CHAT;
+    return SUPPORTED_WORLD_INFO_POSITIONS.includes(numeric) ? numeric : world_info_position.atDepth;
+}
+
+function migrateLegacyRecallInjectPosition(value) {
+    switch (Number(value)) {
+        case extension_prompt_types.BEFORE_PROMPT:
+            return world_info_position.before;
+        case extension_prompt_types.IN_PROMPT:
+            return world_info_position.after;
+        case extension_prompt_types.IN_CHAT:
+            return world_info_position.atDepth;
+        default:
+            return world_info_position.atDepth;
+    }
 }
 
 function normalizeRecallInjectDepth(value) {
@@ -1078,6 +1108,42 @@ function appendUniqueWorldInfoBlock(text, block) {
     };
 }
 
+function appendUniqueNoteEntry(targetList, block) {
+    const incoming = String(block || '').trim();
+    if (!incoming || !Array.isArray(targetList)) {
+        return false;
+    }
+    if (targetList.includes(incoming)) {
+        return false;
+    }
+    targetList.push(incoming);
+    return true;
+}
+
+function appendUniqueWorldInfoExample(payload, anchorPosition, block) {
+    const incoming = String(block || '').trim();
+    if (!incoming) {
+        return false;
+    }
+    if (!Array.isArray(payload.worldInfoExamples)) {
+        payload.worldInfoExamples = [];
+    }
+    const normalizedPosition = Number(anchorPosition) === Number(wi_anchor_position.before)
+        ? wi_anchor_position.before
+        : wi_anchor_position.after;
+    if (payload.worldInfoExamples.some((entry) => (
+        Number(entry?.position) === Number(normalizedPosition)
+        && String(entry?.content || '').trim() === incoming
+    ))) {
+        return false;
+    }
+    payload.worldInfoExamples.push({
+        position: normalizedPosition,
+        content: incoming,
+    });
+    return true;
+}
+
 function injectRecallFocusPacketToPayload(payload, settings, focusPacket) {
     if (!payload || typeof payload !== 'object') {
         return false;
@@ -1087,15 +1153,33 @@ function injectRecallFocusPacketToPayload(payload, settings, focusPacket) {
         return false;
     }
     const position = normalizeRecallInjectPosition(settings?.recallInjectPosition);
-    if (position === extension_prompt_types.BEFORE_PROMPT) {
+    if (position === world_info_position.before) {
         const next = appendUniqueWorldInfoBlock(payload.worldInfoBefore, packet);
         payload.worldInfoBefore = next.text;
         return next.changed;
     }
-    if (position === extension_prompt_types.IN_PROMPT) {
+    if (position === world_info_position.after) {
         const next = appendUniqueWorldInfoBlock(payload.worldInfoAfter, packet);
         payload.worldInfoAfter = next.text;
         return next.changed;
+    }
+    if (position === world_info_position.ANTop) {
+        if (!Array.isArray(payload.anBefore)) {
+            payload.anBefore = [];
+        }
+        return appendUniqueNoteEntry(payload.anBefore, packet);
+    }
+    if (position === world_info_position.ANBottom) {
+        if (!Array.isArray(payload.anAfter)) {
+            payload.anAfter = [];
+        }
+        return appendUniqueNoteEntry(payload.anAfter, packet);
+    }
+    if (position === world_info_position.EMTop) {
+        return appendUniqueWorldInfoExample(payload, wi_anchor_position.before, packet);
+    }
+    if (position === world_info_position.EMBottom) {
+        return appendUniqueWorldInfoExample(payload, wi_anchor_position.after, packet);
     }
 
     const depth = normalizeRecallInjectDepth(settings?.recallInjectDepth);
@@ -1125,6 +1209,10 @@ function ensureSettings() {
     if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
         extension_settings[MODULE_NAME] = {};
     }
+    const hasRecallInjectPositionSchemaVersion = Object.prototype.hasOwnProperty.call(
+        extension_settings[MODULE_NAME],
+        'recallInjectPositionSchemaVersion',
+    );
 
     for (const [key, value] of Object.entries(defaultSettings)) {
         if (extension_settings[MODULE_NAME][key] === undefined) {
@@ -1136,7 +1224,13 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    if (!hasRecallInjectPositionSchemaVersion) {
+        extension_settings[MODULE_NAME].recallInjectPosition = migrateLegacyRecallInjectPosition(
+            extension_settings[MODULE_NAME].recallInjectPosition,
+        );
+    }
     extension_settings[MODULE_NAME].recallInjectPosition = normalizeRecallInjectPosition(extension_settings[MODULE_NAME].recallInjectPosition);
+    extension_settings[MODULE_NAME].recallInjectPositionSchemaVersion = RECALL_INJECT_POSITION_SCHEMA_VERSION;
     extension_settings[MODULE_NAME].recallInjectDepth = normalizeRecallInjectDepth(extension_settings[MODULE_NAME].recallInjectDepth);
     extension_settings[MODULE_NAME].recallInjectRole = normalizeRecallInjectRole(extension_settings[MODULE_NAME].recallInjectRole);
     delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
@@ -11371,13 +11465,17 @@ function ensureUi() {
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
             <label for="luker_rpg_memory_recall_inject_position">${escapeHtml(i18n('Injection position'))}</label>
             <select id="luker_rpg_memory_recall_inject_position" class="text_pole">
-                <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
-                <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
-                <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
+                <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>
+                <option value="${world_info_position.after}">${escapeHtml(i18n('After Character Definitions'))}</option>
+                <option value="${world_info_position.ANTop}">${escapeHtml(i18n("Before Author's Note"))}</option>
+                <option value="${world_info_position.ANBottom}">${escapeHtml(i18n("After Author's Note"))}</option>
+                <option value="${world_info_position.EMTop}">${escapeHtml(i18n('Before Example Messages'))}</option>
+                <option value="${world_info_position.EMBottom}">${escapeHtml(i18n('After Example Messages'))}</option>
+                <option value="${world_info_position.atDepth}">${escapeHtml(i18n('At Chat Depth'))}</option>
             </select>
-            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Injection depth (IN_CHAT only)'))}</label>
+            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Injection depth (At Chat Depth only)'))}</label>
             <input id="luker_rpg_memory_recall_inject_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
-            <label for="luker_rpg_memory_recall_inject_role">${escapeHtml(i18n('Injection role (IN_CHAT only)'))}</label>
+            <label for="luker_rpg_memory_recall_inject_role">${escapeHtml(i18n('Injection role (At Chat Depth only)'))}</label>
             <select id="luker_rpg_memory_recall_inject_role" class="text_pole">
                 <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
                 <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
