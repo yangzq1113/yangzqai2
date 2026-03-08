@@ -6,7 +6,7 @@ import { event_types, eventSource, is_send_press, main_api, substituteParams } f
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
-import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
+import { debounce, waitUntilCondition, escapeHtml, toggleDrawer, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
@@ -32,6 +32,7 @@ const DEFAULT_DEPTH = 4;
 const DEFAULT_ORDER = 100;
 const TOGGLE_UNDO_WINDOW_MS = 6000;
 const DETACH_UNDO_WINDOW_MS = 6000;
+const PROMPT_PLACEHOLDER_REGEX = /\{\{\s*([^{}\s]+)\s*\}\}/g;
 
 /**
  * @enum {number}
@@ -1646,6 +1647,214 @@ class PromptManager {
     }
 
     /**
+     * Normalizes prompt-manager search text so camelCase identifiers and placeholders
+     * can be searched with natural-language queries.
+     * @param {string} value
+     * @returns {string}
+     */
+    normalizePromptSearchText(value) {
+        return String(value || '')
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_./:-]+/g, ' ')
+            .replace(/[{}[\]()<>"'`|\\]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+    }
+
+    /**
+     * Extracts placeholder identifiers from prompt content.
+     * @param {string} content
+     * @returns {string[]}
+     */
+    extractPromptPlaceholders(content) {
+        const placeholders = new Set();
+        const text = String(content || '');
+
+        for (const match of text.matchAll(PROMPT_PLACEHOLDER_REGEX)) {
+            const identifier = String(match[1] || '').trim();
+            if (identifier) {
+                placeholders.add(identifier);
+            }
+        }
+
+        return Array.from(placeholders);
+    }
+
+    /**
+     * Builds human-readable aliases for a prompt identifier.
+     * @param {string} identifier
+     * @returns {string[]}
+     */
+    getPromptSearchAliases(identifier) {
+        const aliases = new Set();
+        const normalizedIdentifier = String(identifier || '').trim();
+
+        if (!normalizedIdentifier) {
+            return [];
+        }
+
+        aliases.add(normalizedIdentifier);
+        aliases.add(this.normalizePromptSearchText(normalizedIdentifier));
+
+        const prompt = this.getPromptById(normalizedIdentifier);
+        if (prompt?.name) {
+            aliases.add(String(prompt.name));
+            aliases.add(this.normalizePromptSearchText(prompt.name));
+        }
+
+        const sourceName = this.promptSources[normalizedIdentifier];
+        if (sourceName) {
+            aliases.add(String(sourceName));
+            aliases.add(this.normalizePromptSearchText(sourceName));
+        }
+
+        return Array.from(aliases).filter(Boolean);
+    }
+
+    /**
+     * Gets runtime messages currently associated with a prompt in the active chat completion.
+     * For marker prompts like chat history, this returns the actual inspected messages.
+     * @param {Prompt} prompt
+     * @returns {import('./openai.js').Message[]}
+     */
+    getPromptRuntimeMessages(prompt) {
+        if (!prompt?.identifier || !this.messages?.hasItemWithIdentifier(prompt.identifier)) {
+            return [];
+        }
+
+        const item = this.messages.getItemByIdentifier(prompt.identifier);
+        if (!item) {
+            return [];
+        }
+
+        if (item instanceof MessageCollection) {
+            return item.flatten();
+        }
+
+        if (item instanceof Message) {
+            return [item];
+        }
+
+        return [];
+    }
+
+    /**
+     * Builds a searchable index string for a prompt.
+     * Includes raw values, normalized values, and aliases for placeholders referenced in content.
+     * @param {Prompt} prompt
+     * @returns {string}
+     */
+    buildPromptSearchIndex(prompt) {
+        const terms = new Set();
+
+        const addTerm = (value) => {
+            const raw = String(value || '').trim();
+            if (!raw) {
+                return;
+            }
+
+            terms.add(raw.toLowerCase());
+
+            const normalized = this.normalizePromptSearchText(raw);
+            if (normalized) {
+                terms.add(normalized);
+            }
+        };
+
+        addTerm(prompt?.identifier);
+        addTerm(prompt?.name);
+        addTerm(prompt?.content);
+
+        this.getPromptSearchAliases(prompt?.identifier).forEach(addTerm);
+
+        for (const placeholder of this.extractPromptPlaceholders(prompt?.content)) {
+            addTerm(placeholder);
+            this.getPromptSearchAliases(placeholder).forEach(addTerm);
+        }
+
+        for (const message of this.getPromptRuntimeMessages(prompt)) {
+            addTerm(message?.identifier);
+            addTerm(message?.name);
+            addTerm(message?.role);
+            addTerm(message?.content);
+        }
+
+        return Array.from(terms).join('\n');
+    }
+
+    /**
+     * Builds a searchable index string for a runtime message.
+     * @param {import('./openai.js').Message} message
+     * @returns {string}
+     */
+    buildPromptMessageSearchIndex(message) {
+        const terms = new Set();
+
+        const addTerm = (value) => {
+            const raw = String(value || '').trim();
+            if (!raw) {
+                return;
+            }
+
+            terms.add(raw.toLowerCase());
+
+            const normalized = this.normalizePromptSearchText(raw);
+            if (normalized) {
+                terms.add(normalized);
+            }
+        };
+
+        addTerm(message?.identifier);
+        addTerm(message?.name);
+        addTerm(message?.role);
+        addTerm(message?.content);
+
+        return Array.from(terms).join('\n');
+    }
+
+    /**
+     * Tests whether a searchable index matches the current prompt-manager query.
+     * @param {string} haystack
+     * @param {string} searchQuery
+     * @param {string} normalizedSearchQuery
+     * @returns {boolean}
+     */
+    matchesPromptSearchIndex(haystack, searchQuery, normalizedSearchQuery) {
+        if (!searchQuery) {
+            return false;
+        }
+
+        return haystack.includes(searchQuery) || (normalizedSearchQuery && haystack.includes(normalizedSearchQuery));
+    }
+
+    /**
+     * Highlights raw query matches in text for inspect drawers.
+     * Falls back to plain escaped text when the current match only exists after normalization.
+     * @param {string} value
+     * @param {string} searchQuery
+     * @returns {string}
+     */
+    highlightPromptSearchText(value, searchQuery) {
+        const raw = String(value || '');
+        const query = String(searchQuery || '').trim();
+
+        if (!query) {
+            return escapeHtml(raw);
+        }
+
+        const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const matcher = new RegExp(`(${escapedQuery})`, 'ig');
+
+        if (!matcher.test(raw)) {
+            return escapeHtml(raw);
+        }
+
+        matcher.lastIndex = 0;
+        return escapeHtml(raw).replace(matcher, '<mark>$1</mark>');
+    }
+
+    /**
      * Finds and returns the index of a prompt by its identifier.
      * @param {string} identifier - Identifier of the prompt
      * @returns {number|null} Index of the prompt, or null if not found
@@ -1818,31 +2027,44 @@ class PromptManager {
     loadMessagesIntoInspectForm(messages) {
         if (!messages) return;
 
+        const searchQuery = String(this.promptListSearchQuery || '').trim().toLowerCase();
+        const normalizedSearchQuery = this.normalizePromptSearchText(searchQuery);
+
         const createInlineDrawer = (message) => {
-            const truncatedTitle = message.content.length > 32 ? message.content.slice(0, 32) + '...' : message.content;
-            const title = message.identifier || truncatedTitle;
-            const role = message.role;
-            const content = message.content || 'No Content';
+            const content = String(message.content || 'No Content');
+            const truncatedTitle = content.length > 32 ? content.slice(0, 32) + '...' : content;
+            const title = String(message.identifier || truncatedTitle);
+            const role = String(message.role || '');
             const tokens = message.getTokens();
+            const searchIndex = this.buildPromptMessageSearchIndex(message);
+            const isMatched = this.matchesPromptSearchIndex(searchIndex, searchQuery, normalizedSearchQuery);
+            const matchedBadge = isMatched ? '<small class="prompt-manager-search-hit-badge">match</small>' : '';
+            const highlightedTitle = this.highlightPromptSearchText(title, searchQuery);
+            const highlightedRole = this.highlightPromptSearchText(role, searchQuery);
+            const highlightedContent = this.highlightPromptSearchText(content, searchQuery);
 
             let drawerHTML = `
-        <div class="inline-drawer ${this.configuration.prefix}prompt_manager_prompt">
+        <div class="inline-drawer ${this.configuration.prefix}prompt_manager_prompt ${isMatched ? `${this.configuration.prefix}prompt_manager_search_hit` : ''}">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <span>Name: ${escapeHtml(title)}, Role: ${role}, Tokens: ${tokens}</span>
+                <span>Name: ${highlightedTitle}, Role: ${highlightedRole}, Tokens: ${tokens} ${matchedBadge}</span>
                 <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
             </div>
-            <div class="inline-drawer-content" style="white-space: pre-wrap;">${escapeHtml(content)}</div>
+            <div class="inline-drawer-content" style="white-space: pre-wrap;">${highlightedContent}</div>
         </div>
         `;
 
             let template = document.createElement('template');
             template.innerHTML = drawerHTML.trim();
-            return template.content.firstChild;
+            const drawer = /** @type {HTMLElement} */(template.content.firstChild);
+            if (isMatched) {
+                toggleDrawer(drawer, true);
+            }
+            return drawer;
         };
 
         const messageList = document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_inspect_list');
 
-        const messagesCollection = messages instanceof Message ? [messages] : messages.getCollection();
+        const messagesCollection = messages instanceof Message ? [messages] : messages.flatten();
 
         if (0 === messagesCollection.length) messageList.innerHTML = '<span>This marker does not contain any prompts.</span>';
 
@@ -2066,6 +2288,7 @@ class PromptManager {
         let listItemHtml = await renderTemplateAsync('promptManagerListHeader', { prefix });
 
         const searchQuery = String(this.promptListSearchQuery || '').trim().toLowerCase();
+        const normalizedSearchQuery = this.normalizePromptSearchText(searchQuery);
         const visiblePrompts = this.getPromptsForCharacter(this.activeCharacter)
             .filter(prompt => {
                 if (!prompt) {
@@ -2074,12 +2297,8 @@ class PromptManager {
                 if (!searchQuery) {
                     return true;
                 }
-                const haystack = [
-                    String(prompt.identifier || ''),
-                    String(prompt.name || ''),
-                    String(prompt.content || ''),
-                ].join('\n').toLowerCase();
-                return haystack.includes(searchQuery);
+                const haystack = this.buildPromptSearchIndex(prompt);
+                return haystack.includes(searchQuery) || (normalizedSearchQuery && haystack.includes(normalizedSearchQuery));
             });
 
         visiblePrompts.forEach(prompt => {

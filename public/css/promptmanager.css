@@ -140,6 +140,22 @@
     border: 1px solid var(--SmartThemeBorderColor);
 }
 
+#completion_prompt_manager_popup .completion_prompt_manager_prompt.completion_prompt_manager_search_hit {
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 60%, var(--SmartThemeBorderColor));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--SmartThemeQuoteColor) 25%, transparent);
+}
+
+#completion_prompt_manager_popup .prompt-manager-search-hit-badge {
+    display: inline-block;
+    margin-left: 0.5em;
+    padding: 0.1em 0.45em;
+    border-radius: 999px;
+    font-size: 0.8em;
+    line-height: 1.4;
+    color: var(--SmartThemeBodyColor);
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 18%, transparent);
+}
+
 #completion_prompt_manager_popup .completion_prompt_manager_popup_header {
     display: flex;
     justify-content: space-between;
