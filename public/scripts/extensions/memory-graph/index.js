@@ -11604,16 +11604,6 @@ jQuery(() => {
             queueMutationInvalidation(fromSeq, { scheduleReplay: true });
         });
     }
-    const messageMutationEvents = [
-        context.eventTypes.MESSAGE_EDITED,
-        context.eventTypes.MESSAGE_UPDATED,
-    ].filter(Boolean);
-    for (const eventName of messageMutationEvents) {
-        context.eventSource.on(eventName, (messageId) => {
-            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
-            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
-        });
-    }
     if (context.eventTypes.MESSAGE_RECEIVED) {
         context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, (messageId, generationType) => {
             const normalizedType = String(generationType || '').trim().toLowerCase();
