@@ -1085,7 +1085,15 @@ export function formatToolResultForModel(toolName, toolArguments, resultContent,
     ].join('\n');
 }
 
-export function normalizeToolResultMessagesForModel(messages = [], options = {}) {
+export function formatToolCallForModel(toolName, toolArguments) {
+    return [
+        'Tool execution request:',
+        `- Tool name: ${String(toolName || '')}`,
+        `- Tool arguments: ${String(toolArguments || '{}')}`,
+    ].join('\n');
+}
+
+export function normalizeToolMessagesForPlainTextFunctionCalling(messages = [], options = {}) {
     const toolResultTag = String(options?.resultTag || 'tool_result');
     const index = buildToolCallIndexFromMessages(messages);
     const output = [];
@@ -1093,24 +1101,54 @@ export function normalizeToolResultMessagesForModel(messages = [], options = {})
         if (!message || typeof message !== 'object') {
             continue;
         }
-        if (String(message.role || '') !== 'tool') {
-            output.push({ ...message });
+        const role = String(message.role || '').trim().toLowerCase();
+        const next = { ...message };
+        const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+        if (toolCalls.length > 0) {
+            const serializedCalls = toolCalls.map((toolCall) => {
+                const toolName = normalizeToolName(toolCall?.function?.name);
+                if (!toolName) {
+                    return '';
+                }
+                let toolArguments = '{}';
+                const rawArguments = toolCall?.function?.arguments;
+                if (typeof rawArguments === 'string') {
+                    toolArguments = rawArguments;
+                } else if (rawArguments && typeof rawArguments === 'object') {
+                    try {
+                        toolArguments = JSON.stringify(rawArguments);
+                    } catch {
+                        toolArguments = String(rawArguments);
+                    }
+                }
+                return formatToolCallForModel(toolName, toolArguments);
+            }).filter(Boolean);
+
+            next.content = [String(next.content ?? '').trim(), ...serializedCalls]
+                .filter(Boolean)
+                .join('\n\n');
+            delete next.tool_calls;
+        }
+
+        if (role !== 'tool') {
+            delete next.tool_call_id;
+            output.push(next);
             continue;
         }
+
         const toolCallId = String(message.tool_call_id || '').trim();
         const toolInfo = index[toolCallId];
-        if (!toolInfo) {
-            output.push({ ...message });
-            continue;
-        }
         output.push({
             role: 'user',
-            content: formatToolResultForModel(
-                toolInfo.name,
-                toolInfo.arguments,
-                message.content ?? '',
-                { resultTag: toolResultTag },
-            ),
+            content: toolInfo
+                ? formatToolResultForModel(
+                    toolInfo.name,
+                    toolInfo.arguments,
+                    message.content ?? '',
+                    { resultTag: toolResultTag },
+                )
+                : String(message.content ?? ''),
         });
     }
     return output;

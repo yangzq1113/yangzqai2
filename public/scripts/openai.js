@@ -94,6 +94,7 @@ import {
     getResponseMessageContent,
     generateRandomTriggerSignal,
     mergeUserAddendumIntoPromptMessages,
+    normalizeToolMessagesForPlainTextFunctionCalling,
     validateParsedToolCalls,
 } from './extensions/function-call-runtime.js';
 
@@ -3308,6 +3309,10 @@ async function sendOpenAIRequest(type, messages, signal, {
     let runtimeFunctionCallContext = null;
 
     if (usePromptJsonFunctionCalls && normalizedTools.length > 0) {
+        if (Array.isArray(requestMessages)) {
+            requestMessages = normalizeToolMessagesForPlainTextFunctionCalling(requestMessages);
+        }
+
         const triggerSignal = String(modeOptions.triggerSignal || generateRandomTriggerSignal()).trim();
         const protocolStyle = modeOptions.protocolStyle === TOOL_PROTOCOL_STYLE.TABLE
             ? TOOL_PROTOCOL_STYLE.TABLE
