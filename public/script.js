@@ -11113,7 +11113,6 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
         reasoningEditDone.trigger('click');
     }
 
-    await eventSource.emit(event_types.MESSAGE_UPDATED, messageId);
     if (messageId == this_edit_mes_id) {
         this_edit_mes_id = undefined;
     }
