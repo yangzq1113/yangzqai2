@@ -6,6 +6,16 @@ export const PUBLIC_DIRECTORIES = {
     globalExtensions: 'public/scripts/extensions/third-party',
 };
 
+export let SERVER_PLUGINS_DIRECTORY = 'plugins';
+
+export function setGlobalExtensionsDirectory(directory) {
+    PUBLIC_DIRECTORIES.globalExtensions = directory;
+}
+
+export function setServerPluginsDirectory(directory) {
+    SERVER_PLUGINS_DIRECTORY = directory;
+}
+
 export const SETTINGS_FILE = 'settings.json';
 
 /**

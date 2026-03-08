@@ -568,7 +568,7 @@ router.post('/install', async (request, response) => {
         }
 
         if (!fs.existsSync(PUBLIC_DIRECTORIES.globalExtensions)) {
-            fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
+            fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions, { recursive: true });
         }
 
         const { url, global, branch, replace } = request.body;
@@ -1002,7 +1002,7 @@ router.get('/discover', function (request, response) {
     }
 
     if (!fs.existsSync(PUBLIC_DIRECTORIES.globalExtensions)) {
-        fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
+        fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions, { recursive: true });
     }
 
     // Get all folders in system extensions folder, excluding third-party

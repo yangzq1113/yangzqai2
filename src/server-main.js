@@ -59,7 +59,12 @@ import {
     getConfigValue,
 } from './util.js';
 import { installLogCapture } from './log-capture.js';
-import { UPLOADS_DIRECTORY } from './constants.js';
+import {
+    UPLOADS_DIRECTORY,
+    SERVER_PLUGINS_DIRECTORY,
+    setGlobalExtensionsDirectory,
+    setServerPluginsDirectory,
+} from './constants.js';
 
 // Routers
 import { router as usersPublicRouter } from './endpoints/users-public.js';
@@ -88,6 +93,9 @@ installLogCapture();
 
 /** @type {import('./command-line.js').CommandLineArguments} */
 const cliArgs = globalThis.COMMAND_LINE_ARGS;
+
+setGlobalExtensionsDirectory(cliArgs.globalExtensionsPath);
+setServerPluginsDirectory(cliArgs.serverPluginsPath);
 
 if (!cliArgs.enableIPv6 && !cliArgs.enableIPv4) {
     console.error('error: You can\'t disable all internet protocols: at least IPv6 or IPv4 must be enabled.');
@@ -311,8 +319,7 @@ async function preSetupTasks() {
     // Initialize image metadata
     await initializeAllUserMetadata(directories);
 
-    const pluginsDirectory = path.join(serverDirectory, 'plugins');
-    const cleanupPlugins = await loadPlugins(app, pluginsDirectory);
+    const cleanupPlugins = await loadPlugins(app, SERVER_PLUGINS_DIRECTORY);
     const consoleTitle = process.title;
 
     let isExiting = false;

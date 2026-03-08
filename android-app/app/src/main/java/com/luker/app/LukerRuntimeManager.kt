@@ -18,18 +18,18 @@ object LukerRuntimeManager {
     private const val MAX_PORT_PROBE_ATTEMPTS = 50
     private val started = AtomicBoolean(false)
     private val librariesLoaded = AtomicBoolean(false)
-    private const val RUNTIME_LAYOUT_VERSION = "2"
+    private const val RUNTIME_LAYOUT_VERSION = "3"
     private const val RUNTIME_MARKER = ".runtime-version"
     private const val RUNTIME_DIR_NAME = "luker-runtime"
     private const val PERSISTENT_DATA_DIR_NAME = "luker-data"
     private const val CONFIG_FILE_NAME = "config.yaml"
     private const val RUNTIME_PERSIST_DIR_NAME = "_runtime-persist"
+    private const val SERVER_PLUGINS_DIR_NAME = "plugins"
+    private const val GLOBAL_EXTENSIONS_RELATIVE_PATH = "extensions/third-party"
     private const val NODE_SCRIPT_PATH = "nodejs-project/bootstrap.js"
     private const val NODE_PROJECT_ASSET_PATH = "luker"
     private const val BOOTSTRAP_LOG_FILE = "bootstrap.log"
     private val RUNTIME_PERSIST_RELATIVE_PATHS = listOf(
-        "plugins",
-        "public/scripts/extensions/third-party",
         "whitelist.txt",
     )
 
@@ -46,7 +46,12 @@ object LukerRuntimeManager {
     private var pingFailures: Int = 0
 
     data class StartResult(val ok: Boolean, val error: String? = null)
-    private data class RuntimePaths(val runtimeRoot: File, val dataRoot: File)
+    private data class RuntimePaths(
+        val runtimeRoot: File,
+        val dataRoot: File,
+        val serverPluginsRoot: File,
+        val globalExtensionsRoot: File,
+    )
 
     @JvmStatic
     external fun startNodeWithArguments(arguments: Array<String>): Int
@@ -108,6 +113,10 @@ object LukerRuntimeManager {
                     selectedPort.toString(),
                     "--dataRoot",
                     paths.dataRoot.absolutePath,
+                    "--serverPluginsPath",
+                    paths.serverPluginsRoot.absolutePath,
+                    "--globalExtensionsPath",
+                    paths.globalExtensionsRoot.absolutePath,
                     "--configPath",
                     File(paths.dataRoot, CONFIG_FILE_NAME).absolutePath,
                 )
@@ -153,6 +162,8 @@ object LukerRuntimeManager {
         val dataRoot = getPreferredDataRoot(context)
         val internalDataRoot = File(context.filesDir, PERSISTENT_DATA_DIR_NAME)
         val persistRoot = File(dataRoot, RUNTIME_PERSIST_DIR_NAME)
+        val serverPluginsRoot = File(dataRoot, SERVER_PLUGINS_DIR_NAME)
+        val globalExtensionsRoot = File(dataRoot, GLOBAL_EXTENSIONS_RELATIVE_PATH)
         val markerFile = File(runtimeRoot, RUNTIME_MARKER)
         val legacyDataRoot = File(runtimeRoot, "data")
         migrateLegacyDataRoot(legacyDataRoot, internalDataRoot)
@@ -161,6 +172,13 @@ object LukerRuntimeManager {
             dataRoot.mkdirs()
         }
         migrateRuntimeConfigToDataRoot(runtimeRoot, persistRoot, dataRoot)
+        migrateLegacyRuntimePaths(runtimeRoot, persistRoot, serverPluginsRoot, globalExtensionsRoot)
+        if (!serverPluginsRoot.exists()) {
+            serverPluginsRoot.mkdirs()
+        }
+        if (!globalExtensionsRoot.exists()) {
+            globalExtensionsRoot.mkdirs()
+        }
 
         val markerValue = buildRuntimeMarker(context)
         val needsRefresh = !runtimeRoot.exists() || !markerFile.exists() || markerFile.readText() != markerValue
@@ -178,7 +196,12 @@ object LukerRuntimeManager {
             Log.i(TAG, "Runtime assets prepared at ${runtimeRoot.absolutePath}")
         }
 
-        return RuntimePaths(runtimeRoot = runtimeRoot, dataRoot = dataRoot)
+        return RuntimePaths(
+            runtimeRoot = runtimeRoot,
+            dataRoot = dataRoot,
+            serverPluginsRoot = serverPluginsRoot,
+            globalExtensionsRoot = globalExtensionsRoot,
+        )
     }
 
     private fun migrateRuntimeConfigToDataRoot(runtimeRoot: File, persistRoot: File, dataRoot: File) {
@@ -201,6 +224,62 @@ object LukerRuntimeManager {
             Log.i(TAG, "Migrated runtime config to data root: ${targetConfig.absolutePath}")
         }.onFailure { t ->
             Log.e(TAG, "Failed to migrate runtime config to data root", t)
+        }
+    }
+
+    private fun migrateLegacyRuntimePaths(
+        runtimeRoot: File,
+        persistRoot: File,
+        serverPluginsRoot: File,
+        globalExtensionsRoot: File,
+    ) {
+        migrateDirectoryIfNeeded(
+            File(runtimeRoot, SERVER_PLUGINS_DIR_NAME),
+            serverPluginsRoot,
+            "runtime server plugins",
+        )
+        migrateDirectoryIfNeeded(
+            File(runtimeRoot, "public/scripts/extensions/third-party"),
+            globalExtensionsRoot,
+            "runtime global extensions",
+        )
+        migrateDirectoryIfNeeded(
+            File(persistRoot, SERVER_PLUGINS_DIR_NAME),
+            serverPluginsRoot,
+            "persisted server plugins",
+        )
+        migrateDirectoryIfNeeded(
+            File(persistRoot, "public/scripts/extensions/third-party"),
+            globalExtensionsRoot,
+            "persisted global extensions",
+        )
+    }
+
+    private fun migrateDirectoryIfNeeded(source: File, target: File, label: String) {
+        if (!source.exists()) {
+            return
+        }
+
+        val targetEntries = target.listFiles()
+        if (target.exists() && targetEntries != null && targetEntries.isNotEmpty()) {
+            return
+        }
+
+        runCatching {
+            target.parentFile?.mkdirs()
+            if (target.exists()) {
+                target.deleteRecursively()
+            }
+            if (source.renameTo(target)) {
+                Log.i(TAG, "Migrated $label to ${target.absolutePath}")
+                return
+            }
+
+            source.copyRecursively(target, overwrite = false)
+            source.deleteRecursively()
+            Log.i(TAG, "Copied $label to ${target.absolutePath}")
+        }.onFailure { t ->
+            Log.e(TAG, "Failed to migrate $label", t)
         }
     }
 
@@ -391,6 +470,8 @@ object LukerRuntimeManager {
     fun collectDiagnostics(context: Context, maxTailChars: Int = 6000): String {
         val dir = runtimeDir ?: File(context.filesDir, RUNTIME_DIR_NAME)
         val dataRoot = dataRootDir ?: getPreferredDataRoot(context)
+        val serverPluginsRoot = File(dataRoot, SERVER_PLUGINS_DIR_NAME)
+        val globalExtensionsRoot = File(dataRoot, GLOBAL_EXTENSIONS_RELATIVE_PATH)
         val marker = File(dir, RUNTIME_MARKER)
         val bootstrap = File(dir, "bootstrap.js")
         val logFile = File(dir, BOOTSTRAP_LOG_FILE)
@@ -405,9 +486,13 @@ object LukerRuntimeManager {
             )
             .append(", runtimeDir=").append(dir.absolutePath)
             .append(", dataRoot=").append(dataRoot.absolutePath)
+            .append(", serverPluginsRoot=").append(serverPluginsRoot.absolutePath)
+            .append(", globalExtensionsRoot=").append(globalExtensionsRoot.absolutePath)
             .append('\n')
         sb.append("exists(runtimeDir)=").append(dir.exists())
             .append(", exists(dataRoot)=").append(dataRoot.exists())
+            .append(", exists(serverPluginsRoot)=").append(serverPluginsRoot.exists())
+            .append(", exists(globalExtensionsRoot)=").append(globalExtensionsRoot.exists())
             .append(", exists(marker)=").append(marker.exists())
             .append(", exists(bootstrap.js)=").append(bootstrap.exists())
             .append(", exists(bootstrap.log)=").append(logFile.exists())

@@ -11,6 +11,8 @@ import { initConfig } from './config-init.js';
  * @typedef {object} CommandLineArguments Parsed command line arguments
  * @property {string} configPath Path to the config file
  * @property {string} dataRoot Data root directory
+ * @property {string} serverPluginsPath Server plugins directory
+ * @property {string} globalExtensionsPath Global third-party extensions directory
  * @property {number} port Port number
  * @property {boolean} listen If Luker is listening on all network interfaces
  * @property {string} listenAddressIPv6 IPv6 address to listen to
@@ -55,6 +57,8 @@ export class CommandLineParser {
         return Object.freeze({
             configPath: configPath,
             dataRoot: dataPath,
+            serverPluginsPath: './plugins',
+            globalExtensionsPath: './public/scripts/extensions/third-party',
             port: 8000,
             listen: false,
             listenAddressIPv6: '[::]',
@@ -210,6 +214,16 @@ export class CommandLineParser {
                 default: null,
                 describe: 'Root directory for data storage (only for standalone mode)',
             })
+            .option('serverPluginsPath', {
+                type: 'string',
+                default: null,
+                describe: 'Directory for server plugins',
+            })
+            .option('globalExtensionsPath', {
+                type: 'string',
+                default: null,
+                describe: 'Directory for global third-party extensions',
+            })
             .option('basicAuthMode', {
                 type: 'boolean',
                 default: null,
@@ -278,10 +292,15 @@ export class CommandLineParser {
             fs.mkdirSync(dataRoot, { recursive: true });
         }
 
+        const serverPluginsPath = cliArguments.serverPluginsPath ?? getConfigValue('serverPluginsPath', defaultConfig.serverPluginsPath);
+        const globalExtensionsPath = cliArguments.globalExtensionsPath ?? getConfigValue('globalExtensionsPath', defaultConfig.globalExtensionsPath);
+
         /** @type {CommandLineArguments} */
         const result = {
             configPath: configPath,
             dataRoot: dataRoot,
+            serverPluginsPath: serverPluginsPath,
+            globalExtensionsPath: globalExtensionsPath,
             port: cliArguments.port ?? getConfigValue('port', defaultConfig.port, 'number'),
             listen: cliArguments.listen ?? getConfigValue('listen', defaultConfig.listen, 'boolean'),
             listenAddressIPv6: cliArguments.listenAddressIPv6 ?? getConfigValue('listenAddress.ipv6', defaultConfig.listenAddressIPv6),

@@ -7,7 +7,7 @@ This directory contains an Android shell app that runs Luker backend locally on 
 - **WebView UI**: loads `http://127.0.0.1:8000`
 - **Backend runtime**: Node.js Mobile (`libnode.so` + JNI bridge)
 - **App boot flow**:
-  1. copy runtime assets to app-private storage
+  1. copy runtime assets to app-private runtime storage
   2. start Node with `bootstrap.js`
   3. wait for local server
   4. open WebView
@@ -72,4 +72,8 @@ bash android-app/scripts/build-android-apk.sh release
 
 - No in-app APK auto-update is implemented.
 - Recommend GitHub Release distribution with user-side APK overlay install.
-- App data stays in app-private storage (`files/luker-data`) and survives overlay install.
+- App data stays in app-specific storage and survives overlay install.
+- Preferred persistent root is `Android/data/<package>/files/luker-data`.
+- Server plugins and global third-party extensions live directly under that root:
+  - `plugins/`
+  - `extensions/third-party/`
