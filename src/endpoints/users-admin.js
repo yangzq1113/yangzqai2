@@ -33,7 +33,12 @@ import {
     startGitUpdate,
 } from '../updater.js';
 import { ensureDirectory, getConfigFilePath, getConfigValue, normalizeZipEntryPath, reloadConfigCache } from '../util.js';
-import { installServerPlugin, listInstalledServerPlugins } from '../plugin-loader.js';
+import {
+    installServerPlugin,
+    listInstalledServerPlugins,
+    removeServerPlugin,
+    updateServerPlugin,
+} from '../plugin-loader.js';
 import { SERVER_PLUGINS_DIRECTORY } from '../constants.js';
 
 export const router = express.Router();
@@ -463,6 +468,50 @@ router.post('/plugins/install', requireAdminMiddleware, async (request, response
         });
     } catch (error) {
         console.error('Server plugin install failed:', error);
+        const statusCode = Number(error?.statusCode);
+        const status = Number.isFinite(statusCode) && statusCode >= 400 ? statusCode : 500;
+        return response.status(status).json({ error: String(error?.message || error) });
+    }
+});
+
+router.post('/plugins/update', requireAdminMiddleware, async (request, response) => {
+    try {
+        const directory = String(request.body?.directory || '').trim();
+        if (!directory) {
+            return response.status(400).json({ error: 'Missing plugin directory name' });
+        }
+
+        const plugin = await updateServerPlugin(SERVER_PLUGINS_DIRECTORY, directory);
+
+        return response.json({
+            ok: true,
+            restartRecommended: true,
+            plugin,
+        });
+    } catch (error) {
+        console.error('Server plugin update failed:', error);
+        const statusCode = Number(error?.statusCode);
+        const status = Number.isFinite(statusCode) && statusCode >= 400 ? statusCode : 500;
+        return response.status(status).json({ error: String(error?.message || error) });
+    }
+});
+
+router.post('/plugins/delete', requireAdminMiddleware, async (request, response) => {
+    try {
+        const directory = String(request.body?.directory || '').trim();
+        if (!directory) {
+            return response.status(400).json({ error: 'Missing plugin directory name' });
+        }
+
+        const plugin = await removeServerPlugin(SERVER_PLUGINS_DIRECTORY, directory);
+
+        return response.json({
+            ok: true,
+            restartRecommended: true,
+            plugin,
+        });
+    } catch (error) {
+        console.error('Server plugin delete failed:', error);
         const statusCode = Number(error?.statusCode);
         const status = Number.isFinite(statusCode) && statusCode >= 400 ? statusCode : 500;
         return response.status(status).json({ error: String(error?.message || error) });

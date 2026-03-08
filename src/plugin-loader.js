@@ -192,6 +192,128 @@ export async function installServerPlugin(pluginsPath, pluginUrl) {
 }
 
 /**
+ * @param {string} pluginsPath
+ * @param {string} directory
+ * @returns {Promise<{directory: string, path: string, remoteUrl: string, packageName: string, version: string, description: string, currentCommitHash: string, isUpToDate: boolean}>}
+ */
+export async function updateServerPlugin(pluginsPath, directory) {
+    const folderName = sanitizeServerPluginFolderName(directory);
+
+    if (!folderName) {
+        const error = new Error('Missing server plugin directory name');
+        // @ts-ignore
+        error.statusCode = 400;
+        throw error;
+    }
+
+    if (!commandExistsSync('git')) {
+        const error = new Error('Git is not installed on the server');
+        // @ts-ignore
+        error.statusCode = 500;
+        throw error;
+    }
+
+    const targetPath = resolveServerPluginPath(pluginsPath, folderName);
+    if (!fs.existsSync(targetPath)) {
+        const error = new Error(`Plugin directory does not exist at ${folderName}`);
+        // @ts-ignore
+        error.statusCode = 404;
+        throw error;
+    }
+
+    const pluginRepo = git(targetPath);
+    const isRepo = await pluginRepo.checkIsRepo(CheckRepoActions.IS_REPO_ROOT);
+    if (!isRepo) {
+        const error = new Error(`Directory is not a Git repository at ${folderName}`);
+        // @ts-ignore
+        error.statusCode = 409;
+        throw error;
+    }
+
+    const remoteUrl = await getPluginRemoteUrl(targetPath);
+    if (!remoteUrl) {
+        const error = new Error(`No git remote detected for ${folderName}`);
+        // @ts-ignore
+        error.statusCode = 409;
+        throw error;
+    }
+
+    await pluginRepo.fetch();
+    const previousCommitHash = await pluginRepo.revparse(['HEAD']);
+
+    let trackingBranch = '';
+    try {
+        trackingBranch = await pluginRepo.revparse(['--abbrev-ref', '@{u}']);
+    } catch {
+        const error = new Error(`Plugin repository does not track an upstream branch at ${folderName}`);
+        // @ts-ignore
+        error.statusCode = 409;
+        throw error;
+    }
+
+    const log = await pluginRepo.log({
+        from: previousCommitHash,
+        to: trackingBranch,
+    });
+
+    const isUpToDate = log.total === 0;
+    if (!isUpToDate) {
+        const currentBranch = await pluginRepo.branch();
+        await pluginRepo.pull('origin', currentBranch.current);
+    }
+
+    const currentCommitHash = await pluginRepo.revparse(['HEAD']);
+    const metadata = getPluginPackageMetadata(targetPath);
+
+    return {
+        directory: folderName,
+        path: targetPath,
+        remoteUrl,
+        currentCommitHash,
+        isUpToDate,
+        ...metadata,
+    };
+}
+
+/**
+ * @param {string} pluginsPath
+ * @param {string} directory
+ * @returns {Promise<{directory: string, path: string}>}
+ */
+export async function removeServerPlugin(pluginsPath, directory) {
+    const folderName = sanitizeServerPluginFolderName(directory);
+
+    if (!folderName) {
+        const error = new Error('Missing server plugin directory name');
+        // @ts-ignore
+        error.statusCode = 400;
+        throw error;
+    }
+
+    const targetPath = resolveServerPluginPath(pluginsPath, folderName);
+    if (!fs.existsSync(targetPath)) {
+        const error = new Error(`Plugin directory does not exist at ${folderName}`);
+        // @ts-ignore
+        error.statusCode = 404;
+        throw error;
+    }
+
+    await fs.promises.rm(targetPath, { recursive: true, force: true });
+
+    if (fs.existsSync(targetPath)) {
+        const error = new Error(`Plugin directory still exists at ${folderName}`);
+        // @ts-ignore
+        error.statusCode = 409;
+        throw error;
+    }
+
+    return {
+        directory: folderName,
+        path: targetPath,
+    };
+}
+
+/**
  * Determine if a file is a CommonJS module.
  * @param {string} file Path to file
  * @returns {boolean} True if file is a CommonJS module

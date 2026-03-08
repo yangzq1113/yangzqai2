@@ -404,6 +404,56 @@ async function installServerPluginFromAdmin(repoUrl) {
 }
 
 /**
+ * Update a server plugin by directory name.
+ * @param {string} directory
+ * @returns {Promise<{ok: boolean, restartRecommended: boolean, plugin: any} | undefined>}
+ */
+async function updateServerPluginFromAdmin(directory) {
+    try {
+        const response = await fetch('/api/users/plugins/update', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ directory }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            toastr.error(data?.error || t`Unknown error`, t`Failed to update server plugin`);
+            throw new Error('Failed to update server plugin');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error updating server plugin:', error);
+    }
+}
+
+/**
+ * Remove a server plugin by directory name.
+ * @param {string} directory
+ * @returns {Promise<{ok: boolean, restartRecommended: boolean, plugin: any} | undefined>}
+ */
+async function removeServerPluginFromAdmin(directory) {
+    try {
+        const response = await fetch('/api/users/plugins/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ directory }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            toastr.error(data?.error || t`Unknown error`, t`Failed to remove server plugin`);
+            throw new Error('Failed to remove server plugin');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error removing server plugin:', error);
+    }
+}
+
+/**
  * Set per-user storage quota.
  * @param {string} handle User handle
  * @param {number|null} quotaBytes Quota bytes, null to clear override
@@ -2164,6 +2214,70 @@ async function openAdminPanel() {
             row.find('.serverPluginVersion').text(plugin.version ? `v${plugin.version}` : '');
             row.find('.serverPluginMeta').text(metaParts.join(' · ') || 'No package metadata');
             row.find('.serverPluginRemote').text(plugin.remoteUrl || 'No git remote detected');
+            row.find('.serverPluginUpdateButton')
+                .toggleClass('disabled', !plugin.remoteUrl)
+                .prop('disabled', !plugin.remoteUrl)
+                .attr('title', plugin.remoteUrl ? '' : 'No git remote detected')
+                .on('click', async function () {
+                    const button = $(this);
+                    if (button.hasClass('disabled')) {
+                        return;
+                    }
+
+                    button.addClass('disabled');
+
+                    try {
+                        const result = await updateServerPluginFromAdmin(plugin.directory);
+                        if (!result?.ok) {
+                            return;
+                        }
+
+                        if (result.plugin?.isUpToDate) {
+                            toastr.info(t`Server plugin is already up to date.`, t`Up to date`);
+                        } else {
+                            toastr.success(t`Server plugin updated.`, t`Updated`);
+                        }
+
+                        if (result.restartRecommended) {
+                            toastr.info(t`Restart the backend to reload updated server plugins.`, t`Restart required`);
+                        }
+
+                        await renderServerPlugins();
+                    } finally {
+                        button.removeClass('disabled');
+                    }
+                });
+            row.find('.serverPluginDeleteButton').on('click', async function () {
+                const confirmed = await callGenericPopup(
+                    `Remove server plugin "${plugin.directory}"?`,
+                    POPUP_TYPE.CONFIRM,
+                    '',
+                    { okButton: 'Remove', cancelButton: 'Cancel', wide: false, large: false },
+                );
+
+                if (confirmed !== POPUP_RESULT.AFFIRMATIVE) {
+                    return;
+                }
+
+                const button = $(this);
+                button.addClass('disabled');
+
+                try {
+                    const result = await removeServerPluginFromAdmin(plugin.directory);
+                    if (!result?.ok) {
+                        return;
+                    }
+
+                    toastr.success(t`Server plugin removed.`, t`Removed`);
+                    if (result.restartRecommended) {
+                        toastr.info(t`Restart the backend to unload removed server plugins.`, t`Restart required`);
+                    }
+
+                    await renderServerPlugins();
+                } finally {
+                    button.removeClass('disabled');
+                }
+            });
             list.append(row);
         }
     }
