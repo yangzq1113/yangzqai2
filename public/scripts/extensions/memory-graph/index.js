@@ -70,8 +70,8 @@ const defaultNodeTypeSchema = [
         tableName: 'character_table',
         tableColumns: ['name', 'aliases', 'traits', 'identity', 'state', 'goal', 'inventory', 'language_sample', 'core_note', 'addressing_user'],
         columnHints: {
-            name: 'Canonical character name.',
-            aliases: 'Nicknames, aliases, titles, or alternative names used in dialogue.',
+            name: 'Canonical character name only. Do not include aliases, English names, titles, translations, or any parenthetical/bracketed clarification here.',
+            aliases: 'Nicknames, aliases, titles, English names, translated names, or alternative names used in dialogue. Store them here instead of appending them to name.',
             traits: 'Stable character traits, personality tendencies, and notable appearance/style markers.',
             identity: 'Stable identity/background facts.',
             state: 'Current condition or stance.',
@@ -105,8 +105,8 @@ const defaultNodeTypeSchema = [
         tableName: 'location_table',
         tableColumns: ['name', 'aliases', 'controller', 'danger', 'resources', 'state'],
         columnHints: {
-            name: 'Canonical location name.',
-            aliases: 'Alternative location names, short names, or colloquial references.',
+            name: 'Canonical location name only. Do not include aliases, English names, translations, or any parenthetical/bracketed clarification here.',
+            aliases: 'Alternative location names, English names, translated names, short names, or colloquial references. Store them here instead of appending them to name.',
             controller: 'Current owner/controller of the location.',
             danger: 'Current danger level or threat profile.',
             resources: 'Important available resources/services/features.',
@@ -202,6 +202,27 @@ const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
     'After function call output, stop immediately.',
 ].join('\n');
 
+const EXTRACT_PROMPT_NODE_DEDUP_LINES = [
+    'Thought dedup rule: in section [2] and section [3], explicitly inspect graph_data.nodes for existing candidate character/location nodes before any create decision, and explain the matched node_id or the no-match reason.',
+    'Duplicate prevention hard rule: never create a second character/location node merely because one form uses a canonical name and another form uses an alias, title, short name, translated name, or English name. Reuse one node and store alternate forms in aliases.',
+    'Create-gate rule for character/location nodes: only create when you have explicitly checked existing graph_data nodes by canonical name and alias overlap and found no plausible match.',
+    'Name format hard rule: for character/location nodes, name must be canonical plain name only.',
+    'Parenthesis prohibition: never use parentheses, brackets, slashes, bilingual pairs, or appended explanations inside name. Forbidden examples: 张三(John), Alice（爱丽丝）, London(伦敦).',
+    'Alias format rule: English names, translated names, nicknames, titles, short names, and alternative spellings belong in aliases only, not in name.',
+];
+
+const CANONICAL_EXTRACT_RELATION_TYPES = ['related', 'involved_in', 'occurred_at', 'mentions', 'evidence', 'updates', 'advances'];
+const CANONICAL_EXTRACT_RELATION_TYPES_TEXT = CANONICAL_EXTRACT_RELATION_TYPES.join(', ');
+const EXTRACT_PROMPT_EDGE_TYPE_LINES = [
+    `Relation vocabulary hard rule: only use these canonical relation types for semantic links: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}.`,
+    'Thought relation review rule: in section [5], explicitly inspect graph_data edges and reuse existing canonical relation labels when the meaning matches. Do not invent a new synonym, translation, or near-duplicate relation label.',
+    'Relation normalization rule: if the meaning is "entity/character participates in or is materially involved in an event", always use involved_in.',
+    'Relation normalization rule: if the meaning is "an event takes place at a location", always use occurred_at.',
+    'Relation normalization rule: if the meaning is simple weak association and no sharper canonical type fits, use related.',
+    'Forbidden relation drift: do not mix Chinese and English variants or near-synonyms for the same meaning. Forbidden examples include 参与者 / 涉及主角 / participant / main_character when involved_in fits, and 发生地 / 发生在 / 发生地点 / 发生于 / occurred_at / happened_at / location / located_at / happened_in / occurs_at for the same event-location meaning.',
+    'Internal edge prohibition: do not create contains or semantic_contains via extraction tools; hierarchy edges are managed by the graph system, not by semantic extraction.',
+];
+
 const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Extract structured memory nodes from dialogue messages into a high-utility memory graph.',
     'Before tool calls, output one VERY detailed <thought>...</thought> analysis. Do not output plain JSON text.',
@@ -237,6 +258,8 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Hard coverage rule: if a type has grounded evidence and there are editable nodes or clear new facts, you MUST emit create/edit calls for that type in this batch.',
     'Never output lazy rationale such as "non-required type so can skip" when grounded evidence is present.',
     'Alias quality rule: when dialogue uses nicknames/short names/titles, fill aliases for character/location nodes.',
+    ...EXTRACT_PROMPT_NODE_DEDUP_LINES,
+    ...EXTRACT_PROMPT_EDGE_TYPE_LINES,
     'Fill optional columns whenever evidence is present; if unknown, omit conservatively.',
     'Respect required columns and force-update types declared in tool descriptions.',
     'If a type is marked force-update, emit at least one grounded node for it in this batch.',
@@ -278,6 +301,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Forbidden examples: <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, duplicate JSON payloads.',
     'After function call output, stop immediately.',
 ].join('\n');
+
 
 const defaultSettings = {
     enabled: false,
@@ -3652,7 +3676,11 @@ function buildDynamicToolDescription(spec = {}, mode = 'create') {
         ? spec.columnHints
         : {};
     const required = Array.isArray(spec?.requiredColumns) ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
+    const primaryKeyColumns = Array.isArray(spec?.primaryKeyColumns)
+        ? spec.primaryKeyColumns.map(field => String(field || '').trim()).filter(Boolean)
+        : [];
     const forceUpdate = Boolean(spec?.forceUpdate);
+    const latestOnly = Boolean(spec?.latestOnly);
     const normalizedMode = String(mode || 'create').trim().toLowerCase();
     const chunks = [];
     if (normalizedMode === 'edit') {
@@ -3678,6 +3706,18 @@ function buildDynamicToolDescription(spec = {}, mode = 'create') {
         chunks.push(`Required columns: ${required.join(', ')}`);
     } else {
         chunks.push('Required columns: none');
+    }
+    if (fields.includes('name')) {
+        chunks.push('Name normalization: name must be the canonical primary name only. Never append aliases, English names, translations, titles, or any parenthetical/bracketed clarification to name.');
+    }
+    if (fields.includes('aliases')) {
+        chunks.push('Alias normalization: put nicknames, titles, English names, translated names, short names, and alternative spellings in aliases only. Separate multiple aliases with commas or semicolons.');
+    }
+    if (latestOnly && primaryKeyColumns.length > 0) {
+        chunks.push(`Dedup rule: before create, inspect graph_data.nodes and prefer edit over create when an existing node plausibly matches by primary-key overlap (${primaryKeyColumns.join(', ')}).`);
+    }
+    if (normalizedMode === 'create') {
+        chunks.push(`Link relation vocabulary: when adding links, only use canonical relation types ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}. Reuse existing canonical labels instead of inventing synonyms or bilingual variants.`);
     }
     chunks.push(`Force update each extraction batch: ${forceUpdate ? 'yes' : 'no'}`);
     return chunks.join(' ');
@@ -3766,7 +3806,7 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                     properties: {
                         target_ref: { type: 'string', description: 'Optional. Use either target_ref or target_node_id.' },
                         target_node_id: { type: 'string', description: 'Optional. Use either target_node_id or target_ref.' },
-                        relation: { type: 'string' },
+                        relation: { type: 'string', description: `Canonical relation type only. Allowed values: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}.` },
                         direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                     },
                     additionalProperties: false,
@@ -3902,7 +3942,7 @@ function buildDynamicExtractTools(schema = [], options = {}) {
         type: 'function',
         function: {
             name: linkUpsertToolName,
-            description: 'Upsert relation edges between semantic nodes. Use this when only links change.',
+            description: `Upsert relation edges between semantic nodes. Use this when only links change. Only use canonical relation types: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}. Reuse existing canonical labels instead of inventing synonyms or bilingual variants.`,
             parameters: {
                 type: 'object',
                 properties: {
@@ -3915,7 +3955,7 @@ function buildDynamicExtractTools(schema = [], options = {}) {
                             properties: {
                                 target_ref: { type: 'string', description: 'Optional. Use either target_ref or target_node_id.' },
                                 target_node_id: { type: 'string', description: 'Optional. Use either target_node_id or target_ref.' },
-                                relation: { type: 'string' },
+                                relation: { type: 'string', description: `Canonical relation type only. Allowed values: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}.` },
                                 direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
                             },
                             additionalProperties: false,
