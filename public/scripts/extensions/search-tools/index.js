@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 
-import { extension_prompt_roles, getRequestHeaders, saveSettingsDebounced } from '../../../script.js';
+import { extension_prompt_roles, extension_prompt_types, getRequestHeaders, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
@@ -81,6 +81,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
     agentMaxRounds: 3,
     toolCallRetryMax: 1,
+    lorebookPosition: extension_prompt_types.IN_CHAT,
     lorebookDepth: 9999,
     lorebookRole: extension_prompt_roles.SYSTEM,
     lorebookEntryOrder: 9800,
@@ -123,6 +124,23 @@ function normalizeLorebookRole(value) {
     return DEFAULT_SETTINGS.lorebookRole;
 }
 
+function normalizeLorebookPosition(value) {
+    const numeric = Number(value);
+    const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
+    return allowed.includes(numeric) ? numeric : DEFAULT_SETTINGS.lorebookPosition;
+}
+
+function mapLorebookPositionToWorldInfoPosition(value) {
+    const normalized = normalizeLorebookPosition(value);
+    if (normalized === extension_prompt_types.BEFORE_PROMPT) {
+        return world_info_position.before;
+    }
+    if (normalized === extension_prompt_types.IN_PROMPT) {
+        return world_info_position.after;
+    }
+    return world_info_position.atDepth;
+}
+
 function ensureSettings() {
     if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
         extension_settings[MODULE_NAME] = {};
@@ -162,6 +180,7 @@ function ensureSettings() {
         5,
         DEFAULT_SETTINGS.toolCallRetryMax,
     );
+    settings.lorebookPosition = normalizeLorebookPosition(settings.lorebookPosition ?? DEFAULT_SETTINGS.lorebookPosition);
     settings.lorebookDepth = clampInteger(
         settings.lorebookDepth ?? DEFAULT_SETTINGS.lorebookDepth,
         0,
@@ -1177,7 +1196,7 @@ function createManagedLorebookEntry(uid, spec, settings, existingEntry = null) {
     entry.constant = Boolean(spec.alwaysInject);
     entry.selective = false;
 
-    entry.position = world_info_position.atDepth;
+    entry.position = mapLorebookPositionToWorldInfoPosition(settings.lorebookPosition);
     entry.depth = Number(settings.lorebookDepth);
     entry.role = Number(settings.lorebookRole);
     entry.order = Number(settings.lorebookEntryOrder);
@@ -1936,15 +1955,21 @@ function renderSettingsBlock() {
         <input id="search_tools_agent_max_rounds" class="text_pole" type="number" min="1" max="8" step="1" />
         <label for="search_tools_tool_call_retry_max">${escapeHtml(i18n('Tool call retry count'))}</label>
         <input id="search_tools_tool_call_retry_max" class="text_pole" type="number" min="0" max="5" step="1" />
-        <label for="search_tools_lorebook_depth">${escapeHtml(i18n('Managed entry depth'))}</label>
+        <label for="search_tools_lorebook_position">${escapeHtml(i18n('Injection position'))}</label>
+        <select id="search_tools_lorebook_position" class="text_pole">
+            <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
+            <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
+            <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
+        </select>
+        <label for="search_tools_lorebook_depth">${escapeHtml(i18n('Injection depth (IN_CHAT only)'))}</label>
         <input id="search_tools_lorebook_depth" class="text_pole" type="number" min="0" max="9999" step="1" />
-        <label for="search_tools_lorebook_role">${escapeHtml(i18n('Managed entry role'))}</label>
+        <label for="search_tools_lorebook_role">${escapeHtml(i18n('Injection role (IN_CHAT only)'))}</label>
         <select id="search_tools_lorebook_role" class="text_pole">
             <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
             <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
             <option value="${extension_prompt_roles.ASSISTANT}">${escapeHtml(i18n('Assistant'))}</option>
         </select>
-        <label for="search_tools_lorebook_entry_order">${escapeHtml(i18n('Managed entry order'))}</label>
+        <label for="search_tools_lorebook_entry_order">${escapeHtml(i18n('Injection order'))}</label>
         <input id="search_tools_lorebook_entry_order" class="text_pole" type="number" min="0" max="20000" step="1" />
         <label for="search_tools_agent_system_prompt">${escapeHtml(i18n('Search agent system prompt'))}</label>
         <textarea id="search_tools_agent_system_prompt" class="text_pole" rows="12"></textarea>
@@ -2047,6 +2072,7 @@ function bindSettingsUi() {
     root.find('#search_tools_agent_preset_name').val(String(settings.agentPresetName || ''));
     root.find('#search_tools_agent_max_rounds').val(String(settings.agentMaxRounds));
     root.find('#search_tools_tool_call_retry_max').val(String(settings.toolCallRetryMax));
+    root.find('#search_tools_lorebook_position').val(String(settings.lorebookPosition));
     root.find('#search_tools_lorebook_depth').val(String(settings.lorebookDepth));
     root.find('#search_tools_lorebook_role').val(String(settings.lorebookRole));
     root.find('#search_tools_lorebook_entry_order').val(String(settings.lorebookEntryOrder));
@@ -2098,6 +2124,12 @@ function bindSettingsUi() {
     root.on('change.searchTools', '#search_tools_tool_call_retry_max', function () {
         settings.toolCallRetryMax = clampInteger(jQuery(this).val(), 0, 5, DEFAULT_SETTINGS.toolCallRetryMax);
         jQuery(this).val(String(settings.toolCallRetryMax));
+        saveSettingsDebounced();
+    });
+    root.on('change.searchTools', '#search_tools_lorebook_position', function () {
+        settings.lorebookPosition = normalizeLorebookPosition(jQuery(this).val());
+        jQuery(this).val(String(settings.lorebookPosition));
+        void syncSharedLorebookForLoadedChat(getContext());
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_lorebook_depth', function () {
@@ -2165,9 +2197,10 @@ function registerLocaleData() {
         'Agent preset (params + prompt, empty = current)': 'Agent 预设（参数+提示词，留空=当前）',
         'Agent max rounds': 'Agent 最大轮数',
         'Tool call retry count': '工具调用重试次数',
-        'Managed entry depth': '受管条目深度',
-        'Managed entry role': '受管条目角色',
-        'Managed entry order': '受管条目顺序',
+        'Injection position': '注入位置',
+        'Injection depth (IN_CHAT only)': '注入深度（仅聊天内）',
+        'Injection role (IN_CHAT only)': '注入角色（仅聊天内）',
+        'Injection order': '注入顺序',
         'Search agent system prompt': '搜索 Agent 系统提示词',
         'Reset search agent prompt': '重置搜索 Agent 提示词',
         'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '确认重置搜索 Agent 提示词为默认值？这会覆盖当前搜索 Agent 系统提示词。',
@@ -2202,9 +2235,10 @@ function registerLocaleData() {
         'Agent preset (params + prompt, empty = current)': 'Agent 預設（參數+提示詞，留空=目前）',
         'Agent max rounds': 'Agent 最大輪數',
         'Tool call retry count': '工具呼叫重試次數',
-        'Managed entry depth': '受管條目深度',
-        'Managed entry role': '受管條目角色',
-        'Managed entry order': '受管條目順序',
+        'Injection position': '注入位置',
+        'Injection depth (IN_CHAT only)': '注入深度（僅聊天內）',
+        'Injection role (IN_CHAT only)': '注入角色（僅聊天內）',
+        'Injection order': '注入順序',
         'Search agent system prompt': '搜尋 Agent 系統提示詞',
         'Reset search agent prompt': '重置搜尋 Agent 提示詞',
         'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '確認重置搜尋 Agent 提示詞為預設值？這會覆蓋目前搜尋 Agent 系統提示詞。',

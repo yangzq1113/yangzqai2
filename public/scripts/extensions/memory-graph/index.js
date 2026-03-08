@@ -356,12 +356,12 @@ function registerLocaleData() {
         'Memory': '记忆',
         'Enabled': '启用',
         'Enable recall injection': '启用记忆召回注入',
-        'Recall injection position': '召回注入位置',
+        'Injection position': '注入位置',
         'In-Chat': '聊天内',
         'In-Prompt (system block)': '提示词内（系统块）',
         'Before-Prompt': '提示词前',
-        'Recall injection depth (IN_CHAT only)': '召回注入深度（仅聊天内）',
-        'Recall injection role (IN_CHAT only)': '召回注入角色（仅聊天内）',
+        'Injection depth (IN_CHAT only)': '注入深度（仅聊天内）',
+        'Injection role (IN_CHAT only)': '注入角色（仅聊天内）',
         'System': 'System',
         'User': 'User',
         'Assistant': 'Assistant',
@@ -624,12 +624,12 @@ function registerLocaleData() {
         'Memory': '記憶',
         'Enabled': '啟用',
         'Enable recall injection': '啟用記憶召回注入',
-        'Recall injection position': '召回注入位置',
+        'Injection position': '注入位置',
         'In-Chat': '聊天內',
         'In-Prompt (system block)': '提示詞內（系統區塊）',
         'Before-Prompt': '提示詞前',
-        'Recall injection depth (IN_CHAT only)': '召回注入深度（僅聊天內）',
-        'Recall injection role (IN_CHAT only)': '召回注入角色（僅聊天內）',
+        'Injection depth (IN_CHAT only)': '注入深度（僅聊天內）',
+        'Injection role (IN_CHAT only)': '注入角色（僅聊天內）',
         'System': 'System',
         'User': 'User',
         'Assistant': 'Assistant',
@@ -11365,15 +11365,15 @@ function ensureUi() {
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
-            <label for="luker_rpg_memory_recall_inject_position">${escapeHtml(i18n('Recall injection position'))}</label>
+            <label for="luker_rpg_memory_recall_inject_position">${escapeHtml(i18n('Injection position'))}</label>
             <select id="luker_rpg_memory_recall_inject_position" class="text_pole">
                 <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
                 <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
                 <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
             </select>
-            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Recall injection depth (IN_CHAT only)'))}</label>
+            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Injection depth (IN_CHAT only)'))}</label>
             <input id="luker_rpg_memory_recall_inject_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
-            <label for="luker_rpg_memory_recall_inject_role">${escapeHtml(i18n('Recall injection role (IN_CHAT only)'))}</label>
+            <label for="luker_rpg_memory_recall_inject_role">${escapeHtml(i18n('Injection role (IN_CHAT only)'))}</label>
             <select id="luker_rpg_memory_recall_inject_role" class="text_pole">
                 <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
                 <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>

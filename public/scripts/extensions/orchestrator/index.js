@@ -215,12 +215,12 @@ function registerLocaleData() {
         'Node tool iteration max rounds (N)': '节点工具迭代最大轮数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
-        'Orchestration result injection position': '编排结果注入位置',
+        'Injection position': '注入位置',
         'In-Chat': '聊天内',
         'In-Prompt (system block)': '提示词内（系统块）',
         'Before-Prompt': '提示词前',
-        'Orchestration result depth (IN_CHAT only)': '编排结果深度（仅聊天内）',
-        'Orchestration result role (IN_CHAT only)': '编排结果角色（仅聊天内）',
+        'Injection depth (IN_CHAT only)': '注入深度（仅聊天内）',
+        'Injection role (IN_CHAT only)': '注入角色（仅聊天内）',
         'Custom orchestration result instruction (prepended before analysis)': '自定义编排结果指令（会放在分析结果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指导，再用角色语气完成最终回复。',
         'System': 'System',
@@ -405,12 +405,12 @@ function registerLocaleData() {
         'Node tool iteration max rounds (N)': '節點工具迭代最大輪數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
-        'Orchestration result injection position': '編排結果注入位置',
+        'Injection position': '注入位置',
         'In-Chat': '聊天內',
         'In-Prompt (system block)': '提示詞內（系統區塊）',
         'Before-Prompt': '提示詞前',
-        'Orchestration result depth (IN_CHAT only)': '編排結果深度（僅聊天內）',
-        'Orchestration result role (IN_CHAT only)': '編排結果角色（僅聊天內）',
+        'Injection depth (IN_CHAT only)': '注入深度（僅聊天內）',
+        'Injection role (IN_CHAT only)': '注入角色（僅聊天內）',
         'Custom orchestration result instruction (prepended before analysis)': '自訂編排結果指令（會放在分析結果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指導，再以角色語氣完成最終回覆。',
         'System': 'System',
@@ -7065,15 +7065,15 @@ function ensureUi() {
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
             <label for="luker_orch_agent_timeout">${escapeHtml(i18n('Per-agent timeout seconds (0 = disabled)'))}</label>
             <input id="luker_orch_agent_timeout" class="text_pole" type="number" min="0" max="3600" step="1" />
-            <label for="luker_orch_capsule_position">${escapeHtml(i18n('Orchestration result injection position'))}</label>
+            <label for="luker_orch_capsule_position">${escapeHtml(i18n('Injection position'))}</label>
             <select id="luker_orch_capsule_position" class="text_pole">
                 <option value="${extension_prompt_types.IN_CHAT}">${escapeHtml(i18n('In-Chat'))}</option>
                 <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
                 <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
             </select>
-            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Orchestration result depth (IN_CHAT only)'))}</label>
+            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Injection depth (IN_CHAT only)'))}</label>
             <input id="luker_orch_capsule_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
-            <label for="luker_orch_capsule_role">${escapeHtml(i18n('Orchestration result role (IN_CHAT only)'))}</label>
+            <label for="luker_orch_capsule_role">${escapeHtml(i18n('Injection role (IN_CHAT only)'))}</label>
             <select id="luker_orch_capsule_role" class="text_pole">
                 <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
                 <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
