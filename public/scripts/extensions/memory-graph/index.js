@@ -590,6 +590,7 @@ function registerLocaleData() {
         'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
         'Selected edge #${0}: ${1} -> ${2} [${3}]': '已选择边 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '检测到聊天变更。记忆图会在下次生成时重新同步。',
+        'Chat changes interrupted memory graph update. It will re-sync on next generation.': '聊天消息发生变化，记忆图更新已中断，将在下次生成时重新同步。',
         'Generation aborted. Skipped memory recall.': '生成已中断，已跳过记忆召回。',
         'Memory recall cancelled by user.': '记忆召回已由用户终止。',
         'Memory graph update cancelled by user.': '记忆图更新已由用户终止。',
@@ -857,6 +858,7 @@ function registerLocaleData() {
         'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
         'Selected edge #${0}: ${1} -> ${2} [${3}]': '已選擇邊 #${0}：${1} -> ${2} [${3}]',
         'Chat mutation detected. Memory graph will re-sync on next generation.': '偵測到聊天變更。記憶圖會在下次生成時重新同步。',
+        'Chat changes interrupted memory graph update. It will re-sync on next generation.': '聊天訊息發生變化，記憶圖更新已中斷，將在下次生成時重新同步。',
         'Generation aborted. Skipped memory recall.': '生成已中斷，已跳過記憶召回。',
         'Memory recall cancelled by user.': '記憶召回已由使用者終止。',
         'Memory graph update cancelled by user.': '記憶圖更新已由使用者終止。',
@@ -11387,6 +11389,7 @@ jQuery(() => {
         }
     };
     const mutationStatusText = i18n('Chat mutation detected. Memory graph will re-sync on next generation.');
+    const mutationInterruptedToastText = i18n('Chat changes interrupted memory graph update. It will re-sync on next generation.');
     const queueMutationInvalidation = (fromSeq = null, { scheduleReplay = false } = {}) => {
         const runtimeContext = getContext();
         const chatKey = getChatKey(runtimeContext);
@@ -11426,6 +11429,10 @@ jQuery(() => {
                     extractionTimers.delete(chatKey);
                 }
                 if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+                    if (isCurrentChat) {
+                        clearRuntimeInfoToast();
+                        notifyInfo(mutationInterruptedToastText);
+                    }
                     activeExtractionAbortController.abort();
                 }
                 const hasAffectedSeq = Number.isFinite(task.fromSeq) && task.fromSeq > 0;
