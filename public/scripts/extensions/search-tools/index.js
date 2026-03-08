@@ -44,7 +44,7 @@ const LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = [
     'If information is uncertain, highly time-sensitive, or search snippets are insufficient, prefer search plus visit before writing.',
     'Only delete entries that are explicitly listed as deletable.',
     'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
-    'Do not move or redesign lorebook layout. Runtime preserves existing position/depth/order fields for updates.',
+    'Do not move or redesign lorebook layout. Runtime controls managed entry position/depth/role/order from current settings.',
     'Use function calls only. Do not output plain prose outside tool calls.',
     `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
 ].join('\n');
@@ -64,7 +64,7 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = [
     'Only delete entries that are explicitly listed as deletable.',
     'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
     'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
-    'Do not move or redesign lorebook layout. Runtime preserves existing position/depth/order fields for updates.',
+    'Do not move or redesign lorebook layout. Runtime controls managed entry position/depth/role/order from current settings.',
     'Use function calls only. Do not output plain prose outside tool calls.',
     `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
 ].join('\n');
@@ -81,7 +81,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
     agentMaxRounds: 3,
     toolCallRetryMax: 1,
-    lorebookDepth: 4,
+    lorebookDepth: 9999,
     lorebookRole: extension_prompt_roles.SYSTEM,
     lorebookEntryOrder: 9800,
 });
@@ -165,7 +165,7 @@ function ensureSettings() {
     settings.lorebookDepth = clampInteger(
         settings.lorebookDepth ?? DEFAULT_SETTINGS.lorebookDepth,
         0,
-        100,
+        9999,
         DEFAULT_SETTINGS.lorebookDepth,
     );
     settings.lorebookRole = normalizeLorebookRole(settings.lorebookRole ?? DEFAULT_SETTINGS.lorebookRole);
@@ -1160,6 +1160,11 @@ async function syncSharedLorebookForCurrentChat(context = getContext()) {
     return { changed: true, bookName: SHARED_LOREBOOK_NAME };
 }
 
+async function syncSharedLorebookForLoadedChat(context = getContext()) {
+    await loadSearchToolsChatState(context, { force: false });
+    return syncSharedLorebookForCurrentChat(context);
+}
+
 function createManagedLorebookEntry(uid, spec, settings, existingEntry = null) {
     const entry = existingEntry && typeof existingEntry === 'object'
         ? structuredClone(existingEntry)
@@ -1172,12 +1177,13 @@ function createManagedLorebookEntry(uid, spec, settings, existingEntry = null) {
     entry.constant = Boolean(spec.alwaysInject);
     entry.selective = false;
 
+    entry.position = world_info_position.atDepth;
+    entry.depth = Number(settings.lorebookDepth);
+    entry.role = Number(settings.lorebookRole);
+    entry.order = Number(settings.lorebookEntryOrder);
+
     if (!existingEntry) {
         entry.disable = false;
-        entry.position = world_info_position.atDepth;
-        entry.depth = Number(settings.lorebookDepth);
-        entry.role = Number(settings.lorebookRole);
-        entry.order = Number(settings.lorebookEntryOrder);
         entry.useProbability = false;
         entry.probability = 100;
         entry.preventRecursion = true;
@@ -1930,15 +1936,15 @@ function renderSettingsBlock() {
         <input id="search_tools_agent_max_rounds" class="text_pole" type="number" min="1" max="8" step="1" />
         <label for="search_tools_tool_call_retry_max">${escapeHtml(i18n('Tool call retry count'))}</label>
         <input id="search_tools_tool_call_retry_max" class="text_pole" type="number" min="0" max="5" step="1" />
-        <label for="search_tools_lorebook_depth">${escapeHtml(i18n('New entry default depth'))}</label>
-        <input id="search_tools_lorebook_depth" class="text_pole" type="number" min="0" max="100" step="1" />
-        <label for="search_tools_lorebook_role">${escapeHtml(i18n('New entry default role'))}</label>
+        <label for="search_tools_lorebook_depth">${escapeHtml(i18n('Managed entry depth'))}</label>
+        <input id="search_tools_lorebook_depth" class="text_pole" type="number" min="0" max="9999" step="1" />
+        <label for="search_tools_lorebook_role">${escapeHtml(i18n('Managed entry role'))}</label>
         <select id="search_tools_lorebook_role" class="text_pole">
             <option value="${extension_prompt_roles.SYSTEM}">${escapeHtml(i18n('System'))}</option>
             <option value="${extension_prompt_roles.USER}">${escapeHtml(i18n('User'))}</option>
             <option value="${extension_prompt_roles.ASSISTANT}">${escapeHtml(i18n('Assistant'))}</option>
         </select>
-        <label for="search_tools_lorebook_entry_order">${escapeHtml(i18n('New entry default order'))}</label>
+        <label for="search_tools_lorebook_entry_order">${escapeHtml(i18n('Managed entry order'))}</label>
         <input id="search_tools_lorebook_entry_order" class="text_pole" type="number" min="0" max="20000" step="1" />
         <label for="search_tools_agent_system_prompt">${escapeHtml(i18n('Search agent system prompt'))}</label>
         <textarea id="search_tools_agent_system_prompt" class="text_pole" rows="12"></textarea>
@@ -2095,18 +2101,21 @@ function bindSettingsUi() {
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_lorebook_depth', function () {
-        settings.lorebookDepth = clampInteger(jQuery(this).val(), 0, 100, DEFAULT_SETTINGS.lorebookDepth);
+        settings.lorebookDepth = clampInteger(jQuery(this).val(), 0, 9999, DEFAULT_SETTINGS.lorebookDepth);
         jQuery(this).val(String(settings.lorebookDepth));
+        void syncSharedLorebookForLoadedChat(getContext());
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_lorebook_role', function () {
         settings.lorebookRole = normalizeLorebookRole(jQuery(this).val());
         jQuery(this).val(String(settings.lorebookRole));
+        void syncSharedLorebookForLoadedChat(getContext());
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_lorebook_entry_order', function () {
         settings.lorebookEntryOrder = clampInteger(jQuery(this).val(), 0, 20000, DEFAULT_SETTINGS.lorebookEntryOrder);
         jQuery(this).val(String(settings.lorebookEntryOrder));
+        void syncSharedLorebookForLoadedChat(getContext());
         saveSettingsDebounced();
     });
     root.on('change.searchTools input.searchTools', '#search_tools_agent_system_prompt', function () {
@@ -2156,9 +2165,9 @@ function registerLocaleData() {
         'Agent preset (params + prompt, empty = current)': 'Agent 预设（参数+提示词，留空=当前）',
         'Agent max rounds': 'Agent 最大轮数',
         'Tool call retry count': '工具调用重试次数',
-        'New entry default depth': '新条目默认深度',
-        'New entry default role': '新条目默认角色',
-        'New entry default order': '新条目默认顺序',
+        'Managed entry depth': '受管条目深度',
+        'Managed entry role': '受管条目角色',
+        'Managed entry order': '受管条目顺序',
         'Search agent system prompt': '搜索 Agent 系统提示词',
         'Reset search agent prompt': '重置搜索 Agent 提示词',
         'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '确认重置搜索 Agent 提示词为默认值？这会覆盖当前搜索 Agent 系统提示词。',
@@ -2193,9 +2202,9 @@ function registerLocaleData() {
         'Agent preset (params + prompt, empty = current)': 'Agent 預設（參數+提示詞，留空=目前）',
         'Agent max rounds': 'Agent 最大輪數',
         'Tool call retry count': '工具呼叫重試次數',
-        'New entry default depth': '新條目預設深度',
-        'New entry default role': '新條目預設角色',
-        'New entry default order': '新條目預設順序',
+        'Managed entry depth': '受管條目深度',
+        'Managed entry role': '受管條目角色',
+        'Managed entry order': '受管條目順序',
         'Search agent system prompt': '搜尋 Agent 系統提示詞',
         'Reset search agent prompt': '重置搜尋 Agent 提示詞',
         'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '確認重置搜尋 Agent 提示詞為預設值？這會覆蓋目前搜尋 Agent 系統提示詞。',

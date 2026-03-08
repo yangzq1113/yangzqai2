@@ -176,7 +176,7 @@ const defaultSettings = {
     agentTimeoutSeconds: 0,
     maxRecentMessages: 14,
     capsuleInjectPosition: extension_prompt_types.IN_CHAT,
-    capsuleInjectDepth: 1,
+    capsuleInjectDepth: 9999,
     capsuleInjectRole: extension_prompt_roles.SYSTEM,
     capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
     orchestrationSpec: defaultSpec,
@@ -219,7 +219,7 @@ function registerLocaleData() {
         'In-Chat': '聊天内',
         'In-Prompt (system block)': '提示词内（系统块）',
         'Before-Prompt': '提示词前',
-        'Orchestration result depth (IN_CHAT only, recommended 1 = before latest message)': '编排结果深度（仅聊天内，建议 1=最后一条消息前）',
+        'Orchestration result depth (IN_CHAT only)': '编排结果深度（仅聊天内）',
         'Orchestration result role (IN_CHAT only)': '编排结果角色（仅聊天内）',
         'Custom orchestration result instruction (prepended before analysis)': '自定义编排结果指令（会放在分析结果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指导，再用角色语气完成最终回复。',
@@ -409,7 +409,7 @@ function registerLocaleData() {
         'In-Chat': '聊天內',
         'In-Prompt (system block)': '提示詞內（系統區塊）',
         'Before-Prompt': '提示詞前',
-        'Orchestration result depth (IN_CHAT only, recommended 1 = before latest message)': '編排結果深度（僅聊天內，建議 1=最後一則訊息前）',
+        'Orchestration result depth (IN_CHAT only)': '編排結果深度（僅聊天內）',
         'Orchestration result role (IN_CHAT only)': '編排結果角色（僅聊天內）',
         'Custom orchestration result instruction (prepended before analysis)': '自訂編排結果指令（會放在分析結果前）',
         'e.g. Follow this guidance first, then write final reply in-character.': '例如：先遵循下列指導，再以角色語氣完成最終回覆。',
@@ -2264,6 +2264,19 @@ function injectCapsule(context, text) {
         true,
         role,
     );
+}
+
+function reapplyLatestCapsuleInjection(context) {
+    const chatKey = getChatKey(context);
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        return;
+    }
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return;
+    }
+    const rebuiltText = buildCapsule(Array.isArray(latestOrchestrationSnapshot.stageOutputs) ? latestOrchestrationSnapshot.stageOutputs : []);
+    const nextText = String(rebuiltText || latestOrchestrationSnapshot.capsuleText || '').trim();
+    injectCapsule(context, nextText);
 }
 
 async function onWorldInfoFinalized(payload) {
@@ -5916,11 +5929,13 @@ function bindUi() {
         const value = Number(jQuery(this).val());
         const allowed = [extension_prompt_types.IN_PROMPT, extension_prompt_types.IN_CHAT, extension_prompt_types.BEFORE_PROMPT];
         settings.capsuleInjectPosition = allowed.includes(value) ? value : extension_prompt_types.IN_CHAT;
+        reapplyLatestCapsuleInjection(getContext());
         saveSettingsDebounced();
     });
 
     root.on('change.lukerOrch', '#luker_orch_capsule_depth', function () {
         settings.capsuleInjectDepth = Math.max(0, Math.min(10000, Math.floor(Number(jQuery(this).val()) || 0)));
+        reapplyLatestCapsuleInjection(getContext());
         saveSettingsDebounced();
     });
 
@@ -5928,11 +5943,13 @@ function bindUi() {
         const value = Number(jQuery(this).val());
         const allowedRoles = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
         settings.capsuleInjectRole = allowedRoles.includes(value) ? value : extension_prompt_roles.SYSTEM;
+        reapplyLatestCapsuleInjection(getContext());
         saveSettingsDebounced();
     });
 
     root.on('input.lukerOrch', '#luker_orch_capsule_custom_instruction', function () {
         settings.capsuleCustomInstruction = String(jQuery(this).val() || '').trim();
+        reapplyLatestCapsuleInjection(getContext());
         saveSettingsDebounced();
     });
 
@@ -7054,7 +7071,7 @@ function ensureUi() {
                 <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
                 <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
             </select>
-            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Orchestration result depth (IN_CHAT only, recommended 1 = before latest message)'))}</label>
+            <label for="luker_orch_capsule_depth">${escapeHtml(i18n('Orchestration result depth (IN_CHAT only)'))}</label>
             <input id="luker_orch_capsule_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
             <label for="luker_orch_capsule_role">${escapeHtml(i18n('Orchestration result role (IN_CHAT only)'))}</label>
             <select id="luker_orch_capsule_role" class="text_pole">

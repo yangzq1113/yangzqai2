@@ -309,7 +309,7 @@ const defaultSettings = {
     maxTurns: 900,
     recallEnabled: true,
     recallInjectPosition: extension_prompt_types.IN_CHAT,
-    recallInjectDepth: 4,
+    recallInjectDepth: 9999,
     recallInjectRole: extension_prompt_roles.SYSTEM,
     recallApiPresetName: '',
     recallPresetName: '',
@@ -360,7 +360,7 @@ function registerLocaleData() {
         'In-Chat': '聊天内',
         'In-Prompt (system block)': '提示词内（系统块）',
         'Before-Prompt': '提示词前',
-        'Recall injection depth (IN_CHAT only, recommended 1 = before latest message)': '召回注入深度（仅聊天内，建议 1=最后一条消息前）',
+        'Recall injection depth (IN_CHAT only)': '召回注入深度（仅聊天内）',
         'Recall injection role (IN_CHAT only)': '召回注入角色（仅聊天内）',
         'System': 'System',
         'User': 'User',
@@ -628,7 +628,7 @@ function registerLocaleData() {
         'In-Chat': '聊天內',
         'In-Prompt (system block)': '提示詞內（系統區塊）',
         'Before-Prompt': '提示詞前',
-        'Recall injection depth (IN_CHAT only, recommended 1 = before latest message)': '召回注入深度（僅聊天內，建議 1=最後一則訊息前）',
+        'Recall injection depth (IN_CHAT only)': '召回注入深度（僅聊天內）',
         'Recall injection role (IN_CHAT only)': '召回注入角色（僅聊天內）',
         'System': 'System',
         'User': 'User',
@@ -11371,7 +11371,7 @@ function ensureUi() {
                 <option value="${extension_prompt_types.IN_PROMPT}">${escapeHtml(i18n('In-Prompt (system block)'))}</option>
                 <option value="${extension_prompt_types.BEFORE_PROMPT}">${escapeHtml(i18n('Before-Prompt'))}</option>
             </select>
-            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Recall injection depth (IN_CHAT only, recommended 1 = before latest message)'))}</label>
+            <label for="luker_rpg_memory_recall_inject_depth">${escapeHtml(i18n('Recall injection depth (IN_CHAT only)'))}</label>
             <input id="luker_rpg_memory_recall_inject_depth" class="text_pole" type="number" min="0" max="10000" step="1" />
             <label for="luker_rpg_memory_recall_inject_role">${escapeHtml(i18n('Recall injection role (IN_CHAT only)'))}</label>
             <select id="luker_rpg_memory_recall_inject_role" class="text_pole">
