@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import express from 'express';
+import { load } from 'cheerio';
 
 import { decode } from 'html-entities';
 import { readSecret, SECRET_KEYS } from './secrets.js';
@@ -72,16 +73,66 @@ function parseDuckDuckGoHtml(html, maxResults = 8) {
     const source = String(html || '');
     const results = [];
     const seenUrls = new Set();
-    const anchorRegex = /<a[^>]+class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    const $ = load(source);
+    const containerSelectors = [
+        'article[data-testid="result"]',
+        '.result.results_links_deep.web-result',
+        '.web-result',
+    ];
+    const titleSelectors = [
+        '[data-testid="result-title-a"]',
+        'a.result__a',
+        'h2 a',
+    ];
+    const urlSelectors = [
+        '[data-testid="result-extras-url-link"]',
+        'a.result__url',
+        '.result__extras__url a',
+    ];
+    const snippetSelectors = [
+        '[data-result="snippet"]',
+        '.result__snippet',
+    ];
 
-    let match;
-    while ((match = anchorRegex.exec(source)) !== null) {
+    let containers = $();
+    for (const selector of containerSelectors) {
+        containers = $(selector);
+        if (containers.length) {
+            break;
+        }
+    }
+
+    for (const container of containers.toArray()) {
         if (results.length >= maxResults) {
             break;
         }
 
-        const rawHref = match[1];
-        const titleHtml = match[2];
+        const $container = $(container);
+
+        let titleLink = null;
+        for (const selector of titleSelectors) {
+            const candidate = $container.find(selector).first();
+            if (candidate.length) {
+                titleLink = candidate;
+                break;
+            }
+        }
+
+        if (!titleLink?.length) {
+            continue;
+        }
+
+        let urlLink = null;
+        for (const selector of urlSelectors) {
+            const candidate = $container.find(selector).first();
+            if (candidate.length) {
+                urlLink = candidate;
+                break;
+            }
+        }
+
+        const rawHref = urlLink?.attr('href') || titleLink.attr('href') || '';
+        const titleHtml = titleLink.html() || titleLink.text();
         const title = decodeHtmlFragment(titleHtml);
         const url = resolveDuckDuckGoResultUrl(rawHref);
 
@@ -100,12 +151,15 @@ function parseDuckDuckGoHtml(html, maxResults = 8) {
             continue;
         }
 
-        const tail = source.slice(match.index + match[0].length, match.index + match[0].length + 1400);
-        const snippetMatch = tail.match(
-            /<a[^>]+class="[^"]*\bresult__snippet\b[^"]*"[^>]*>([\s\S]*?)<\/a>|<div[^>]+class="[^"]*\bresult__snippet\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
-        );
-        const snippetHtml = snippetMatch?.[1] || snippetMatch?.[2] || '';
-        const snippet = decodeHtmlFragment(snippetHtml);
+        let snippet = '';
+        for (const selector of snippetSelectors) {
+            const candidate = $container.find(selector).first();
+            const text = normalizeWhitespace(decode(candidate.text() || ''));
+            if (text) {
+                snippet = text;
+                break;
+            }
+        }
 
         seenUrls.add(url);
         results.push({ title, url, snippet });
