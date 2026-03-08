@@ -6962,9 +6962,8 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
         return null;
     }
 
-    clearRollbackHistory(chatKey);
     const rebuilt = createEmptyStore();
-    await runExtractionForStore(context, rebuilt, {
+    const extracted = await runExtractionForStore(context, rebuilt, {
         force: true,
         startSeq: 1,
         showCompressionToast: false,
@@ -6972,6 +6971,10 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
         onBatchStart,
         rebuildCreateOnly: true,
     });
+    const latestSeq = Math.max(0, Number(rebuilt?.lastExtractionDebug?.latestSeq || 0));
+    if (!extracted && latestSeq > 0) {
+        throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
+    }
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
     const persistedStore = replacePersistedGraphWithStore(
@@ -6979,6 +6982,7 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
         rebuilt,
         Number(rebuilt?.lastExtractionDebug?.latestSeq || getSemanticCoverageSeq(rebuilt) || 0),
     ) || rebuilt;
+    clearRollbackHistory(chatKey);
     await persistMemoryStoreByChatKey(context, chatKey, persistedStore, { syncPersistentProjection: true });
     return persistedStore;
 }
@@ -10833,9 +10837,13 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
         const runtimeSettings = getEffectiveSettings(context, settings);
+        const rebuildLatestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, runtimeSettings);
+        if (rebuildLatestSeq <= 0) {
+            notifyError(i18n('No assistant turns available to rebuild.'));
+            return;
+        }
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
-        const rebuildLatestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, runtimeSettings);
         showRuntimeInfoToast(formatExtractionRangeToast(1, Math.min(1, rebuildLatestSeq || 1), Math.max(1, rebuildLatestSeq)), {
             stopLabel: i18n('Stop'),
             onStop: () => {
@@ -10855,7 +10863,6 @@ function bindUi() {
                 notifyError(i18n('No active chat selected.'));
                 return;
             }
-            await persistMemoryStoreByChatKey(context, getChatKey(context), store, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18n('Memory graph rebuilt from current chat.'));
             notifyEventCompressionIfAny(store?.lastExtractionDebug?.compression);
@@ -10913,9 +10920,10 @@ function bindUi() {
         }
 
         const startSeq = Math.max(1, latestSeq - recentTurns + 1);
-        const trimResult = trimPersistedOpLogFromSeq(chatKey, startSeq);
-        store = trimResult.store || store;
-        updateStoreSourceState(store, context);
+        const beforeStore = normalizeStoreForRuntime(store);
+        const workingStore = normalizeStoreForRuntime(store);
+        truncateStoreFromSeq(workingStore, startSeq);
+        updateStoreSourceState(workingStore, context);
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
         const extractBatchTurns = Math.max(
@@ -10935,8 +10943,7 @@ function bindUi() {
             },
         });
         try {
-            const beforeStore = normalizeStoreForRuntime(store);
-            await runExtractionForStore(context, store, {
+            const extracted = await runExtractionForStore(context, workingStore, {
                 force: true,
                 startSeq,
                 abortSignal: rebuildAbortController.signal,
@@ -10944,8 +10951,13 @@ function bindUi() {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latest));
                 },
             });
-            appendPersistedDiffEntry(chatKey, beforeStore, store, Number(latestSeq || 0));
-            await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
+            const debug = workingStore.lastExtractionDebug || {};
+            if (!extracted && Number(debug.latestSeq || 0) >= startSeq) {
+                throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
+            }
+            trimRollbackHistoryFromSeq(chatKey, startSeq);
+            appendPersistedDiffEntry(chatKey, beforeStore, workingStore, Number(latestSeq || 0));
+            await persistMemoryStoreByChatKey(context, chatKey, workingStore, { syncPersistentProjection: true });
             refreshUiStats();
             notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} assistant turn(s).', recentTurns));
             updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, latestSeq));
