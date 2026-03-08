@@ -69,12 +69,23 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = [
     `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
 ].join('\n');
 
-const FINAL_STAGE_AGENT_SYSTEM_PROMPT = [
-    'You are now in the mandatory finalization stage.',
+const DEFAULT_AGENT_FINAL_STAGE_PROMPT = [
+    'You are the final-stage web research agent for roleplay generation.',
+    'This stage exists to finish the pre-request search pass using only evidence already gathered earlier in this run.',
     `Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.`,
-    'Use only the evidence already gathered in managed search entries, previous search results, and visited page text from this run.',
+    'Use only managed search entries, previous search results, and visited page text already available in the conversation.',
+    'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
+    'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
+    'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
+    'If a source is ambiguous, keep wording neutral or do not write it.',
+    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
+    'Only delete entries that are explicitly listed as deletable.',
+    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
+    'Use function calls only. Do not output plain prose outside tool calls.',
     `If any lorebook change is still needed, do it now and also call ${TOOL_NAMES.AGENT_FINALIZE} in the same response.`,
     `If no lorebook change is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.`,
+    `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
 ].join('\n');
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -87,6 +98,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     agentApiPresetName: '',
     agentPresetName: '',
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+    agentFinalStagePrompt: DEFAULT_AGENT_FINAL_STAGE_PROMPT,
     agentMaxRounds: 3,
     toolCallRetryMax: 1,
     lorebookPosition: world_info_position.atDepth,
@@ -187,6 +199,8 @@ function ensureSettings() {
     settings.agentSystemPrompt = normalizedAgentSystemPrompt === LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT
         ? DEFAULT_SETTINGS.agentSystemPrompt
         : (normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt);
+    settings.agentFinalStagePrompt = String(settings.agentFinalStagePrompt ?? DEFAULT_SETTINGS.agentFinalStagePrompt).trim()
+        || DEFAULT_SETTINGS.agentFinalStagePrompt;
     settings.agentMaxRounds = clampInteger(
         settings.agentMaxRounds ?? DEFAULT_SETTINGS.agentMaxRounds,
         1,
@@ -1474,12 +1488,10 @@ function buildManagedEntryCatalog(entries = []) {
     })), null, 2);
 }
 
-function buildSearchAgentSystemPrompt(basePrompt, { isFinalStage = false } = {}) {
+function buildSearchAgentSystemPrompt(basePrompt, finalStagePrompt, { isFinalStage = false } = {}) {
     const normalizedBasePrompt = String(basePrompt || DEFAULT_AGENT_SYSTEM_PROMPT).trim() || DEFAULT_AGENT_SYSTEM_PROMPT;
-    if (!isFinalStage) {
-        return normalizedBasePrompt;
-    }
-    return `${normalizedBasePrompt}\n\n${FINAL_STAGE_AGENT_SYSTEM_PROMPT}`;
+    const normalizedFinalStagePrompt = String(finalStagePrompt || DEFAULT_AGENT_FINAL_STAGE_PROMPT).trim() || DEFAULT_AGENT_FINAL_STAGE_PROMPT;
+    return isFinalStage ? normalizedFinalStagePrompt : normalizedBasePrompt;
 }
 
 function buildSearchAgentUserPrompt(payload, {
@@ -1713,7 +1725,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         const promptMessages = await buildPresetAwareMessages(
             context,
             settings,
-            buildSearchAgentSystemPrompt(settings.agentSystemPrompt, { isFinalStage }),
+            buildSearchAgentSystemPrompt(settings.agentSystemPrompt, settings.agentFinalStagePrompt, { isFinalStage }),
             buildSearchAgentUserPrompt(payload, {
                 roundIndex: phaseIndex,
                 maxRounds: searchRoundCount,
@@ -2029,10 +2041,13 @@ function renderSettingsBlock() {
         </select>
         <label for="search_tools_lorebook_entry_order">${escapeHtml(i18n('Injection order'))}</label>
         <input id="search_tools_lorebook_entry_order" class="text_pole" type="number" min="0" max="20000" step="1" />
-        <label for="search_tools_agent_system_prompt">${escapeHtml(i18n('Search agent system prompt'))}</label>
+        <label for="search_tools_agent_system_prompt">${escapeHtml(i18n('Search-stage agent system prompt'))}</label>
         <textarea id="search_tools_agent_system_prompt" class="text_pole" rows="12"></textarea>
+        <label for="search_tools_agent_final_stage_prompt">${escapeHtml(i18n('Final-stage agent system prompt'))}</label>
+        <textarea id="search_tools_agent_final_stage_prompt" class="text_pole" rows="12"></textarea>
         <div class="flex-container">
-            <div id="search_tools_reset_agent_prompt" class="menu_button menu_button_small">${escapeHtml(i18n('Reset search agent prompt'))}</div>
+            <div id="search_tools_reset_agent_prompt" class="menu_button menu_button_small">${escapeHtml(i18n('Reset search-stage agent prompt'))}</div>
+            <div id="search_tools_reset_agent_final_stage_prompt" class="menu_button menu_button_small">${escapeHtml(i18n('Reset final-stage agent prompt'))}</div>
         </div>
         <div id="${STATUS_ID}" class="wide100p text_muted" style="margin-top: 8px;"></div>
     </div>
@@ -2135,6 +2150,7 @@ function bindSettingsUi() {
     root.find('#search_tools_lorebook_role').val(String(settings.lorebookRole));
     root.find('#search_tools_lorebook_entry_order').val(String(settings.lorebookEntryOrder));
     root.find('#search_tools_agent_system_prompt').val(String(settings.agentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt));
+    root.find('#search_tools_agent_final_stage_prompt').val(String(settings.agentFinalStagePrompt || DEFAULT_SETTINGS.agentFinalStagePrompt));
 
     root.off('.searchTools');
     root.on('input.searchTools', '#search_tools_enabled', function () {
@@ -2212,15 +2228,30 @@ function bindSettingsUi() {
         settings.agentSystemPrompt = String(jQuery(this).val() || '').trim() || DEFAULT_SETTINGS.agentSystemPrompt;
         saveSettingsDebounced();
     });
+    root.on('change.searchTools input.searchTools', '#search_tools_agent_final_stage_prompt', function () {
+        settings.agentFinalStagePrompt = String(jQuery(this).val() || '').trim() || DEFAULT_SETTINGS.agentFinalStagePrompt;
+        saveSettingsDebounced();
+    });
     root.on('click.searchTools', '#search_tools_reset_agent_prompt', function () {
-        if (!window.confirm(i18n('Reset search agent prompt to default? This will overwrite current search agent system prompt.'))) {
+        if (!window.confirm(i18n('Reset search-stage agent prompt to default? This will overwrite the current search-stage system prompt.'))) {
             return;
         }
         settings.agentSystemPrompt = DEFAULT_SETTINGS.agentSystemPrompt;
         root.find('#search_tools_agent_system_prompt').val(settings.agentSystemPrompt);
         saveSettingsDebounced();
         if (typeof toastr !== 'undefined') {
-            toastr.success(i18n('Reset search agent prompt'));
+            toastr.success(i18n('Reset search-stage agent prompt'));
+        }
+    });
+    root.on('click.searchTools', '#search_tools_reset_agent_final_stage_prompt', function () {
+        if (!window.confirm(i18n('Reset final-stage agent prompt to default? This will overwrite the current final-stage system prompt.'))) {
+            return;
+        }
+        settings.agentFinalStagePrompt = DEFAULT_SETTINGS.agentFinalStagePrompt;
+        root.find('#search_tools_agent_final_stage_prompt').val(settings.agentFinalStagePrompt);
+        saveSettingsDebounced();
+        if (typeof toastr !== 'undefined') {
+            toastr.success(i18n('Reset final-stage agent prompt'));
         }
     });
 }
@@ -2266,9 +2297,12 @@ function registerLocaleData() {
         'Injection depth (At Chat Depth only)': '注入深度（仅聊天深度位置）',
         'Injection role (At Chat Depth only)': '注入角色（仅聊天深度位置）',
         'Injection order': '注入顺序',
-        'Search agent system prompt': '搜索 Agent 系统提示词',
-        'Reset search agent prompt': '重置搜索 Agent 提示词',
-        'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '确认重置搜索 Agent 提示词为默认值？这会覆盖当前搜索 Agent 系统提示词。',
+        'Search-stage agent system prompt': '搜索阶段 Agent 系统提示词',
+        'Final-stage agent system prompt': '最终阶段 Agent 系统提示词',
+        'Reset search-stage agent prompt': '重置搜索阶段 Agent 提示词',
+        'Reset final-stage agent prompt': '重置最终阶段 Agent 提示词',
+        'Reset search-stage agent prompt to default? This will overwrite the current search-stage system prompt.': '确认重置搜索阶段 Agent 提示词为默认值？这会覆盖当前搜索阶段系统提示词。',
+        'Reset final-stage agent prompt to default? This will overwrite the current final-stage system prompt.': '确认重置最终阶段 Agent 提示词为默认值？这会覆盖当前最终阶段系统提示词。',
         'System': '系统',
         'User': '用户',
         'Assistant': '助手',
@@ -2311,9 +2345,12 @@ function registerLocaleData() {
         'Injection depth (At Chat Depth only)': '注入深度（僅聊天深度位置）',
         'Injection role (At Chat Depth only)': '注入角色（僅聊天深度位置）',
         'Injection order': '注入順序',
-        'Search agent system prompt': '搜尋 Agent 系統提示詞',
-        'Reset search agent prompt': '重置搜尋 Agent 提示詞',
-        'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '確認重置搜尋 Agent 提示詞為預設值？這會覆蓋目前搜尋 Agent 系統提示詞。',
+        'Search-stage agent system prompt': '搜尋階段 Agent 系統提示詞',
+        'Final-stage agent system prompt': '最終階段 Agent 系統提示詞',
+        'Reset search-stage agent prompt': '重置搜尋階段 Agent 提示詞',
+        'Reset final-stage agent prompt': '重置最終階段 Agent 提示詞',
+        'Reset search-stage agent prompt to default? This will overwrite the current search-stage system prompt.': '確認重置搜尋階段 Agent 提示詞為預設值？這會覆蓋目前搜尋階段系統提示詞。',
+        'Reset final-stage agent prompt to default? This will overwrite the current final-stage system prompt.': '確認重置最終階段 Agent 提示詞為預設值？這會覆蓋目前最終階段系統提示詞。',
         'System': '系統',
         'User': '使用者',
         'Assistant': '助手',
