@@ -2032,6 +2032,110 @@ function appendPersistedDiffEntry(chatKey, beforeStore, afterStore, seq) {
     return true;
 }
 
+function applyStoreMetadataToPersistedState(state, store) {
+    const nextState = state && typeof state === 'object'
+        ? state
+        : createEmptyPersistedMemoryState();
+    nextState.sourceMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
+    nextState.lastRecallTrace = structuredClone(Array.isArray(store?.lastRecallTrace) ? store.lastRecallTrace : []);
+    nextState.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? structuredClone(store.lastRecallProjection)
+        : null;
+    return nextState;
+}
+
+function buildRuntimeStoreWithPersistedMetadata(state, sourceStore) {
+    const runtimeStore = buildRuntimeStoreFromPersistedState(state);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(sourceStore?.lastRecallTrace) ? sourceStore.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = sourceStore?.lastRecallProjection && typeof sourceStore.lastRecallProjection === 'object'
+        ? structuredClone(sourceStore.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(sourceStore?.sourceMessageCount || 0));
+    runtimeStore.lastExtractionDebug = sourceStore?.lastExtractionDebug && typeof sourceStore.lastExtractionDebug === 'object'
+        ? structuredClone(sourceStore.lastExtractionDebug)
+        : null;
+    return runtimeStore;
+}
+
+function hasPersistedStoreMetadataChanges(beforeStore, afterStore) {
+    const beforeTrace = JSON.stringify(Array.isArray(beforeStore?.lastRecallTrace) ? beforeStore.lastRecallTrace : []);
+    const afterTrace = JSON.stringify(Array.isArray(afterStore?.lastRecallTrace) ? afterStore.lastRecallTrace : []);
+    const beforeProjection = JSON.stringify(beforeStore?.lastRecallProjection && typeof beforeStore.lastRecallProjection === 'object'
+        ? beforeStore.lastRecallProjection
+        : null);
+    const afterProjection = JSON.stringify(afterStore?.lastRecallProjection && typeof afterStore.lastRecallProjection === 'object'
+        ? afterStore.lastRecallProjection
+        : null);
+    return Math.max(0, Number(beforeStore?.sourceMessageCount || 0)) !== Math.max(0, Number(afterStore?.sourceMessageCount || 0))
+        || beforeTrace !== afterTrace
+        || beforeProjection !== afterProjection;
+}
+
+async function persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection = false } = {}) {
+    const target = memoryStoreTargets.get(chatKey);
+    if (!target) {
+        throw new Error('Memory store target is unavailable.');
+    }
+    if (typeof context.updateChatState !== 'function') {
+        throw new Error('Chat state update API is unavailable in extension context.');
+    }
+
+    const persistedState = normalizePersistedStateBase(nextState);
+    const normalizedStore = normalizeStoreForRuntime(runtimeStore);
+    normalizedStore.lastExtractionDebug = runtimeStore?.lastExtractionDebug && typeof runtimeStore.lastExtractionDebug === 'object'
+        ? structuredClone(runtimeStore.lastExtractionDebug)
+        : null;
+    const result = await context.updateChatState(
+        CHAT_STATE_NAMESPACE,
+        () => normalizePersistedStateBase(persistedState),
+        { target, maxOperations: 16000 },
+    );
+    if (!result?.ok) {
+        throw new Error('Failed to persist memory store.');
+    }
+
+    memoryStateCache.set(chatKey, persistedState);
+    memoryStoreCache.set(chatKey, normalizedStore);
+
+    if (syncPersistentProjection && chatKey === getChatKey(context)) {
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        await syncPersistentLorebookProjection(context, effectiveSettings, normalizedStore);
+    }
+
+    return normalizedStore;
+}
+
+async function commitMemoryStoreReplaceByChatKey(context, chatKey, store, seq, { syncPersistentProjection = false } = {}) {
+    const normalizedStore = normalizeStoreForRuntime(store);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedStore.appliedSeqTo || getSemanticCoverageSeq(normalizedStore) || 0)));
+    const nextState = applyStoreMetadataToPersistedState(createEmptyPersistedMemoryState(), normalizedStore);
+    const ops = buildMemoryLogOpsFromStore(normalizedStore);
+    nextState.opLog = (normalizedSeq > 0 || ops.length > 0)
+        ? [{ seq: normalizedSeq, ops }]
+        : [];
+    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(nextState, normalizedStore);
+    return await persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection });
+}
+
+async function commitMemoryStoreDiffByChatKey(context, chatKey, beforeStore, afterStore, seq, { syncPersistentProjection = false } = {}) {
+    const normalizedBefore = normalizeStoreForRuntime(beforeStore);
+    const normalizedAfter = normalizeStoreForRuntime(afterStore);
+    const ops = buildMemoryLogDiffOps(normalizedBefore, normalizedAfter);
+    const metadataChanged = hasPersistedStoreMetadataChanges(normalizedBefore, normalizedAfter);
+    if (ops.length === 0 && !metadataChanged) {
+        return normalizedAfter;
+    }
+
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedAfter.appliedSeqTo || getSemanticCoverageSeq(normalizedAfter) || 0)));
+    const nextState = normalizePersistedStateBase(getMemoryState(chatKey));
+    if (ops.length > 0) {
+        nextState.opLog.push({ seq: normalizedSeq, ops });
+    }
+    applyStoreMetadataToPersistedState(nextState, normalizedAfter);
+    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(nextState, normalizedAfter);
+    return await persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection });
+}
+
 function replacePersistedGraphWithStore(chatKey, store, seq) {
     const key = String(chatKey || '').trim();
     if (!key) {
@@ -5311,6 +5415,7 @@ async function runExtractionForStore(context, store, {
     showCompressionToast = true,
     abortSignal = null,
     onBatchStart = null,
+    onBatchApplied = null,
     rebuildCreateOnly = false,
 } = {}) {
     const settings = getEffectiveSettings(context, getSettings());
@@ -5433,6 +5538,13 @@ async function runExtractionForStore(context, store, {
         }
         if (!success) {
             break;
+        }
+        if (typeof onBatchApplied === 'function') {
+            await onBatchApplied({
+                beginSeq: Number(startFrame?.seq || 0),
+                endSeq: Number(endFrame?.seq || 0),
+                latestSeq,
+            });
         }
     }
     if (extractedAny) {
@@ -6963,12 +7075,25 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
     }
 
     const rebuilt = createEmptyStore();
+    let hasCommittedBatch = false;
     const extracted = await runExtractionForStore(context, rebuilt, {
         force: true,
         startSeq: 1,
         showCompressionToast: false,
         abortSignal,
         onBatchStart,
+        onBatchApplied: async ({ beginSeq, endSeq }) => {
+            if (!hasCommittedBatch) {
+                const currentBatchEntries = getRollbackHistory(chatKey)
+                    .filter(entry => Number(entry?.seqFrom || 0) === Number(beginSeq || 0) && Number(entry?.seqTo || 0) === Number(endSeq || 0));
+                clearRollbackHistory(chatKey);
+                for (const entry of currentBatchEntries) {
+                    recordRollbackEntry(chatKey, entry);
+                }
+                hasCommittedBatch = true;
+            }
+            await commitMemoryStoreReplaceByChatKey(context, chatKey, rebuilt, endSeq, { syncPersistentProjection: true });
+        },
         rebuildCreateOnly: true,
     });
     const latestSeq = Math.max(0, Number(rebuilt?.lastExtractionDebug?.latestSeq || 0));
@@ -6977,13 +7102,13 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
     }
     updateStoreSourceState(rebuilt, context);
     memoryStoreTargets.set(chatKey, target);
-    const persistedStore = replacePersistedGraphWithStore(
+    const persistedStore = await commitMemoryStoreReplaceByChatKey(
+        context,
         chatKey,
         rebuilt,
         Number(rebuilt?.lastExtractionDebug?.latestSeq || getSemanticCoverageSeq(rebuilt) || 0),
-    ) || rebuilt;
-    clearRollbackHistory(chatKey);
-    await persistMemoryStoreByChatKey(context, chatKey, persistedStore, { syncPersistentProjection: true });
+        { syncPersistentProjection: true },
+    );
     return persistedStore;
 }
 
@@ -7439,7 +7564,7 @@ function scheduleExtraction(context) {
 
     const timer = setTimeout(async () => {
         extractionTimers.delete(chatKey);
-        let store = await ensureStoreSyncedWithChat(context);
+        const store = await ensureStoreSyncedWithChat(context);
         if (!store) {
             return;
         }
@@ -7469,7 +7594,8 @@ function scheduleExtraction(context) {
                 refreshUiStats();
                 return;
             }
-            const beforeStore = normalizeStoreForRuntime(store);
+            const workingStore = normalizeStoreForRuntime(store);
+            let committedStore = normalizeStoreForRuntime(store);
             const extractBatchTurns = Math.max(
                 1,
                 Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
@@ -7486,15 +7612,31 @@ function scheduleExtraction(context) {
                     }
                 },
             });
-            await runExtractionForStore(context, store, {
+            await runExtractionForStore(context, workingStore, {
                 abortSignal: extractionAbortController.signal,
                 onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
                 },
+                onBatchApplied: async ({ endSeq }) => {
+                    committedStore = await commitMemoryStoreDiffByChatKey(
+                        context,
+                        chatKey,
+                        committedStore,
+                        workingStore,
+                        endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
             });
-            appendPersistedDiffEntry(chatKey, beforeStore, store, Number(preview.latestSeq || 0));
-            await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
-            const debug = store.lastExtractionDebug || {};
+            const finalStore = await commitMemoryStoreDiffByChatKey(
+                context,
+                chatKey,
+                committedStore,
+                workingStore,
+                Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
+                { syncPersistentProjection: true },
+            );
+            const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
                 'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
                 debug.extracted ? 'ok' : 'skip',
@@ -7506,6 +7648,7 @@ function scheduleExtraction(context) {
         } catch (error) {
             if (isAbortError(error, extractionAbortController.signal)) {
                 updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
                 return;
             }
             console.warn(`[${MODULE_NAME}] Extraction failed`, error);
@@ -10769,17 +10912,34 @@ function bindUi() {
                     }
                 },
             });
-            const beforeStore = normalizeStoreForRuntime(store);
-            await runExtractionForStore(context, store, {
+            const workingStore = normalizeStoreForRuntime(store);
+            let committedStore = normalizeStoreForRuntime(store);
+            await runExtractionForStore(context, workingStore, {
                 force: true,
                 abortSignal: fillAbortController.signal,
                 onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
                 },
+                onBatchApplied: async ({ endSeq }) => {
+                    committedStore = await commitMemoryStoreDiffByChatKey(
+                        context,
+                        chatKey,
+                        committedStore,
+                        workingStore,
+                        endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
             });
-            appendPersistedDiffEntry(chatKey, beforeStore, store, Number(preview.latestSeq || 0));
-            await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
-            const debug = store.lastExtractionDebug || {};
+            const finalStore = await commitMemoryStoreDiffByChatKey(
+                context,
+                chatKey,
+                committedStore,
+                workingStore,
+                Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
+                { syncPersistentProjection: true },
+            );
+            const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
             updateUiStatus(i18nFormat(
                 'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
                 debug.extracted ? 'ok' : 'skip',
@@ -10792,6 +10952,7 @@ function bindUi() {
         } catch (error) {
             if (isAbortError(error, fillAbortController.signal)) {
                 updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
                 return;
             }
             console.warn(`[${MODULE_NAME}] Incremental fill failed`, error);
@@ -10870,6 +11031,7 @@ function bindUi() {
         } catch (error) {
             if (isAbortError(error, rebuildAbortController.signal)) {
                 updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
                 return;
             }
             console.warn(`[${MODULE_NAME}] Rebuild failed`, error);
@@ -10920,12 +11082,12 @@ function bindUi() {
         }
 
         const startSeq = Math.max(1, latestSeq - recentTurns + 1);
-        const beforeStore = normalizeStoreForRuntime(store);
         const workingStore = normalizeStoreForRuntime(store);
         truncateStoreFromSeq(workingStore, startSeq);
         updateStoreSourceState(workingStore, context);
         const rebuildAbortController = new AbortController();
         activeExtractionAbortController = rebuildAbortController;
+        let hasCommittedBatch = false;
         const extractBatchTurns = Math.max(
             1,
             Math.floor(Number(runtimeSettings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
@@ -10950,20 +11112,44 @@ function bindUi() {
                 onBatchStart: ({ beginSeq, endSeq, latestSeq: latest }) => {
                     updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latest));
                 },
+                onBatchApplied: async ({ beginSeq, endSeq }) => {
+                    if (!hasCommittedBatch) {
+                        const currentBatchEntries = getRollbackHistory(chatKey)
+                            .filter(entry => Number(entry?.seqFrom || 0) === Number(beginSeq || 0) && Number(entry?.seqTo || 0) === Number(endSeq || 0));
+                        trimRollbackHistoryFromSeq(chatKey, startSeq);
+                        for (const entry of currentBatchEntries) {
+                            recordRollbackEntry(chatKey, entry);
+                        }
+                        hasCommittedBatch = true;
+                    }
+                    await commitMemoryStoreReplaceByChatKey(
+                        context,
+                        chatKey,
+                        workingStore,
+                        endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
             });
             const debug = workingStore.lastExtractionDebug || {};
             if (!extracted && Number(debug.latestSeq || 0) >= startSeq) {
                 throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
             }
-            trimRollbackHistoryFromSeq(chatKey, startSeq);
-            appendPersistedDiffEntry(chatKey, beforeStore, workingStore, Number(latestSeq || 0));
-            await persistMemoryStoreByChatKey(context, chatKey, workingStore, { syncPersistentProjection: true });
+            const persistedStore = await commitMemoryStoreReplaceByChatKey(
+                context,
+                chatKey,
+                workingStore,
+                Number(latestSeq || debug.latestSeq || 0),
+                { syncPersistentProjection: true },
+            );
+            const committedDebug = persistedStore?.lastExtractionDebug || debug;
             refreshUiStats();
             notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} assistant turn(s).', recentTurns));
-            updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, latestSeq));
+            updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, Number(committedDebug.latestSeq || latestSeq)));
         } catch (error) {
             if (isAbortError(error, rebuildAbortController.signal)) {
                 updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
                 return;
             }
             console.warn(`[${MODULE_NAME}] Recent rebuild failed`, error);
