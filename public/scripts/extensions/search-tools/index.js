@@ -69,6 +69,14 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = [
     `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
 ].join('\n');
 
+const FINAL_STAGE_AGENT_SYSTEM_PROMPT = [
+    'You are now in the mandatory finalization stage.',
+    `Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.`,
+    'Use only the evidence already gathered in managed search entries, previous search results, and visited page text from this run.',
+    `If any lorebook change is still needed, do it now and also call ${TOOL_NAMES.AGENT_FINALIZE} in the same response.`,
+    `If no lorebook change is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.`,
+].join('\n');
+
 const DEFAULT_SETTINGS = Object.freeze({
     enabled: false,
     preRequestEnabled: false,
@@ -1466,28 +1474,47 @@ function buildManagedEntryCatalog(entries = []) {
     })), null, 2);
 }
 
+function buildSearchAgentSystemPrompt(basePrompt, { isFinalStage = false } = {}) {
+    const normalizedBasePrompt = String(basePrompt || DEFAULT_AGENT_SYSTEM_PROMPT).trim() || DEFAULT_AGENT_SYSTEM_PROMPT;
+    if (!isFinalStage) {
+        return normalizedBasePrompt;
+    }
+    return `${normalizedBasePrompt}\n\n${FINAL_STAGE_AGENT_SYSTEM_PROMPT}`;
+}
+
 function buildSearchAgentUserPrompt(payload, {
     roundIndex,
     maxRounds,
     bookName,
     managedEntries,
+    isFinalStage = false,
 } = {}) {
     const recentChat = buildRecentChatText(payload?.coreChat || []);
     const lastUserMessage = Array.isArray(payload?.coreChat)
         ? [...payload.coreChat].reverse().find(message => message?.is_user)
         : null;
     const userText = normalizeMultilineText(lastUserMessage?.mes || '');
+    const allToolNames = Object.values(TOOL_NAMES).filter(name => name.startsWith('luker_search_agent_'));
+    const finalStageToolNames = [
+        TOOL_NAMES.AGENT_UPSERT,
+        TOOL_NAMES.AGENT_DELETE,
+        TOOL_NAMES.AGENT_FINALIZE,
+    ];
 
     return [
         '# Search Agent Task',
-        `Round ${roundIndex} of ${maxRounds}.`,
+        isFinalStage
+            ? `Final stage after ${maxRounds} search rounds.`
+            : `Search round ${roundIndex} of ${maxRounds}.`,
         `Generation type: ${String(payload?.type || 'unknown')}.`,
         `Shared lorebook: ${bookName || '(not created yet)'}.`,
         '',
         'Decide whether persistent search-backed lorebook updates are needed before the main generation continues.',
         'If there is no meaningful gap, or the information would repeat active world info / character info / existing managed search entries, call finalize immediately.',
         'You may use existing managed search entries as your own database without searching or visiting.',
-        'Search and visit are optional. Visit is recommended when snippets are weak or the topic is time-sensitive.',
+        isFinalStage
+            ? 'This is the mandatory finalization stage. No new searching or visiting is allowed.'
+            : 'Search and visit are optional. Visit is recommended when snippets are weak or the topic is time-sensitive.',
         'Only delete entry_ids from the managed entry list below.',
         'For non-always_inject entries, provide activation keywords.',
         '',
@@ -1507,10 +1534,13 @@ function buildSearchAgentUserPrompt(payload, {
         buildManagedEntryCatalog(managedEntries),
         '',
         '## Output contract',
-        `- Use only these function tools: ${Object.values(TOOL_NAMES).filter(name => name.startsWith('luker_search_agent_')).join(', ')}`,
+        `- Use only these function tools: ${(isFinalStage ? finalStageToolNames : allToolNames).join(', ')}`,
+        isFinalStage ? `- Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.` : null,
+        isFinalStage ? `- If any lorebook mutation is still needed, do it in this response and also call ${TOOL_NAMES.AGENT_FINALIZE}.` : null,
+        isFinalStage ? `- If no mutation is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.` : null,
         `- End with ${TOOL_NAMES.AGENT_FINALIZE}.`,
         '- Do not output plain prose.',
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 }
 
 function buildAgentTools() {
@@ -1652,7 +1682,13 @@ async function runPreRequestSearchAgent(context, settings, payload) {
     const requestApi = profileResolution.requestApi;
     const apiSettingsOverride = profileResolution.apiSettingsOverride;
     const tools = buildAgentTools();
+    const searchRoundCount = Math.max(1, Number(settings.agentMaxRounds) || DEFAULT_SETTINGS.agentMaxRounds);
+    const finalStageTools = tools.filter((tool) => {
+        const name = String(tool?.function?.name || '');
+        return name !== TOOL_NAMES.AGENT_SEARCH && name !== TOOL_NAMES.AGENT_VISIT;
+    });
     const allowedNames = tools.map(tool => tool?.function?.name).filter(Boolean);
+    const finalStageAllowedNames = finalStageTools.map(tool => tool?.function?.name).filter(Boolean);
     const toolHistoryMessages = [];
     let internalRuntimeWorldInfo = buildRuntimeWorldInfoFromPayload(payload);
     let mutationCount = 0;
@@ -1661,10 +1697,11 @@ async function runPreRequestSearchAgent(context, settings, payload) {
     let lorebookBookName = '';
     let lorebookData = null;
 
-    for (let roundIndex = 1; roundIndex <= Number(settings.agentMaxRounds); roundIndex += 1) {
+    for (let phaseIndex = 1; phaseIndex <= searchRoundCount + 1; phaseIndex += 1) {
         if (payload?.signal?.aborted) {
             throw Object.assign(new Error('Search agent aborted.'), { name: 'AbortError' });
         }
+        const isFinalStage = phaseIndex > searchRoundCount;
 
         if (!lorebookData && !lorebookBookName) {
             const lorebook = await ensureSharedLorebook(context, true);
@@ -1676,12 +1713,13 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         const promptMessages = await buildPresetAwareMessages(
             context,
             settings,
-            settings.agentSystemPrompt,
+            buildSearchAgentSystemPrompt(settings.agentSystemPrompt, { isFinalStage }),
             buildSearchAgentUserPrompt(payload, {
-                roundIndex,
-                maxRounds: settings.agentMaxRounds,
+                roundIndex: phaseIndex,
+                maxRounds: searchRoundCount,
                 bookName: lorebookBookName,
                 managedEntries,
+                isFinalStage,
             }),
             {
                 api: requestApi,
@@ -1696,8 +1734,8 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         throwIfAborted(payload?.signal, 'Search agent aborted.');
         const requestMessages = [...promptMessages, ...toolHistoryMessages];
         const response = await requestToolCallsWithRetry(settings, requestMessages, {
-            tools,
-            allowedNames,
+            tools: isFinalStage ? finalStageTools : tools,
+            allowedNames: isFinalStage ? finalStageAllowedNames : allowedNames,
             llmPresetName: String(settings.agentPresetName || '').trim(),
             apiSettingsOverride,
             abortSignal: payload?.signal || null,
