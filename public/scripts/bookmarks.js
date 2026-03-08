@@ -12,6 +12,8 @@ import {
     saveChatConditional,
     saveItemizedPrompts,
     setActiveGroup,
+    eventSource,
+    event_types,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -41,6 +43,42 @@ import {
 } from './utils.js';
 
 const bookmarkNameToken = 'Checkpoint #';
+
+function buildBranchChatStateTarget(chatName) {
+    if (selected_group) {
+        const currentChatId = String(groups?.find(x => x.id == selected_group)?.chat_id || '').trim();
+        const targetChatId = String(chatName || '').trim();
+        return {
+            sourceTarget: currentChatId ? { is_group: true, id: currentChatId } : null,
+            targetTarget: targetChatId ? { is_group: true, id: targetChatId } : null,
+        };
+    }
+
+    const avatarUrl = String(characters?.[this_chid]?.avatar || '').trim();
+    const currentChatId = String(characters?.[this_chid]?.chat || '').trim();
+    const targetChatId = String(chatName || '').trim();
+    return {
+        sourceTarget: avatarUrl && currentChatId
+            ? { is_group: false, avatar_url: avatarUrl, file_name: currentChatId }
+            : null,
+        targetTarget: avatarUrl && targetChatId
+            ? { is_group: false, avatar_url: avatarUrl, file_name: targetChatId }
+            : null,
+    };
+}
+
+function countAssistantMessagesThroughIndex(messageIndex) {
+    const endIndex = Math.max(0, Math.floor(Number(messageIndex || 0)));
+    let count = 0;
+    for (let index = 0; index <= endIndex && index < chat.length; index++) {
+        const message = chat[index];
+        if (!message || message.is_system || message.is_user) {
+            continue;
+        }
+        count += 1;
+    }
+    return count;
+}
 
 /**
  * Gets the names of existing chats for the current character or group.
@@ -173,11 +211,22 @@ export async function createBranch(mesId) {
     const mainChat = selected_group ? groups?.find(x => x.id == selected_group)?.chat_id : characters[this_chid].chat;
     const newMetadata = { main_chat: mainChat };
     let name = `Branch #${mesId} - ${humanizedDateTime()}`;
+    const { sourceTarget, targetTarget } = buildBranchChatStateTarget(name);
+    const assistantMessageCount = countAssistantMessagesThroughIndex(mesId);
 
     if (selected_group) {
         await saveGroupBookmarkChat(selected_group, name, newMetadata, mesId);
     } else {
         await saveChat({ chatName: name, withMetadata: newMetadata, mesId });
+    }
+    if (sourceTarget && targetTarget) {
+        await eventSource.emit(event_types.CHAT_BRANCH_CREATED, {
+            mesId,
+            branchName: name,
+            assistantMessageCount,
+            sourceTarget,
+            targetTarget,
+        });
     }
     // append to branches list if it exists
     // otherwise create it

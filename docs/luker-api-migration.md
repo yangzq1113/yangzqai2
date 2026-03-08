@@ -319,6 +319,40 @@ Lifecycle hooks:
 - `GENERATION_STOPPED`
 - `GENERATION_ENDED`
 
+Chat lifecycle hooks commonly used by plugins:
+
+- `CHAT_CHANGED`
+- `CHAT_CREATED`
+- `GROUP_CHAT_CREATED`
+- `CHAT_BRANCH_CREATED`
+
+`CHAT_BRANCH_CREATED` is emitted after the new branch chat file is saved and before the UI switches into that branch. This is intended for chat-bound plugin state that needs to be copied or truncated for the new branch.
+
+Payload shape:
+
+```ts
+{
+  mesId: number,                  // branch point message index in source chat
+  branchName: string,             // new branch chat id / file name
+  assistantMessageCount: number,  // assistant turns included in the branch
+  sourceTarget: {
+    is_group: boolean,
+    id?: string,                  // group chat id when is_group=true
+    avatar_url?: string,          // character avatar when is_group=false
+    file_name?: string,           // source character chat id when is_group=false
+  },
+  targetTarget: {
+    is_group: boolean,
+    id?: string,
+    avatar_url?: string,
+    file_name?: string,
+  },
+}
+```
+
+Practical rule:
+- If your plugin stores chat-bound sidecar state and branch semantics depend on the cutoff point, use `CHAT_BRANCH_CREATED` to create the derived branch state instead of blindly copying the latest source state.
+
 Practical rule:
 - If you need to read/update lorebook-triggered context for this request, do it at `GENERATION_WORLD_INFO_FINALIZED`.
 
