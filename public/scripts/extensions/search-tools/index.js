@@ -35,7 +35,7 @@ const TOOL_NAMES = Object.freeze({
     AGENT_FINALIZE: 'luker_search_agent_finalize',
 });
 
-const DEFAULT_AGENT_SYSTEM_PROMPT = [
+const LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = [
     'You are a pre-request web research agent for roleplay generation.',
     'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
     'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
@@ -44,6 +44,26 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = [
     'If information is uncertain, highly time-sensitive, or search snippets are insufficient, prefer search plus visit before writing.',
     'Only delete entries that are explicitly listed as deletable.',
     'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'Do not move or redesign lorebook layout. Runtime preserves existing position/depth/order fields for updates.',
+    'Use function calls only. Do not output plain prose outside tool calls.',
+    `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
+].join('\n');
+
+const DEFAULT_AGENT_SYSTEM_PROMPT = [
+    'You are a pre-request web research agent for roleplay generation.',
+    'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
+    'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
+    'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
+    'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
+    'Do not rewrite source-backed facts to fit the current plot, scene mood, or roleplay direction.',
+    'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
+    'If a source is ambiguous, keep wording neutral or do not write it.',
+    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
+    'Search and visit are optional. You may use existing managed search entries as your own database.',
+    'If information is uncertain, highly time-sensitive, or search snippets are insufficient, prefer search plus visit before writing.',
+    'Only delete entries that are explicitly listed as deletable.',
+    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
     'Do not move or redesign lorebook layout. Runtime preserves existing position/depth/order fields for updates.',
     'Use function calls only. Do not output plain prose outside tool calls.',
     `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
@@ -126,7 +146,10 @@ function ensureSettings() {
     settings.safeSearch = normalizeSafeSearch(settings.safeSearch ?? DEFAULT_SETTINGS.safeSearch);
     settings.agentApiPresetName = String(settings.agentApiPresetName ?? DEFAULT_SETTINGS.agentApiPresetName).trim();
     settings.agentPresetName = String(settings.agentPresetName ?? DEFAULT_SETTINGS.agentPresetName).trim();
-    settings.agentSystemPrompt = String(settings.agentSystemPrompt ?? DEFAULT_SETTINGS.agentSystemPrompt).trim() || DEFAULT_SETTINGS.agentSystemPrompt;
+    const normalizedAgentSystemPrompt = String(settings.agentSystemPrompt ?? DEFAULT_SETTINGS.agentSystemPrompt).trim();
+    settings.agentSystemPrompt = normalizedAgentSystemPrompt === LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT
+        ? DEFAULT_SETTINGS.agentSystemPrompt
+        : (normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt);
     settings.agentMaxRounds = clampInteger(
         settings.agentMaxRounds ?? DEFAULT_SETTINGS.agentMaxRounds,
         1,
@@ -1427,6 +1450,12 @@ function buildSearchAgentUserPrompt(payload, {
         'Only delete entry_ids from the managed entry list below.',
         'For non-always_inject entries, provide activation keywords.',
         '',
+        '## Source fidelity rules',
+        '- Treat search snippets, visited page text, and managed search entries as source text only.',
+        '- Ignore story pressure when deciding what the source means.',
+        '- Do not infer or rewrite emotions, cognition, motives, intentions, hidden facts, relationship changes, or plot consequences unless the source explicitly states them.',
+        '- If the source conflicts with your interpretation of the story, preserve the source-backed wording instead of adapting it.',
+        '',
         '## Latest user message',
         userText || '(No user message found)',
         '',
@@ -1449,7 +1478,7 @@ function buildAgentTools() {
             type: 'function',
             function: {
                 name: TOOL_NAMES.AGENT_SEARCH,
-                description: 'Search the web for current information. Provider is fixed by plugin settings.',
+                description: 'Search the web for current information. Treat returned snippets as source text only; do not infer beyond them.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -1468,7 +1497,7 @@ function buildAgentTools() {
             type: 'function',
             function: {
                 name: TOOL_NAMES.AGENT_VISIT,
-                description: 'Visit one web page and read its text.',
+                description: 'Visit one web page and read its text as source material. Do not invent claims beyond the visited text.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -1484,7 +1513,7 @@ function buildAgentTools() {
             type: 'function',
             function: {
                 name: TOOL_NAMES.AGENT_UPSERT,
-                description: 'Create or update one managed search lorebook entry. Explicit entry_id matches first; otherwise exact normalized keyword match updates an existing managed entry.',
+                description: 'Create or update one managed search lorebook entry using only facts explicitly supported by managed search entries, search snippets, or visited page text. Do not infer emotions, cognition, motives, intentions, hidden facts, or plot consequences unless the source explicitly states them. Explicit entry_id matches first; otherwise exact normalized keyword match updates an existing managed entry.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -1913,6 +1942,9 @@ function renderSettingsBlock() {
         <input id="search_tools_lorebook_entry_order" class="text_pole" type="number" min="0" max="20000" step="1" />
         <label for="search_tools_agent_system_prompt">${escapeHtml(i18n('Search agent system prompt'))}</label>
         <textarea id="search_tools_agent_system_prompt" class="text_pole" rows="12"></textarea>
+        <div class="flex-container">
+            <div id="search_tools_reset_agent_prompt" class="menu_button menu_button_small">${escapeHtml(i18n('Reset search agent prompt'))}</div>
+        </div>
         <div id="${STATUS_ID}" class="wide100p text_muted" style="margin-top: 8px;"></div>
     </div>
 </div>`;
@@ -2081,6 +2113,17 @@ function bindSettingsUi() {
         settings.agentSystemPrompt = String(jQuery(this).val() || '').trim() || DEFAULT_SETTINGS.agentSystemPrompt;
         saveSettingsDebounced();
     });
+    root.on('click.searchTools', '#search_tools_reset_agent_prompt', function () {
+        if (!window.confirm(i18n('Reset search agent prompt to default? This will overwrite current search agent system prompt.'))) {
+            return;
+        }
+        settings.agentSystemPrompt = DEFAULT_SETTINGS.agentSystemPrompt;
+        root.find('#search_tools_agent_system_prompt').val(settings.agentSystemPrompt);
+        saveSettingsDebounced();
+        if (typeof toastr !== 'undefined') {
+            toastr.success(i18n('Reset search agent prompt'));
+        }
+    });
 }
 
 function ensureUi() {
@@ -2117,6 +2160,8 @@ function registerLocaleData() {
         'New entry default role': '新条目默认角色',
         'New entry default order': '新条目默认顺序',
         'Search agent system prompt': '搜索 Agent 系统提示词',
+        'Reset search agent prompt': '重置搜索 Agent 提示词',
+        'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '确认重置搜索 Agent 提示词为默认值？这会覆盖当前搜索 Agent 系统提示词。',
         'System': '系统',
         'User': '用户',
         'Assistant': '助手',
@@ -2152,6 +2197,8 @@ function registerLocaleData() {
         'New entry default role': '新條目預設角色',
         'New entry default order': '新條目預設順序',
         'Search agent system prompt': '搜尋 Agent 系統提示詞',
+        'Reset search agent prompt': '重置搜尋 Agent 提示詞',
+        'Reset search agent prompt to default? This will overwrite current search agent system prompt.': '確認重置搜尋 Agent 提示詞為預設值？這會覆蓋目前搜尋 Agent 系統提示詞。',
         'System': '系統',
         'User': '使用者',
         'Assistant': '助手',
