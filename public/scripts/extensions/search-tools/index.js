@@ -260,9 +260,19 @@ function getChatKey(context) {
         return `group:${context.groupId}`;
     }
 
-    const avatar = context.characters?.[context.characterId]?.avatar || 'unknown_avatar';
-    const chatId = context.chatId || context.getCurrentChatId?.() || 'unknown_chat';
+    const avatar = String(context.characters?.[context.characterId]?.avatar || '').trim();
+    const chatId = String(context.chatId || context.getCurrentChatId?.() || '').trim();
+    if (!avatar || !chatId) {
+        return '';
+    }
     return `char:${avatar}:${chatId}`;
+}
+
+function abortActiveSearchAgentRun() {
+    if (activeAgentAbortController && !activeAgentAbortController.signal.aborted) {
+        activeAgentAbortController.abort();
+    }
+    clearAgentRunInfoToast();
 }
 
 async function loadSearchToolsChatState(context, { force = false } = {}) {
@@ -2183,10 +2193,17 @@ jQuery(() => {
 
     if (context?.eventTypes?.CHAT_CHANGED) {
         context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
+            abortActiveSearchAgentRun();
             loadedChatStateKey = '';
             latestSearchAgentSnapshot = null;
-            void loadSearchToolsChatState(getContext(), { force: true })
-                .then(() => syncSharedLorebookForCurrentChat(getContext()))
+            latestManagedEntries = [];
+            const liveContext = getContext();
+            void loadSearchToolsChatState(liveContext, { force: true })
+                .then(() => syncSharedLorebookForCurrentChat(liveContext))
+                .catch((error) => {
+                    console.warn(`[${MODULE_NAME}] Failed to reload search chat state on chat change`, error);
+                    return syncSharedLorebookForCurrentChat(liveContext);
+                })
                 .finally(() => refreshUiStatusForCurrentChat());
         });
     }

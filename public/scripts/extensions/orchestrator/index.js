@@ -1020,9 +1020,19 @@ function getChatKey(context) {
         return `group:${context.groupId}`;
     }
 
-    const avatar = context.characters?.[context.characterId]?.avatar || 'unknown_avatar';
-    const chatId = context.chatId || 'unknown_chat';
+    const avatar = String(context.characters?.[context.characterId]?.avatar || '').trim();
+    const chatId = String(context.chatId || context.getCurrentChatId?.() || '').trim();
+    if (!avatar || !chatId) {
+        return '';
+    }
     return `char:${avatar}:${chatId}`;
+}
+
+function abortActiveOrchestratorRun() {
+    if (activeOrchRunAbortController && !activeOrchRunAbortController.signal.aborted) {
+        activeOrchRunAbortController.abort();
+    }
+    clearRunInfoToast();
 }
 
 function getCoreMessages(payload) {
@@ -7110,9 +7120,11 @@ jQuery(() => {
         context.eventSource.on(eventName, () => ensureUi());
     }
     context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
+        const liveContext = getContext();
+        abortActiveOrchestratorRun();
         loadedChatStateKey = '';
         latestOrchestrationSnapshot = null;
-        clearCapsulePrompt(context);
-        void loadOrchestratorChatState(context, { force: true }).finally(() => ensureUi());
+        clearCapsulePrompt(liveContext);
+        void loadOrchestratorChatState(liveContext, { force: true }).finally(() => ensureUi());
     });
 });

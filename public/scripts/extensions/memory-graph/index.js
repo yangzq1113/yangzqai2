@@ -6666,8 +6666,9 @@ async function syncPersistentLorebookProjection(context, settings, store) {
     const semanticNodes = listNodesByLevel(store, LEVEL.SEMANTIC)
         .filter(node => node && !node.archived);
     if (semanticNodes.length === 0) {
+        const changed = await clearPersistentLorebookProjection(context, settings);
         return {
-            changed: false,
+            changed,
             corePacket: '',
             alwaysInjectNodes: [],
         };
@@ -6734,6 +6735,7 @@ async function syncPersistentProjectionForCurrentChat(context = getContext()) {
         }
         const store = await ensureStoreSyncedWithChat(context);
         if (!store) {
+            await clearAllMemoryLorebookProjection(context, effectiveSettings);
             refreshUiStats();
             return;
         }
