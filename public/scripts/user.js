@@ -356,6 +356,54 @@ async function saveRuntimeConfigFile(content) {
 }
 
 /**
+ * Get server plugin admin payload.
+ * @returns {Promise<{ok: boolean, enabled: boolean, pluginsPath: string, plugins: Array<any>} | undefined>}
+ */
+async function getServerPluginsAdminData() {
+    try {
+        const response = await fetch('/api/users/plugins/list', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            toastr.error(data?.error || t`Unknown error`, t`Failed to load server plugins`);
+            throw new Error('Failed to load server plugins');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error loading server plugins:', error);
+    }
+}
+
+/**
+ * Install a server plugin from a git repository URL.
+ * @param {string} repoUrl
+ * @returns {Promise<{ok: boolean, enabled: boolean, restartRecommended: boolean, plugin: any} | undefined>}
+ */
+async function installServerPluginFromAdmin(repoUrl) {
+    try {
+        const response = await fetch('/api/users/plugins/install', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ repoUrl }),
+        });
+
+        if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            toastr.error(data?.error || t`Unknown error`, t`Failed to install server plugin`);
+            throw new Error('Failed to install server plugin');
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error('Error installing server plugin:', error);
+    }
+}
+
+/**
  * Set per-user storage quota.
  * @param {string} handle User handle
  * @param {number|null} quotaBytes Quota bytes, null to clear override
@@ -2076,6 +2124,50 @@ async function openAdminPanel() {
             .append(`<div><strong>Disabled users:</strong> ${disabledUsers.length ? disabledUsers.join(', ') : 'None'}</div>`);
     }
 
+    async function renderServerPlugins() {
+        const payload = await getServerPluginsAdminData();
+        if (!payload) {
+            return;
+        }
+
+        const status = template.find('.serverPluginsStatus');
+        const list = template.find('.serverPluginsList');
+        status.empty();
+        list.empty();
+
+        status
+            .append(`<div><strong>Install path:</strong> ${payload.pluginsPath || '-'}</div>`)
+            .append(`<div><strong>Installed directories:</strong> ${payload.plugins?.length ?? 0}</div>`);
+
+        if (!payload.enabled) {
+            status.append('<div><strong>Server plugins are currently disabled in config.</strong> Installed plugins will load after you enable them and restart the backend.</div>');
+        }
+
+        if (!Array.isArray(payload.plugins) || payload.plugins.length === 0) {
+            list.append('<div>No server plugins installed.</div>');
+            return;
+        }
+
+        for (const plugin of payload.plugins) {
+            const row = template.find('.serverPluginTemplate .serverPluginRow').clone();
+            const metaParts = [];
+
+            if (plugin.packageName) {
+                metaParts.push(plugin.packageName);
+            }
+
+            if (plugin.description) {
+                metaParts.push(plugin.description);
+            }
+
+            row.find('.serverPluginDirectory').text(plugin.directory || '-');
+            row.find('.serverPluginVersion').text(plugin.version ? `v${plugin.version}` : '');
+            row.find('.serverPluginMeta').text(metaParts.join(' · ') || 'No package metadata');
+            row.find('.serverPluginRemote').text(plugin.remoteUrl || 'No git remote detected');
+            list.append(row);
+        }
+    }
+
     async function renderUsers() {
         const users = await getUsers();
         template.find('.usersList').empty();
@@ -2147,12 +2239,15 @@ async function openAdminPanel() {
 
         if (target === 'adminOverviewTab' || target === 'adminSecurityTab' || target === 'authAndQuotaTab') {
             renderOverview();
+        } else if (target === 'serverPluginsTab') {
+            renderServerPlugins();
         } else if (target === 'configEditorTab') {
             renderRuntimeConfig();
         }
     });
 
     template.find('.overviewRefreshButton').on('click', renderOverview);
+    template.find('.refreshServerPluginsButton').on('click', renderServerPlugins);
 
     template.find('.saveAuthQuotaSettingsButton').on('click', async () => {
         const payload = collectAuthSettingsForm();
@@ -2185,6 +2280,37 @@ async function openAdminPanel() {
 
         if (runtimeConfigPath) {
             template.find('.runtimeConfigPath').text(runtimeConfigPath);
+        }
+    });
+
+    template.find('.installServerPluginButton').on('click', async function () {
+        const button = $(this);
+        const repoUrlInput = template.find('#serverPluginRepoUrlInput');
+        const repoUrl = String(repoUrlInput.val() || '').trim();
+
+        if (!repoUrl) {
+            toastr.error(t`Please enter a Git repository URL.`, t`Missing repository URL`);
+            return;
+        }
+
+        if (button.hasClass('disabled')) {
+            return;
+        }
+
+        button.addClass('disabled');
+
+        try {
+            const result = await installServerPluginFromAdmin(repoUrl);
+            if (!result?.ok) {
+                return;
+            }
+
+            repoUrlInput.val('');
+            toastr.success(t`Server plugin installed to ${result.plugin?.directory || 'plugin directory'}.`, t`Installed`);
+            toastr.info(t`Restart the backend to load newly installed server plugins.`, t`Restart required`);
+            await renderServerPlugins();
+        } finally {
+            button.removeClass('disabled');
         }
     });
 

@@ -17,6 +17,181 @@ const enableServerPluginsAutoUpdate = !!getConfigValue('enableServerPluginsAutoU
 const loadedPlugins = new Map();
 
 /**
+ * @param {string} name
+ * @returns {string}
+ */
+export function sanitizeServerPluginFolderName(name) {
+    const base = String(name || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 96);
+
+    return base || 'server-plugin';
+}
+
+/**
+ * @param {string} pluginUrl
+ * @returns {string}
+ */
+export function deriveServerPluginFolderName(pluginUrl) {
+    const normalized = String(pluginUrl || '')
+        .trim()
+        .replace(/[?#].*$/, '')
+        .replace(/[\\/]+$/, '');
+
+    const basename = path.posix.basename(normalized).replace(/\.git$/i, '');
+    return sanitizeServerPluginFolderName(basename);
+}
+
+/**
+ * @param {string} pluginsPath
+ * @param {string} folderName
+ * @returns {string}
+ */
+function resolveServerPluginPath(pluginsPath, folderName) {
+    const root = path.resolve(pluginsPath);
+    const target = path.resolve(path.join(root, folderName));
+
+    if (!(target === root || target.startsWith(root + path.sep))) {
+        throw new Error('Resolved plugin path escapes the plugins directory');
+    }
+
+    return target;
+}
+
+/**
+ * @param {string} pluginPath
+ * @returns {Promise<string>}
+ */
+async function getPluginRemoteUrl(pluginPath) {
+    if (!commandExistsSync('git')) {
+        return '';
+    }
+
+    try {
+        const pluginRepo = git(pluginPath);
+        const isRepo = await pluginRepo.checkIsRepo(CheckRepoActions.IS_REPO_ROOT);
+
+        if (!isRepo) {
+            return '';
+        }
+
+        const remotes = await pluginRepo.getRemotes(true);
+        const origin = remotes.find(remote => remote.name === 'origin');
+        return origin?.refs?.fetch || origin?.refs?.push || '';
+    } catch {
+        return '';
+    }
+}
+
+/**
+ * @param {string} pluginPath
+ * @returns {{ packageName: string, version: string, description: string }}
+ */
+function getPluginPackageMetadata(pluginPath) {
+    try {
+        const packageJsonPath = path.join(pluginPath, 'package.json');
+        if (!fs.existsSync(packageJsonPath)) {
+            return { packageName: '', version: '', description: '' };
+        }
+
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        return {
+            packageName: String(packageJson?.name || ''),
+            version: String(packageJson?.version || ''),
+            description: String(packageJson?.description || ''),
+        };
+    } catch {
+        return { packageName: '', version: '', description: '' };
+    }
+}
+
+/**
+ * @param {string} pluginsPath
+ * @returns {Promise<Array<{directory: string, path: string, remoteUrl: string, packageName: string, version: string, description: string}>>}
+ */
+export async function listInstalledServerPlugins(pluginsPath) {
+    const root = path.resolve(pluginsPath);
+
+    if (!fs.existsSync(root)) {
+        return [];
+    }
+
+    const directories = fs.readdirSync(root, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .filter(entry => !entry.name.startsWith('.'));
+
+    const plugins = await Promise.all(directories.map(async (entry) => {
+        const pluginPath = path.join(root, entry.name);
+        const metadata = getPluginPackageMetadata(pluginPath);
+        const remoteUrl = await getPluginRemoteUrl(pluginPath);
+
+        return {
+            directory: entry.name,
+            path: pluginPath,
+            remoteUrl,
+            ...metadata,
+        };
+    }));
+
+    plugins.sort((left, right) => left.directory.localeCompare(right.directory));
+    return plugins;
+}
+
+/**
+ * @param {string} pluginsPath
+ * @param {string} pluginUrl
+ * @returns {Promise<{directory: string, path: string, remoteUrl: string, packageName: string, version: string, description: string}>}
+ */
+export async function installServerPlugin(pluginsPath, pluginUrl) {
+    const remoteUrl = String(pluginUrl || '').trim();
+
+    if (!remoteUrl) {
+        const error = new Error('Missing plugin repository URL');
+        // @ts-ignore
+        error.statusCode = 400;
+        throw error;
+    }
+
+    if (!commandExistsSync('git')) {
+        const error = new Error('Git is not installed on the server');
+        // @ts-ignore
+        error.statusCode = 500;
+        throw error;
+    }
+
+    const root = path.resolve(pluginsPath);
+    fs.mkdirSync(root, { recursive: true });
+
+    const directory = deriveServerPluginFolderName(remoteUrl);
+    const targetPath = resolveServerPluginPath(root, directory);
+
+    if (fs.existsSync(targetPath)) {
+        const error = new Error(`A plugin directory already exists at ${directory}`);
+        // @ts-ignore
+        error.statusCode = 409;
+        throw error;
+    }
+
+    try {
+        await git().clone(remoteUrl, targetPath, { '--depth': 1 });
+        const metadata = getPluginPackageMetadata(targetPath);
+        const resolvedRemoteUrl = await getPluginRemoteUrl(targetPath);
+
+        return {
+            directory,
+            path: targetPath,
+            remoteUrl: resolvedRemoteUrl || remoteUrl,
+            ...metadata,
+        };
+    } catch (error) {
+        fs.rmSync(targetPath, { recursive: true, force: true });
+        throw error;
+    }
+}
+
+/**
  * Determine if a file is a CommonJS module.
  * @param {string} file Path to file
  * @returns {boolean} True if file is a CommonJS module

@@ -32,7 +32,9 @@ import {
     getGitUpdateStatus,
     startGitUpdate,
 } from '../updater.js';
-import { ensureDirectory, getConfigFilePath, normalizeZipEntryPath, reloadConfigCache } from '../util.js';
+import { ensureDirectory, getConfigFilePath, getConfigValue, normalizeZipEntryPath, reloadConfigCache } from '../util.js';
+import { installServerPlugin, listInstalledServerPlugins } from '../plugin-loader.js';
+import { SERVER_PLUGINS_DIRECTORY } from '../constants.js';
 
 export const router = express.Router();
 
@@ -423,6 +425,47 @@ router.post('/import/global-extensions', requireAdminMiddleware, async (request,
         if (uploadPath) {
             await fsPromises.rm(uploadPath, { force: true });
         }
+    }
+});
+
+router.post('/plugins/list', requireAdminMiddleware, async (_request, response) => {
+    try {
+        const plugins = await listInstalledServerPlugins(SERVER_PLUGINS_DIRECTORY);
+        const enabled = !!getConfigValue('enableServerPlugins', false, 'boolean');
+
+        return response.json({
+            ok: true,
+            enabled,
+            pluginsPath: path.resolve(SERVER_PLUGINS_DIRECTORY),
+            plugins,
+        });
+    } catch (error) {
+        console.error('Server plugin list failed:', error);
+        return response.status(500).json({ error: String(error?.message || error) });
+    }
+});
+
+router.post('/plugins/install', requireAdminMiddleware, async (request, response) => {
+    try {
+        const repoUrl = String(request.body?.repoUrl || '').trim();
+        if (!repoUrl) {
+            return response.status(400).json({ error: 'Missing plugin repository URL' });
+        }
+
+        const plugin = await installServerPlugin(SERVER_PLUGINS_DIRECTORY, repoUrl);
+        const enabled = !!getConfigValue('enableServerPlugins', false, 'boolean');
+
+        return response.json({
+            ok: true,
+            enabled,
+            restartRecommended: true,
+            plugin,
+        });
+    } catch (error) {
+        console.error('Server plugin install failed:', error);
+        const statusCode = Number(error?.statusCode);
+        const status = Number.isFinite(statusCode) && statusCode >= 400 ? statusCode : 500;
+        return response.status(status).json({ error: String(error?.message || error) });
     }
 });
 
