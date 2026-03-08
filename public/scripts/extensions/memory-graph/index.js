@@ -2251,6 +2251,51 @@ async function persistMemoryStoreByChatKey(context, chatKey, store, { syncPersis
     }
 }
 
+async function inheritMemoryStoreForBranch(context, payload) {
+    const sourceTarget = normalizeExplicitChatStateTarget(payload?.sourceTarget);
+    const targetTarget = normalizeExplicitChatStateTarget(payload?.targetTarget);
+    if (!sourceTarget || !targetTarget) {
+        return;
+    }
+
+    const assistantMessageCount = Math.max(0, Math.floor(Number(payload?.assistantMessageCount || 0)));
+    await ensureMemoryStoreLoaded(context, { targetHint: sourceTarget });
+    const sourceChatKey = getChatKey(context, sourceTarget);
+    const targetChatKey = getChatKey(context, targetTarget);
+    if (!sourceChatKey || sourceChatKey === 'invalid_target' || !targetChatKey || targetChatKey === 'invalid_target') {
+        return;
+    }
+
+    const nextState = normalizePersistedStateBase(memoryStateCache.get(sourceChatKey));
+    nextState.opLog = nextState.opLog.filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) <= assistantMessageCount);
+    nextState.sourceMessageCount = assistantMessageCount;
+    nextState.lastRecallTrace = [];
+    nextState.lastRecallProjection = null;
+    const branchStore = buildRuntimeStoreWithPersistedMetadata(nextState, {
+        sourceMessageCount: assistantMessageCount,
+        lastRecallTrace: [],
+        lastRecallProjection: null,
+    });
+    branchStore.pendingFullRebuild = false;
+
+    memoryStoreTargets.set(targetChatKey, targetTarget);
+    memoryLoadTasks.delete(targetChatKey);
+    memoryStoreCache.delete(targetChatKey);
+    memoryStateCache.delete(targetChatKey);
+    clearRollbackHistory(targetChatKey);
+    const pendingInvalidation = pendingMutationInvalidations.get(targetChatKey);
+    if (pendingInvalidation?.timer) {
+        clearTimeout(pendingInvalidation.timer);
+    }
+    pendingMutationInvalidations.delete(targetChatKey);
+    if (extractionTimers.has(targetChatKey)) {
+        clearTimeout(extractionTimers.get(targetChatKey));
+        extractionTimers.delete(targetChatKey);
+    }
+
+    await persistPreparedMemoryStateByChatKey(context, targetChatKey, nextState, branchStore);
+}
+
 function normalizeText(text) {
     return String(text || '').replace(/\s+/g, ' ').trim();
 }
@@ -11527,6 +11572,15 @@ jQuery(() => {
                 return;
             }
             await captureLatestAssistantAfterGeneration();
+        });
+    }
+    if (context.eventTypes.CHAT_BRANCH_CREATED) {
+        context.eventSource.on(context.eventTypes.CHAT_BRANCH_CREATED, async (payload) => {
+            try {
+                await inheritMemoryStoreForBranch(getContext(), payload);
+            } catch (error) {
+                console.warn(`[${MODULE_NAME}] Failed to inherit memory graph for branch`, error);
+            }
         });
     }
     context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_messageCount, mutationMeta) => {
