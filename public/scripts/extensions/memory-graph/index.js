@@ -8,7 +8,7 @@ import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, wi_anchor_position, world_info_position } from '../../world-info.js';
-import { notifyRuntimeRegexScriptsChanged, registerRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
+import { registerManagedRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
     TOOL_PROTOCOL_STYLE,
@@ -925,6 +925,7 @@ let cytoscapeLoadPromise = null;
 let lastKnownChatKey = '';
 let latestRecallSnapshot = null;
 let generationInProgress = false;
+let generationVisibleHistoryRegexProvider = null;
 function getGenerationVisibleHistoryRuntimeRegexScripts() {
     const context = getContext();
     const settings = getEffectiveSettings(context, getSettings());
@@ -952,6 +953,10 @@ function getGenerationVisibleHistoryRuntimeRegexScripts() {
         minDepth: visibleLayers,
         maxDepth: null,
     }];
+}
+
+function syncGenerationVisibleHistoryRuntimeRegexScripts(options = {}) {
+    generationVisibleHistoryRegexProvider?.setScripts(getGenerationVisibleHistoryRuntimeRegexScripts(), options);
 }
 
 function cloneDefault(value) {
@@ -10653,7 +10658,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         }
         const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, getAdvancedScopeInfo(context, settings).settings);
         await persistAdvancedToGlobal(settings, nextAdvancedSettings);
-        notifyRuntimeRegexScriptsChanged();
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
         const nextScopeInfo = getAdvancedScopeInfo(context, settings);
         setPopupScopeUi(nextScopeInfo);
         syncRootScopeUi();
@@ -10677,7 +10682,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             notifyError(i18n('Failed to persist character advanced override.'));
             return;
         }
-        notifyRuntimeRegexScriptsChanged();
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
         const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
         setPopupScopeUi(refreshedScopeInfo);
         syncRootScopeUi();
@@ -10695,7 +10700,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             notifyError(i18n('Failed to clear character advanced override.'));
             return;
         }
-        notifyRuntimeRegexScriptsChanged();
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
         const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
         applyValuesToPopup(getPopupRoot(), refreshedScopeInfo.settings);
         setPopupScopeUi(refreshedScopeInfo);
@@ -10941,7 +10946,7 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_enabled').off('input').on('input', function () {
         settings.enabled = Boolean(jQuery(this).prop('checked'));
-        notifyRuntimeRegexScriptsChanged();
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
         void syncMemoryLorebookActivation(getContext(), settings);
         if (settings.enabled) {
             void syncPersistentProjectionForCurrentChat(getContext());
@@ -11543,7 +11548,8 @@ jQuery(() => {
     const context = getContext();
     registerLocaleData();
     ensureSettings();
-    registerRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID, getGenerationVisibleHistoryRuntimeRegexScripts);
+    generationVisibleHistoryRegexProvider = registerManagedRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID);
+    syncGenerationVisibleHistoryRuntimeRegexScripts();
     saveSettingsDebounced();
     ensureUi();
     void syncPersistentProjectionForCurrentChat();
