@@ -365,6 +365,98 @@ Best practices:
 - Prefer `reloadOnChange=false` unless UI rendering must update immediately.
 - Prefer runtime providers for plugin-temporary behavior; use persisted regex storage only for user-managed rules.
 
+### Search tools runtime API (plugin-side)
+
+When the `search-tools` extension is loaded, it exposes a reusable runtime API on `Luker.searchTools` for popup/sidecar flows that want search + visit tool calls without duplicating schema or dispatch logic.
+
+Global object:
+
+```js
+const searchTools = Luker.searchTools;
+```
+
+Behavior notes:
+
+- This runtime API is available independently from the `Expose tools to main model` setting.
+- The setting only controls whether `luker_web_search` / `luker_web_visit` are registered for the main generation model.
+- Plugin-side callers decide whether to include these tools in their own request loop.
+
+Available fields:
+
+```ts
+Luker.searchTools = {
+  toolNames: {
+    SEARCH: 'luker_web_search',
+    VISIT: 'luker_web_visit',
+  },
+  getToolDefs(): Array<{
+    type: 'function',
+    function: {
+      name: string,
+      description: string,
+      parameters: object,
+    },
+  }>,
+  isToolName(name: string): boolean,
+  invoke(
+    call: { name?: string, args?: object },
+    options?: { abortSignal?: AbortSignal | null }
+  ): Promise<any>,
+  search(args?: object, options?: { abortSignal?: AbortSignal | null }): Promise<any>,
+  visit(args?: object, options?: { abortSignal?: AbortSignal | null }): Promise<any>,
+  getSettings(): {
+    enabled: boolean,
+    preRequestEnabled: boolean,
+    provider: string,
+    defaultMaxResults: number,
+    defaultVisitMaxChars: number,
+    safeSearch: string,
+    agentApiPresetName: string,
+    agentPresetName: string,
+    agentMaxRounds: number,
+    lorebookDepth: number,
+    lorebookRole: number,
+    lorebookEntryOrder: number,
+  },
+}
+```
+
+Method notes:
+
+- `toolNames` exposes the canonical tool names to reference in prompts or routing logic.
+- `getToolDefs()` returns function-tool definitions suitable for popup/sidecar tool-calling loops.
+- `isToolName(name)` is the routing helper for splitting search tool calls from your own plugin tool calls.
+- `invoke(call, options)` dispatches one canonical search tool call by `name`.
+- `search(...)` and `visit(...)` are the low-level direct methods if you do not need tool-call routing.
+- `getSettings()` returns normalized runtime settings currently active for the search-tools extension.
+
+Minimal popup loop example:
+
+```js
+const searchApi = Luker.searchTools;
+const tools = [
+  ...myPluginTools,
+  ...searchApi.getToolDefs(),
+];
+
+const { calls } = await requestToolCalls(tools);
+const pluginCalls = [];
+const searchCalls = [];
+
+for (const call of calls) {
+  if (searchApi.isToolName(call?.name)) {
+    searchCalls.push(call);
+  } else {
+    pluginCalls.push(call);
+  }
+}
+
+for (const call of searchCalls) {
+  const result = await searchApi.invoke(call);
+  // Feed result back into your own loop/context.
+}
+```
+
 ### Lorebook/world info persistence
 
 - `loadWorldInfo(name)`

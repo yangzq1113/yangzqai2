@@ -34,6 +34,10 @@ const TOOL_NAMES = Object.freeze({
     AGENT_DELETE: 'luker_search_agent_delete_lorebook_entry',
     AGENT_FINALIZE: 'luker_search_agent_finalize',
 });
+const EXPORTED_TOOL_NAMES = Object.freeze({
+    SEARCH: TOOL_NAMES.SEARCH,
+    VISIT: TOOL_NAMES.VISIT,
+});
 
 const LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = [
     'You are a pre-request web research agent for roleplay generation.',
@@ -620,12 +624,90 @@ async function visitWebPage(args = {}, { abortSignal = null } = {}) {
     };
 }
 
+function getSharedSearchToolSpecs() {
+    return [
+        {
+            tool: {
+                type: 'function',
+                function: {
+                    name: EXPORTED_TOOL_NAMES.SEARCH,
+                    description: 'Search the web for up-to-date information. Provider is configured by the plugin settings.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            query: { type: 'string', description: 'Search query text.' },
+                            max_results: { type: 'integer', description: 'Maximum number of search results (1-20).' },
+                            safe_search: { type: 'string', enum: ['off', 'moderate', 'strict'] },
+                            time_range: { type: 'string', enum: ['', 'day', 'week', 'month', 'year'] },
+                            region: { type: 'string', description: 'Optional DuckDuckGo region code (kl), e.g. us-en.' },
+                        },
+                        required: ['query'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            displayName: 'Web Search',
+            formatMessage: 'Searching web...',
+            action: searchWeb,
+        },
+        {
+            tool: {
+                type: 'function',
+                function: {
+                    name: EXPORTED_TOOL_NAMES.VISIT,
+                    description: 'Fetch one webpage and return readable text excerpt.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            url: { type: 'string', description: 'HTTP/HTTPS page URL.' },
+                            max_chars: { type: 'integer', description: 'Maximum output characters (0-50000). 0 means no truncation.' },
+                        },
+                        required: ['url'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            displayName: 'Visit Web Page',
+            formatMessage: 'Fetching webpage...',
+            action: visitWebPage,
+        },
+    ];
+}
+
+function getSharedSearchToolDefs() {
+    return getSharedSearchToolSpecs().map(spec => structuredClone(spec.tool));
+}
+
+function isSharedSearchToolName(name = '') {
+    const normalizedName = String(name || '').trim();
+    return normalizedName === EXPORTED_TOOL_NAMES.SEARCH || normalizedName === EXPORTED_TOOL_NAMES.VISIT;
+}
+
+async function invokeSharedSearchToolCall(call, { abortSignal = null } = {}) {
+    const name = String(call?.name || '').trim();
+    const args = call?.args && typeof call.args === 'object' ? call.args : {};
+
+    if (name === EXPORTED_TOOL_NAMES.SEARCH) {
+        return await searchWeb(args, { abortSignal });
+    }
+
+    if (name === EXPORTED_TOOL_NAMES.VISIT) {
+        return await visitWebPage(args, { abortSignal });
+    }
+
+    throw new Error(`Unsupported search tool: ${name}`);
+}
+
 function installGlobalApi() {
     const root = globalThis;
     if (!root.Luker || typeof root.Luker !== 'object') {
         root.Luker = {};
     }
     root.Luker.searchTools = {
+        toolNames: EXPORTED_TOOL_NAMES,
+        getToolDefs: () => getSharedSearchToolDefs(),
+        isToolName: (name) => isSharedSearchToolName(name),
+        invoke: async (call, options = {}) => await invokeSharedSearchToolCall(call, options),
         search: searchWeb,
         visit: visitWebPage,
         getSettings: () => {
@@ -651,44 +733,17 @@ function installGlobalApi() {
 function registerTools(context) {
     Object.values(TOOL_NAMES).forEach(name => context.unregisterFunctionTool(name));
 
-    context.registerFunctionTool({
-        name: TOOL_NAMES.SEARCH,
-        displayName: 'Web Search',
-        description: 'Search the web for up-to-date information. Provider is configured by the plugin settings.',
-        shouldRegister: async () => isToolEnabled(),
-        parameters: {
-            type: 'object',
-            properties: {
-                query: { type: 'string', description: 'Search query text.' },
-                max_results: { type: 'integer', description: 'Maximum number of search results (1-20).' },
-                safe_search: { type: 'string', enum: ['off', 'moderate', 'strict'] },
-                time_range: { type: 'string', enum: ['', 'day', 'week', 'month', 'year'] },
-                region: { type: 'string', description: 'Optional DuckDuckGo region code (kl), e.g. us-en.' },
-            },
-            required: ['query'],
-            additionalProperties: false,
-        },
-        action: async (args) => await searchWeb(args),
-        formatMessage: () => 'Searching web...',
-    });
-
-    context.registerFunctionTool({
-        name: TOOL_NAMES.VISIT,
-        displayName: 'Visit Web Page',
-        description: 'Fetch one webpage and return readable text excerpt.',
-        shouldRegister: async () => isToolEnabled(),
-        parameters: {
-            type: 'object',
-            properties: {
-                url: { type: 'string', description: 'HTTP/HTTPS page URL.' },
-                max_chars: { type: 'integer', description: 'Maximum output characters (0-50000). 0 means no truncation.' },
-            },
-            required: ['url'],
-            additionalProperties: false,
-        },
-        action: async (args) => await visitWebPage(args),
-        formatMessage: () => 'Fetching webpage...',
-    });
+    for (const spec of getSharedSearchToolSpecs()) {
+        context.registerFunctionTool({
+            name: spec.tool.function.name,
+            displayName: spec.displayName,
+            description: spec.tool.function.description,
+            shouldRegister: async () => isToolEnabled(),
+            parameters: structuredClone(spec.tool.function.parameters),
+            action: async (args) => await spec.action(args),
+            formatMessage: () => spec.formatMessage,
+        });
+    }
 }
 
 function normalizeWorldInfoResolverMessages(messages = []) {

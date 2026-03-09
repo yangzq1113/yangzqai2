@@ -31,10 +31,6 @@ const TOOL_NAMES = Object.freeze({
     UPSERT_ENTRY: 'luker_card_upsert_lorebook_entry',
     DELETE_ENTRY: 'luker_card_delete_lorebook_entry',
 });
-const CHARACTER_EDITOR_SEARCH_TOOL_NAMES = Object.freeze({
-    SEARCH: 'luker_web_search',
-    VISIT: 'luker_web_visit',
-});
 const CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT = 12;
 
 const defaultSettings = {
@@ -2550,48 +2546,7 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
     return { applied, failed, errors };
 }
 
-function buildCharacterEditorSearchToolDefs() {
-    return [
-        {
-            type: 'function',
-            function: {
-                name: CHARACTER_EDITOR_SEARCH_TOOL_NAMES.SEARCH,
-                description: 'Search the web for up-to-date information.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        query: { type: 'string', description: 'Search query text.' },
-                        provider: { type: 'string', description: 'Search provider id. Default: ddg.' },
-                        max_results: { type: 'integer', description: 'Maximum number of search results (1-20).' },
-                        safe_search: { type: 'string', enum: ['off', 'moderate', 'strict'] },
-                        time_range: { type: 'string', enum: ['', 'day', 'week', 'month', 'year'] },
-                        region: { type: 'string', description: 'Optional region code, e.g. us-en.' },
-                    },
-                    required: ['query'],
-                    additionalProperties: false,
-                },
-            },
-        },
-        {
-            type: 'function',
-            function: {
-                name: CHARACTER_EDITOR_SEARCH_TOOL_NAMES.VISIT,
-                description: 'Fetch one webpage and return readable text.',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        url: { type: 'string', description: 'HTTP/HTTPS page URL.' },
-                        max_chars: { type: 'integer', description: 'Maximum output characters (0 means no truncation).' },
-                    },
-                    required: ['url'],
-                    additionalProperties: false,
-                },
-            },
-        },
-    ];
-}
-
-function splitCharacterEditorToolCalls(rawCalls) {
+function splitCharacterEditorToolCalls(rawCalls, searchApi = null) {
     const editCalls = [];
     const searchCalls = [];
     for (const call of Array.isArray(rawCalls) ? rawCalls : []) {
@@ -2599,7 +2554,7 @@ function splitCharacterEditorToolCalls(rawCalls) {
         if (!name) {
             continue;
         }
-        if (name === CHARACTER_EDITOR_SEARCH_TOOL_NAMES.SEARCH || name === CHARACTER_EDITOR_SEARCH_TOOL_NAMES.VISIT) {
+        if (searchApi?.isToolName?.(name)) {
             searchCalls.push(call);
             continue;
         }
@@ -2613,26 +2568,23 @@ function getCharacterEditorSearchApi() {
     if (!api || typeof api !== 'object') {
         return null;
     }
-    if (typeof api.search !== 'function' || typeof api.visit !== 'function') {
+    if (typeof api.getToolDefs !== 'function' || typeof api.isToolName !== 'function' || typeof api.invoke !== 'function') {
+        return null;
+    }
+    const searchName = String(api?.toolNames?.SEARCH || '').trim();
+    const visitName = String(api?.toolNames?.VISIT || '').trim();
+    if (!searchName || !visitName) {
         return null;
     }
     return api;
 }
 
-async function runCharacterEditorSearchToolCall(call) {
-    const api = getCharacterEditorSearchApi();
-    const name = String(call?.name || '').trim();
-    const args = call?.args && typeof call.args === 'object' ? call.args : {};
+async function runCharacterEditorSearchToolCall(call, searchApi = null) {
+    const api = searchApi || getCharacterEditorSearchApi();
     if (!api) {
         throw new Error('Search tools extension is unavailable.');
     }
-    if (name === CHARACTER_EDITOR_SEARCH_TOOL_NAMES.SEARCH) {
-        return await api.search(args);
-    }
-    if (name === CHARACTER_EDITOR_SEARCH_TOOL_NAMES.VISIT) {
-        return await api.visit(args);
-    }
-    throw new Error(`Unsupported search tool: ${name}`);
+    return await api.invoke(call);
 }
 
 function makeRuntimeToolCallId() {
@@ -2692,7 +2644,7 @@ function appendStandardToolRoundMessages(targetMessages, executedCalls, assistan
     }
 }
 
-function buildCharacterEditorModelTools({ includeSearchTools = true } = {}) {
+function buildCharacterEditorModelTools({ searchApi = null } = {}) {
     const tools = [
         {
             type: 'function',
@@ -2775,8 +2727,8 @@ function buildCharacterEditorModelTools({ includeSearchTools = true } = {}) {
             },
         },
     ];
-    if (includeSearchTools) {
-        tools.push(...buildCharacterEditorSearchToolDefs());
+    if (searchApi) {
+        tools.push(...searchApi.getToolDefs());
     }
     return tools;
 }
@@ -2931,9 +2883,16 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
             content: String(item?.content || '').trim(),
         }))
         .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content);
-    const hasSearchTools = Boolean(getCharacterEditorSearchApi());
-    const modelTools = buildCharacterEditorModelTools({ includeSearchTools: hasSearchTools });
+    const searchApi = getCharacterEditorSearchApi();
+    const hasSearchTools = Boolean(searchApi);
+    const modelTools = buildCharacterEditorModelTools({ searchApi });
     const availableToolNames = modelTools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean);
+    const searchToolNames = hasSearchTools
+        ? [
+            String(searchApi.toolNames.SEARCH || '').trim(),
+            String(searchApi.toolNames.VISIT || '').trim(),
+        ].filter(Boolean)
+        : [];
     const systemPrompt = [
         'You are editing the current character card and its primary lorebook.',
         'Continue the conversation naturally, and propose edits only when needed.',
@@ -2942,7 +2901,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         'Do not repeat rejected operation keys unless user explicitly asks to reconsider.',
         hasSearchTools
             ? [
-                `You may call ${CHARACTER_EDITOR_SEARCH_TOOL_NAMES.SEARCH} and ${CHARACTER_EDITOR_SEARCH_TOOL_NAMES.VISIT} when you need external facts.`,
+                `You may call ${searchToolNames.join(' and ')} when you need external facts.`,
                 'When search results are provided in follow-up context, use them to produce concrete edit tool calls.',
             ].join(' ')
             : 'Search tools are unavailable in this runtime. Do not call web-search tools.',
@@ -2981,7 +2940,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         );
         lastAssistantText = String(assistantText || '').trim();
 
-        const { editCalls, searchCalls } = splitCharacterEditorToolCalls(rawCalls);
+        const { editCalls, searchCalls } = splitCharacterEditorToolCalls(rawCalls, searchApi);
         if (!hasSearchTools || searchCalls.length === 0) {
             return {
                 assistantText: lastAssistantText,
@@ -2995,7 +2954,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
             const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
             try {
-                const result = await runCharacterEditorSearchToolCall(call);
+                const result = await runCharacterEditorSearchToolCall(call, searchApi);
                 executedSearchCalls.push({
                     id: callId,
                     name,
