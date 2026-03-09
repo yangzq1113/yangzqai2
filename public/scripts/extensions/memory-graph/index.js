@@ -1387,7 +1387,9 @@ async function removeCharacterSchemaOverride(context, avatar) {
         return true;
     }
     const next = { ...previous };
-    delete next[CHARACTER_SCHEMA_OVERRIDE_KEY];
+    // writeExtensionField() persists via merge-attributes, so removals must be
+    // sent as explicit nulls instead of omitted keys.
+    next[CHARACTER_SCHEMA_OVERRIDE_KEY] = null;
     await context.writeExtensionField(characterIndex, MODULE_NAME, next);
     return true;
 }
@@ -1424,7 +1426,9 @@ async function removeCharacterAdvancedOverride(context, avatar) {
         return true;
     }
     const next = { ...previous };
-    delete next[CHARACTER_ADVANCED_OVERRIDE_KEY];
+    // writeExtensionField() persists via merge-attributes, so removals must be
+    // sent as explicit nulls instead of omitted keys.
+    next[CHARACTER_ADVANCED_OVERRIDE_KEY] = null;
     await context.writeExtensionField(characterIndex, MODULE_NAME, next);
     return true;
 }
