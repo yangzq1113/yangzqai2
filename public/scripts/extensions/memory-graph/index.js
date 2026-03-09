@@ -7,7 +7,7 @@ import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
-import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, wi_anchor_position, world_info_position } from '../../world-info.js';
+import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, world_info_position } from '../../world-info.js';
 import { registerManagedRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
@@ -1085,68 +1085,6 @@ function normalizeRecallInjectRole(value) {
     const allowed = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
     const numeric = Number(value);
     return allowed.includes(numeric) ? numeric : extension_prompt_roles.SYSTEM;
-}
-
-function mapPromptRoleToWorldInfoRole(value) {
-    const role = normalizeRecallInjectRole(value);
-    if (role === extension_prompt_roles.USER) {
-        return 'user';
-    }
-    if (role === extension_prompt_roles.ASSISTANT) {
-        return 'assistant';
-    }
-    return 'system';
-}
-
-function appendUniqueWorldInfoBlock(text, block) {
-    const existing = String(text || '').trim();
-    const incoming = String(block || '').trim();
-    if (!incoming) {
-        return { text: existing, changed: false };
-    }
-    if (existing.includes(incoming)) {
-        return { text: existing, changed: false };
-    }
-    return {
-        text: [existing, incoming].filter(Boolean).join('\n\n').trim(),
-        changed: true,
-    };
-}
-
-function appendUniqueNoteEntry(targetList, block) {
-    const incoming = String(block || '').trim();
-    if (!incoming || !Array.isArray(targetList)) {
-        return false;
-    }
-    if (targetList.includes(incoming)) {
-        return false;
-    }
-    targetList.push(incoming);
-    return true;
-}
-
-function appendUniqueWorldInfoExample(payload, anchorPosition, block) {
-    const incoming = String(block || '').trim();
-    if (!incoming) {
-        return false;
-    }
-    if (!Array.isArray(payload.worldInfoExamples)) {
-        payload.worldInfoExamples = [];
-    }
-    const normalizedPosition = Number(anchorPosition) === Number(wi_anchor_position.before)
-        ? wi_anchor_position.before
-        : wi_anchor_position.after;
-    if (payload.worldInfoExamples.some((entry) => (
-        Number(entry?.position) === Number(normalizedPosition)
-        && String(entry?.content || '').trim() === incoming
-    ))) {
-        return false;
-    }
-    payload.worldInfoExamples.push({
-        position: normalizedPosition,
-        content: incoming,
-    });
-    return true;
 }
 
 function ensureSettings() {
