@@ -14,6 +14,7 @@ import { SlashCommandScope } from '../../slash-commands/SlashCommandScope.js';
 import { collapseSpaces, getUniqueName, isFalseBoolean, uuidv4, waitUntilCondition } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { getSecretLabelById } from '../../secrets.js';
+import { oai_settings } from '../../openai.js';
 
 const MODULE_NAME = 'connection-manager';
 const NONE = '<None>';
@@ -562,14 +563,13 @@ async function renderDetailsContent(detailsContent) {
             return;
         }
         const profile = getSelectedProfile();
-        const supported = Boolean(profile && profile.mode === 'cc');
+        const globalValue = Boolean(oai_settings.function_calling_plain_text);
+        const supported = !profile || profile.mode === 'cc';
         plainTextFunctionCallingToggle.disabled = !supported;
-        if (!supported) {
-            plainTextFunctionCallingToggle.checked = false;
-            return;
-        }
-        const parsed = parseProfileBoolean(profile['function-calling-plain-text']);
-        plainTextFunctionCallingToggle.checked = parsed === true;
+        const parsed = profile?.mode === 'cc'
+            ? parseProfileBoolean(profile['function-calling-plain-text'])
+            : null;
+        plainTextFunctionCallingToggle.checked = parsed ?? globalValue;
     }
 
     function toggleProfileSpecificButtons() {
@@ -583,7 +583,13 @@ async function renderDetailsContent(detailsContent) {
     if (plainTextFunctionCallingToggle) {
         plainTextFunctionCallingToggle.addEventListener('input', async () => {
             const profile = getSelectedProfile();
-            if (!profile || profile.mode !== 'cc') {
+            if (!profile) {
+                oai_settings.function_calling_plain_text = !!plainTextFunctionCallingToggle.checked;
+                saveSettingsDebounced();
+                syncPlainTextFunctionCallingToggle();
+                return;
+            }
+            if (profile.mode !== 'cc') {
                 syncPlainTextFunctionCallingToggle();
                 return;
             }
