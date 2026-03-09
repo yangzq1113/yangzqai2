@@ -5554,6 +5554,39 @@ function normalizeWorldInfoResolutionData(worldInfoResolution) {
     };
 }
 
+function applyFinalizedAuthorsNoteInjections(anBefore = [], anAfter = []) {
+    setFloatingPrompt();
+    if (!shouldWIAddPrompt) {
+        return;
+    }
+
+    const beforeEntries = Array.isArray(anBefore)
+        ? anBefore.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+    const afterEntries = Array.isArray(anAfter)
+        ? anAfter.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+
+    if (beforeEntries.length === 0 && afterEntries.length === 0) {
+        return;
+    }
+
+    const originalAN = String(extension_prompts[NOTE_MODULE_NAME]?.value || '').trim();
+    const mergedAuthorsNote = [...beforeEntries, originalAN, ...afterEntries]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+
+    setExtensionPrompt(
+        NOTE_MODULE_NAME,
+        mergedAuthorsNote,
+        chat_metadata[metadata_keys.position],
+        chat_metadata[metadata_keys.depth],
+        extension_settings.note.allowWIScan,
+        chat_metadata[metadata_keys.role],
+    );
+}
+
 /**
  * MARK:Generate()
  * Runs a generation using the current chat context.
@@ -6151,6 +6184,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         worldInfoAfter,
     });
 
+    applyFinalizedAuthorsNoteInjections(anBefore, anAfter);
     setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
 
     // Add message example WI
