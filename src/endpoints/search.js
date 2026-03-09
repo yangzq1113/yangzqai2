@@ -306,6 +306,22 @@ function normalizeBraveApiResults(rawRows = [], maxResults = 8) {
     return results;
 }
 
+function summarizeVisitErrorBody(text, maxChars = 240) {
+    const normalized = decodeHtmlFragment(text || '');
+    if (!normalized) {
+        return '';
+    }
+    if (normalized.length <= maxChars) {
+        return normalized;
+    }
+    return `${normalized.slice(0, maxChars - 3).trim()}...`;
+}
+
+function isHtmlLikeContentType(contentType = '') {
+    const normalized = String(contentType || '').toLowerCase();
+    return normalized.includes('text/html') || normalized.includes('application/xhtml+xml');
+}
+
 /**
  * Extract the transcript of a YouTube video
  * @param {string} videoPageBody HTML of the video page
@@ -892,8 +908,9 @@ router.post('/visit', async (request, response) => {
                 throw new Error('Invalid hostname');
             }
         } catch (error) {
-            console.error('Invalid url provided for /visit', url);
-            return response.sendStatus(400);
+            const reason = summarizeVisitErrorBody(error?.message || '') || 'Invalid URL';
+            console.error('Invalid url provided for /visit', url, reason);
+            return response.status(400).send(`Invalid URL: ${reason}`);
         }
 
         console.info('Visiting web URL', url);
@@ -901,27 +918,36 @@ router.post('/visit', async (request, response) => {
         const result = await fetch(url, { headers: visitHeaders });
 
         if (!result.ok) {
-            console.error(`Visit failed ${result.status} ${result.statusText}`);
-            return response.sendStatus(500);
+            const bodyText = await result.text().catch(() => '');
+            const bodySummary = summarizeVisitErrorBody(bodyText);
+            const message = bodySummary
+                ? `Visit failed: upstream returned ${result.status} ${result.statusText}. ${bodySummary}`
+                : `Visit failed: upstream returned ${result.status} ${result.statusText}.`;
+            console.error(message);
+            const status = result.status >= 500 ? 502 : result.status;
+            return response.status(status).send(message);
         }
 
         const contentType = String(result.headers.get('content-type'));
 
         if (html) {
-            if (!contentType.includes('text/html')) {
-                console.error(`Visit failed, content-type is ${contentType}, expected text/html`);
-                return response.sendStatus(500);
+            if (!isHtmlLikeContentType(contentType)) {
+                const message = `Visit failed: upstream content-type is ${contentType || 'unknown'}, expected HTML.`;
+                console.error(message);
+                return response.status(415).send(message);
             }
 
             const text = await result.text();
             return response.send(text);
         }
 
-        response.setHeader('Content-Type', contentType);
+        response.setHeader('Content-Type', contentType || 'application/octet-stream');
         const buffer = await result.arrayBuffer();
         return response.send(Buffer.from(buffer));
     } catch (error) {
         console.error(error);
-        return response.sendStatus(500);
+        const message = summarizeVisitErrorBody(error?.message || '') || 'Visit request failed.';
+        const isTimeout = String(error?.type || '').toLowerCase() === 'request-timeout' || /timeout/i.test(String(error?.message || ''));
+        return response.status(isTimeout ? 504 : 502).send(`Visit request failed: ${message}`);
     }
 });
