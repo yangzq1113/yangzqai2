@@ -30,8 +30,24 @@ const TOOL_NAMES = Object.freeze({
     SET_PRIMARY_BOOK: 'luker_card_set_primary_lorebook',
     UPSERT_ENTRY: 'luker_card_upsert_lorebook_entry',
     DELETE_ENTRY: 'luker_card_delete_lorebook_entry',
+    QUERY_ENTRIES: 'luker_card_query_lorebook_entries',
+    GET_ENTRIES: 'luker_card_get_lorebook_entries',
 });
 const CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT = 12;
+const CHARACTER_EDITOR_QUERY_LIMIT_DEFAULT = 10;
+const CHARACTER_EDITOR_QUERY_LIMIT_MAX = 20;
+const CHARACTER_EDITOR_DETAIL_LIMIT_MAX = 10;
+const CHARACTER_EDITOR_MATCH_EXCERPT_RADIUS = 70;
+const CHARACTER_EDITOR_SEARCH_MODE = Object.freeze({
+    ANY: 'any',
+    ACTIVATION: 'activation',
+});
+const CHARACTER_EDITOR_SELECTIVE_LOGIC_LABELS = Object.freeze({
+    0: 'AND_ANY',
+    1: 'NOT_ALL',
+    2: 'NOT_ANY',
+    3: 'AND_ALL',
+});
 
 const defaultSettings = {
     replaceLorebookSyncEnabled: true,
@@ -1084,6 +1100,355 @@ async function restorePreviousLorebookBinding(context, previousSnapshot, current
 
 function compactEntryForModel(entry, uid) {
     return normalizeLorebookEntryForSync(entry, uid);
+}
+
+function getCharacterEditorSelectiveLogicLabel(value) {
+    const numeric = asFiniteInteger(value, 0);
+    return CHARACTER_EDITOR_SELECTIVE_LOGIC_LABELS[numeric] || CHARACTER_EDITOR_SELECTIVE_LOGIC_LABELS[0];
+}
+
+function normalizeCharacterEditorSearchMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === CHARACTER_EDITOR_SEARCH_MODE.ACTIVATION
+        ? CHARACTER_EDITOR_SEARCH_MODE.ACTIVATION
+        : CHARACTER_EDITOR_SEARCH_MODE.ANY;
+}
+
+function normalizeCharacterEditorQueryLimit(value, fallback = CHARACTER_EDITOR_QUERY_LIMIT_DEFAULT) {
+    const numeric = asFiniteInteger(value, fallback);
+    if (!Number.isInteger(numeric)) {
+        return fallback;
+    }
+    return Math.max(1, Math.min(CHARACTER_EDITOR_QUERY_LIMIT_MAX, numeric));
+}
+
+function normalizeCharacterEditorDetailUids(value) {
+    const source = Array.isArray(value) ? value : [];
+    const unique = [];
+    const seen = new Set();
+    for (const item of source) {
+        const uid = asFiniteInteger(item, null);
+        if (!Number.isInteger(uid) || uid < 0 || seen.has(uid)) {
+            continue;
+        }
+        seen.add(uid);
+        unique.push(uid);
+        if (unique.length >= CHARACTER_EDITOR_DETAIL_LIMIT_MAX) {
+            break;
+        }
+    }
+    return unique;
+}
+
+function normalizeCharacterEditorLorebookToolEntry(entry, uid, { includeContent = false, includeLayout = false } = {}) {
+    const normalized = normalizeLorebookEntryForSync(entry, uid);
+    const output = {
+        uid: Number(normalized.uid),
+        comment: String(normalized.comment || ''),
+        key: Array.isArray(normalized.key) ? normalized.key.slice() : [],
+        keysecondary: Array.isArray(normalized.keysecondary) ? normalized.keysecondary.slice() : [],
+        selective_logic: getCharacterEditorSelectiveLogicLabel(normalized.selectiveLogic),
+        constant: Boolean(normalized.constant),
+        enabled: !Boolean(normalized.disable),
+    };
+    if (includeLayout) {
+        output.order = Number(normalized.order);
+        output.position = Number(normalized.position);
+        output.depth = Number(normalized.depth);
+    }
+    if (includeContent) {
+        output.content = String(normalized.content || '');
+    }
+    return output;
+}
+
+function buildCharacterEditorLorebookStats(entries = {}) {
+    const uids = Array.from(collectLorebookEntryUids(entries).values()).sort((a, b) => a - b);
+    let enabledEntryCount = 0;
+    let constantEntryCount = 0;
+    let secondaryKeyEntryCount = 0;
+    for (const uid of uids) {
+        const entry = getLorebookEntryByUid(entries, uid);
+        const normalized = normalizeCharacterEditorLorebookToolEntry(entry, uid);
+        if (normalized.enabled) {
+            enabledEntryCount += 1;
+        }
+        if (normalized.constant) {
+            constantEntryCount += 1;
+        }
+        if (normalized.keysecondary.length > 0) {
+            secondaryKeyEntryCount += 1;
+        }
+    }
+    return {
+        entry_count: uids.length,
+        max_entry_uid: uids.length > 0 ? uids[uids.length - 1] : -1,
+        enabled_entry_count: enabledEntryCount,
+        constant_entry_count: constantEntryCount,
+        secondary_key_entry_count: secondaryKeyEntryCount,
+    };
+}
+
+function buildCharacterEditorContentExcerpt(text, query) {
+    const rawText = String(text ?? '');
+    const rawQuery = String(query ?? '').trim();
+    if (!rawText || !rawQuery) {
+        return null;
+    }
+    const haystack = rawText.toLocaleLowerCase();
+    const needle = rawQuery.toLocaleLowerCase();
+    const index = haystack.indexOf(needle);
+    if (index < 0) {
+        return null;
+    }
+    const start = Math.max(0, index - CHARACTER_EDITOR_MATCH_EXCERPT_RADIUS);
+    const end = Math.min(rawText.length, index + rawQuery.length + CHARACTER_EDITOR_MATCH_EXCERPT_RADIUS);
+    let excerpt = rawText.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (!excerpt) {
+        return null;
+    }
+    if (start > 0) {
+        excerpt = `…${excerpt}`;
+    }
+    if (end < rawText.length) {
+        excerpt = `${excerpt}…`;
+    }
+    return excerpt;
+}
+
+function buildCharacterEditorLorebookMatch(entry, query, searchMode) {
+    const text = String(query || '').trim();
+    if (!text) {
+        return {
+            matched: true,
+            score: 0,
+            matchFields: [],
+            matchedExcerpt: null,
+        };
+    }
+    const queryLower = text.toLocaleLowerCase();
+    const normalizedMode = normalizeCharacterEditorSearchMode(searchMode);
+    const matchFields = [];
+    let score = 0;
+    let matchedExcerpt = null;
+    const includeField = (value) => String(value ?? '').toLocaleLowerCase().includes(queryLower);
+    const keyMatches = Array.isArray(entry?.key) && entry.key.some(includeField);
+    const secondaryMatches = Array.isArray(entry?.keysecondary) && entry.keysecondary.some(includeField);
+    if (normalizedMode === CHARACTER_EDITOR_SEARCH_MODE.ANY && includeField(entry?.comment)) {
+        matchFields.push('comment');
+        score += 400;
+    }
+    if (keyMatches) {
+        matchFields.push('key');
+        score += 320;
+    }
+    if (secondaryMatches) {
+        matchFields.push('keysecondary');
+        score += 280;
+    }
+    if (normalizedMode === CHARACTER_EDITOR_SEARCH_MODE.ANY && includeField(entry?.content)) {
+        matchFields.push('content');
+        score += 120;
+        matchedExcerpt = buildCharacterEditorContentExcerpt(entry?.content, text);
+    }
+    return {
+        matched: matchFields.length > 0,
+        score,
+        matchFields,
+        matchedExcerpt,
+    };
+}
+
+async function loadCharacterEditorPrimaryLorebookState(context, { avatar = '' } = {}) {
+    const record = getActiveCharacterRecord(context, { avatar });
+    const character = record.character || {};
+    const bookName = getPrimaryLorebookName(character);
+    const lorebookData = bookName ? await loadLorebookData(context, bookName) : { entries: {} };
+    return {
+        record,
+        character,
+        bookName,
+        lorebookData,
+    };
+}
+
+async function queryCharacterEditorLorebookEntries(context, args = {}, { avatar = '' } = {}) {
+    const queryText = normalizeText(args?.text ?? '');
+    const searchMode = normalizeCharacterEditorSearchMode(args?.search_mode);
+    const hasConstantFilter = typeof args?.constant === 'boolean';
+    const hasEnabledFilter = typeof args?.enabled === 'boolean';
+    if (!queryText && !hasConstantFilter && !hasEnabledFilter) {
+        throw new Error(`${TOOL_NAMES.QUERY_ENTRIES} requires text, constant, or enabled.`);
+    }
+    const limit = normalizeCharacterEditorQueryLimit(args?.limit);
+    const state = await loadCharacterEditorPrimaryLorebookState(context, { avatar });
+    const entries = state?.lorebookData?.entries && typeof state.lorebookData.entries === 'object'
+        ? state.lorebookData.entries
+        : {};
+    if (!state.bookName) {
+        return {
+            book_name: '',
+            total_hits: 0,
+            entries: [],
+        };
+    }
+
+    const hits = [];
+    const uids = Array.from(collectLorebookEntryUids(entries).values()).sort((a, b) => a - b);
+    for (const uid of uids) {
+        const rawEntry = getLorebookEntryByUid(entries, uid);
+        const normalizedEntry = normalizeCharacterEditorLorebookToolEntry(rawEntry, uid, { includeContent: true });
+        if (hasConstantFilter && normalizedEntry.constant !== Boolean(args.constant)) {
+            continue;
+        }
+        if (hasEnabledFilter && normalizedEntry.enabled !== Boolean(args.enabled)) {
+            continue;
+        }
+        const match = buildCharacterEditorLorebookMatch(normalizedEntry, queryText, searchMode);
+        if (queryText && !match.matched) {
+            continue;
+        }
+        hits.push({
+            uid: normalizedEntry.uid,
+            comment: normalizedEntry.comment,
+            key: normalizedEntry.key,
+            keysecondary: normalizedEntry.keysecondary,
+            selective_logic: normalizedEntry.selective_logic,
+            constant: normalizedEntry.constant,
+            enabled: normalizedEntry.enabled,
+            match_fields: match.matchFields,
+            matched_excerpt: match.matchedExcerpt,
+            _score: match.score,
+        });
+    }
+
+    hits.sort((a, b) => {
+        if (queryText) {
+            if (b._score !== a._score) {
+                return b._score - a._score;
+            }
+        }
+        const aEntry = getLorebookEntryByUid(entries, a.uid);
+        const bEntry = getLorebookEntryByUid(entries, b.uid);
+        const aOrder = asFiniteInteger(aEntry?.order, 0) ?? 0;
+        const bOrder = asFiniteInteger(bEntry?.order, 0) ?? 0;
+        if (bOrder !== aOrder) {
+            return bOrder - aOrder;
+        }
+        return a.uid - b.uid;
+    });
+
+    return {
+        book_name: state.bookName,
+        total_hits: hits.length,
+        entries: hits.slice(0, limit).map(({ _score, ...entry }) => entry),
+    };
+}
+
+async function getCharacterEditorLorebookEntries(context, args = {}, { avatar = '' } = {}) {
+    const uids = normalizeCharacterEditorDetailUids(args?.uids);
+    if (uids.length === 0) {
+        throw new Error(`${TOOL_NAMES.GET_ENTRIES} requires one or more valid uids.`);
+    }
+    const state = await loadCharacterEditorPrimaryLorebookState(context, { avatar });
+    const entries = state?.lorebookData?.entries && typeof state.lorebookData.entries === 'object'
+        ? state.lorebookData.entries
+        : {};
+    if (!state.bookName) {
+        return {
+            book_name: '',
+            entries: [],
+            missing_uids: uids,
+        };
+    }
+
+    const output = [];
+    const missing = [];
+    for (const uid of uids) {
+        const rawEntry = getLorebookEntryByUid(entries, uid);
+        if (!rawEntry) {
+            missing.push(uid);
+            continue;
+        }
+        output.push(normalizeCharacterEditorLorebookToolEntry(rawEntry, uid, {
+            includeContent: true,
+            includeLayout: true,
+        }));
+    }
+
+    return {
+        book_name: state.bookName,
+        entries: output,
+        missing_uids: missing,
+    };
+}
+
+function createCharacterEditorLorebookToolApi(context, { avatar = '' } = {}) {
+    const toolNames = Object.freeze({
+        QUERY: TOOL_NAMES.QUERY_ENTRIES,
+        GET: TOOL_NAMES.GET_ENTRIES,
+    });
+    return {
+        toolNames,
+        getToolDefs: () => [
+            {
+                type: 'function',
+                function: {
+                    name: toolNames.QUERY,
+                    description: 'Search the current character primary lorebook and return lightweight matching entries. Use this before requesting full entry content.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            text: { type: 'string' },
+                            search_mode: {
+                                type: 'string',
+                                enum: [CHARACTER_EDITOR_SEARCH_MODE.ANY, CHARACTER_EDITOR_SEARCH_MODE.ACTIVATION],
+                            },
+                            constant: { type: 'boolean' },
+                            enabled: { type: 'boolean' },
+                            limit: { type: 'integer', minimum: 1, maximum: CHARACTER_EDITOR_QUERY_LIMIT_MAX },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: toolNames.GET,
+                    description: `Fetch full current primary lorebook entries by uid after narrowing candidates with ${toolNames.QUERY}.`,
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            uids: {
+                                type: 'array',
+                                items: { type: 'integer' },
+                                minItems: 1,
+                                maxItems: CHARACTER_EDITOR_DETAIL_LIMIT_MAX,
+                            },
+                        },
+                        required: ['uids'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+        ],
+        isToolName: (name) => {
+            const normalized = String(name || '').trim();
+            return normalized === toolNames.QUERY || normalized === toolNames.GET;
+        },
+        invoke: async (call) => {
+            const name = String(call?.name || '').trim();
+            const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            if (name === toolNames.QUERY) {
+                return await queryCharacterEditorLorebookEntries(context, args, { avatar });
+            }
+            if (name === toolNames.GET) {
+                return await getCharacterEditorLorebookEntries(context, args, { avatar });
+            }
+            throw new Error(`Unsupported character editor lorebook tool: ${name}`);
+        },
+    };
 }
 
 function clipLorebookDebugText(value, maxLength = 80) {
@@ -2546,21 +2911,22 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
     return { applied, failed, errors };
 }
 
-function splitCharacterEditorToolCalls(rawCalls, searchApi = null) {
+function splitCharacterEditorToolCalls(rawCalls, helperToolApis = []) {
     const editCalls = [];
-    const searchCalls = [];
+    const helperCalls = [];
+    const apis = Array.isArray(helperToolApis) ? helperToolApis : [];
     for (const call of Array.isArray(rawCalls) ? rawCalls : []) {
         const name = String(call?.name || '').trim();
         if (!name) {
             continue;
         }
-        if (searchApi?.isToolName?.(name)) {
-            searchCalls.push(call);
+        if (apis.some(api => typeof api?.isToolName === 'function' && api.isToolName(name))) {
+            helperCalls.push(call);
             continue;
         }
         editCalls.push(call);
     }
-    return { editCalls, searchCalls };
+    return { editCalls, helperCalls };
 }
 
 function getCharacterEditorSearchApi() {
@@ -2579,10 +2945,12 @@ function getCharacterEditorSearchApi() {
     return api;
 }
 
-async function runCharacterEditorSearchToolCall(call, searchApi = null) {
-    const api = searchApi || getCharacterEditorSearchApi();
+async function runCharacterEditorHelperToolCall(call, helperToolApis = []) {
+    const name = String(call?.name || '').trim();
+    const api = (Array.isArray(helperToolApis) ? helperToolApis : [])
+        .find(item => typeof item?.isToolName === 'function' && item.isToolName(name));
     if (!api) {
-        throw new Error('Search tools extension is unavailable.');
+        throw new Error(`Unsupported helper tool: ${name}`);
     }
     return await api.invoke(call);
 }
@@ -2644,7 +3012,7 @@ function appendStandardToolRoundMessages(targetMessages, executedCalls, assistan
     }
 }
 
-function buildCharacterEditorModelTools({ searchApi = null } = {}) {
+function buildCharacterEditorModelTools({ helperToolApis = [] } = {}) {
     const tools = [
         {
             type: 'function',
@@ -2727,8 +3095,10 @@ function buildCharacterEditorModelTools({ searchApi = null } = {}) {
             },
         },
     ];
-    if (searchApi) {
-        tools.push(...searchApi.getToolDefs());
+    for (const api of Array.isArray(helperToolApis) ? helperToolApis : []) {
+        if (typeof api?.getToolDefs === 'function') {
+            tools.push(...api.getToolDefs());
+        }
     }
     return tools;
 }
@@ -2841,15 +3211,14 @@ function buildCharacterEditorOperationKey(operation) {
 }
 
 async function buildCharacterEditorContextPayload(context, avatar = '') {
-    const record = getActiveCharacterRecord(context, { avatar });
-    const character = record.character || {};
-    const primaryBook = getPrimaryLorebookName(character);
-    const lorebookData = primaryBook ? await loadLorebookData(context, primaryBook) : { entries: {} };
+    const state = await loadCharacterEditorPrimaryLorebookState(context, { avatar });
+    const record = state.record;
+    const character = state.character || {};
+    const primaryBook = state.bookName;
+    const lorebookData = state.lorebookData || { entries: {} };
     const operationState = await loadOperationState(context, { avatar: record.avatar });
     const recentJournal = Array.isArray(operationState?.journal) ? operationState.journal : [];
-    const entryUids = Object.keys(lorebookData.entries || {}).map(uid => asFiniteInteger(uid, null)).filter(uid => Number.isInteger(uid) && uid >= 0).sort((a, b) => a - b);
-    const entrySample = entryUids.map(uid => compactEntryForModel(lorebookData.entries[uid], uid));
-    const maxEntryUid = entryUids.length > 0 ? entryUids[entryUids.length - 1] : -1;
+    const lorebookStats = buildCharacterEditorLorebookStats(lorebookData.entries || {});
     return {
         avatar: record.avatar,
         name: String(character?.name || ''),
@@ -2864,9 +3233,11 @@ async function buildCharacterEditorContextPayload(context, avatar = '') {
         },
         primary_lorebook: {
             name: primaryBook,
-            entry_count: Number(Object.keys(lorebookData.entries || {}).length),
-            max_entry_uid: maxEntryUid,
-            sample: entrySample,
+            entry_count: Number(lorebookStats.entry_count || 0),
+            max_entry_uid: Number(lorebookStats.max_entry_uid ?? -1),
+            enabled_entry_count: Number(lorebookStats.enabled_entry_count || 0),
+            constant_entry_count: Number(lorebookStats.constant_entry_count || 0),
+            secondary_key_entry_count: Number(lorebookStats.secondary_key_entry_count || 0),
         },
         recent_journal: recentJournal.map(item => ({
             kind: String(item?.kind || ''),
@@ -2883,9 +3254,14 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
             content: String(item?.content || '').trim(),
         }))
         .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content);
+    const lorebookToolApi = createCharacterEditorLorebookToolApi(context, { avatar });
     const searchApi = getCharacterEditorSearchApi();
     const hasSearchTools = Boolean(searchApi);
-    const modelTools = buildCharacterEditorModelTools({ searchApi });
+    const helperToolApis = [
+        lorebookToolApi,
+        ...(searchApi ? [searchApi] : []),
+    ];
+    const modelTools = buildCharacterEditorModelTools({ helperToolApis });
     const availableToolNames = modelTools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean);
     const searchToolNames = hasSearchTools
         ? [
@@ -2893,11 +3269,17 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
             String(searchApi.toolNames.VISIT || '').trim(),
         ].filter(Boolean)
         : [];
+    const lorebookToolNames = [
+        String(lorebookToolApi?.toolNames?.QUERY || '').trim(),
+        String(lorebookToolApi?.toolNames?.GET || '').trim(),
+    ].filter(Boolean);
     const systemPrompt = [
         'You are editing the current character card and its primary lorebook.',
         'Continue the conversation naturally, and propose edits only when needed.',
         'Use tool calls for concrete edits.',
         `Available tools: ${availableToolNames.join(', ')}`,
+        `The primary lorebook is not included in full. Use ${lorebookToolNames.join(' and ')} before editing lorebook entries that need entry-level details.`,
+        'If you call any helper tool in a round, do not emit edit tool calls in that same round.',
         'Do not repeat rejected operation keys unless user explicitly asks to reconsider.',
         hasSearchTools
             ? [
@@ -2920,13 +3302,16 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 context: payload,
                 conversation_history: conversationHistory,
                 rejected_operation_keys: Array.isArray(rejectedOperationKeys) ? rejectedOperationKeys : [],
-                search_tools_available: hasSearchTools,
-                search_round: round,
+                helper_tools_available: {
+                    lorebook_query: true,
+                    web_search: hasSearchTools,
+                },
+                tool_round: round,
             }),
         ].join('\n\n');
         const baseRequestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
             ...requestPresetOptions,
-            worldInfoMessages: conversationHistory,
+            runtimeWorldInfo: {},
         });
         const requestMessages = baseRequestMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
         const { calls: rawCalls, assistantText } = await requestLorebookToolCallsWithRetry(
@@ -2940,22 +3325,22 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         );
         lastAssistantText = String(assistantText || '').trim();
 
-        const { editCalls, searchCalls } = splitCharacterEditorToolCalls(rawCalls, searchApi);
-        if (!hasSearchTools || searchCalls.length === 0) {
+        const { editCalls, helperCalls } = splitCharacterEditorToolCalls(rawCalls, helperToolApis);
+        if (helperCalls.length === 0) {
             return {
                 assistantText: lastAssistantText,
                 operations: normalizeCharacterEditorOperationsFromCalls(editCalls),
             };
         }
 
-        const executedSearchCalls = [];
-        for (const call of searchCalls) {
+        const executedHelperCalls = [];
+        for (const call of helperCalls) {
             const name = String(call?.name || '').trim();
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
             const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
             try {
-                const result = await runCharacterEditorSearchToolCall(call, searchApi);
-                executedSearchCalls.push({
+                const result = await runCharacterEditorHelperToolCall(call, helperToolApis);
+                executedHelperCalls.push({
                     id: callId,
                     name,
                     args,
@@ -2965,13 +3350,13 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                     },
                 });
             } catch (error) {
-                executedSearchCalls.push({
+                executedHelperCalls.push({
                     id: callId,
                     name,
                     args,
                     result: {
                         ok: false,
-                        error: String(error?.message || error || 'search tool failed'),
+                        error: String(error?.message || error || 'helper tool failed'),
                     },
                 });
             }
@@ -2983,7 +3368,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 content: lastAssistantText,
             });
         }
-        appendStandardToolRoundMessages(runtimeToolMessages, executedSearchCalls, lastAssistantText);
+        appendStandardToolRoundMessages(runtimeToolMessages, executedHelperCalls, lastAssistantText);
     }
 
     throw new Error(`Character editor search chain exceeded internal safety limit (${CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT}).`);
