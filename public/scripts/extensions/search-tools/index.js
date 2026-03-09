@@ -1136,6 +1136,14 @@ function throwIfAborted(signal, message = 'Operation aborted.') {
     }
 }
 
+function buildRecoverableToolErrorResult(error, fallbackMessage = 'Tool call failed.') {
+    const message = normalizeWhitespace(error?.message || error || fallbackMessage) || fallbackMessage;
+    return {
+        ok: false,
+        error: message,
+    };
+}
+
 function linkAbortSignals(...signals) {
     const validSignals = signals.filter(isAbortSignalLike);
     if (validSignals.length === 0) {
@@ -2052,11 +2060,25 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             let result = null;
 
             if (callName === TOOL_NAMES.AGENT_SEARCH) {
-                result = await searchWeb(args, { abortSignal: payload?.signal || null });
-                throwIfAborted(payload?.signal, 'Search agent aborted.');
+                try {
+                    result = await searchWeb(args, { abortSignal: payload?.signal || null });
+                    throwIfAborted(payload?.signal, 'Search agent aborted.');
+                } catch (error) {
+                    if (isAbortError(error, payload?.signal || null)) {
+                        throw error;
+                    }
+                    result = buildRecoverableToolErrorResult(error, 'Search tool failed.');
+                }
             } else if (callName === TOOL_NAMES.AGENT_VISIT) {
-                result = await visitWebPage(args, { abortSignal: payload?.signal || null });
-                throwIfAborted(payload?.signal, 'Search agent aborted.');
+                try {
+                    result = await visitWebPage(args, { abortSignal: payload?.signal || null });
+                    throwIfAborted(payload?.signal, 'Search agent aborted.');
+                } catch (error) {
+                    if (isAbortError(error, payload?.signal || null)) {
+                        throw error;
+                    }
+                    result = buildRecoverableToolErrorResult(error, 'Visit tool failed.');
+                }
             } else if (callName === TOOL_NAMES.AGENT_UPSERT) {
                 if (!lorebookData) {
                     const createdLorebook = await ensureSharedLorebook(context, true);
