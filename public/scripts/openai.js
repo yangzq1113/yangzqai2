@@ -7945,11 +7945,6 @@ export function initOpenAI() {
         saveSettingsDebounced();
     });
 
-    $('#openai_function_calling_plain_text').on('input', function () {
-        oai_settings.function_calling_plain_text = !!$(this).prop('checked');
-        saveSettingsDebounced();
-    });
-
     $('#seed_openai').on('input', function () {
         oai_settings.seed = Number($(this).val());
         saveSettingsDebounced();
