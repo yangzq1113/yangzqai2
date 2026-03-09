@@ -4,8 +4,7 @@ const isFirefox = () => /firefox/i.test(navigator.userAgent);
 const MOBILE_LAYOUT_RESIZE_WIDTH_THRESHOLD = 4;
 
 /**
- * Mobile soft keyboards usually resize only the viewport height. Treat those as transient
- * and skip the heavier layout repair path.
+ * Mobile soft keyboards usually resize only the viewport height.
  *
  * @param {number} previousWidth
  * @param {number} [nextWidth]
@@ -17,6 +16,21 @@ export function didMobileLayoutWidthChange(previousWidth, nextWidth = window.inn
     }
 
     return Math.abs(Number(nextWidth) - Number(previousWidth)) > MOBILE_LAYOUT_RESIZE_WIDTH_THRESHOLD;
+}
+
+/**
+ * World info editing keeps a very large DOM tree alive. On mobile IME open/close,
+ * avoid running the heavier viewport repair work while focus stays inside that editor.
+ *
+ * @returns {boolean}
+ */
+export function isWorldInfoEditorInputFocused() {
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLElement)) {
+        return false;
+    }
+
+    return activeElement.closest('#WorldInfo.openDrawer #world_popup') instanceof HTMLElement;
 }
 
 function sanitizeInlineQuotationOnCopy() {
@@ -96,10 +110,10 @@ function applyBrowserFixes() {
         let previousViewportWidth = window.innerWidth;
         window.addEventListener('resize', () => {
             const currentViewportWidth = window.innerWidth;
-            const shouldHandleResize = didMobileLayoutWidthChange(previousViewportWidth, currentViewportWidth);
+            const didWidthChange = didMobileLayoutWidthChange(previousViewportWidth, currentViewportWidth);
             previousViewportWidth = currentViewportWidth;
 
-            if (!shouldHandleResize) {
+            if (!didWidthChange && isWorldInfoEditorInputFocused()) {
                 return;
             }
 
