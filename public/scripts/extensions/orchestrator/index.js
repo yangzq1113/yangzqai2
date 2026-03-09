@@ -1823,6 +1823,7 @@ function sanitizeProfileForAiPrompt(profile = null) {
 
 function buildAutoInjectedNodePromptPrelude({
     previousOrchestration = '',
+    rerunReason = undefined,
 } = {}) {
     const orchestrationText = String(previousOrchestration || '').trim();
     const sections = [];
@@ -1831,6 +1832,15 @@ function buildAutoInjectedNodePromptPrelude({
             '## auto_injected_previous_orchestration_capsule',
             '```text',
             orchestrationText,
+            '```',
+        ].join('\n'));
+    }
+    if (rerunReason !== undefined) {
+        const reasonText = String(rerunReason || '').trim();
+        sections.push([
+            '## auto_injected_review_rerun_reason',
+            '```text',
+            reasonText || '(no reason provided by review node)',
             '```',
         ].join('\n'));
     }
@@ -2465,8 +2475,10 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
     const previousOutputs = buildPreviousOutputsMarkdown(previousNodeOutputs);
     const distillerOutput = buildDistillerOutputMarkdown(previousNodeOutputs);
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
+    const hasRerunReason = Object.prototype.hasOwnProperty.call(options || {}, 'rerunReason');
     const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
         previousOrchestration,
+        rerunReason: hasRerunReason ? String(options?.rerunReason ?? '') : undefined,
     });
 
     const runtimeTemplate = normalizeTemplateForRuntime(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '');
@@ -2576,16 +2588,22 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
     currentNodeIndex,
     targetEntries,
     currentStageWorkerOutputs,
+    rerunReason = '',
 }, abortSignal = null) {
     const stages = Array.isArray(runtime?.stages) ? runtime.stages : [];
     const earliestStageIndex = Math.min(...targetEntries.map(entry => entry.stageIndex));
     const existingStageOutputs = Array.isArray(runtime?.stageOutputs) ? runtime.stageOutputs.slice() : [];
     const rerunTargetsByStage = new Map();
+    const rerunReasonsByStage = new Map();
     for (const entry of targetEntries) {
         if (!rerunTargetsByStage.has(entry.stageIndex)) {
             rerunTargetsByStage.set(entry.stageIndex, new Set());
         }
         rerunTargetsByStage.get(entry.stageIndex).add(entry.nodeId);
+        if (!rerunReasonsByStage.has(entry.stageIndex)) {
+            rerunReasonsByStage.set(entry.stageIndex, new Map());
+        }
+        rerunReasonsByStage.get(entry.stageIndex).set(entry.nodeId, String(rerunReason || ''));
     }
 
     runtime.stageOutputs = existingStageOutputs.slice(0, earliestStageIndex);
@@ -2595,6 +2613,9 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
         const stageResult = await executeStage(context, payload, messages, profile, runtime, stageIndex, previousNodeOutputs, abortSignal, {
             rerunNodeIds: stageIndex === earliestStageIndex
                 ? (rerunTargetsByStage.get(stageIndex) || null)
+                : null,
+            rerunReasonByNodeId: stageIndex === earliestStageIndex
+                ? (rerunReasonsByStage.get(stageIndex) || null)
                 : null,
             seedStageWorkerOutputs: stageIndex === earliestStageIndex
                 ? buildStageWorkerOutputMap(existingStageOutputs[stageIndex])
@@ -2608,6 +2629,9 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
         stopBeforeNodeIndex: currentNodeIndex,
         rerunNodeIds: earliestStageIndex === currentStageIndex
             ? (rerunTargetsByStage.get(currentStageIndex) || null)
+            : null,
+        rerunReasonByNodeId: earliestStageIndex === currentStageIndex
+            ? (rerunReasonsByStage.get(currentStageIndex) || null)
             : null,
         seedStageWorkerOutputs: earliestStageIndex === currentStageIndex
             ? mergeNodeOutputMaps(currentStageWorkerOutputs instanceof Map ? currentStageWorkerOutputs : new Map())
@@ -2626,7 +2650,7 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
     };
 }
 
-async function runReviewNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, currentStageWorkerOutputs, abortSignal = null, options = {}) {
+async function runReviewNode(context, payload, profile, nodeSpec, preset, messages, previousNodeOutputs, currentStageWorkerOutputs, abortSignal = null, options = {}) {
     throwIfAborted(abortSignal, 'Orchestration aborted.');
     if (Boolean(options?.isFinalStage)) {
         throw new Error(`Review node '${nodeSpec.id}' cannot be used in the final stage.`);
@@ -2736,6 +2760,7 @@ async function runReviewNode(context, payload, nodeSpec, preset, messages, previ
             currentNodeIndex: Number(options?.nodeIndex || 0),
             targetEntries,
             currentStageWorkerOutputs: currentStageOutputs,
+            rerunReason: decision.reason,
         }, abortSignal);
         currentPreviousNodeOutputs = replay.previousNodeOutputs;
         currentStageOutputs = replay.currentStageWorkerOutputs;
@@ -2764,7 +2789,28 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
     const rerunNodeIds = options?.rerunNodeIds instanceof Set
         ? new Set([...options.rerunNodeIds].map(nodeId => sanitizeIdentifierToken(nodeId, '')).filter(Boolean))
         : null;
+    let rerunReasonByNodeId = null;
+    if (options?.rerunReasonByNodeId instanceof Map) {
+        rerunReasonByNodeId = new Map();
+        for (const [nodeId, reason] of options.rerunReasonByNodeId.entries()) {
+            const sanitizedNodeId = sanitizeIdentifierToken(nodeId, '');
+            if (!sanitizedNodeId) {
+                continue;
+            }
+            rerunReasonByNodeId.set(sanitizedNodeId, String(reason || ''));
+        }
+    }
     const shouldRunWorkerNode = (nodeId) => !(rerunNodeIds instanceof Set) || rerunNodeIds.has(nodeId);
+    const resolveRerunReasonForNode = (nodeId) => {
+        if (!(rerunReasonByNodeId instanceof Map)) {
+            return undefined;
+        }
+        const key = sanitizeIdentifierToken(nodeId, '');
+        if (!key || !rerunReasonByNodeId.has(key)) {
+            return undefined;
+        }
+        return String(rerunReasonByNodeId.get(key) || '');
+    };
     const effectiveMode = getStageRuntimeMode(stage);
     const isFullStage = stopBeforeNodeIndex === null;
     const isFinalStage = isFullStage && stageIndex === Number(runtime?.stages?.length || 0) - 1;
@@ -2781,6 +2827,7 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
                     nodeSpec.id,
                     await runWorkerNode(context, payload, nodeSpec, profile.presets[nodeSpec.preset] || {}, messages, previousNodeOutputs, abortSignal, {
                         isFinalStage,
+                        rerunReason: resolveRerunReasonForNode(nodeSpec.id),
                     }),
                 ];
             }));
@@ -2804,6 +2851,7 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
             const reviewResult = await runReviewNode(
                 context,
                 payload,
+                profile,
                 nodeSpec,
                 preset,
                 messages,
@@ -2827,6 +2875,7 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
         }
         const output = await runWorkerNode(context, payload, nodeSpec, preset, messages, currentPreviousNodeOutputs, abortSignal, {
             isFinalStage,
+            rerunReason: resolveRerunReasonForNode(nodeSpec.id),
         });
         currentStageWorkerOutputs.set(nodeSpec.id, output);
         throwIfAborted(abortSignal, 'Orchestration aborted.');
