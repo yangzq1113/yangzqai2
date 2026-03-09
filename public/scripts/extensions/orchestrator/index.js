@@ -1273,19 +1273,34 @@ function extractLastUserMessage(messages) {
     return { index: -1, message: null };
 }
 
+function buildAnchorHashSource(messages, endIndex) {
+    return messages
+        .slice(0, endIndex + 1)
+        .filter(item => item && !item.is_system)
+        .map((item, index) => JSON.stringify({
+            playable_seq: index + 1,
+            role: item.is_user ? 'user' : 'assistant',
+            name: String(item.name ?? ''),
+            text: String(item.mes ?? ''),
+            type: String(item.extra?.type ?? ''),
+            bias: String(item.extra?.bias ?? ''),
+        }))
+        .join('\n');
+}
+
 function buildLastUserAnchorFromMessages(messages) {
     const { index, message } = extractLastUserMessage(messages);
     if (index < 0 || !message) {
         return null;
     }
-    const text = String(message.mes ?? '');
+    const hashSource = buildAnchorHashSource(messages, index);
     const playableFloor = messages
         .slice(0, index + 1)
         .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0);
     return {
         floor: index + 1,
         playableFloor,
-        hash: String(getStringHash(text)),
+        hash: String(getStringHash(hashSource)),
     };
 }
 
@@ -3125,6 +3140,28 @@ function onMessageDeleted(_chatLength, details) {
 
     if (deletedStrictlyAfterAnchor) {
         clearCapsulePrompt(context);
+        return;
+    }
+
+    clearCapsulePrompt(context);
+    clearLastOrchestrationSnapshot(context, { persist: true });
+}
+
+function onMessageEdited(_messageId) {
+    const context = getContext();
+    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+        clearCapsulePrompt(context);
+        return;
+    }
+
+    const chatKey = getChatKey(context);
+    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
+        clearCapsulePrompt(context);
+        return;
+    }
+
+    const currentAnchor = buildLastUserAnchor(context, Array.isArray(context?.chat) ? context.chat : []);
+    if (currentAnchor && canReuseLatestOrchestrationSnapshot(chatKey, currentAnchor)) {
         return;
     }
 
@@ -7852,6 +7889,9 @@ jQuery(() => {
     }
     if (context.eventTypes.MESSAGE_DELETED) {
         context.eventSource.on(context.eventTypes.MESSAGE_DELETED, onMessageDeleted);
+    }
+    if (context.eventTypes.MESSAGE_EDITED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_EDITED, onMessageEdited);
     }
     if (context.eventTypes.PRESET_CHANGED) {
         context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
