@@ -15925,7 +15925,7 @@ jQuery(async function () {
         icon.toggleClass('fa-circle-chevron-down fa-circle-chevron-up');
         drawer.trigger('inline-drawer-toggle');
         drawerContent.stop().slideToggle({
-            complete: () => {
+            complete: function () {
                 $(this).css('height', '');
             },
         });
