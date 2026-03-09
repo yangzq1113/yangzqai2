@@ -14,7 +14,7 @@ import storage from 'node-persist';
 
 import { AVATAR_WIDTH, AVATAR_HEIGHT, DEFAULT_AVATAR_PATH } from '../constants.js';
 import { default as validateAvatarUrlMiddleware, getFileNameValidationFunction } from '../middleware/validateFileName.js';
-import { deepMerge, humanizedDateTime, tryParse, tryReadFileSync, MemoryLimitedMap, getConfigValue, mutateJsonString, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements } from '../util.js';
+import { deepMerge, humanizedDateTime, tryParse, tryReadFileSync, MemoryLimitedMap, getConfigValue, clientRelativePath, getUniqueName, sanitizeSafeCharacterReplacements } from '../util.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { parse, read, write } from '../character-card-parser.js';
 import { readWorldInfoFile } from './worldinfo.js';
@@ -721,26 +721,7 @@ function charaFormatData(data, directories) {
     _.set(char, 'data.extensions.depth_prompt.depth', depth_value);
     _.set(char, 'data.extensions.depth_prompt.role', role_value);
 
-    const existingCharacterBookEntries = _.get(char, 'data.character_book.entries');
-    const hasEmbeddedCharacterBook = Array.isArray(existingCharacterBookEntries) && existingCharacterBookEntries.length > 0;
-    if (data.world && !hasEmbeddedCharacterBook) {
-        try {
-            const file = readWorldInfoFile(directories, data.world, false);
-
-            // File was imported - save it to the character book
-            if (file && file.originalData) {
-                _.set(char, 'data.character_book', file.originalData);
-            }
-
-            // File was not imported - convert the world info to the character book
-            if (file && file.entries) {
-                _.set(char, 'data.character_book', convertWorldInfoToCharacterBook(data.world, file.entries));
-            }
-
-        } catch {
-            console.warn(`Failed to read world info file: ${data.world}. Character book will not be available.`);
-        }
-    }
+    syncCharacterBookFromWorldInfo(char, directories, data.world);
 
     if (data.extensions) {
         try {
@@ -753,6 +734,38 @@ function charaFormatData(data, directories) {
     }
 
     return char;
+}
+
+/**
+ * Refreshes the embedded character book from the currently linked world info.
+ * Current world info entries are authoritative. Preserve originalData only as a fallback
+ * for malformed/legacy files that no longer expose an entries object.
+ * @param {object} char Character payload being saved
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {string} worldInfoName Linked world info name
+ */
+function syncCharacterBookFromWorldInfo(char, directories, worldInfoName) {
+    const normalizedWorldInfoName = String(worldInfoName || '').trim();
+    if (!normalizedWorldInfoName) {
+        return;
+    }
+
+    try {
+        const file = readWorldInfoFile(directories, normalizedWorldInfoName, false);
+
+        if (file && _.isObjectLike(file.entries) && !Array.isArray(file.entries)) {
+            _.set(char, 'data.character_book', convertWorldInfoToCharacterBook(normalizedWorldInfoName, file.entries));
+            return;
+        }
+
+        if (file?.originalData && Array.isArray(file.originalData.entries)) {
+            const fallbackCharacterBook = JSON.parse(JSON.stringify(file.originalData));
+            fallbackCharacterBook.name = String(fallbackCharacterBook.name || normalizedWorldInfoName);
+            _.set(char, 'data.character_book', fallbackCharacterBook);
+        }
+    } catch {
+        console.warn(`Failed to read world info file: ${normalizedWorldInfoName}. Character book will not be available.`);
+    }
 }
 
 /**
@@ -1823,8 +1836,10 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             case 'png': {
                 const rawBuffer = await fsPromises.readFile(filename);
                 const rawData = read(rawBuffer);
-                const mutatedData = mutateJsonString(rawData, unsetPrivateFields);
-                const mutatedBuffer = write(rawBuffer, mutatedData);
+                const jsonObject = getCharaCardV2(JSON.parse(rawData), request.user.directories);
+                syncCharacterBookFromWorldInfo(jsonObject, request.user.directories, _.get(jsonObject, 'data.extensions.world'));
+                unsetPrivateFields(jsonObject);
+                const mutatedBuffer = write(rawBuffer, JSON.stringify(jsonObject));
                 const contentType = mime.lookup(filename) || 'image/png';
                 response.setHeader('Content-Type', contentType);
                 response.setHeader('Content-Disposition', `attachment; filename="${encodeURI(path.basename(filename))}"`);
@@ -1835,6 +1850,7 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                     const json = await readCharacterData(filename);
                     if (json === undefined) return response.sendStatus(400);
                     const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
+                    syncCharacterBookFromWorldInfo(jsonObject, request.user.directories, _.get(jsonObject, 'data.extensions.world'));
                     unsetPrivateFields(jsonObject);
                     return response.type('json').send(JSON.stringify(jsonObject, null, 4));
                 }
