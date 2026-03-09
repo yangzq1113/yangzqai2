@@ -99,6 +99,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     defaultMaxResults: 8,
     defaultVisitMaxChars: 4000,
     safeSearch: 'moderate',
+    providers: Object.freeze({
+        ddg: Object.freeze({
+            safeSearch: 'moderate',
+        }),
+    }),
     agentApiPresetName: '',
     agentPresetName: '',
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
@@ -140,14 +145,54 @@ function clampInteger(value, min, max, fallback) {
     return Math.max(min, Math.min(max, parsed));
 }
 
+function getAvailableSearchProviders() {
+    return [
+        {
+            id: 'ddg',
+            label: 'DuckDuckGo (no login)',
+        },
+    ];
+}
+
+function getDefaultSearchProviderId() {
+    return getAvailableSearchProviders()[0]?.id || 'ddg';
+}
+
+function getSearchProviderDefinition(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return getAvailableSearchProviders().find(provider => provider.id === normalized) || getAvailableSearchProviders()[0];
+}
+
 function normalizeProvider(value) {
-    const provider = String(value || '').trim().toLowerCase();
-    return provider === 'ddg' ? 'ddg' : 'ddg';
+    return getSearchProviderDefinition(value)?.id || getDefaultSearchProviderId();
 }
 
 function normalizeSafeSearch(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return ['off', 'moderate', 'strict'].includes(normalized) ? normalized : DEFAULT_SETTINGS.safeSearch;
+}
+
+function normalizeDdgProviderSettings(raw = {}, legacySafeSearch = DEFAULT_SETTINGS.safeSearch) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return {
+        safeSearch: normalizeSafeSearch(source.safeSearch ?? legacySafeSearch),
+    };
+}
+
+function normalizeProviderSettings(raw = {}, legacy = {}) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return {
+        ddg: normalizeDdgProviderSettings(source.ddg, legacy.safeSearch),
+    };
+}
+
+function getProviderSettings(settings = getSettings(), providerId = '') {
+    const normalizedProviderId = normalizeProvider(providerId || settings?.provider);
+    const source = settings?.providers && typeof settings.providers === 'object' ? settings.providers : {};
+    if (normalizedProviderId === 'ddg') {
+        return normalizeDdgProviderSettings(source.ddg, settings?.safeSearch);
+    }
+    return {};
 }
 
 function normalizeLorebookRole(value) {
@@ -184,6 +229,9 @@ function ensureSettings() {
     settings.enabled = Boolean(settings.enabled ?? DEFAULT_SETTINGS.enabled);
     settings.preRequestEnabled = Boolean(settings.preRequestEnabled ?? DEFAULT_SETTINGS.preRequestEnabled);
     settings.provider = normalizeProvider(settings.provider ?? DEFAULT_SETTINGS.provider);
+    settings.providers = normalizeProviderSettings(settings.providers, {
+        safeSearch: settings.safeSearch ?? DEFAULT_SETTINGS.safeSearch,
+    });
     settings.defaultMaxResults = clampInteger(
         settings.defaultMaxResults ?? DEFAULT_SETTINGS.defaultMaxResults,
         1,
@@ -196,7 +244,7 @@ function ensureSettings() {
         50000,
         DEFAULT_SETTINGS.defaultVisitMaxChars,
     );
-    settings.safeSearch = normalizeSafeSearch(settings.safeSearch ?? DEFAULT_SETTINGS.safeSearch);
+    settings.safeSearch = getProviderSettings(settings, 'ddg').safeSearch;
     settings.agentApiPresetName = String(settings.agentApiPresetName ?? DEFAULT_SETTINGS.agentApiPresetName).trim();
     settings.agentPresetName = String(settings.agentPresetName ?? DEFAULT_SETTINGS.agentPresetName).trim();
     const normalizedAgentSystemPrompt = String(settings.agentSystemPrompt ?? DEFAULT_SETTINGS.agentSystemPrompt).trim();
@@ -548,9 +596,11 @@ async function runDdgSearch({
 
 async function runSearchProvider(provider, options) {
     const normalizedProvider = normalizeProvider(provider);
-    if (normalizedProvider !== 'ddg') {
-        console.warn(`[${MODULE_NAME}] Unsupported provider '${provider}'. Falling back to ddg.`);
+    if (normalizedProvider === 'ddg') {
+        return await runDdgSearch(options);
     }
+
+    console.warn(`[${MODULE_NAME}] Unsupported provider '${provider}'. Falling back to ${getDefaultSearchProviderId()}.`);
     return await runDdgSearch(options);
 }
 
@@ -567,7 +617,8 @@ async function searchWeb(args = {}, { abortSignal = null } = {}) {
         20,
         settings.defaultMaxResults,
     );
-    const safeSearch = normalizeSafeSearch(args?.safe_search || settings.safeSearch);
+    const providerSettings = getProviderSettings(settings, settings.provider);
+    const safeSearch = normalizeSafeSearch(args?.safe_search || providerSettings.safeSearch || settings.safeSearch);
     const timeRange = String(args?.time_range || '').trim().toLowerCase();
     const region = normalizeWhitespace(args?.region || '');
 
@@ -639,7 +690,7 @@ function getSharedSearchToolSpecs() {
                             max_results: { type: 'integer', description: 'Maximum number of search results (1-20).' },
                             safe_search: { type: 'string', enum: ['off', 'moderate', 'strict'] },
                             time_range: { type: 'string', enum: ['', 'day', 'week', 'month', 'year'] },
-                            region: { type: 'string', description: 'Optional DuckDuckGo region code (kl), e.g. us-en.' },
+                            region: { type: 'string', description: 'Optional provider-specific locale or region hint.' },
                         },
                         required: ['query'],
                         additionalProperties: false,
@@ -712,13 +763,15 @@ function installGlobalApi() {
         visit: visitWebPage,
         getSettings: () => {
             const settings = getSettings();
+            const activeProviderSettings = getProviderSettings(settings, settings.provider);
             return {
                 enabled: Boolean(settings.enabled),
                 preRequestEnabled: Boolean(settings.preRequestEnabled),
-                provider: String(settings.provider || 'ddg'),
+                provider: String(settings.provider || getDefaultSearchProviderId()),
                 defaultMaxResults: Number(settings.defaultMaxResults || DEFAULT_SETTINGS.defaultMaxResults),
                 defaultVisitMaxChars: Number(settings.defaultVisitMaxChars || DEFAULT_SETTINGS.defaultVisitMaxChars),
-                safeSearch: String(settings.safeSearch || DEFAULT_SETTINGS.safeSearch),
+                safeSearch: String(activeProviderSettings.safeSearch || settings.safeSearch || DEFAULT_SETTINGS.safeSearch),
+                providerSettings: structuredClone(settings.providers || {}),
                 agentApiPresetName: String(settings.agentApiPresetName || ''),
                 agentPresetName: String(settings.agentPresetName || ''),
                 agentMaxRounds: Number(settings.agentMaxRounds || DEFAULT_SETTINGS.agentMaxRounds),
@@ -2093,6 +2146,44 @@ function onMessageDeleted(_chatLength, details) {
     clearLastSearchAgentSnapshot(context, { persist: true });
 }
 
+function renderSearchProviderOptions(selectedProvider = '') {
+    const selected = normalizeProvider(selectedProvider);
+    return getAvailableSearchProviders()
+        .map(provider => `<option value="${escapeHtml(provider.id)}"${provider.id === selected ? ' selected' : ''}>${escapeHtml(i18n(provider.label))}</option>`)
+        .join('');
+}
+
+function renderSafeSearchOptions(selectedValue = '') {
+    const selected = normalizeSafeSearch(selectedValue);
+    const options = [
+        ['off', 'Off'],
+        ['moderate', 'Moderate'],
+        ['strict', 'Strict'],
+    ];
+    return options
+        .map(([value, label]) => `<option value="${escapeHtml(value)}"${value === selected ? ' selected' : ''}>${escapeHtml(i18n(label))}</option>`)
+        .join('');
+}
+
+function buildProviderSettingsPanelHtml(settings = getSettings()) {
+    const providerId = normalizeProvider(settings.provider);
+    if (providerId === 'ddg') {
+        const providerSettings = getProviderSettings(settings, providerId);
+        return `
+        <label for="search_tools_ddg_safe_search">${escapeHtml(i18n('Default safe search'))}</label>
+        <select id="search_tools_ddg_safe_search" class="text_pole">
+            ${renderSafeSearchOptions(providerSettings.safeSearch)}
+        </select>`;
+    }
+
+    return '';
+}
+
+function refreshProviderSettingsUi(root, settings = getSettings()) {
+    root.find('#search_tools_provider').html(renderSearchProviderOptions(settings.provider));
+    root.find('#search_tools_provider_settings').html(buildProviderSettingsPanelHtml(settings));
+}
+
 function renderSettingsBlock() {
     return `
 <div id="${UI_BLOCK_ID}" class="inline-drawer">
@@ -2110,17 +2201,10 @@ function renderSettingsBlock() {
             ${escapeHtml(i18n('Run pre-request search agent'))}
         </label>
         <label for="search_tools_provider">${escapeHtml(i18n('Search provider'))}</label>
-        <select id="search_tools_provider" class="text_pole">
-            <option value="ddg">${escapeHtml(i18n('DuckDuckGo (no login)'))}</option>
-        </select>
+        <select id="search_tools_provider" class="text_pole"></select>
+        <div id="search_tools_provider_settings"></div>
         <label for="search_tools_default_max_results">${escapeHtml(i18n('Default max search results'))}</label>
         <input id="search_tools_default_max_results" class="text_pole" type="number" min="1" max="20" step="1" />
-        <label for="search_tools_safe_search">${escapeHtml(i18n('Default safe search'))}</label>
-        <select id="search_tools_safe_search" class="text_pole">
-            <option value="off">${escapeHtml(i18n('Off'))}</option>
-            <option value="moderate">${escapeHtml(i18n('Moderate'))}</option>
-            <option value="strict">${escapeHtml(i18n('Strict'))}</option>
-        </select>
         <label for="search_tools_default_visit_max_chars">${escapeHtml(i18n('Default page excerpt max chars (0 = no truncation)'))}</label>
         <input id="search_tools_default_visit_max_chars" class="text_pole" type="number" min="0" max="50000" step="100" />
         <label for="search_tools_agent_api_preset_name">${escapeHtml(i18n('Agent API preset (Connection profile, empty = current)'))}</label>
@@ -2245,12 +2329,12 @@ function bindSettingsUi() {
     const context = getContext();
     const settings = getSettings();
     refreshAgentPresetSelectors(root, context, settings);
+    refreshProviderSettingsUi(root, settings);
     root.find('#search_tools_enabled').prop('checked', Boolean(settings.enabled));
     root.find('#search_tools_pre_request_enabled').prop('checked', Boolean(settings.preRequestEnabled));
     root.find('#search_tools_provider').val(String(settings.provider || 'ddg'));
     root.find('#search_tools_default_max_results').val(String(settings.defaultMaxResults));
     root.find('#search_tools_default_visit_max_chars').val(String(settings.defaultVisitMaxChars));
-    root.find('#search_tools_safe_search').val(String(settings.safeSearch || DEFAULT_SETTINGS.safeSearch));
     root.find('#search_tools_agent_api_preset_name').val(String(settings.agentApiPresetName || ''));
     root.find('#search_tools_agent_preset_name').val(String(settings.agentPresetName || ''));
     root.find('#search_tools_agent_max_rounds').val(String(settings.agentMaxRounds));
@@ -2275,6 +2359,7 @@ function bindSettingsUi() {
     });
     root.on('change.searchTools', '#search_tools_provider', function () {
         settings.provider = normalizeProvider(jQuery(this).val());
+        refreshProviderSettingsUi(root, settings);
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_default_max_results', function () {
@@ -2287,8 +2372,9 @@ function bindSettingsUi() {
         jQuery(this).val(String(settings.defaultVisitMaxChars));
         saveSettingsDebounced();
     });
-    root.on('change.searchTools', '#search_tools_safe_search', function () {
-        settings.safeSearch = normalizeSafeSearch(jQuery(this).val());
+    root.on('change.searchTools', '#search_tools_ddg_safe_search', function () {
+        settings.providers.ddg.safeSearch = normalizeSafeSearch(jQuery(this).val());
+        settings.safeSearch = settings.providers.ddg.safeSearch;
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_agent_api_preset_name', function () {
