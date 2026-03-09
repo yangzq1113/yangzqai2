@@ -18,6 +18,7 @@ import {
 
 const MODULE_NAME = 'search_tools';
 const UI_BLOCK_ID = 'search_tools_settings';
+const STYLE_ID = 'search_tools_style';
 const STATUS_ID = 'search_tools_status';
 const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const SHARED_LOREBOOK_NAME = '__SEARCH_TOOLS__';
@@ -2398,6 +2399,28 @@ function renderSettingsBlock() {
 </div>`;
 }
 
+function ensureStyles() {
+    if (jQuery(`#${STYLE_ID}`).length) {
+        return;
+    }
+
+    jQuery('head').append(`
+<style id="${STYLE_ID}">
+#${UI_BLOCK_ID} .menu_button,
+#${UI_BLOCK_ID} .menu_button_small {
+    display: inline-flex;
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    word-break: keep-all;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    align-items: center;
+    justify-content: center;
+}
+</style>`);
+}
+
 function updateUiStatus(text) {
     const element = jQuery(`#${STATUS_ID}`);
     if (!element.length) {
@@ -2621,6 +2644,8 @@ function ensureUi() {
     if (!host.length) {
         return;
     }
+
+    ensureStyles();
 
     if (!jQuery(`#${UI_BLOCK_ID}`).length) {
         host.append(renderSettingsBlock());
