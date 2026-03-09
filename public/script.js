@@ -50,6 +50,7 @@ import {
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
     deleteWorldInfo,
+    deleteWorldInfoWithUndo,
 } from './scripts/world-info.js';
 
 import {
@@ -281,7 +282,7 @@ import { initBulkEdit } from './scripts/bulk-edit.js';
 import { getContext } from './scripts/st-context.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, initReasoning, parseReasoningInSwipes, PromptReasoning, ReasoningHandler, removeReasoningFromString, updateReasoningUI } from './scripts/reasoning.js';
 import { accountStorage } from './scripts/util/AccountStorage.js';
-import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
+import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar, openWelcomeScreen } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts } from './scripts/itemized-prompts.js';
 import { getSystemMessageByType, initSystemMessages, SAFETY_CHAT, sendSystemMessage, system_message_types, system_messages } from './scripts/system-messages.js';
@@ -296,6 +297,7 @@ import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
+import { showUndoToast } from './scripts/undo-toast.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 const lukerApi = {
@@ -2138,42 +2140,93 @@ export async function getCharacters() {
     }
 }
 
-async function delChat(chatfile) {
-    const response = await fetch('/api/chats/delete', {
+async function getReplacementCharacterChatName(character) {
+    const chatsResponse = await fetch('/api/characters/chats', {
         method: 'POST',
         headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: character.avatar }),
+    });
+    const chats = Object.values(await chatsResponse.json());
+    chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
+    return chats.length && typeof chats[0] === 'object'
+        ? chats[0].file_name.replace('.jsonl', '')
+        : `${character.name} - ${humanizedDateTime()}`;
+}
+
+async function getRawCharacterChatSnapshot(characterId, fileName) {
+    await unshallowCharacter(characterId);
+
+    const character = characters[characterId];
+    if (!character) {
+        return null;
+    }
+
+    const response = await fetch('/api/chats/get', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        cache: 'no-cache',
         body: JSON.stringify({
-            chatfile: chatfile,
-            avatar_url: characters[this_chid].avatar,
+            ch_name: character.name,
+            file_name: fileName,
+            avatar_url: character.avatar,
         }),
     });
-    if (response.ok === true) {
-        // choose another chat if current was deleted
-        const name = chatfile.replace('.jsonl', '');
-        if (name === characters[this_chid].chat) {
-            chat_metadata = {};
-            await replaceCurrentChat();
-        }
-        await eventSource.emit(event_types.CHAT_DELETED, name);
+
+    if (!response.ok) {
+        return null;
+    }
+
+    const data = await response.json();
+    return Array.isArray(data) ? structuredClone(data) : null;
+}
+
+async function restoreCharacterChatSnapshot(characterId, fileName, chatFile) {
+    await unshallowCharacter(characterId);
+
+    const character = characters[characterId];
+    if (!character || !Array.isArray(chatFile)) {
+        return false;
+    }
+
+    const response = await fetch('/api/chats/save', {
+        method: 'POST',
+        cache: 'no-cache',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            ch_name: character.name,
+            file_name: fileName,
+            chat: structuredClone(chatFile),
+            avatar_url: character.avatar,
+            force: true,
+        }),
+    });
+
+    return response.ok;
+}
+
+async function refreshVisibleDeletedChatViews(fileName = '') {
+    if ($('#select_chat_popup').is(':visible')) {
+        await displayPastChats(fileName ? [fileName] : []);
+    }
+
+    if (document.querySelector('#chat .welcomePanel')) {
+        await openWelcomeScreen({ force: true });
     }
 }
 
-/**
- * Deletes a character chat by its name.
- * @param {string} characterId Character ID to delete chat for
- * @param {string} fileName Name of the chat file to delete (without .jsonl extension)
- * @returns {Promise<void>} A promise that resolves when the chat is deleted.
- */
-export async function deleteCharacterChatByName(characterId, fileName) {
-    // Make sure all the data is loaded.
+async function deleteCharacterChatInternal(characterId, fileName) {
     await unshallowCharacter(characterId);
 
     /** @type {Character} */
     const character = characters[characterId];
     if (!character) {
         console.warn(`Character with ID ${characterId} not found.`);
-        return;
+        return false;
     }
+
+    const rawChatSnapshot = await getRawCharacterChatSnapshot(characterId, fileName);
+    const previousSelectedChat = String(character.chat || '');
+    const deletedCurrentChat = previousSelectedChat === fileName;
 
     const response = await fetch('/api/chats/delete', {
         method: 'POST',
@@ -2186,22 +2239,72 @@ export async function deleteCharacterChatByName(characterId, fileName) {
 
     if (!response.ok) {
         console.error('Failed to delete chat for character.');
-        return;
+        return false;
     }
 
-    if (fileName === character.chat) {
-        const chatsResponse = await fetch('/api/characters/chats', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: character.avatar }),
-        });
-        const chats = Object.values(await chatsResponse.json());
-        chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
-        const newChatName = chats.length && typeof chats[0] === 'object' ? chats[0].file_name.replace('.jsonl', '') : `${character.name} - ${humanizedDateTime()}`;
-        await updateRemoteChatName(characterId, newChatName);
+    if (deletedCurrentChat) {
+        if (Number(characterId) === Number(this_chid)) {
+            chat_metadata = {};
+            await replaceCurrentChat();
+        } else {
+            const newChatName = await getReplacementCharacterChatName(character);
+            await updateRemoteChatName(characterId, newChatName);
+        }
     }
 
-    await eventSource.emit(event_types.CHAT_DELETED, fileName);
+    const replacementChatName = String(character.chat || '');
+
+    if (!Array.isArray(rawChatSnapshot)) {
+        toastr.success(t`Chat deleted.`);
+        await eventSource.emit(event_types.CHAT_DELETED, fileName);
+        return true;
+    }
+
+    showUndoToast({
+        message: t`Chat deleted.`,
+        onUndo: async () => {
+            const restored = await restoreCharacterChatSnapshot(characterId, fileName, rawChatSnapshot);
+            if (!restored) {
+                toastr.error(t`Failed to restore chat.`);
+                return;
+            }
+
+            if (deletedCurrentChat) {
+                if (Number(characterId) !== Number(this_chid)) {
+                    await updateRemoteChatName(characterId, fileName);
+                } else if (String(character.chat || '') === replacementChatName) {
+                    await updateRemoteChatName(characterId, fileName);
+                    await openCharacterChat(fileName);
+                }
+            }
+
+            await refreshVisibleDeletedChatViews(fileName);
+        },
+        onCommit: async () => {
+            await eventSource.emit(event_types.CHAT_DELETED, fileName);
+        },
+    });
+
+    return true;
+}
+
+async function delChat(chatfile) {
+    const fileName = String(chatfile || '').replace(/\.jsonl$/i, '');
+    if (!fileName) {
+        return false;
+    }
+
+    return await deleteCharacterChatInternal(String(this_chid), fileName);
+}
+
+/**
+ * Deletes a character chat by its name.
+ * @param {string} characterId Character ID to delete chat for
+ * @param {string} fileName Name of the chat file to delete (without .jsonl extension)
+ * @returns {Promise<void>} A promise that resolves when the chat is deleted.
+ */
+export async function deleteCharacterChatByName(characterId, fileName) {
+    return await deleteCharacterChatInternal(String(characterId), fileName);
 }
 
 export async function replaceCurrentChat() {
@@ -2597,7 +2700,7 @@ async function maybeDeleteChatBoundLorebook(chatFile, groupId = null, { avatarUr
         return { lorebookName, deleted: false };
     }
 
-    const deleted = await deleteWorldInfo(lorebookName);
+    const deleted = await deleteWorldInfoWithUndo(lorebookName);
     if (!deleted) {
         toastr.warning(t`Lorebook could not be deleted.`, t`Delete Chat`);
     }
@@ -2636,7 +2739,7 @@ async function maybeDeleteCharacterBoundImportedLorebook(character, { alreadyPro
         return { lorebookName, deleted: false };
     }
 
-    const deleted = await deleteWorldInfo(lorebookName);
+    const deleted = await deleteWorldInfoWithUndo(lorebookName);
     if (!deleted) {
         toastr.warning(t`Lorebook could not be deleted.`, t`Delete Character`);
     }

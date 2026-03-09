@@ -551,9 +551,11 @@ async function deleteRecentCharacterChat(avatarId, fileName) {
             console.log('Deletion cancelled by user');
             return;
         }
-        await deleteCharacterChatByName(String(characterId), fileName);
+        const deleted = await deleteCharacterChatByName(String(characterId), fileName);
+        if (!deleted) {
+            return;
+        }
         await refreshWelcomeScreen();
-        toastr.success(t`Chat deleted.`);
     } catch (error) {
         console.error('Error deleting recent character chat:', error);
         toastr.error(t`Failed to delete recent chat. See console for details.`);
@@ -577,9 +579,11 @@ async function deleteRecentGroupChat(groupId, fileName) {
             console.log('Deletion cancelled by user');
             return;
         }
-        await deleteGroupChatByName(groupId, fileName);
+        const deleted = await deleteGroupChatByName(groupId, fileName);
+        if (!deleted) {
+            return;
+        }
         await refreshWelcomeScreen();
-        toastr.success(t`Group chat deleted.`);
     } catch (error) {
         console.error('Error deleting recent group chat:', error);
         toastr.error(t`Failed to delete recent group chat. See console for details.`);

@@ -93,6 +93,7 @@ import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
+import { showUndoToast } from './undo-toast.js';
 
 export {
     selected_group,
@@ -2267,6 +2268,123 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
     await editGroup(groupId, true, true);
 }
 
+async function restoreGroupChatSnapshot(chatId, chatFile) {
+    if (!Array.isArray(chatFile)) {
+        return false;
+    }
+
+    const response = await fetch('/api/chats/group/save', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ id: chatId, chat: structuredClone(chatFile) }),
+    });
+
+    return response.ok;
+}
+
+async function deleteGroupChatInternal(groupId, chatId, { jumpToNewChat = true } = {}) {
+    const group = groups.find(x => x.id === groupId);
+
+    if (!group || !group.chats.includes(chatId)) {
+        return false;
+    }
+
+    const rawChatSnapshot = structuredClone(await loadGroupChat(chatId));
+    const previousChats = Array.isArray(group.chats) ? [...group.chats] : [];
+    const previousGroupChatId = String(group.chat_id || '');
+    const deletedCurrentChat = previousGroupChatId === chatId;
+
+    const response = await fetch('/api/chats/group/delete', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ id: chatId }),
+    });
+
+    if (!response.ok) {
+        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be deleted`);
+        console.error('Group chat could not be deleted');
+        return false;
+    }
+
+    group.chats = group.chats.filter(name => name !== chatId);
+
+    let groupStatePersisted = false;
+    if (deletedCurrentChat) {
+        const fallbackChatId = group.chats.length ? group.chats[group.chats.length - 1] : humanizedDateTime();
+
+        if (selected_group === groupId && jumpToNewChat) {
+            updateChatMetadata({}, true);
+
+            if (group.chats.length) {
+                await openGroupChat(groupId, fallbackChatId);
+            } else {
+                await createNewGroupChat(groupId);
+            }
+
+            groupStatePersisted = true;
+        } else {
+            group.chat_id = fallbackChatId;
+        }
+    }
+
+    if (!groupStatePersisted) {
+        await editGroup(groupId, true, true);
+        groupStatePersisted = true;
+    }
+
+    const replacementChatId = String(group.chat_id || '');
+
+    if (!Array.isArray(rawChatSnapshot) || rawChatSnapshot.length === 0) {
+        toastr.success(t`Group chat deleted.`);
+        await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
+        return true;
+    }
+
+    showUndoToast({
+        message: t`Group chat deleted.`,
+        onUndo: async () => {
+            const restored = await restoreGroupChatSnapshot(chatId, rawChatSnapshot);
+            if (!restored) {
+                toastr.error(t`Failed to restore group chat.`);
+                return;
+            }
+
+            const shouldReopenDeletedChat = deletedCurrentChat
+                && selected_group === groupId
+                && String(group.chat_id || '') === replacementChatId;
+
+            group.chats = [...previousChats];
+
+            if (selected_group !== groupId) {
+                group.chat_id = previousGroupChatId;
+                await editGroup(groupId, true, true);
+            } else {
+                if (!group.chats.includes(String(group.chat_id || ''))) {
+                    group.chat_id = previousGroupChatId;
+                }
+
+                await editGroup(groupId, true, true);
+
+                if (shouldReopenDeletedChat) {
+                    await openGroupChat(groupId, chatId);
+                } else if ($('#select_chat_popup').is(':visible')) {
+                    await displayPastChats([chatId]);
+                }
+            }
+
+            if (document.querySelector('#chat .welcomePanel')) {
+                const welcomeScreen = await import('./welcome-screen.js');
+                await welcomeScreen.openWelcomeScreen({ force: true });
+            }
+        },
+        onCommit: async () => {
+            await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
+        },
+    });
+
+    return true;
+}
+
 /**
  * Deletes a group chat by its name. Doesn't affect displayed chat.
  * @param {string} groupId Group ID
@@ -2274,33 +2392,7 @@ export async function renameGroupChat(groupId, oldChatId, newChatId) {
  * @returns {Promise<void>}
  */
 export async function deleteGroupChatByName(groupId, chatName) {
-    const group = groups.find(x => x.id === groupId);
-    if (!group || !group.chats.includes(chatName)) {
-        return;
-    }
-
-    group.chats.splice(group.chats.indexOf(chatName), 1);
-
-    const response = await fetch('/api/chats/group/delete', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatName }),
-    });
-
-    if (!response.ok) {
-        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be deleted`);
-        console.error('Group chat could not be deleted');
-        return;
-    }
-
-    // If the deleted chat was the current chat, switch to the last chat in the group
-    if (group.chat_id === chatName) {
-        const newChatName = group.chats.length ? group.chats[group.chats.length - 1] : humanizedDateTime();
-        group.chat_id = newChatName;
-    }
-
-    await editGroup(groupId, true, true);
-    await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatName);
+    return await deleteGroupChatInternal(groupId, chatName, { jumpToNewChat: false });
 }
 
 /**
@@ -2311,36 +2403,7 @@ export async function deleteGroupChatByName(groupId, chatName) {
  * @param {boolean} [options.jumpToNewChat=true] Whether to jump to a new chat after deletion (existing one, or create a new one if none exists)
  */
 export async function deleteGroupChat(groupId, chatId, { jumpToNewChat = true } = {}) {
-    const group = groups.find(x => x.id === groupId);
-
-    if (!group || !group.chats.includes(chatId)) {
-        return;
-    }
-
-    group.chats.splice(group.chats.indexOf(chatId), 1);
-
-    if (group.chat_id === chatId) {
-        group.chat_id = '';
-        updateChatMetadata({}, true);
-    }
-
-    const response = await fetch('/api/chats/group/delete', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId }),
-    });
-
-    if (response.ok) {
-        if (jumpToNewChat) {
-            if (group.chats.length) {
-                await openGroupChat(groupId, group.chats[group.chats.length - 1]);
-            } else {
-                await createNewGroupChat(groupId);
-            }
-        }
-
-        await eventSource.emit(event_types.GROUP_CHAT_DELETED, chatId);
-    }
+    return await deleteGroupChatInternal(groupId, chatId, { jumpToNewChat });
 }
 
 /**
