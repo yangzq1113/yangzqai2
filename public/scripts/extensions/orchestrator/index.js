@@ -54,6 +54,10 @@ const LEGACY_REMOVED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${LEGACY_REMOVED_CON
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const ORCH_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const CAPSULE_INJECT_POSITION_SCHEMA_VERSION = 2;
+const ORCH_NODE_TYPE_WORKER = 'worker';
+const ORCH_NODE_TYPE_REVIEW = 'review';
+const ORCH_REVIEW_TOOL_APPROVE = 'luker_orch_review_approve';
+const ORCH_REVIEW_TOOL_RERUN = 'luker_orch_request_rerun';
 const SUPPORTED_WORLD_INFO_POSITIONS = Object.freeze([
     world_info_position.before,
     world_info_position.after,
@@ -90,8 +94,11 @@ function getDefaultAiSuggestSystemPrompt() {
         'Call multiple functions in one response to build the profile incrementally.',
         'Keep stages concise, operational, and easy to run in a single request turn.',
         'Only the LAST stage outputs are injected into the final generation context.',
-        'Design a clear pipeline: state distillation -> parallel reasoning/critique -> final synthesis.',
-        'Non-final stage nodes should return structured tool-call fields for machine processing.',
+        'Design a clear pipeline: state distillation -> reasoning workers -> review gate -> final synthesis.',
+        'Worker nodes before the final stage should return structured tool-call fields for machine processing.',
+        'Review nodes inspect already-executed worker outputs, then either approve or request rerun of specific earlier worker node ids.',
+        'Review nodes do not add downstream guidance of their own; later stages keep consuming passthrough worker outputs.',
+        'Do not place review nodes in the final stage. Prefer a dedicated serial review stage after the workers it audits.',
         'Last-stage nodes must return function-call payload with a single field `text`.',
         'Runtime injects the `text` content directly as-is (no YAML wrapping).',
         'Do NOT hardcode any fixed narrator persona/identity/roleplay character in system prompts.',
@@ -101,7 +108,7 @@ function getDefaultAiSuggestSystemPrompt() {
         'Each node must have a distinct role, concrete output focus, and minimal overlap.',
         'Prefer practical distiller/planner/critic/synthesizer style agents and add custom presets only when necessary.',
         'Design for robust RP quality: user-intent understanding, character independence, anti-OOC, realism, and world autonomy.',
-        'Require explicit hard-gate checks (consistency, OOC, causality, continuity, over-interpretation) in the critic node.',
+        'Require explicit hard-gate checks (consistency, OOC, causality, continuity, over-interpretation) in the critic review node.',
         'Hard requirement: include one dedicated node id "lorebook_reader" to explicitly study active lorebook/world-info constraints.',
         'Hard requirement: include one dedicated node id "anti_data_guard" to explicitly block data-like writing and metric-style phrasing.',
         `For anti_data_guard, enforce blocked lexicon as hard risk: ${ANTI_DATA_BLOCKED_LEXICON.join(', ')}.`,
@@ -139,7 +146,8 @@ const defaultSpec = {
     stages: [
         { id: 'distill', mode: 'serial', nodes: ['distiller'] },
         { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
-        { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
+        { id: 'reason', mode: 'parallel', nodes: ['planner', 'recall_relevance'] },
+        { id: 'review', mode: 'serial', nodes: [{ id: 'critic', preset: 'critic', type: ORCH_NODE_TYPE_REVIEW }] },
         { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
     ],
 };
@@ -163,7 +171,7 @@ const defaultPresets = {
     },
     critic: {
         systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Run hard-gate checks: continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If a check fails, provide minimal actionable fixes.\n- Keep critique specific and operational.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Review prior agent outputs for continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If specific earlier agents must be recomputed, request rerun for only those agent ids.\n- If prior outputs are acceptable, approve immediately.\n- Do not produce any rewritten guidance, summaries, or synthesis of your own.\n\nReturn review tool calls only.',
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
@@ -171,7 +179,7 @@ const defaultPresets = {
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge planner/critic/recall plus lorebook_reader/anti_data_guard outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge the approved worker outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
     },
 };
 
@@ -183,6 +191,7 @@ const defaultSettings = {
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
     nodeIterationMaxRounds: 3,
+    reviewRerunMaxRounds: 2,
     toolCallRetryMax: 2,
     agentTimeoutSeconds: 0,
     maxRecentMessages: 14,
@@ -359,6 +368,7 @@ function registerLocaleData() {
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '确认重置 AI 生成提示词为默认值？这会覆盖当前内容。',
         'Recent assistant turns for orchestration (N)': '编排阶段可见最近 N 条 Assistant 回复',
         'Node tool iteration max rounds (N)': '节点工具迭代最大轮数（N）',
+        'Review rerun max rounds (N)': 'Review 重跑最大轮数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
         'Injection position': '注入位置',
@@ -474,6 +484,9 @@ function registerLocaleData() {
         'Delete': '删除',
         'Node ID': '节点 ID',
         'Preset': '预设',
+        'Node Type': '节点类型',
+        'Worker': '工作节点',
+        'Review': '审查节点',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
         'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上轮编排结果会自动注入。',
         'Execution': '执行方式',
@@ -553,6 +566,7 @@ function registerLocaleData() {
         'Reset AI build prompt to default? This will overwrite current AI build system prompt.': '確認重置 AI 生成提示詞為預設值？這會覆蓋目前內容。',
         'Recent assistant turns for orchestration (N)': '編排階段可見最近 N 條 Assistant 回覆',
         'Node tool iteration max rounds (N)': '節點工具迭代最大輪數（N）',
+        'Review rerun max rounds (N)': 'Review 重跑最大輪數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
         'Injection position': '注入位置',
@@ -667,6 +681,9 @@ function registerLocaleData() {
         'Delete': '刪除',
         'Node ID': '節點 ID',
         'Preset': '預設',
+        'Node Type': '節點類型',
+        'Worker': '工作節點',
+        'Review': '審查節點',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
         'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上輪編排結果會自動注入。',
         'Execution': '執行方式',
@@ -753,6 +770,12 @@ function cloneDefault(value) {
     return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
 }
 
+function normalizeNodeType(value) {
+    return String(value || '').trim().toLowerCase() === ORCH_NODE_TYPE_REVIEW
+        ? ORCH_NODE_TYPE_REVIEW
+        : ORCH_NODE_TYPE_WORKER;
+}
+
 function sanitizeSpec(spec) {
     if (!spec || typeof spec !== 'object') {
         return structuredClone(defaultSpec);
@@ -770,6 +793,7 @@ function sanitizeSpec(spec) {
                     const compact = {
                         id: String(node.id || node.node || node.preset || '').trim(),
                         preset: String(node.preset || node.id || node.node || '').trim(),
+                        type: normalizeNodeType(node.type),
                         userPromptTemplate: typeof node.userPromptTemplate === 'string' ? node.userPromptTemplate : undefined,
                     };
                     if (!compact.id && compact.preset) {
@@ -886,6 +910,10 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].nodeIterationMaxRounds = Math.max(
         1,
         Math.min(20, Math.floor(Number(extension_settings[MODULE_NAME].nodeIterationMaxRounds) || 0)),
+    );
+    extension_settings[MODULE_NAME].reviewRerunMaxRounds = Math.max(
+        0,
+        Math.min(20, Math.floor(Number(extension_settings[MODULE_NAME].reviewRerunMaxRounds) || 0)),
     );
     extension_settings[MODULE_NAME].agentTimeoutSeconds = Math.max(
         0,
@@ -1358,6 +1386,7 @@ function normalizeNodeSpec(node) {
         return {
             id: node,
             preset: node,
+            type: ORCH_NODE_TYPE_WORKER,
             userPromptTemplate: undefined,
         };
     }
@@ -1367,6 +1396,7 @@ function normalizeNodeSpec(node) {
     return {
         id: id || preset,
         preset,
+        type: normalizeNodeType(node?.type),
         userPromptTemplate: typeof node?.userPromptTemplate === 'string' ? node.userPromptTemplate : undefined,
     };
 }
@@ -1757,6 +1787,7 @@ function sanitizeProfileForAiPrompt(profile = null) {
             const nextNode = {
                 id: String(node?.id || '').trim(),
                 preset: String(node?.preset || node?.id || '').trim(),
+                type: normalizeNodeType(node?.type),
             };
             const template = String(node?.userPromptTemplate || '');
             if (template.trim()) {
@@ -2040,7 +2071,58 @@ function getNodeIterationMaxRounds(settings = null) {
     return Math.max(1, Math.min(20, Math.floor(Number(source?.nodeIterationMaxRounds) || 0)));
 }
 
-function buildNodeToolSet({ isFinalStage = false } = {}) {
+function getReviewRerunMaxRounds(settings = null) {
+    const source = settings && typeof settings === 'object' ? settings : extension_settings[MODULE_NAME];
+    return Math.max(0, Math.min(20, Math.floor(Number(source?.reviewRerunMaxRounds) || 0)));
+}
+
+function isReviewNodeSpec(nodeSpec) {
+    return normalizeNodeType(nodeSpec?.type) === ORCH_NODE_TYPE_REVIEW;
+}
+
+function getStageRuntimeMode(stage) {
+    const mode = String(stage?.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
+    const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+    return nodes.some(node => isReviewNodeSpec(normalizeNodeSpec(node))) ? 'serial' : mode;
+}
+
+function buildNodeToolSet(nodeSpec, { isFinalStage = false } = {}) {
+    if (isReviewNodeSpec(nodeSpec)) {
+        return [
+            {
+                type: 'function',
+                function: {
+                    name: ORCH_REVIEW_TOOL_APPROVE,
+                    description: 'Approve prior worker outputs and continue without adding any new output.',
+                    parameters: {
+                        type: 'object',
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: ORCH_REVIEW_TOOL_RERUN,
+                    description: 'Request rerun for specific previously executed worker node ids.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            target_node_ids: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                minItems: 1,
+                            },
+                            reason: { type: 'string' },
+                        },
+                        required: ['target_node_ids'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+        ];
+    }
+
     return [isFinalStage
         ? {
             type: 'function',
@@ -2086,7 +2168,16 @@ function buildNodeToolSet({ isFinalStage = false } = {}) {
         }];
 }
 
-function buildNodeIterationContractText({ isFinalStage = false } = {}) {
+function buildNodeIterationContractText(nodeSpec, { isFinalStage = false } = {}) {
+    if (isReviewNodeSpec(nodeSpec)) {
+        return [
+            '## node_iteration_contract',
+            `- If prior worker outputs are acceptable, call ${ORCH_REVIEW_TOOL_APPROVE} exactly once.`,
+            `- If specific prior worker nodes must be recomputed, call ${ORCH_REVIEW_TOOL_RERUN} exactly once with target_node_ids.`,
+            '- Do not emit any summaries, rewritten outputs, or synthesis of your own.',
+        ].join('\n');
+    }
+
     const outputName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
     return [
         '## node_iteration_contract',
@@ -2152,7 +2243,213 @@ function appendStandardToolRoundMessages(targetMessages, executedCalls, assistan
     }
 }
 
-async function runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
+function buildPreviousOutputsMarkdown(previousNodeOutputs = new Map()) {
+    return [
+        '## previous_node_outputs',
+        'Outputs from completed worker nodes currently available to downstream execution.',
+        '```yaml',
+        toReadableYamlText(Object.fromEntries(previousNodeOutputs), '{}'),
+        '```',
+    ].join('\n');
+}
+
+function buildDistillerOutputMarkdown(previousNodeOutputs = new Map()) {
+    return [
+        '## distiller_output',
+        'Output from distiller node if available.',
+        '```yaml',
+        toReadableYamlText(previousNodeOutputs.get('distiller') || {}, '{}'),
+        '```',
+    ].join('\n');
+}
+
+function createStageOutputSnapshot(stage, stageWorkerOutputs = new Map()) {
+    const nodes = (Array.isArray(stage?.nodes) ? stage.nodes : [])
+        .map(rawNode => normalizeNodeSpec(rawNode))
+        .filter(nodeSpec => !isReviewNodeSpec(nodeSpec))
+        .map((nodeSpec) => {
+            if (!stageWorkerOutputs.has(nodeSpec.id)) {
+                return null;
+            }
+            return {
+                node: nodeSpec.id,
+                output: stageWorkerOutputs.get(nodeSpec.id),
+            };
+        })
+        .filter(Boolean);
+
+    return {
+        id: String(stage?.id || ''),
+        mode: getStageRuntimeMode(stage),
+        nodes,
+    };
+}
+
+function buildNodeOutputMapFromStageOutputs(stageOutputs = []) {
+    const result = new Map();
+    for (const stage of Array.isArray(stageOutputs) ? stageOutputs : []) {
+        for (const node of Array.isArray(stage?.nodes) ? stage.nodes : []) {
+            const nodeId = String(node?.node || '').trim();
+            if (!nodeId) {
+                continue;
+            }
+            result.set(nodeId, node?.output);
+        }
+    }
+    return result;
+}
+
+function buildStageWorkerOutputMap(stageOutput = null) {
+    const result = new Map();
+    for (const node of Array.isArray(stageOutput?.nodes) ? stageOutput.nodes : []) {
+        const nodeId = String(node?.node || '').trim();
+        if (!nodeId) {
+            continue;
+        }
+        result.set(nodeId, node?.output);
+    }
+    return result;
+}
+
+function mergeNodeOutputMaps(...maps) {
+    const merged = new Map();
+    for (const map of maps) {
+        if (!(map instanceof Map)) {
+            continue;
+        }
+        for (const [key, value] of map.entries()) {
+            merged.set(key, value);
+        }
+    }
+    return merged;
+}
+
+function collectPriorNodeEntries(stages, currentStageIndex, currentNodeIndex) {
+    const entries = [];
+    for (let stageIndex = 0; stageIndex <= currentStageIndex; stageIndex++) {
+        const stage = stages[stageIndex];
+        const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+        const stopIndex = stageIndex === currentStageIndex ? currentNodeIndex : nodes.length;
+        for (let nodeIndex = 0; nodeIndex < stopIndex; nodeIndex++) {
+            const nodeSpec = normalizeNodeSpec(nodes[nodeIndex]);
+            if (!nodeSpec.id) {
+                continue;
+            }
+            entries.push({
+                stageIndex,
+                stageId: String(stage?.id || `stage_${stageIndex + 1}`),
+                nodeIndex,
+                nodeId: nodeSpec.id,
+                preset: nodeSpec.preset,
+                type: normalizeNodeType(nodeSpec.type),
+            });
+        }
+    }
+    return entries;
+}
+
+function resolveReviewTargetEntries(stages, currentStageIndex, currentNodeIndex, targetNodeIds) {
+    const priorEntries = collectPriorNodeEntries(stages, currentStageIndex, currentNodeIndex)
+        .filter(entry => entry.type !== ORCH_NODE_TYPE_REVIEW);
+    const counts = new Map();
+    for (const entry of priorEntries) {
+        counts.set(entry.nodeId, Number(counts.get(entry.nodeId) || 0) + 1);
+    }
+    const index = new Map(priorEntries.map(entry => [entry.nodeId, entry]));
+    const resolved = [];
+    for (const rawTarget of Array.isArray(targetNodeIds) ? targetNodeIds : []) {
+        const targetNodeId = sanitizeIdentifierToken(rawTarget, '');
+        if (!targetNodeId) {
+            continue;
+        }
+        if (Number(counts.get(targetNodeId) || 0) > 1) {
+            throw new Error(`Review rerun target '${targetNodeId}' is ambiguous. Node ids must be unique among prior worker nodes.`);
+        }
+        const entry = index.get(targetNodeId);
+        if (!entry) {
+            throw new Error(`Review rerun target '${targetNodeId}' is not a valid prior worker node.`);
+        }
+        if (!resolved.some(item => item.nodeId === entry.nodeId)) {
+            resolved.push(entry);
+        }
+    }
+    if (resolved.length === 0) {
+        throw new Error('Review rerun requested without valid target_node_ids.');
+    }
+    return resolved;
+}
+
+function buildReviewRuntimeContextText({
+    currentNodeId = '',
+    priorEntries = [],
+    rerunUsed = 0,
+    rerunMax = 0,
+} = {}) {
+    const priorExecutionOrder = priorEntries.map((entry) => ({
+        stage_id: entry.stageId,
+        node_id: entry.nodeId,
+        preset: entry.preset,
+        type: entry.type,
+    }));
+    const rerunCandidates = priorEntries
+        .filter(entry => entry.type !== ORCH_NODE_TYPE_REVIEW)
+        .map(entry => entry.nodeId);
+    return [
+        '## review_runtime_context',
+        '```yaml',
+        toReadableYamlText({
+            current_review_node: String(currentNodeId || ''),
+            rerun_budget: {
+                used: Number(rerunUsed || 0),
+                remaining: Math.max(Number(rerunMax || 0) - Number(rerunUsed || 0), 0),
+                max: Number(rerunMax || 0),
+            },
+            prior_execution_order: priorExecutionOrder,
+            rerun_candidates: rerunCandidates,
+        }, '{}'),
+        '```',
+    ].join('\n');
+}
+
+function extractReviewDecision(toolCalls = [], nodeId = '') {
+    let approveCall = null;
+    let rerunCall = null;
+
+    for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+        const name = String(call?.name || '').trim();
+        if (name === ORCH_REVIEW_TOOL_APPROVE && !approveCall) {
+            approveCall = call;
+        }
+        if (name === ORCH_REVIEW_TOOL_RERUN && !rerunCall) {
+            rerunCall = call;
+        }
+    }
+
+    if (approveCall && rerunCall) {
+        throw new Error(`Review node '${nodeId}' returned both approve and rerun.`);
+    }
+
+    if (rerunCall) {
+        const rawTargets = Array.isArray(rerunCall?.args?.target_node_ids) ? rerunCall.args.target_node_ids : [];
+        const targetNodeIds = [...new Set(rawTargets.map(item => sanitizeIdentifierToken(item, '')).filter(Boolean))];
+        if (targetNodeIds.length === 0) {
+            throw new Error(`Review node '${nodeId}' requested rerun without target_node_ids.`);
+        }
+        return {
+            action: 'rerun',
+            targetNodeIds,
+            reason: String(rerunCall?.args?.reason || '').trim(),
+        };
+    }
+
+    if (approveCall) {
+        return { action: 'approve' };
+    }
+
+    throw new Error(`Review node '${nodeId}' did not return a review decision tool call.`);
+}
+
+async function runWorkerNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
     throwIfAborted(abortSignal, 'Orchestration aborted.');
     const isFinalStage = Boolean(options?.isFinalStage);
     const settings = extension_settings[MODULE_NAME];
@@ -2160,20 +2457,8 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
         .join('\n');
     const { message: lastUser } = extractLastUserMessage(messages);
-    const previousOutputs = [
-        '## previous_node_outputs',
-        'Outputs from completed nodes in prior stages. Use as upstream context only.',
-        '```yaml',
-        toReadableYamlText(Object.fromEntries(previousNodeOutputs), '{}'),
-        '```',
-    ].join('\n');
-    const distillerOutput = [
-        '## distiller_output',
-        'Output from distiller node if available.',
-        '```yaml',
-        toReadableYamlText(previousNodeOutputs.get('distiller') || {}, '{}'),
-        '```',
-    ].join('\n');
+    const previousOutputs = buildPreviousOutputsMarkdown(previousNodeOutputs);
+    const distillerOutput = buildDistillerOutputMarkdown(previousNodeOutputs);
     const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
     const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
         previousOrchestration,
@@ -2199,7 +2484,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     });
     const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
     const apiSettingsOverride = llmProfileResolution.apiSettingsOverride;
-    const tools = buildNodeToolSet({ isFinalStage });
+    const tools = buildNodeToolSet(nodeSpec, { isFinalStage });
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
     const maxRounds = getNodeIterationMaxRounds(settings);
     const outputToolName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
@@ -2210,7 +2495,7 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
         const iterationPrompt = [
             autoInjectedPrelude,
             baseUserPrompt,
-            buildNodeIterationContractText({ isFinalStage }),
+            buildNodeIterationContractText(nodeSpec, { isFinalStage }),
             '## node_iteration_round',
             `${round}/${maxRounds}`,
         ].filter(Boolean).join('\n\n');
@@ -2281,63 +2566,294 @@ async function runLLMNode(context, payload, nodeSpec, preset, messages, previous
     throw new Error(`Node '${nodeSpec.id}' exceeded max iteration rounds (${maxRounds}) without ${outputToolName}.`);
 }
 
-async function executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, presets, abortSignal = null, options = {}) {
-    const preset = presets[nodeSpec.preset] || {};
-    return await runLLMNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal, options);
+async function replayStagesToReview(context, payload, messages, profile, runtime, {
+    currentStageIndex,
+    currentNodeIndex,
+    targetEntries,
+    currentStageWorkerOutputs,
+}, abortSignal = null) {
+    const stages = Array.isArray(runtime?.stages) ? runtime.stages : [];
+    const earliestStageIndex = Math.min(...targetEntries.map(entry => entry.stageIndex));
+    const existingStageOutputs = Array.isArray(runtime?.stageOutputs) ? runtime.stageOutputs.slice() : [];
+    const rerunTargetsByStage = new Map();
+    for (const entry of targetEntries) {
+        if (!rerunTargetsByStage.has(entry.stageIndex)) {
+            rerunTargetsByStage.set(entry.stageIndex, new Set());
+        }
+        rerunTargetsByStage.get(entry.stageIndex).add(entry.nodeId);
+    }
+
+    runtime.stageOutputs = existingStageOutputs.slice(0, earliestStageIndex);
+    let previousNodeOutputs = buildNodeOutputMapFromStageOutputs(runtime.stageOutputs);
+
+    for (let stageIndex = earliestStageIndex; stageIndex < currentStageIndex; stageIndex++) {
+        const stageResult = await executeStage(context, payload, messages, profile, runtime, stageIndex, previousNodeOutputs, abortSignal, {
+            rerunNodeIds: stageIndex === earliestStageIndex
+                ? (rerunTargetsByStage.get(stageIndex) || null)
+                : null,
+            seedStageWorkerOutputs: stageIndex === earliestStageIndex
+                ? buildStageWorkerOutputMap(existingStageOutputs[stageIndex])
+                : null,
+        });
+        previousNodeOutputs = mergeNodeOutputMaps(stageResult.previousNodeOutputs, stageResult.stageWorkerOutputs);
+        runtime.stageOutputs.push(createStageOutputSnapshot(stages[stageIndex], stageResult.stageWorkerOutputs));
+    }
+
+    const currentStagePrefix = await executeStage(context, payload, messages, profile, runtime, currentStageIndex, previousNodeOutputs, abortSignal, {
+        stopBeforeNodeIndex: currentNodeIndex,
+        rerunNodeIds: earliestStageIndex === currentStageIndex
+            ? (rerunTargetsByStage.get(currentStageIndex) || null)
+            : null,
+        seedStageWorkerOutputs: earliestStageIndex === currentStageIndex
+            ? mergeNodeOutputMaps(currentStageWorkerOutputs instanceof Map ? currentStageWorkerOutputs : new Map())
+            : null,
+    });
+
+    return {
+        previousNodeOutputs: currentStagePrefix.previousNodeOutputs,
+        currentStageWorkerOutputs: currentStagePrefix.stageWorkerOutputs,
+        result: {
+            rerun_round: Number(runtime.reviewRerunCount || 0),
+            rerun_remaining: Math.max(getReviewRerunMaxRounds() - Number(runtime.reviewRerunCount || 0), 0),
+            restart_stage_id: String(stages[earliestStageIndex]?.id || ''),
+            target_node_ids: targetEntries.map(entry => entry.nodeId),
+        },
+    };
+}
+
+async function runReviewNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, currentStageWorkerOutputs, abortSignal = null, options = {}) {
+    throwIfAborted(abortSignal, 'Orchestration aborted.');
+    if (Boolean(options?.isFinalStage)) {
+        throw new Error(`Review node '${nodeSpec.id}' cannot be used in the final stage.`);
+    }
+
+    const settings = extension_settings[MODULE_NAME];
+    const maxReruns = getReviewRerunMaxRounds(settings);
+    const maxRounds = Math.max(1, getNodeIterationMaxRounds(settings) + maxReruns + 1);
+    const recent = getRecentMessages(messages, settings.maxRecentMessages)
+        .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
+        .join('\n');
+    const { message: lastUser } = extractLastUserMessage(messages);
+    const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
+    const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
+        previousOrchestration,
+    });
+    const runtimeTemplate = normalizeTemplateForRuntime(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '');
+    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
+    const promptPresetName = llmPresetName;
+    const llmProfileResolution = resolveChatCompletionRequestProfile({
+        profileName: llmApiPresetName,
+        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
+        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    });
+    const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
+    const apiSettingsOverride = llmProfileResolution.apiSettingsOverride;
+    const tools = buildNodeToolSet(nodeSpec);
+    const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
+    const runtimeToolMessages = [];
+    let currentPreviousNodeOutputs = mergeNodeOutputMaps(previousNodeOutputs);
+    let currentStageOutputs = mergeNodeOutputMaps(currentStageWorkerOutputs);
+
+    for (let round = 1; round <= maxRounds; round++) {
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
+        const availableOutputs = mergeNodeOutputMaps(currentPreviousNodeOutputs, currentStageOutputs);
+        const priorEntries = collectPriorNodeEntries(options?.runtime?.stages || [], Number(options?.stageIndex || 0), Number(options?.nodeIndex || 0));
+        const baseUserPrompt = renderTemplate(runtimeTemplate, {
+            recent_chat: recent,
+            last_user: String(lastUser?.mes || ''),
+            previous_outputs: buildPreviousOutputsMarkdown(availableOutputs),
+            distiller: buildDistillerOutputMarkdown(availableOutputs),
+            previous_snapshot: '',
+            previous_orchestration: AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE,
+        });
+        const iterationPrompt = [
+            autoInjectedPrelude,
+            baseUserPrompt,
+            buildReviewRuntimeContextText({
+                currentNodeId: nodeSpec.id,
+                priorEntries,
+                rerunUsed: Number(options?.runtime?.reviewRerunCount || 0),
+                rerunMax: maxReruns,
+            }),
+            buildNodeIterationContractText(nodeSpec),
+            '## node_iteration_round',
+            `${round}/${maxRounds}`,
+        ].filter(Boolean).join('\n\n');
+
+        const basePromptMessages = await buildPresetAwareMessages(
+            context,
+            settings,
+            String(preset.systemPrompt || '').trim(),
+            iterationPrompt,
+            {
+                api,
+                promptPresetName,
+                worldInfoMessages: messages,
+                worldInfoType: String(payload?.type || 'quiet'),
+                runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+                forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+                abortSignal,
+            },
+        );
+        const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
+        const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
+            tools,
+            allowedNames,
+            llmPresetName,
+            apiSettingsOverride,
+            abortSignal,
+            includeAssistantText: true,
+            allowNoToolCalls: false,
+            applyAgentTimeout: true,
+        });
+        const decision = extractReviewDecision(detailed?.toolCalls || [], nodeSpec.id);
+        if (decision.action === 'approve') {
+            return {
+                previousNodeOutputs: currentPreviousNodeOutputs,
+                currentStageWorkerOutputs: currentStageOutputs,
+            };
+        }
+
+        if (Number(options?.runtime?.reviewRerunCount || 0) >= maxReruns) {
+            throw new Error(`Review rerun limit reached (${maxReruns}).`);
+        }
+
+        const targetEntries = resolveReviewTargetEntries(
+            options?.runtime?.stages || [],
+            Number(options?.stageIndex || 0),
+            Number(options?.nodeIndex || 0),
+            decision.targetNodeIds,
+        );
+        options.runtime.reviewRerunCount = Number(options.runtime.reviewRerunCount || 0) + 1;
+        const replay = await replayStagesToReview(context, payload, messages, profile, options.runtime, {
+            currentStageIndex: Number(options?.stageIndex || 0),
+            currentNodeIndex: Number(options?.nodeIndex || 0),
+            targetEntries,
+            currentStageWorkerOutputs: currentStageOutputs,
+        }, abortSignal);
+        currentPreviousNodeOutputs = replay.previousNodeOutputs;
+        currentStageOutputs = replay.currentStageWorkerOutputs;
+        appendStandardToolRoundMessages(runtimeToolMessages, [{
+            name: ORCH_REVIEW_TOOL_RERUN,
+            args: {
+                target_node_ids: targetEntries.map(entry => entry.nodeId),
+                reason: decision.reason,
+            },
+            result: replay.result,
+        }], detailed?.assistantText || '');
+    }
+
+    throw new Error(`Review node '${nodeSpec.id}' exceeded max rounds (${maxRounds}).`);
+}
+
+async function executeStage(context, payload, messages, profile, runtime, stageIndex, previousNodeOutputs, abortSignal = null, options = {}) {
+    const stage = runtime?.stages?.[stageIndex];
+    const nodes = (Array.isArray(stage?.nodes) ? stage.nodes : []).map(rawNode => normalizeNodeSpec(rawNode));
+    const stopBeforeNodeIndex = Number.isInteger(options?.stopBeforeNodeIndex)
+        ? Math.max(0, Math.min(nodes.length, Number(options.stopBeforeNodeIndex)))
+        : null;
+    const seedStageWorkerOutputs = options?.seedStageWorkerOutputs instanceof Map
+        ? mergeNodeOutputMaps(options.seedStageWorkerOutputs)
+        : new Map();
+    const rerunNodeIds = options?.rerunNodeIds instanceof Set
+        ? new Set([...options.rerunNodeIds].map(nodeId => sanitizeIdentifierToken(nodeId, '')).filter(Boolean))
+        : null;
+    const shouldRunWorkerNode = (nodeId) => !(rerunNodeIds instanceof Set) || rerunNodeIds.has(nodeId);
+    const effectiveMode = getStageRuntimeMode(stage);
+    const isFullStage = stopBeforeNodeIndex === null;
+    const isFinalStage = isFullStage && stageIndex === Number(runtime?.stages?.length || 0) - 1;
+
+    if (effectiveMode === 'parallel' && isFullStage) {
+        const stageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
+        const outputs = await Promise.all(nodes
+            .filter(nodeSpec => shouldRunWorkerNode(nodeSpec.id) || !stageWorkerOutputs.has(nodeSpec.id))
+            .map(async (nodeSpec) => {
+                if (isReviewNodeSpec(nodeSpec)) {
+                    throw new Error(`Review node '${nodeSpec.id}' cannot run in a parallel execution stage.`);
+                }
+                return [
+                    nodeSpec.id,
+                    await runWorkerNode(context, payload, nodeSpec, profile.presets[nodeSpec.preset] || {}, messages, previousNodeOutputs, abortSignal, {
+                        isFinalStage,
+                    }),
+                ];
+            }));
+        for (const [nodeId, output] of outputs) {
+            stageWorkerOutputs.set(nodeId, output);
+        }
+        return {
+            previousNodeOutputs: mergeNodeOutputMaps(previousNodeOutputs),
+            stageWorkerOutputs,
+        };
+    }
+
+    let currentPreviousNodeOutputs = mergeNodeOutputMaps(previousNodeOutputs);
+    let currentStageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
+    const limit = stopBeforeNodeIndex === null ? nodes.length : stopBeforeNodeIndex;
+
+    for (let nodeIndex = 0; nodeIndex < limit; nodeIndex++) {
+        const nodeSpec = nodes[nodeIndex];
+        const preset = profile.presets[nodeSpec.preset] || {};
+        if (isReviewNodeSpec(nodeSpec)) {
+            const reviewResult = await runReviewNode(
+                context,
+                payload,
+                nodeSpec,
+                preset,
+                messages,
+                currentPreviousNodeOutputs,
+                currentStageWorkerOutputs,
+                abortSignal,
+                {
+                    isFinalStage,
+                    stageIndex,
+                    nodeIndex,
+                    runtime,
+                },
+            );
+            currentPreviousNodeOutputs = reviewResult.previousNodeOutputs;
+            currentStageWorkerOutputs = reviewResult.currentStageWorkerOutputs;
+            continue;
+        }
+
+        if (!shouldRunWorkerNode(nodeSpec.id) && currentStageWorkerOutputs.has(nodeSpec.id)) {
+            continue;
+        }
+        const output = await runWorkerNode(context, payload, nodeSpec, preset, messages, currentPreviousNodeOutputs, abortSignal, {
+            isFinalStage,
+        });
+        currentStageWorkerOutputs.set(nodeSpec.id, output);
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
+    }
+
+    return {
+        previousNodeOutputs: currentPreviousNodeOutputs,
+        stageWorkerOutputs: currentStageWorkerOutputs,
+    };
 }
 
 async function runOrchestration(context, payload, messages, profile) {
     const spec = sanitizeSpec(profile.spec);
     const stages = Array.isArray(spec?.stages) ? spec.stages : [];
-    const stageOutputs = [];
-    const previousNodeOutputs = new Map();
+    const runtime = {
+        stages,
+        stageOutputs: [],
+        reviewRerunCount: 0,
+    };
+    let previousNodeOutputs = new Map();
     const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
     throwIfAborted(abortSignal, 'Orchestration aborted.');
 
-    for (const stage of stages) {
+    for (let stageIndex = 0; stageIndex < stages.length; stageIndex++) {
         throwIfAborted(abortSignal, 'Orchestration aborted.');
-        const mode = String(stage?.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
-        const isFinalStage = Number(stageOutputs.length) === Number(stages.length - 1);
-        const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
-        const nodeOutputs = [];
-
-        if (mode === 'parallel') {
-            const outputs = await Promise.all(nodes.map(async (rawNode) => {
-                const nodeSpec = normalizeNodeSpec(rawNode);
-                return {
-                    node: nodeSpec.id,
-                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal, {
-                        isFinalStage,
-                    }),
-                };
-            }));
-            throwIfAborted(abortSignal, 'Orchestration aborted.');
-            nodeOutputs.push(...outputs);
-        } else {
-            for (const rawNode of nodes) {
-                const nodeSpec = normalizeNodeSpec(rawNode);
-                nodeOutputs.push({
-                    node: nodeSpec.id,
-                    output: await executeNode(context, payload, nodeSpec, messages, previousNodeOutputs, profile.presets, abortSignal, {
-                        isFinalStage,
-                    }),
-                });
-                throwIfAborted(abortSignal, 'Orchestration aborted.');
-            }
-        }
-
-        for (const item of nodeOutputs) {
-            previousNodeOutputs.set(String(item.node), item.output);
-        }
-
-        stageOutputs.push({
-            id: String(stage?.id || `stage_${stageOutputs.length + 1}`),
-            mode,
-            nodes: nodeOutputs,
-        });
+        const stage = stages[stageIndex];
+        const stageResult = await executeStage(context, payload, messages, profile, runtime, stageIndex, previousNodeOutputs, abortSignal);
+        previousNodeOutputs = mergeNodeOutputMaps(stageResult.previousNodeOutputs, stageResult.stageWorkerOutputs);
+        runtime.stageOutputs.push(createStageOutputSnapshot(stage, stageResult.stageWorkerOutputs));
     }
 
-    return { stageOutputs, previousNodeOutputs };
+    return { stageOutputs: runtime.stageOutputs, previousNodeOutputs };
 }
 
 function compactStageOutputs(stageOutputs) {
@@ -2766,6 +3282,7 @@ function toEditableSpec(spec, presets) {
                 return {
                     id: sanitizeIdentifierToken(normalizedNode.id || preset, `node_${nodeIndex + 1}`),
                     preset,
+                    type: normalizeNodeType(normalizedNode.type),
                     userPromptTemplate: String(normalizedNode.userPromptTemplate || ''),
                 };
             });
@@ -2777,6 +3294,7 @@ function toEditableSpec(spec, presets) {
                     : [{
                         id: defaultPreset,
                         preset: defaultPreset,
+                        type: ORCH_NODE_TYPE_WORKER,
                         userPromptTemplate: '',
                     }],
             };
@@ -2794,6 +3312,7 @@ function toEditableSpec(spec, presets) {
             nodes: [{
                 id: defaultPreset,
                 preset: defaultPreset,
+                type: ORCH_NODE_TYPE_WORKER,
                 userPromptTemplate: '',
             }],
         }],
@@ -2813,7 +3332,7 @@ function serializeEditorSpec(editorSpec) {
                         const preset = sanitizeIdentifierToken(node?.preset, id);
                         const userPromptTemplate = String(node?.userPromptTemplate || '').trim();
 
-                        const serialized = { id, preset };
+                        const serialized = { id, preset, type: normalizeNodeType(node?.type) };
                         if (userPromptTemplate) {
                             serialized.userPromptTemplate = userPromptTemplate;
                         }
@@ -2929,6 +3448,7 @@ function createNewStage(editor) {
         nodes: [{
             id: defaultPreset,
             preset: defaultPreset,
+            type: ORCH_NODE_TYPE_WORKER,
             userPromptTemplate: '',
         }],
     };
@@ -3029,6 +3549,11 @@ function renderWorkflowBoard(scope, editor) {
     <label>${escapeHtml(i18n('Preset'))}</label>
     <select class="text_pole" data-luker-field="node-preset" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
         ${renderPresetOptions(editor.presets, node.preset)}
+    </select>
+    <label>${escapeHtml(i18n('Node Type'))}</label>
+    <select class="text_pole" data-luker-field="node-type" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
+        <option value="${ORCH_NODE_TYPE_WORKER}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_WORKER ? ' selected' : ''}>${escapeHtml(i18n('Worker'))}</option>
+        <option value="${ORCH_NODE_TYPE_REVIEW}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_REVIEW ? ' selected' : ''}>${escapeHtml(i18n('Review'))}</option>
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
@@ -3507,6 +4032,7 @@ function buildAiProfileFromToolCalls(toolCalls) {
                 const nextNode = {
                     id: String(node.id || '').trim(),
                     preset: String(node.preset || node.id || '').trim(),
+                    type: normalizeNodeType(node.type),
                 };
                 const template = String(node.userPromptTemplate || '');
                 if (template.trim()) {
@@ -3617,6 +4143,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
         'Runtime prepends previous orchestration result before node template text; do not add placeholders for that context.',
+        'If you use a critic/reviewer, model it as a review node that approves or requests rerun of earlier worker node ids.',
+        'Review nodes do not emit synthesis. Downstream stages must continue from passthrough worker outputs.',
         'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
     ].join('\n');
     const suggestUserPrompt = buildAiSuggestInputXml({
@@ -3651,7 +4179,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             stages: [
                 { id: 'distill', mode: 'serial', nodes: ['distiller'] },
                 { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
-                { id: 'reason', mode: 'parallel', nodes: ['planner', 'critic', 'recall_relevance'] },
+                { id: 'reason', mode: 'parallel', nodes: ['planner', 'recall_relevance'] },
+                { id: 'review', mode: 'serial', nodes: [{ id: 'critic', preset: 'critic', type: ORCH_NODE_TYPE_REVIEW }] },
                 { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
             ],
             role_contracts: {
@@ -3659,9 +4188,9 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
-                critic: 'Run hard-gate checks and output minimal fix directives.',
+                critic: 'Audit prior worker outputs, then either approve or request rerun of specific earlier worker nodes. Do not emit synthesis.',
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
-                synthesizer: 'Merge all prior outputs into one draft-ready final guidance.',
+                synthesizer: 'Merge the approved worker outputs into one draft-ready final guidance.',
             },
             last_stage_rule: 'Prefer single synthesizer node as final stage output.',
             innovation_policy: {
@@ -3669,6 +4198,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 allow_stage_refactor: true,
                 allow_node_role_innovation: true,
                 must_preserve_hard_gates: true,
+                must_preserve_review_passthrough: true,
                 must_preserve_final_plain_text_contract: true,
                 card_specific_optimization_required: true,
             },
@@ -3684,12 +4214,17 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         globalOrchestrationSpec: aiVisibleGlobalProfile.spec,
         globalPresets: aiVisibleGlobalProfile.presets,
         toolProtocol: {
+            review_node_contract: {
+                type_field: `Set node.type to "${ORCH_NODE_TYPE_REVIEW}" for review nodes. Omit or use "${ORCH_NODE_TYPE_WORKER}" for normal worker nodes.`,
+                runtime_behavior: 'Review nodes inspect current available worker outputs, may request rerun of specific earlier worker node ids, and produce no downstream output of their own.',
+                topology_rule: 'Prefer a dedicated serial review stage after the worker stage being audited. Do not place review nodes in the final stage.',
+            },
             append_stage: {
                 function: 'luker_orch_append_stage',
                 shape: {
                     stage_id: 'string',
                     mode: 'serial|parallel',
-                    nodes: [{ id: 'string', preset: 'string', userPromptTemplate: 'optional string' }],
+                    nodes: [{ id: 'string', preset: 'string', type: 'optional worker|review', userPromptTemplate: 'optional string' }],
                 },
             },
             upsert_preset: {
@@ -3758,6 +4293,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                                         properties: {
                                             id: { type: 'string' },
                                             preset: { type: 'string' },
+                                            type: { type: 'string', enum: [ORCH_NODE_TYPE_WORKER, ORCH_NODE_TYPE_REVIEW] },
                                             userPromptTemplate: { type: 'string' },
                                         },
                                         required: ['id', 'preset'],
@@ -4064,7 +4600,10 @@ function ensureAiIterationSession(context, settings, { forceNew = false } = {}) 
 
 function summarizeStageForUi(stage) {
     const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
-    const nodeSummary = nodes.map(node => `${String(node?.id || '')}→${String(node?.preset || '')}`).filter(Boolean).join(' | ');
+    const nodeSummary = nodes.map((node) => {
+        const type = normalizeNodeType(node?.type);
+        return `${String(node?.id || '')}→${String(node?.preset || '')}${type === ORCH_NODE_TYPE_REVIEW ? ' [review]' : ''}`;
+    }).filter(Boolean).join(' | ');
     return {
         id: String(stage?.id || ''),
         mode: String(stage?.mode || 'serial') === 'parallel' ? 'parallel' : 'serial',
@@ -4711,12 +5250,16 @@ function buildAiIterationPendingDiffState(session, pending) {
             const existingIndex = nodes.findIndex(node => String(node?.id || '') === nodeId);
             const beforeNode = existingIndex >= 0 ? structuredClone(nodes[existingIndex]) : null;
             const presetId = sanitizeIdentifierToken(args.preset, nodeId || 'distiller') || 'distiller';
+            const nextNodeType = typeof args.type === 'string'
+                ? normalizeNodeType(args.type)
+                : normalizeNodeType(beforeNode?.type);
             const afterUserPromptTemplate = typeof args.userPromptTemplate === 'string'
                 ? normalizeTemplateForRuntime(args.userPromptTemplate)
                 : (beforeNode ? String(beforeNode.userPromptTemplate || '') : '');
             const nextNode = {
                 id: nodeId,
                 preset: presetId,
+                type: nextNodeType,
                 userPromptTemplate: afterUserPromptTemplate,
             };
             if (existingIndex >= 0) {
@@ -4732,6 +5275,11 @@ function buildAiIterationPendingDiffState(session, pending) {
                 label: 'preset',
                 before: formatDiffValue(beforeNode?.preset || ''),
                 after: formatDiffValue(presetId),
+            });
+            item.fields.push({
+                label: 'type',
+                before: formatDiffValue(normalizeNodeType(beforeNode?.type)),
+                after: formatDiffValue(nextNodeType),
             });
             item.fields.push({
                 label: 'userPromptTemplate',
@@ -4990,6 +5538,10 @@ function buildAiIterationSystemPrompt(settings) {
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
         '- Runtime prepends previous orchestration result before node template text; do not use placeholders for that context.',
+        '- Nodes can be worker or review. Review nodes inspect already-executed worker outputs, may rerun specific earlier worker node ids, and do not generate downstream guidance.',
+        '- Keep approved worker outputs as passthrough context after review; do not invent critic summaries to replace them.',
+        '- Prefer dedicated serial review stages after the worker stages they audit. Do not place review nodes in the final stage.',
+        `- Use luker_orch_set_node.type to set "${ORCH_NODE_TYPE_REVIEW}" when a node should behave as a reviewer.`,
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
         '- If you need user decision or clarification, do not call continue/finalize. Stop and wait for user.',
@@ -5045,6 +5597,19 @@ function buildAiIterationUserPrompt(session, userInputText, {
         '## working_profile',
         '```yaml',
         toReadableYamlText(aiVisibleWorkingProfile, '{}'),
+        '```',
+        '',
+        '## review_node_contract',
+        '```yaml',
+        toReadableYamlText({
+            type_field: {
+                worker: ORCH_NODE_TYPE_WORKER,
+                review: ORCH_NODE_TYPE_REVIEW,
+            },
+            runtime_behavior: 'Review nodes inspect currently available worker outputs, request rerun for specific earlier worker node ids when needed, and otherwise approve without adding new output.',
+            downstream_behavior: 'Later stages keep receiving passthrough worker outputs; critic/review nodes do not replace them with summaries.',
+            topology_rule: 'Prefer dedicated serial review stages after the workers being audited. Do not place review nodes in the final stage.',
+        }, '{}'),
         '```',
         '',
         '## conversation_history',
@@ -5112,6 +5677,7 @@ function buildAiIterationToolSet() {
                         stage_id: { type: 'string' },
                         node_id: { type: 'string' },
                         preset: { type: 'string' },
+                        type: { type: 'string', enum: [ORCH_NODE_TYPE_WORKER, ORCH_NODE_TYPE_REVIEW] },
                         userPromptTemplate: { type: 'string' },
                         position: { type: 'integer' },
                     },
@@ -5385,9 +5951,13 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             }
             const nodes = Array.isArray(stage.nodes) ? stage.nodes : [];
             const existingIndex = nodes.findIndex(item => String(item?.id || '') === nodeId);
+            const nextNodeType = typeof args.type === 'string'
+                ? normalizeNodeType(args.type)
+                : normalizeNodeType(existingIndex >= 0 ? nodes[existingIndex]?.type : ORCH_NODE_TYPE_WORKER);
             const nextNode = {
                 id: nodeId,
                 preset: presetId,
+                type: nextNodeType,
                 userPromptTemplate: typeof args.userPromptTemplate === 'string'
                     ? normalizeTemplateForRuntime(args.userPromptTemplate)
                     : (existingIndex >= 0 ? String(nodes[existingIndex]?.userPromptTemplate || '') : ''),
@@ -5988,6 +6558,7 @@ function bindUi() {
     root.find('#luker_orch_ai_suggest_system_prompt').val(String(settings.aiSuggestSystemPrompt || ''));
     root.find('#luker_orch_max_recent_messages').val(String(settings.maxRecentMessages || 14));
     root.find('#luker_orch_node_iterations').val(String(settings.nodeIterationMaxRounds || 3));
+    root.find('#luker_orch_review_reruns').val(String(settings.reviewRerunMaxRounds ?? 2));
     root.find('#luker_orch_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
     root.find('#luker_orch_agent_timeout').val(String(settings.agentTimeoutSeconds ?? 0));
     root.find('#luker_orch_capsule_position').val(String(Number(settings.capsuleInjectPosition)));
@@ -6066,6 +6637,11 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
+    root.on('change.lukerOrch', '#luker_orch_review_reruns', function () {
+        settings.reviewRerunMaxRounds = Math.max(0, Math.min(20, Math.floor(Number(jQuery(this).val()) || 0)));
+        saveSettingsDebounced();
+    });
+
     root.on('change.lukerOrch', '#luker_orch_tool_retries', function () {
         settings.toolCallRetryMax = Math.max(0, Math.min(10, Math.floor(Number(jQuery(this).val()) || 0)));
         saveSettingsDebounced();
@@ -6132,6 +6708,8 @@ function bindUi() {
                 node.id = String(jQuery(this).val() || '');
             } else if (field === 'node-preset') {
                 node.preset = sanitizeIdentifierToken(jQuery(this).val(), pickDefaultPreset(editor));
+            } else if (field === 'node-type') {
+                node.type = normalizeNodeType(jQuery(this).val());
             } else if (field === 'node-template') {
                 node.userPromptTemplate = String(jQuery(this).val() || '');
             }
@@ -6191,6 +6769,7 @@ function bindUi() {
             editor.spec.stages[stageIndex].nodes.push({
                 id: defaultPreset,
                 preset: defaultPreset,
+                type: ORCH_NODE_TYPE_WORKER,
                 userPromptTemplate: '',
             });
             renderDynamicPanels(root, context);
@@ -6208,6 +6787,7 @@ function bindUi() {
                 stage.nodes.push({
                     id: defaultPreset,
                     preset: defaultPreset,
+                    type: ORCH_NODE_TYPE_WORKER,
                     userPromptTemplate: '',
                 });
             }
@@ -7208,6 +7788,8 @@ function ensureUi() {
             <input id="luker_orch_max_recent_messages" class="text_pole" type="number" min="1" max="80" step="1" />
             <label for="luker_orch_node_iterations">${escapeHtml(i18n('Node tool iteration max rounds (N)'))}</label>
             <input id="luker_orch_node_iterations" class="text_pole" type="number" min="1" max="20" step="1" />
+            <label for="luker_orch_review_reruns">${escapeHtml(i18n('Review rerun max rounds (N)'))}</label>
+            <input id="luker_orch_review_reruns" class="text_pole" type="number" min="0" max="20" step="1" />
             <label for="luker_orch_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
             <label for="luker_orch_agent_timeout">${escapeHtml(i18n('Per-agent timeout seconds (0 = disabled)'))}</label>
