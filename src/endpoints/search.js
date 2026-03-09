@@ -269,6 +269,43 @@ function normalizeSearxngApiResults(rawRows = [], maxResults = 8) {
     return results;
 }
 
+function normalizeBraveApiResults(rawRows = [], maxResults = 8) {
+    if (!Array.isArray(rawRows)) {
+        return [];
+    }
+
+    const results = [];
+    const seenUrls = new Set();
+    for (const row of rawRows) {
+        if (results.length >= maxResults) {
+            break;
+        }
+
+        const title = normalizeWhitespace(row?.title || '');
+        const url = normalizeWhitespace(row?.url || '');
+        const snippet = normalizeWhitespace(row?.description || row?.snippet || '');
+        if (!title || !url || seenUrls.has(url)) {
+            continue;
+        }
+
+        let protocol = '';
+        try {
+            protocol = new URL(url).protocol;
+        } catch {
+            protocol = '';
+        }
+
+        if (protocol !== 'http:' && protocol !== 'https:') {
+            continue;
+        }
+
+        seenUrls.add(url);
+        results.push({ title, url, snippet });
+    }
+
+    return results;
+}
+
 /**
  * Extract the transcript of a YouTube video
  * @param {string} videoPageBody HTML of the video page
@@ -705,6 +742,73 @@ router.post('/serper', async (request, response) => {
         return response.json(data);
     } catch (error) {
         console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/brave', async (request, response) => {
+    try {
+        const apiKey = readSecret(request.user.directories, SECRET_KEYS.BRAVE_SEARCH);
+
+        if (!apiKey) {
+            console.error('No Brave Search key found');
+            return response.status(400).send('No Brave Search key found');
+        }
+
+        const query = String(request.body.query || '').trim();
+        if (!query) {
+            console.error('Query is required for /brave');
+            return response.sendStatus(400);
+        }
+
+        const maxResults = Math.max(1, Math.min(20, Math.floor(Number(request.body.max_results ?? request.body.maxResults ?? 8) || 8)));
+        const safeSearchRaw = String(request.body.safe_search ?? request.body.safeSearch ?? 'moderate').trim().toLowerCase();
+        const timeRangeRaw = String(request.body.time_range ?? request.body.timeRange ?? '').trim().toLowerCase();
+        const safeSearchMap = {
+            off: 'off',
+            moderate: 'moderate',
+            strict: 'strict',
+        };
+        const freshnessMap = {
+            day: 'pd',
+            week: 'pw',
+            month: 'pm',
+            year: 'py',
+        };
+
+        const searchUrl = new URL('https://api.search.brave.com/res/v1/web/search');
+        searchUrl.searchParams.set('q', query);
+        searchUrl.searchParams.set('count', String(maxResults));
+        searchUrl.searchParams.set('safesearch', safeSearchMap[safeSearchRaw] || 'moderate');
+        if (freshnessMap[timeRangeRaw]) {
+            searchUrl.searchParams.set('freshness', freshnessMap[timeRangeRaw]);
+        }
+
+        console.debug('Brave Search query', query);
+        const result = await fetch(searchUrl, {
+            headers: {
+                'Accept': 'application/json',
+                'Accept-Encoding': 'gzip',
+                'X-Subscription-Token': apiKey,
+            },
+        });
+
+        if (!result.ok) {
+            const text = await result.text();
+            console.error('Brave Search request failed', result.statusText, text);
+            return response.status(500).send(text);
+        }
+
+        const data = await result.json();
+        const results = normalizeBraveApiResults(data?.web?.results, maxResults);
+        return response.json({
+            provider: 'brave',
+            query,
+            result_count: results.length,
+            results,
+        });
+    } catch (error) {
+        console.error('Brave Search request failed', error);
         return response.sendStatus(500);
     }
 });

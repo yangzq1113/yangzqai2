@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 
-import { extension_prompt_roles, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../script.js';
+import { eventSource, event_types, extension_prompt_roles, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
+import { SECRET_KEYS, secret_state } from '../../secrets.js';
 import { escapeHtml, getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, world_info_position } from '../../world-info.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
@@ -107,6 +108,9 @@ const DEFAULT_SETTINGS = Object.freeze({
             baseUrl: '',
             safeSearch: 'moderate',
         }),
+        brave: Object.freeze({
+            safeSearch: 'moderate',
+        }),
     }),
     agentApiPresetName: '',
     agentPresetName: '',
@@ -159,6 +163,10 @@ function getAvailableSearchProviders() {
             id: 'searxng',
             label: 'SearXNG (custom instance)',
         },
+        {
+            id: 'brave',
+            label: 'Brave Search (API key)',
+        },
     ];
 }
 
@@ -195,11 +203,19 @@ function normalizeSearxngProviderSettings(raw = {}, legacySafeSearch = DEFAULT_S
     };
 }
 
+function normalizeBraveProviderSettings(raw = {}, legacySafeSearch = DEFAULT_SETTINGS.safeSearch) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return {
+        safeSearch: normalizeSafeSearch(source.safeSearch ?? legacySafeSearch),
+    };
+}
+
 function normalizeProviderSettings(raw = {}, legacy = {}) {
     const source = raw && typeof raw === 'object' ? raw : {};
     return {
         ddg: normalizeDdgProviderSettings(source.ddg, legacy.safeSearch),
         searxng: normalizeSearxngProviderSettings(source.searxng, legacy.safeSearch),
+        brave: normalizeBraveProviderSettings(source.brave, legacy.safeSearch),
     };
 }
 
@@ -212,7 +228,15 @@ function getProviderSettings(settings = getSettings(), providerId = '') {
     if (normalizedProviderId === 'searxng') {
         return normalizeSearxngProviderSettings(source.searxng, settings?.safeSearch);
     }
+    if (normalizedProviderId === 'brave') {
+        return normalizeBraveProviderSettings(source.brave, settings?.safeSearch);
+    }
     return {};
+}
+
+function hasConfiguredSecret(key) {
+    const secrets = secret_state?.[key];
+    return Array.isArray(secrets) ? secrets.length > 0 : Boolean(secrets);
 }
 
 function normalizeLorebookRole(value) {
@@ -655,6 +679,40 @@ async function runSearxngSearch({
     };
 }
 
+async function runBraveSearch({
+    query,
+    maxResults,
+    safeSearch,
+    timeRange,
+    abortSignal = null,
+}) {
+    const response = await fetch('/api/search/brave', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal: isAbortSignalLike(abortSignal) ? abortSignal : null,
+        body: JSON.stringify({
+            query,
+            max_results: maxResults,
+            safe_search: safeSearch,
+            time_range: timeRange || '',
+        }),
+    });
+
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`Brave search request failed (${response.status}): ${text || response.statusText}`);
+    }
+
+    const payload = await response.json();
+    const results = normalizeSearchRows(payload?.results || [], 'brave');
+    return {
+        provider: 'brave',
+        query: String(payload?.query || query || ''),
+        result_count: Number(payload?.result_count || results.length),
+        results,
+    };
+}
+
 async function runSearchProvider(provider, options) {
     const normalizedProvider = normalizeProvider(provider);
     if (normalizedProvider === 'ddg') {
@@ -662,6 +720,9 @@ async function runSearchProvider(provider, options) {
     }
     if (normalizedProvider === 'searxng') {
         return await runSearxngSearch(options);
+    }
+    if (normalizedProvider === 'brave') {
+        return await runBraveSearch(options);
     }
 
     console.warn(`[${MODULE_NAME}] Unsupported provider '${provider}'. Falling back to ${getDefaultSearchProviderId()}.`);
@@ -2250,6 +2311,20 @@ function buildProviderSettingsPanelHtml(settings = getSettings()) {
             ${renderSafeSearchOptions(providerSettings.safeSearch)}
         </select>`;
     }
+    if (providerId === 'brave') {
+        const providerSettings = getProviderSettings(settings, providerId);
+        const hasApiKey = hasConfiguredSecret(SECRET_KEYS.BRAVE_SEARCH);
+        return `
+        <label>${escapeHtml(i18n('Brave API key'))}</label>
+        <div class="flex-container alignitemscenter">
+            <span class="text_muted">${escapeHtml(i18n(hasApiKey ? 'Configured' : 'Not configured'))}</span>
+            <div class="menu_button menu_button_small manage-api-keys" data-key="${escapeHtml(SECRET_KEYS.BRAVE_SEARCH)}">${escapeHtml(i18n('Manage API key'))}</div>
+        </div>
+        <label for="search_tools_brave_safe_search">${escapeHtml(i18n('Default safe search'))}</label>
+        <select id="search_tools_brave_safe_search" class="text_pole">
+            ${renderSafeSearchOptions(providerSettings.safeSearch)}
+        </select>`;
+    }
 
     return '';
 }
@@ -2461,6 +2536,10 @@ function bindSettingsUi() {
         settings.providers.searxng.safeSearch = normalizeSafeSearch(jQuery(this).val());
         saveSettingsDebounced();
     });
+    root.on('change.searchTools', '#search_tools_brave_safe_search', function () {
+        settings.providers.brave.safeSearch = normalizeSafeSearch(jQuery(this).val());
+        saveSettingsDebounced();
+    });
     root.on('change.searchTools', '#search_tools_agent_api_preset_name', function () {
         settings.agentApiPresetName = normalizeWhitespace(jQuery(this).val());
         jQuery(this).val(settings.agentApiPresetName);
@@ -2558,7 +2637,12 @@ function registerLocaleData() {
         'Search provider': '搜索提供方',
         'DuckDuckGo (no login)': 'DuckDuckGo（无需登录）',
         'SearXNG (custom instance)': 'SearXNG（自定义实例）',
+        'Brave Search (API key)': 'Brave Search（API Key）',
         'SearXNG instance URL': 'SearXNG 实例地址',
+        'Brave API key': 'Brave API Key',
+        'Configured': '已配置',
+        'Not configured': '未配置',
+        'Manage API key': '管理 API Key',
         'Default max search results': '默认搜索结果上限',
         'Default safe search': '默认安全搜索',
         'Off': '关闭',
@@ -2608,7 +2692,12 @@ function registerLocaleData() {
         'Search provider': '搜尋提供方',
         'DuckDuckGo (no login)': 'DuckDuckGo（無需登入）',
         'SearXNG (custom instance)': 'SearXNG（自訂實例）',
+        'Brave Search (API key)': 'Brave Search（API Key）',
         'SearXNG instance URL': 'SearXNG 實例網址',
+        'Brave API key': 'Brave API Key',
+        'Configured': '已設定',
+        'Not configured': '未設定',
+        'Manage API key': '管理 API Key',
         'Default max search results': '預設搜尋結果上限',
         'Default safe search': '預設安全搜尋',
         'Off': '關閉',
@@ -2708,5 +2797,18 @@ jQuery(() => {
     ].filter(Boolean);
     for (const eventName of connectionProfileEvents) {
         context.eventSource.on(eventName, () => ensureUi());
+    }
+
+    const secretEvents = [
+        event_types.SECRET_WRITTEN,
+        event_types.SECRET_DELETED,
+        event_types.SECRET_ROTATED,
+    ];
+    for (const eventName of secretEvents) {
+        eventSource.on(eventName, (key) => {
+            if (key === SECRET_KEYS.BRAVE_SEARCH) {
+                ensureUi();
+            }
+        });
     }
 });
