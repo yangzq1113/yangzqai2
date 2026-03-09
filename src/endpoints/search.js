@@ -9,10 +9,10 @@ import { setAdditionalHeaders } from '../additional-headers.js';
 
 export const router = express.Router();
 
-// Cosplay as Chrome
+// Cosplay as browser
 const visitHeaders = {
     'Accept': 'text/html',
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0',
     'Accept-Language': 'en-US,en;q=0.5',
     'Accept-Encoding': 'gzip, deflate, br',
     'Connection': 'keep-alive',
