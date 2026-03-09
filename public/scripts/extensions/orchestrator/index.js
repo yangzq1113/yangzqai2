@@ -211,6 +211,12 @@ function normalizeCapsuleInjectPosition(value) {
     return SUPPORTED_WORLD_INFO_POSITIONS.includes(numeric) ? numeric : world_info_position.atDepth;
 }
 
+function normalizeCapsuleInjectRole(value) {
+    const allowedRoles = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
+    const numeric = Number(value);
+    return allowedRoles.includes(numeric) ? numeric : extension_prompt_roles.SYSTEM;
+}
+
 function migrateLegacyCapsuleInjectPosition(value) {
     switch (Number(value)) {
         case extension_prompt_types.BEFORE_PROMPT:
@@ -313,18 +319,13 @@ function injectCapsuleToPayload(payload, text, settings = extension_settings[MOD
         return appendUniqueWorldInfoExample(payload, wi_anchor_position.after, packet);
     }
     const depth = Math.max(0, Math.min(10000, Math.floor(Number(settings?.capsuleInjectDepth) || 0)));
-    const roleValue = Number(settings?.capsuleInjectRole);
-    const role = roleValue === extension_prompt_roles.USER
-        ? 'user'
-        : roleValue === extension_prompt_roles.ASSISTANT
-            ? 'assistant'
-            : 'system';
+    const role = normalizeCapsuleInjectRole(settings?.capsuleInjectRole);
     if (!Array.isArray(payload.worldInfoDepth)) {
         payload.worldInfoDepth = [];
     }
     let target = payload.worldInfoDepth.find((entry) => (
         Math.max(0, Math.floor(Number(entry?.depth) || 0)) === depth
-        && String(entry?.role || '').trim().toLowerCase() === role
+        && normalizeCapsuleInjectRole(entry?.role) === role
     ));
     if (!target) {
         target = { depth, role, entries: [] };
@@ -332,6 +333,7 @@ function injectCapsuleToPayload(payload, text, settings = extension_settings[MOD
     } else if (!Array.isArray(target.entries)) {
         target.entries = [];
     }
+    target.role = role;
     if (target.entries.includes(packet)) {
         return false;
     }
