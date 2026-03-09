@@ -1,6 +1,23 @@
 import { getParsedUA, isMobile } from './RossAscends-mods.js';
 
 const isFirefox = () => /firefox/i.test(navigator.userAgent);
+const MOBILE_LAYOUT_RESIZE_WIDTH_THRESHOLD = 4;
+
+/**
+ * Mobile soft keyboards usually resize only the viewport height. Treat those as transient
+ * and skip the heavier layout repair path.
+ *
+ * @param {number} previousWidth
+ * @param {number} [nextWidth]
+ * @returns {boolean}
+ */
+export function didMobileLayoutWidthChange(previousWidth, nextWidth = window.innerWidth) {
+    if (!isMobile()) {
+        return true;
+    }
+
+    return Math.abs(Number(nextWidth) - Number(previousWidth)) > MOBILE_LAYOUT_RESIZE_WIDTH_THRESHOLD;
+}
 
 function sanitizeInlineQuotationOnCopy() {
     // STRG+C, STRG+V on firefox leads to duplicate double quotes when inline quotation elements are copied.
@@ -76,7 +93,18 @@ function applyBrowserFixes() {
             document.documentElement.style.position = 'fixed';
             requestAnimationFrame(() => document.documentElement.style.position = '');
         };
-        window.addEventListener('resize', fixFunkyPositioning);
+        let previousViewportWidth = window.innerWidth;
+        window.addEventListener('resize', () => {
+            const currentViewportWidth = window.innerWidth;
+            const shouldHandleResize = didMobileLayoutWidthChange(previousViewportWidth, currentViewportWidth);
+            previousViewportWidth = currentViewportWidth;
+
+            if (!shouldHandleResize) {
+                return;
+            }
+
+            fixFunkyPositioning();
+        });
         window.addEventListener('orientationchange', fixFunkyPositioning);
     }
 

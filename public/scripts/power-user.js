@@ -55,6 +55,7 @@ import { PARSER_FLAG, SlashCommandParser } from './slash-commands/SlashCommandPa
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
 import { AUTOCOMPLETE_SELECT_KEY, AUTOCOMPLETE_STATE, AUTOCOMPLETE_WIDTH } from './autocomplete/AutoComplete.js';
+import { didMobileLayoutWidthChange } from './browser-fixes.js';
 import { SlashCommandEnumValue, enumTypes } from './slash-commands/SlashCommandEnumValue.js';
 import { commonEnumProviders, enumIcons } from './slash-commands/SlashCommandCommonEnumsProvider.js';
 import { POPUP_TYPE, callGenericPopup, fixToastrForDialogs } from './popup.js';
@@ -3587,8 +3588,19 @@ jQuery(() => {
 
     var coreTruthWinWidth = window.innerWidth;
     var coreTruthWinHeight = window.innerHeight;
+    let previousMobileViewportWidth = window.innerWidth;
 
     $(window).on('resize', async () => {
+        if (isMobile()) {
+            const currentViewportWidth = window.innerWidth;
+            const shouldHandleResize = didMobileLayoutWidthChange(previousMobileViewportWidth, currentViewportWidth);
+            previousMobileViewportWidth = currentViewportWidth;
+
+            if (!shouldHandleResize) {
+                return;
+            }
+        }
+
         adjustAutocompleteDebounced();
         setHotswapsDebounced();
 
