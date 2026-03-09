@@ -1274,18 +1274,8 @@ function extractLastUserMessage(messages) {
 }
 
 function buildAnchorHashSource(messages, endIndex) {
-    return messages
-        .slice(0, endIndex + 1)
-        .filter(item => item && !item.is_system)
-        .map((item, index) => JSON.stringify({
-            playable_seq: index + 1,
-            role: item.is_user ? 'user' : 'assistant',
-            name: String(item.name ?? ''),
-            text: String(item.mes ?? ''),
-            type: String(item.extra?.type ?? ''),
-            bias: String(item.extra?.bias ?? ''),
-        }))
-        .join('\n');
+    const message = messages[endIndex];
+    return String(message?.mes ?? '');
 }
 
 function buildLastUserAnchorFromMessages(messages) {
