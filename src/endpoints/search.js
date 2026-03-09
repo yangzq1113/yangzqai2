@@ -69,6 +69,20 @@ function resolveDuckDuckGoResultUrl(rawHref) {
     }
 }
 
+function resolveRelativeResultUrl(rawHref, baseUrl = '') {
+    const href = String(rawHref || '').trim();
+    if (!href) {
+        return '';
+    }
+
+    try {
+        const parsed = baseUrl ? new URL(href, baseUrl) : new URL(href);
+        return parsed.toString();
+    } catch {
+        return href;
+    }
+}
+
 function parseDuckDuckGoHtml(html, maxResults = 8) {
     const source = String(html || '');
     const results = [];
@@ -159,6 +173,93 @@ function parseDuckDuckGoHtml(html, maxResults = 8) {
                 snippet = text;
                 break;
             }
+        }
+
+        seenUrls.add(url);
+        results.push({ title, url, snippet });
+    }
+
+    return results;
+}
+
+function parseSearxngHtml(html, baseUrl, maxResults = 8) {
+    const source = String(html || '');
+    const results = [];
+    const seenUrls = new Set();
+    const $ = load(source);
+    const containers = $('article.result, .result').toArray();
+
+    for (const container of containers) {
+        if (results.length >= maxResults) {
+            break;
+        }
+
+        const $container = $(container);
+        const titleLink = $container.find('h3 a, a.result_header, a.url_header, a[data-testid="result-title-a"]').first();
+        if (!titleLink.length) {
+            continue;
+        }
+
+        const rawHref = titleLink.attr('href')
+            || $container.find('a.url_header, .url_header a, a.result_url').first().attr('href')
+            || '';
+        const title = decodeHtmlFragment(titleLink.html() || titleLink.text());
+        const url = resolveRelativeResultUrl(rawHref, baseUrl);
+
+        if (!title || !url || seenUrls.has(url)) {
+            continue;
+        }
+
+        let protocol = '';
+        try {
+            protocol = new URL(url).protocol;
+        } catch {
+            protocol = '';
+        }
+
+        if (protocol !== 'http:' && protocol !== 'https:') {
+            continue;
+        }
+
+        const snippet = normalizeWhitespace(decode(
+            $container.find('p.content, .content, .result-content, .result-snippet').first().text() || '',
+        ));
+
+        seenUrls.add(url);
+        results.push({ title, url, snippet });
+    }
+
+    return results;
+}
+
+function normalizeSearxngApiResults(rawRows = [], maxResults = 8) {
+    if (!Array.isArray(rawRows)) {
+        return [];
+    }
+
+    const results = [];
+    const seenUrls = new Set();
+    for (const row of rawRows) {
+        if (results.length >= maxResults) {
+            break;
+        }
+
+        const title = normalizeWhitespace(row?.title || '');
+        const url = normalizeWhitespace(row?.url || '');
+        const snippet = normalizeWhitespace(row?.content || row?.snippet || '');
+        if (!title || !url || seenUrls.has(url)) {
+            continue;
+        }
+
+        let protocol = '';
+        try {
+            protocol = new URL(url).protocol;
+        } catch {
+            protocol = '';
+        }
+
+        if (protocol !== 'http:' && protocol !== 'https:') {
+            continue;
         }
 
         seenUrls.add(url);
@@ -373,9 +474,76 @@ router.post('/searxng', async (request, response) => {
             return response.sendStatus(400);
         }
 
-        console.debug('SearXNG query', baseUrl, query);
+        const maxResults = Math.max(1, Math.min(20, Math.floor(Number(request.body.max_results ?? request.body.maxResults ?? 8) || 8)));
+        const safeSearchRaw = String(request.body.safe_search ?? request.body.safeSearch ?? 'moderate').trim().toLowerCase();
+        const timeRangeRaw = String(request.body.time_range ?? request.body.timeRange ?? '').trim().toLowerCase();
+        const language = String(request.body.language || '').trim();
+        const safeSearchMap = {
+            off: '0',
+            moderate: '1',
+            strict: '2',
+        };
+        const timeRangeMap = {
+            day: 'day',
+            week: 'week',
+            month: 'month',
+            year: 'year',
+        };
 
-        const mainPageUrl = new URL(baseUrl);
+        let normalizedBaseUrl = '';
+        try {
+            normalizedBaseUrl = new URL(baseUrl).toString();
+        } catch {
+            console.error('Invalid baseUrl for /searxng', baseUrl);
+            return response.status(400).send('Invalid baseUrl');
+        }
+
+        console.debug('SearXNG query', normalizedBaseUrl, query);
+
+        const buildSearchUrl = ({ json = false } = {}) => {
+            const searchUrl = new URL('/search', normalizedBaseUrl);
+            searchUrl.searchParams.set('q', query);
+            if (preferences) {
+                searchUrl.searchParams.set('preferences', preferences);
+            }
+            if (categories) {
+                searchUrl.searchParams.set('categories', categories);
+            }
+            if (language) {
+                searchUrl.searchParams.set('language', language);
+            }
+            if (safeSearchMap[safeSearchRaw]) {
+                searchUrl.searchParams.set('safesearch', safeSearchMap[safeSearchRaw]);
+            }
+            if (timeRangeMap[timeRangeRaw]) {
+                searchUrl.searchParams.set('time_range', timeRangeMap[timeRangeRaw]);
+            }
+            if (json) {
+                searchUrl.searchParams.set('format', 'json');
+            }
+            return searchUrl;
+        };
+
+        const jsonSearchUrl = buildSearchUrl({ json: true });
+        const jsonResult = await fetch(jsonSearchUrl, {
+            headers: {
+                ...visitHeaders,
+                'Accept': 'application/json',
+            },
+        });
+
+        if (jsonResult.ok && String(jsonResult.headers.get('content-type') || '').includes('application/json')) {
+            const payload = await jsonResult.json();
+            const results = normalizeSearxngApiResults(payload?.results, maxResults);
+            return response.json({
+                provider: 'searxng',
+                query,
+                result_count: results.length,
+                results,
+            });
+        }
+
+        const mainPageUrl = new URL(normalizedBaseUrl);
         const mainPageRequest = await fetch(mainPageUrl, { headers: visitHeaders });
 
         if (!mainPageRequest.ok) {
@@ -387,22 +555,12 @@ router.post('/searxng', async (request, response) => {
         const clientHref = mainPageText.match(/href="(\/client.+\.css)"/)?.[1];
 
         if (clientHref) {
-            const clientUrl = new URL(clientHref, baseUrl);
+            const clientUrl = new URL(clientHref, normalizedBaseUrl);
             await fetch(clientUrl, { headers: visitHeaders });
         }
 
-        const searchUrl = new URL('/search', baseUrl);
-        const searchParams = new URLSearchParams();
-        searchParams.append('q', query);
-        if (preferences) {
-            searchParams.append('preferences', preferences);
-        }
-        if (categories) {
-            searchParams.append('categories', categories);
-        }
-        searchUrl.search = searchParams.toString();
-
-        const searchResult = await fetch(searchUrl, { headers: visitHeaders });
+        const htmlSearchUrl = buildSearchUrl();
+        const searchResult = await fetch(htmlSearchUrl, { headers: visitHeaders });
 
         if (!searchResult.ok) {
             const text = await searchResult.text();
@@ -410,8 +568,14 @@ router.post('/searxng', async (request, response) => {
             return response.sendStatus(500);
         }
 
-        const data = await searchResult.text();
-        return response.send(data);
+        const html = await searchResult.text();
+        const results = parseSearxngHtml(html, normalizedBaseUrl, maxResults);
+        return response.json({
+            provider: 'searxng',
+            query,
+            result_count: results.length,
+            results,
+        });
     } catch (error) {
         console.error('SearXNG request failed', error);
         return response.sendStatus(500);

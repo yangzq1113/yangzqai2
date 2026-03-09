@@ -103,6 +103,10 @@ const DEFAULT_SETTINGS = Object.freeze({
         ddg: Object.freeze({
             safeSearch: 'moderate',
         }),
+        searxng: Object.freeze({
+            baseUrl: '',
+            safeSearch: 'moderate',
+        }),
     }),
     agentApiPresetName: '',
     agentPresetName: '',
@@ -151,6 +155,10 @@ function getAvailableSearchProviders() {
             id: 'ddg',
             label: 'DuckDuckGo (no login)',
         },
+        {
+            id: 'searxng',
+            label: 'SearXNG (custom instance)',
+        },
     ];
 }
 
@@ -179,10 +187,19 @@ function normalizeDdgProviderSettings(raw = {}, legacySafeSearch = DEFAULT_SETTI
     };
 }
 
+function normalizeSearxngProviderSettings(raw = {}, legacySafeSearch = DEFAULT_SETTINGS.safeSearch) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return {
+        baseUrl: normalizeWhitespace(source.baseUrl || ''),
+        safeSearch: normalizeSafeSearch(source.safeSearch ?? legacySafeSearch),
+    };
+}
+
 function normalizeProviderSettings(raw = {}, legacy = {}) {
     const source = raw && typeof raw === 'object' ? raw : {};
     return {
         ddg: normalizeDdgProviderSettings(source.ddg, legacy.safeSearch),
+        searxng: normalizeSearxngProviderSettings(source.searxng, legacy.safeSearch),
     };
 }
 
@@ -191,6 +208,9 @@ function getProviderSettings(settings = getSettings(), providerId = '') {
     const source = settings?.providers && typeof settings.providers === 'object' ? settings.providers : {};
     if (normalizedProviderId === 'ddg') {
         return normalizeDdgProviderSettings(source.ddg, settings?.safeSearch);
+    }
+    if (normalizedProviderId === 'searxng') {
+        return normalizeSearxngProviderSettings(source.searxng, settings?.safeSearch);
     }
     return {};
 }
@@ -594,10 +614,54 @@ async function runDdgSearch({
     };
 }
 
+async function runSearxngSearch({
+    query,
+    maxResults,
+    safeSearch,
+    timeRange,
+    providerSettings,
+    abortSignal = null,
+}) {
+    const baseUrl = normalizeWhitespace(providerSettings?.baseUrl || '');
+    if (!baseUrl) {
+        throw new Error('SearXNG instance URL is required.');
+    }
+
+    const response = await fetch('/api/search/searxng', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal: isAbortSignalLike(abortSignal) ? abortSignal : null,
+        body: JSON.stringify({
+            baseUrl,
+            query,
+            max_results: maxResults,
+            safe_search: safeSearch,
+            time_range: timeRange || '',
+        }),
+    });
+
+    if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`SearXNG search request failed (${response.status}): ${text || response.statusText}`);
+    }
+
+    const payload = await response.json();
+    const results = normalizeSearchRows(payload?.results || [], 'searxng');
+    return {
+        provider: 'searxng',
+        query: String(payload?.query || query || ''),
+        result_count: Number(payload?.result_count || results.length),
+        results,
+    };
+}
+
 async function runSearchProvider(provider, options) {
     const normalizedProvider = normalizeProvider(provider);
     if (normalizedProvider === 'ddg') {
         return await runDdgSearch(options);
+    }
+    if (normalizedProvider === 'searxng') {
+        return await runSearxngSearch(options);
     }
 
     console.warn(`[${MODULE_NAME}] Unsupported provider '${provider}'. Falling back to ${getDefaultSearchProviderId()}.`);
@@ -628,6 +692,7 @@ async function searchWeb(args = {}, { abortSignal = null } = {}) {
         safeSearch,
         timeRange,
         region,
+        providerSettings,
         abortSignal,
     });
 }
@@ -2175,6 +2240,16 @@ function buildProviderSettingsPanelHtml(settings = getSettings()) {
             ${renderSafeSearchOptions(providerSettings.safeSearch)}
         </select>`;
     }
+    if (providerId === 'searxng') {
+        const providerSettings = getProviderSettings(settings, providerId);
+        return `
+        <label for="search_tools_searxng_base_url">${escapeHtml(i18n('SearXNG instance URL'))}</label>
+        <input id="search_tools_searxng_base_url" class="text_pole" type="text" placeholder="https://your-searxng.example" value="${escapeHtml(providerSettings.baseUrl || '')}" />
+        <label for="search_tools_searxng_safe_search">${escapeHtml(i18n('Default safe search'))}</label>
+        <select id="search_tools_searxng_safe_search" class="text_pole">
+            ${renderSafeSearchOptions(providerSettings.safeSearch)}
+        </select>`;
+    }
 
     return '';
 }
@@ -2377,6 +2452,15 @@ function bindSettingsUi() {
         settings.safeSearch = settings.providers.ddg.safeSearch;
         saveSettingsDebounced();
     });
+    root.on('change.searchTools input.searchTools', '#search_tools_searxng_base_url', function () {
+        settings.providers.searxng.baseUrl = normalizeWhitespace(jQuery(this).val());
+        jQuery(this).val(settings.providers.searxng.baseUrl);
+        saveSettingsDebounced();
+    });
+    root.on('change.searchTools', '#search_tools_searxng_safe_search', function () {
+        settings.providers.searxng.safeSearch = normalizeSafeSearch(jQuery(this).val());
+        saveSettingsDebounced();
+    });
     root.on('change.searchTools', '#search_tools_agent_api_preset_name', function () {
         settings.agentApiPresetName = normalizeWhitespace(jQuery(this).val());
         jQuery(this).val(settings.agentApiPresetName);
@@ -2473,6 +2557,8 @@ function registerLocaleData() {
         'Run pre-request search agent': '请求前运行搜索 Agent',
         'Search provider': '搜索提供方',
         'DuckDuckGo (no login)': 'DuckDuckGo（无需登录）',
+        'SearXNG (custom instance)': 'SearXNG（自定义实例）',
+        'SearXNG instance URL': 'SearXNG 实例地址',
         'Default max search results': '默认搜索结果上限',
         'Default safe search': '默认安全搜索',
         'Off': '关闭',
@@ -2521,6 +2607,8 @@ function registerLocaleData() {
         'Run pre-request search agent': '在請求前執行搜尋 Agent',
         'Search provider': '搜尋提供方',
         'DuckDuckGo (no login)': 'DuckDuckGo（無需登入）',
+        'SearXNG (custom instance)': 'SearXNG（自訂實例）',
+        'SearXNG instance URL': 'SearXNG 實例網址',
         'Default max search results': '預設搜尋結果上限',
         'Default safe search': '預設安全搜尋',
         'Off': '關閉',
