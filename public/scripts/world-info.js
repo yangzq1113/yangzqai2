@@ -23,6 +23,7 @@ import { renderTemplateAsync } from './templates.js';
 import { t } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from './personas.js';
+import { showUndoToast } from './undo-toast.js';
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -2824,23 +2825,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
             return;
         }
 
-        if (world_info.charLore) {
-            world_info.charLore.forEach((charLore, index) => {
-                if (charLore.extraBooks?.includes(name)) {
-                    const tempCharLore = charLore.extraBooks.filter((e) => e !== name);
-                    if (tempCharLore.length === 0) {
-                        world_info.charLore.splice(index, 1);
-                    } else {
-                        charLore.extraBooks = tempCharLore;
-                    }
-                }
-            });
-
-            saveSettingsDebounced();
-        }
-
-        // Selected world_info automatically refreshes
-        await deleteWorldInfo(name);
+        await deleteWorldInfoWithUndo(name);
     });
 
     // Before printing the WI, we check if we should enable/disable search sorting
@@ -4806,6 +4791,100 @@ export async function deleteWorldInfo(worldInfoName) {
     return true;
 }
 
+export async function deleteWorldInfoWithUndo(worldInfoName) {
+    if (!world_names.includes(worldInfoName)) {
+        return false;
+    }
+
+    const worldData = structuredClone(await loadWorldInfo(worldInfoName));
+    const worldEditorIndex = Number($('#world_editor_select').val());
+    const worldEditorName = Number.isInteger(worldEditorIndex) && worldEditorIndex >= 0 ? String(world_names[worldEditorIndex] || '') : '';
+    const snapshot = {
+        worldData,
+        selectedWorldInfo: structuredClone(selected_world_info),
+        charLore: world_info.charLore ? structuredClone(world_info.charLore) : null,
+        characterWorld: String($('#character_world').val() || ''),
+        personaLorebook: String(power_user.persona_description_lorebook || ''),
+        worldEditorName,
+    };
+
+    if (world_info.charLore) {
+        for (let index = world_info.charLore.length - 1; index >= 0; index--) {
+            const charLore = world_info.charLore[index];
+            if (charLore.extraBooks?.includes(worldInfoName)) {
+                const nextExtraBooks = charLore.extraBooks.filter((entry) => entry !== worldInfoName);
+                if (nextExtraBooks.length === 0) {
+                    world_info.charLore.splice(index, 1);
+                } else {
+                    charLore.extraBooks = nextExtraBooks;
+                }
+            }
+        }
+
+        saveSettingsDebounced();
+    }
+
+    const deleted = await deleteWorldInfo(worldInfoName);
+    if (!deleted) {
+        return false;
+    }
+
+    if (!snapshot.worldData) {
+        toastr.success(t`World/Lorebook deleted.`);
+        return true;
+    }
+
+    showUndoToast({
+        message: t`World/Lorebook deleted.`,
+        onUndo: async () => {
+            try {
+                await saveWorldInfo(worldInfoName, structuredClone(snapshot.worldData), true);
+                await updateWorldInfoList();
+
+                if (snapshot.charLore) {
+                    world_info.charLore = structuredClone(snapshot.charLore);
+                }
+
+                const restoredSelectedWorlds = snapshot.selectedWorldInfo.filter(name => world_names.includes(name));
+                selected_world_info.splice(0, selected_world_info.length, ...restoredSelectedWorlds);
+                $('#world_info').val(restoredSelectedWorlds).trigger('change');
+
+                if (snapshot.characterWorld === worldInfoName) {
+                    $('#character_world').val(worldInfoName).trigger('change');
+                    setWorldInfoButtonClass(undefined, true);
+                    if (menu_type != 'create') {
+                        saveCharacterDebounced();
+                    }
+                }
+
+                if (snapshot.personaLorebook === worldInfoName) {
+                    power_user.persona_description_lorebook = worldInfoName;
+                    if (power_user.personas[user_avatar]) {
+                        const object = getOrCreatePersonaDescriptor();
+                        object.lorebook = worldInfoName;
+                    }
+                    $('#persona_lore_button').toggleClass('world_set', true);
+                }
+
+                requestAsyncDiffForNextSettingsSave();
+                saveSettingsDebounced();
+
+                if (snapshot.worldEditorName === worldInfoName) {
+                    const restoredIndex = world_names.indexOf(worldInfoName);
+                    if (restoredIndex !== -1) {
+                        $('#world_editor_select').val(restoredIndex).trigger('change');
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to restore deleted world info', error);
+                toastr.error(t`Failed to restore World/Lorebook.`);
+            }
+        },
+    });
+
+    return true;
+}
+
 export function getFreeWorldEntryUid(data) {
     if (!data || !('entries' in data)) {
         return null;
@@ -6501,10 +6580,8 @@ export async function maybeDeleteLinkedLorebookForPresetDeletion({ presetName = 
         return;
     }
 
-    const deleted = await deleteWorldInfo(payload.name);
-    if (deleted) {
-        toastr.success(t`Linked World/Lorebook deleted.`);
-    } else {
+    const deleted = await deleteWorldInfoWithUndo(payload.name);
+    if (!deleted) {
         toastr.warning(t`Failed to delete linked World/Lorebook.`);
     }
 }

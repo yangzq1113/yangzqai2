@@ -82,6 +82,7 @@ import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
+import { showUndoToast } from './undo-toast.js';
 import {
     PlainTextFunctionCallStreamDetector,
     TOOL_PROTOCOL_STYLE,
@@ -5590,9 +5591,27 @@ async function onDeletePresetClick() {
     if (!response.ok) {
         toastr.warning(t`Preset was not deleted from server`);
     } else {
-        toastr.success(t`Preset deleted`);
-        await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
-        await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: nameToDelete, extensions: presetBodyToDelete.extensions });
+        if (!presetBodyToDelete || typeof presetBodyToDelete !== 'object' || !Object.keys(presetBodyToDelete).length) {
+            toastr.success(t`Preset deleted`);
+            await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
+            await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: nameToDelete, extensions: presetBodyToDelete.extensions });
+        } else {
+            showUndoToast({
+                message: t`Preset deleted`,
+                onUndo: async () => {
+                    try {
+                        await saveOpenAIPreset(nameToDelete, structuredClone(presetBodyToDelete), true);
+                    } catch (error) {
+                        console.error('Failed to restore deleted OpenAI preset', error);
+                        toastr.error(t`Failed to restore preset.`);
+                    }
+                },
+                onCommit: async () => {
+                    await eventSource.emit(event_types.PRESET_DELETED, { apiId: 'openai', name: nameToDelete });
+                    await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: nameToDelete, extensions: presetBodyToDelete.extensions });
+                },
+            });
+        }
     }
 
     requestAsyncDiffForNextSettingsSave();

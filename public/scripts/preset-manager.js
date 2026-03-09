@@ -52,6 +52,7 @@ import {
     updateWorldInfoList,
     world_names,
 } from './world-info.js';
+import { showUndoToast } from './undo-toast.js';
 
 const presetManagers = {};
 const PRESET_LOREBOOK_BINDABLE_APIS = new Set(['kobold', 'novel', 'openai', 'textgenerationwebui']);
@@ -960,6 +961,24 @@ class PresetManager {
     }
 
     /**
+     * Retrieves the stored preset body by name.
+     * @param {string} [name]
+     * @returns {any}
+     */
+    getStoredPreset(name) {
+        const presetName = name || this.getSelectedPresetName();
+        const { presets, preset_names } = this.getPresetList();
+
+        if (this.isKeyedApi()) {
+            const index = preset_names.indexOf(presetName);
+            return index !== -1 ? structuredClone(presets[index]) : undefined;
+        }
+
+        const index = preset_names[presetName];
+        return index !== undefined ? structuredClone(presets[index]) : undefined;
+    }
+
+    /**
      * Deletes a preset by name. If not provided, deletes the currently selected preset.
      * @param {string} [name] Name of the preset to delete.
      */
@@ -1331,14 +1350,35 @@ export async function initPresetManager() {
         }
 
         const name = presetManager.getSelectedPresetName();
+        const presetSnapshot = presetManager.getStoredPreset(name);
         const extensions = presetManager.readPresetExtensionField({ name, path: '' });
         const result = await presetManager.deletePreset();
 
         if (result) {
             const successToast = !presetManager.isAdvancedFormatting() ? t`Preset deleted` : t`Template deleted`;
-            toastr.success(successToast);
-            await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
-            await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: name, extensions });
+            const restoreErrorToast = !presetManager.isAdvancedFormatting() ? t`Failed to restore preset.` : t`Failed to restore template.`;
+
+            if (!presetSnapshot) {
+                toastr.success(successToast);
+                await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
+                await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: name, extensions });
+            } else {
+                showUndoToast({
+                    message: successToast,
+                    onUndo: async () => {
+                        try {
+                            await presetManager.savePreset(name, structuredClone(presetSnapshot));
+                        } catch (error) {
+                            console.error('Failed to restore deleted preset', error);
+                            toastr.error(restoreErrorToast);
+                        }
+                    },
+                    onCommit: async () => {
+                        await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
+                        await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: name, extensions });
+                    },
+                });
+            }
         } else {
             const warningToast = !presetManager.isAdvancedFormatting() ? t`Preset was not deleted from server` : t`Template was not deleted from server`;
             toastr.warning(warningToast);
