@@ -22,7 +22,8 @@ const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
 const UI_BLOCK_ID = 'orchestrator_settings';
 const ORCH_CHAT_STATE_NAMESPACE = 'luker_orchestrator_state';
-const ORCH_CHAT_STATE_VERSION = 1;
+const ORCH_CHAT_STATE_VERSION = 2;
+const ORCH_CHAT_CONTENT_NAMESPACE_PREFIX = 'luker_orchestrator_anchor_';
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints. Before function-call output, provide one concise <thought>...</thought> that reflects your role-specific reasoning.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
@@ -52,7 +53,6 @@ const AUTO_INJECTED_PLACEHOLDER_AI_NOTE = '(auto-injected by runtime before this
 const AUTO_INJECTED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${AUTO_INJECTED_CONTEXT_VARS.join('|')})\\s*}}`, 'gi');
 const LEGACY_REMOVED_PLACEHOLDER_REGEX = new RegExp(`{{\\s*(${LEGACY_REMOVED_CONTEXT_VARS.join('|')})\\s*}}`, 'gi');
 const ORCH_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
-const ORCH_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const CAPSULE_INJECT_POSITION_SCHEMA_VERSION = 2;
 const ORCH_NODE_TYPE_WORKER = 'worker';
 const ORCH_NODE_TYPE_REVIEW = 'review';
@@ -450,12 +450,19 @@ function registerLocaleData() {
         'View Last Run': '查看最近一轮',
         'View Runtime Trace': '查看运行态轨迹',
         'Latest Orchestration Result': '最近编排结果',
+        'Anchored User Turn': '绑定用户楼层',
+        'Last run state: none': '最近编排状态：无有效结果',
+        'Last run state: none · stored anchors ${0}': '最近编排状态：无有效结果 · 已存锚点 ${0}',
+        'Last run state: user turn ${0} · stored anchors ${1}': '最近编排状态：用户楼层 ${0} · 已存锚点 ${1}',
         'Orchestration Runtime Trace': '编排运行态轨迹',
         'Edit Result': '编辑结果',
         'Edit latest orchestration result text.': '编辑最近一轮编排结果文本。',
         'Orchestration result cannot be empty.': '编排结果不能为空。',
         'Saved latest orchestration result.': '最近一轮编排结果已保存。',
+        'Failed to persist orchestration snapshot.': '编排结果写入失败。',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
+        'Orchestration history invalidated. Rolled back to user turn ${0}.': '编排历史已失效，已回退到用户楼层 ${0}。',
+        'Orchestration history invalidated. No valid stored result remains.': '编排历史已失效，当前没有可用的已存结果。',
         'No runtime orchestration trace available for this chat yet.': '当前聊天暂无可查看的运行态编排轨迹。',
         'This trace is in-memory only and clears when chat changes.': '该轨迹仅保存在内存中，切换聊天时会清空。',
         'Trace is still running. Close and reopen to refresh.': '轨迹仍在运行中；关闭后重新打开即可刷新。',
@@ -684,12 +691,19 @@ function registerLocaleData() {
         'View Last Run': '查看最近一輪',
         'View Runtime Trace': '查看執行態軌跡',
         'Latest Orchestration Result': '最近編排結果',
+        'Anchored User Turn': '綁定使用者樓層',
+        'Last run state: none': '最近編排狀態：無有效結果',
+        'Last run state: none · stored anchors ${0}': '最近編排狀態：無有效結果 · 已存錨點 ${0}',
+        'Last run state: user turn ${0} · stored anchors ${1}': '最近編排狀態：使用者樓層 ${0} · 已存錨點 ${1}',
         'Orchestration Runtime Trace': '編排執行態軌跡',
         'Edit Result': '編輯結果',
         'Edit latest orchestration result text.': '編輯最近一輪編排結果文本。',
         'Orchestration result cannot be empty.': '編排結果不能為空。',
         'Saved latest orchestration result.': '最近一輪編排結果已儲存。',
+        'Failed to persist orchestration snapshot.': '編排結果寫入失敗。',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
+        'Orchestration history invalidated. Rolled back to user turn ${0}.': '編排歷史已失效，已回退到使用者樓層 ${0}。',
+        'Orchestration history invalidated. No valid stored result remains.': '編排歷史已失效，目前沒有可用的已存結果。',
         'No runtime orchestration trace available for this chat yet.': '目前聊天尚無可檢視的執行態編排軌跡。',
         'This trace is in-memory only and clears when chat changes.': '此軌跡僅保存在記憶體中，切換聊天時會清空。',
         'Trace is still running. Close and reopen to refresh.': '軌跡仍在執行中；關閉後重新打開即可刷新。',
@@ -867,6 +881,7 @@ let activeAiIterationAbortController = null;
 let activeOrchRunAbortController = null;
 let activeAiBuildAbortController = null;
 let latestOrchestrationSnapshot = null;
+let latestOrchestrationHistoryIndex = null;
 let latestOrchestrationRuntimeTrace = null;
 let loadedChatStateKey = '';
 
@@ -1328,6 +1343,62 @@ function finishOrchestrationRuntimeNodeAttempt(trace, attempt, details = {}) {
     });
 }
 
+function normalizeAnchorPlayableFloor(value) {
+    const normalized = Math.max(0, Math.floor(Number(value) || 0));
+    return normalized > 0 ? normalized : 0;
+}
+
+function normalizeOrchestrationHistoryAnchors(rawAnchors) {
+    const next = new Set();
+    for (const value of Array.isArray(rawAnchors) ? rawAnchors : []) {
+        const anchorPlayableFloor = normalizeAnchorPlayableFloor(value);
+        if (anchorPlayableFloor > 0) {
+            next.add(anchorPlayableFloor);
+        }
+    }
+    return Array.from(next).sort((a, b) => a - b);
+}
+
+function equalNumberArrays(left, right) {
+    const leftItems = Array.isArray(left) ? left : [];
+    const rightItems = Array.isArray(right) ? right : [];
+    if (leftItems.length !== rightItems.length) {
+        return false;
+    }
+    for (let i = 0; i < leftItems.length; i++) {
+        if (Number(leftItems[i]) !== Number(rightItems[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function getOrchestrationSnapshotNamespace(anchorPlayableFloor) {
+    const normalized = normalizeAnchorPlayableFloor(anchorPlayableFloor);
+    if (!normalized) {
+        return '';
+    }
+    return `${ORCH_CHAT_CONTENT_NAMESPACE_PREFIX}${normalized}`;
+}
+
+function normalizeLegacyOrchestrationSnapshot(raw) {
+    const source = raw && typeof raw === 'object' ? raw : null;
+    if (!source) {
+        return null;
+    }
+    const capsuleText = String(source.capsuleText || '').trim();
+    const anchorPlayableFloor = normalizeAnchorPlayableFloor(source.anchorPlayableFloor || source.anchorFloor);
+    if (!capsuleText || !anchorPlayableFloor) {
+        return null;
+    }
+    return {
+        anchorPlayableFloor,
+        anchorHash: String(source.anchorHash || '').trim(),
+        capsuleText,
+        stageOutputs: Array.isArray(source.stageOutputs) ? structuredClone(source.stageOutputs) : [],
+    };
+}
+
 function normalizeOrchestrationSnapshot(raw) {
     const source = raw && typeof raw === 'object' ? raw : null;
     if (!source) {
@@ -1338,13 +1409,8 @@ function normalizeOrchestrationSnapshot(raw) {
         return null;
     }
     return {
-        chatKey: String(source.chatKey || '').trim(),
-        anchorFloor: Number(source.anchorFloor || 0),
-        anchorPlayableFloor: Number(source.anchorPlayableFloor || 0),
         anchorHash: String(source.anchorHash || '').trim(),
         capsuleText,
-        updatedAt: String(source.updatedAt || '').trim(),
-        targetLayer: Number(source.targetLayer || 0),
         stageOutputs: Array.isArray(source.stageOutputs) ? structuredClone(source.stageOutputs) : [],
     };
 }
@@ -1353,14 +1419,158 @@ function normalizeOrchestratorChatState(raw) {
     const source = raw && typeof raw === 'object' ? raw : {};
     return {
         version: Number(source.version || ORCH_CHAT_STATE_VERSION),
-        snapshot: normalizeOrchestrationSnapshot(source.snapshot),
+        anchors: normalizeOrchestrationHistoryAnchors(source.anchors),
+        legacySnapshot: normalizeLegacyOrchestrationSnapshot(source.snapshot),
     };
+}
+
+function setLoadedOrchestrationHistoryIndex(chatKey, anchors) {
+    const normalizedChatKey = String(chatKey || '').trim();
+    if (!normalizedChatKey) {
+        latestOrchestrationHistoryIndex = null;
+        return;
+    }
+    latestOrchestrationHistoryIndex = {
+        chatKey: normalizedChatKey,
+        anchors: normalizeOrchestrationHistoryAnchors(anchors),
+    };
+}
+
+function getLoadedOrchestrationHistoryAnchors(context) {
+    const chatKey = getChatKey(context);
+    if (!latestOrchestrationHistoryIndex || typeof latestOrchestrationHistoryIndex !== 'object') {
+        return [];
+    }
+    if (String(latestOrchestrationHistoryIndex.chatKey || '') !== String(chatKey || '')) {
+        return [];
+    }
+    return normalizeOrchestrationHistoryAnchors(latestOrchestrationHistoryIndex.anchors);
+}
+
+function materializeOrchestrationSnapshot(chatKey, anchorPlayableFloor, snapshot) {
+    const normalizedSnapshot = normalizeOrchestrationSnapshot(snapshot);
+    const normalizedChatKey = String(chatKey || '').trim();
+    const normalizedAnchor = normalizeAnchorPlayableFloor(anchorPlayableFloor);
+    if (!normalizedSnapshot || !normalizedChatKey || !normalizedAnchor) {
+        return null;
+    }
+    return {
+        chatKey: normalizedChatKey,
+        anchorPlayableFloor: normalizedAnchor,
+        anchorHash: String(normalizedSnapshot.anchorHash || '').trim(),
+        capsuleText: normalizedSnapshot.capsuleText,
+        stageOutputs: Array.isArray(normalizedSnapshot.stageOutputs) ? structuredClone(normalizedSnapshot.stageOutputs) : [],
+    };
+}
+
+async function loadStoredOrchestrationSnapshot(context, anchorPlayableFloor) {
+    const namespace = getOrchestrationSnapshotNamespace(anchorPlayableFloor);
+    if (!namespace || typeof context?.getChatState !== 'function') {
+        return null;
+    }
+    const payload = await context.getChatState(namespace, {});
+    return normalizeOrchestrationSnapshot(payload);
+}
+
+async function persistStoredOrchestrationSnapshot(context, anchorPlayableFloor, snapshot) {
+    const namespace = getOrchestrationSnapshotNamespace(anchorPlayableFloor);
+    const normalized = normalizeOrchestrationSnapshot(snapshot);
+    if (!namespace || !normalized || typeof context?.updateChatState !== 'function') {
+        return false;
+    }
+    const result = await context.updateChatState(namespace, () => ({
+        anchorHash: String(normalized.anchorHash || '').trim(),
+        capsuleText: normalized.capsuleText,
+        stageOutputs: Array.isArray(normalized.stageOutputs) ? structuredClone(normalized.stageOutputs) : [],
+    }), { maxOperations: 2000, maxRetries: 1 });
+    return Boolean(result?.ok);
+}
+
+async function deleteStoredOrchestrationSnapshot(context, anchorPlayableFloor) {
+    const namespace = getOrchestrationSnapshotNamespace(anchorPlayableFloor);
+    if (!namespace || typeof context?.deleteChatState !== 'function') {
+        return false;
+    }
+    return Boolean(await context.deleteChatState(namespace, {}));
+}
+
+function getPlayableMessageAt(messages, playableFloor) {
+    const source = Array.isArray(messages) ? messages : [];
+    const targetPlayableFloor = normalizeAnchorPlayableFloor(playableFloor);
+    if (!targetPlayableFloor) {
+        return null;
+    }
+    let playableSeq = 0;
+    for (let index = 0; index < source.length; index++) {
+        const message = source[index];
+        if (!message || message.is_system) {
+            continue;
+        }
+        playableSeq += 1;
+        if (playableSeq === targetPlayableFloor) {
+            return { index, message };
+        }
+    }
+    return null;
+}
+
+function isStoredOrchestrationSnapshotValidForMessages(anchorPlayableFloor, snapshot, messages) {
+    const normalizedSnapshot = normalizeOrchestrationSnapshot(snapshot);
+    if (!normalizedSnapshot) {
+        return false;
+    }
+    const target = getPlayableMessageAt(messages, anchorPlayableFloor);
+    if (!target?.message || target.message.is_system || !target.message.is_user) {
+        return false;
+    }
+    const storedHash = String(normalizedSnapshot.anchorHash || '').trim();
+    if (!storedHash) {
+        return false;
+    }
+    const currentHash = String(getStringHash(buildAnchorHashSource(messages, target.index)));
+    return currentHash === storedHash;
+}
+
+async function selectLatestValidOrchestrationSnapshot(context, { persistCleanup = false } = {}) {
+    const chatKey = getChatKey(context);
+    if (!chatKey) {
+        latestOrchestrationSnapshot = null;
+        latestOrchestrationHistoryIndex = null;
+        return null;
+    }
+
+    const messages = Array.isArray(context?.chat) ? context.chat : [];
+    const previousAnchors = getLoadedOrchestrationHistoryAnchors(context);
+    const nextAnchors = previousAnchors.slice();
+    let nextSnapshot = null;
+
+    for (let index = nextAnchors.length - 1; index >= 0; index--) {
+        const anchorPlayableFloor = nextAnchors[index];
+        const snapshot = await loadStoredOrchestrationSnapshot(context, anchorPlayableFloor);
+        if (!snapshot || !isStoredOrchestrationSnapshotValidForMessages(anchorPlayableFloor, snapshot, messages)) {
+            nextAnchors.splice(index, 1);
+            if (persistCleanup) {
+                await deleteStoredOrchestrationSnapshot(context, anchorPlayableFloor);
+            }
+            continue;
+        }
+        nextSnapshot = materializeOrchestrationSnapshot(chatKey, anchorPlayableFloor, snapshot);
+        break;
+    }
+
+    setLoadedOrchestrationHistoryIndex(chatKey, nextAnchors);
+    latestOrchestrationSnapshot = nextSnapshot;
+    if (persistCleanup && !equalNumberArrays(previousAnchors, nextAnchors)) {
+        await persistOrchestratorChatState(context);
+    }
+    return nextSnapshot;
 }
 
 async function loadOrchestratorChatState(context, { force = false } = {}) {
     const chatKey = getChatKey(context);
     if (!chatKey) {
         latestOrchestrationSnapshot = null;
+        latestOrchestrationHistoryIndex = null;
         loadedChatStateKey = '';
         return;
     }
@@ -1373,39 +1583,42 @@ async function loadOrchestratorChatState(context, { force = false } = {}) {
         payload = await context.getChatState(ORCH_CHAT_STATE_NAMESPACE, {});
     }
     const normalized = normalizeOrchestratorChatState(payload);
-    latestOrchestrationSnapshot = normalized.snapshot;
+    let nextAnchors = normalized.anchors.slice();
+    let migratedLegacySnapshot = false;
+    if (normalized.legacySnapshot) {
+        const legacyAnchor = normalizeAnchorPlayableFloor(normalized.legacySnapshot.anchorPlayableFloor);
+        if (legacyAnchor) {
+            await persistStoredOrchestrationSnapshot(context, legacyAnchor, normalized.legacySnapshot);
+            nextAnchors = normalizeOrchestrationHistoryAnchors([...nextAnchors, legacyAnchor]);
+            migratedLegacySnapshot = true;
+        }
+    }
     loadedChatStateKey = chatKey;
+    setLoadedOrchestrationHistoryIndex(chatKey, nextAnchors);
+    await selectLatestValidOrchestrationSnapshot(context, { persistCleanup: true });
+    if (migratedLegacySnapshot) {
+        await persistOrchestratorChatState(context);
+    }
 }
 
 async function persistOrchestratorChatState(context) {
     const chatKey = getChatKey(context);
-    if (!chatKey || typeof context?.updateChatState !== 'function') {
+    if (!chatKey) {
         return;
     }
     loadedChatStateKey = chatKey;
-    const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
+    const anchors = getLoadedOrchestrationHistoryAnchors(context);
+    if (anchors.length === 0 && typeof context?.deleteChatState === 'function') {
+        await context.deleteChatState(ORCH_CHAT_STATE_NAMESPACE, {});
+        return;
+    }
+    if (typeof context?.updateChatState !== 'function') {
+        return;
+    }
     await context.updateChatState(ORCH_CHAT_STATE_NAMESPACE, () => ({
         version: ORCH_CHAT_STATE_VERSION,
-        snapshot,
+        anchors,
     }), { maxOperations: 2000, maxRetries: 1 });
-}
-
-function getPreviousOrchestrationSnapshotText(context, payload) {
-    const chatKey = getChatKey(context);
-    const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
-    if (!snapshot || String(snapshot.chatKey || '') !== String(chatKey || '')) {
-        return '';
-    }
-    const currentTargetLayer = getTargetAssistantLayer(payload);
-    const expectedPreviousLayer = Math.max(currentTargetLayer - 1, 0);
-    const storedLayer = Number(snapshot.targetLayer || 0);
-    if (expectedPreviousLayer <= 0 || storedLayer !== expectedPreviousLayer) {
-        return '';
-    }
-    return toReadableYamlText({
-        updated_at: String(snapshot.updatedAt || ''),
-        stage_outputs: Array.isArray(snapshot.stageOutputs) ? snapshot.stageOutputs : [],
-    }, '{}');
 }
 
 function getLatestOrchestrationEntry(context) {
@@ -1421,22 +1634,9 @@ function getLatestOrchestrationEntry(context) {
         return null;
     }
     return {
-        updatedAt: String(latestOrchestrationSnapshot.updatedAt || '').trim(),
+        anchorPlayableFloor: normalizeAnchorPlayableFloor(latestOrchestrationSnapshot.anchorPlayableFloor),
         injectedText,
     };
-}
-
-function clearLastOrchestrationSnapshot(context, { persist = false } = {}) {
-    const chatKey = getChatKey(context);
-    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
-        return;
-    }
-    if (String(latestOrchestrationSnapshot.chatKey || '') === String(chatKey || '')) {
-        latestOrchestrationSnapshot = null;
-        if (persist) {
-            void persistOrchestratorChatState(context);
-        }
-    }
 }
 
 function getTargetAssistantLayer(payload) {
@@ -1448,22 +1648,40 @@ function getTargetAssistantLayer(payload) {
         : Math.max(assistantCount + 1, 1);
 }
 
-function getPreviousOrchestrationCapsuleText(context, payload) {
+async function getPreviousOrchestrationCapsuleText(context, payload) {
+    if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, '__lukerOrchPreviousCapsuleText')) {
+        return String(payload.__lukerOrchPreviousCapsuleText || '');
+    }
     const chatKey = getChatKey(context);
-    const snapshot = normalizeOrchestrationSnapshot(latestOrchestrationSnapshot);
-    if (!snapshot) {
+    const currentAnchor = buildLastUserAnchor(context, getCoreMessages(payload));
+    const currentAnchorPlayableFloor = normalizeAnchorPlayableFloor(currentAnchor?.playableFloor);
+    if (!chatKey || !currentAnchorPlayableFloor) {
         return '';
     }
-    if (String(snapshot.chatKey || '') !== String(chatKey || '')) {
-        return '';
+
+    const messages = Array.isArray(getCoreMessages(payload)) && getCoreMessages(payload).length > 0
+        ? getCoreMessages(payload)
+        : (Array.isArray(context?.chat) ? context.chat : []);
+    const candidateAnchors = getLoadedOrchestrationHistoryAnchors(context)
+        .filter(anchorPlayableFloor => anchorPlayableFloor < currentAnchorPlayableFloor)
+        .sort((left, right) => right - left);
+
+    for (const anchorPlayableFloor of candidateAnchors) {
+        const snapshot = await loadStoredOrchestrationSnapshot(context, anchorPlayableFloor);
+        if (!snapshot || !isStoredOrchestrationSnapshotValidForMessages(anchorPlayableFloor, snapshot, messages)) {
+            continue;
+        }
+        const previousCapsuleText = String(snapshot.capsuleText || '').trim();
+        if (payload && typeof payload === 'object') {
+            payload.__lukerOrchPreviousCapsuleText = previousCapsuleText;
+        }
+        return previousCapsuleText;
     }
-    const currentTargetLayer = getTargetAssistantLayer(payload);
-    const expectedPreviousLayer = Math.max(currentTargetLayer - 1, 0);
-    const storedLayer = Number(snapshot.targetLayer || 0);
-    if (expectedPreviousLayer <= 0 || storedLayer !== expectedPreviousLayer) {
-        return '';
+
+    if (payload && typeof payload === 'object') {
+        payload.__lukerOrchPreviousCapsuleText = '';
     }
-    return String(snapshot.capsuleText || '').trim();
+    return '';
 }
 
 function formatReadableTimestamp(value) {
@@ -1488,12 +1706,12 @@ function renderLastOrchestrationResultHtml(context) {
         return `<div class="luker_orch_last_run_empty">${escapeHtml(i18n('No recent orchestration result available for this chat.'))}</div>`;
     }
 
-    const updatedAt = String(entry.updatedAt || '').trim() || i18n('Not set');
+    const anchorPlayableFloor = normalizeAnchorPlayableFloor(entry.anchorPlayableFloor);
     const injectedText = String(entry.injectedText || '').trim();
 
     return `
 <div class="luker_orch_last_run_popup">
-    <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
+    <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Anchored User Turn'))}</b>：${escapeHtml(String(anchorPlayableFloor || 0))}</div>
     <pre class="luker_orch_last_run_capsule">${escapeHtml(injectedText || i18n('Not set'))}</pre>
 </div>`;
 }
@@ -1829,10 +2047,10 @@ async function editLastOrchestrationResult(context) {
     latestOrchestrationSnapshot = {
         ...latestOrchestrationSnapshot,
         capsuleText: nextText,
-        updatedAt: new Date().toISOString(),
     };
     clearCapsulePrompt(context);
-    await persistOrchestratorChatState(context);
+    await persistStoredOrchestrationSnapshot(context, latestOrchestrationSnapshot.anchorPlayableFloor, latestOrchestrationSnapshot);
+    ensureUi();
     notifySuccess(i18n('Saved latest orchestration result.'));
     updateUiStatus(i18n('Saved latest orchestration result.'));
     return true;
@@ -1994,15 +2212,91 @@ function canReuseLatestOrchestrationSnapshot(chatKey, anchor) {
     if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
         return false;
     }
-    const storedFloor = Number(latestOrchestrationSnapshot.anchorFloor);
-    const incomingFloor = Number(anchor.floor);
-    const storedPlayableFloor = Number(latestOrchestrationSnapshot.anchorPlayableFloor);
-    const incomingPlayableFloor = Number(anchor.playableFloor);
-    const floorMatched = Number.isFinite(storedPlayableFloor) && Number.isFinite(incomingPlayableFloor)
-        ? storedPlayableFloor === incomingPlayableFloor
-        : storedFloor === incomingFloor;
-    return floorMatched
+    return normalizeAnchorPlayableFloor(latestOrchestrationSnapshot.anchorPlayableFloor) === normalizeAnchorPlayableFloor(anchor.playableFloor)
         && String(latestOrchestrationSnapshot.anchorHash || '') === String(anchor.hash || '');
+}
+
+async function deleteStoredOrchestrationAnchors(context, anchors) {
+    const normalizedAnchors = normalizeOrchestrationHistoryAnchors(anchors);
+    for (const anchorPlayableFloor of normalizedAnchors) {
+        await deleteStoredOrchestrationSnapshot(context, anchorPlayableFloor);
+    }
+}
+
+async function storeCompletedOrchestrationSnapshot(context, anchor, capsuleText, stageOutputs) {
+    const chatKey = getChatKey(context);
+    const anchorPlayableFloor = normalizeAnchorPlayableFloor(anchor?.playableFloor);
+    const anchorHash = String(anchor?.hash || '').trim();
+    const nextCapsuleText = String(capsuleText || '').trim();
+    if (!chatKey || !anchorPlayableFloor || !anchorHash || !nextCapsuleText) {
+        return null;
+    }
+
+    const compactOutputs = compactStageOutputs(stageOutputs || []);
+    const nextSnapshot = {
+        anchorHash,
+        capsuleText: nextCapsuleText,
+        stageOutputs: compactOutputs,
+    };
+    const previousAnchors = getLoadedOrchestrationHistoryAnchors(context);
+    const removedAnchors = previousAnchors.filter(existingAnchor => existingAnchor > anchorPlayableFloor);
+    if (removedAnchors.length > 0) {
+        await deleteStoredOrchestrationAnchors(context, removedAnchors);
+    }
+    const ok = await persistStoredOrchestrationSnapshot(context, anchorPlayableFloor, nextSnapshot);
+    if (!ok) {
+        throw new Error(i18n('Failed to persist orchestration snapshot.'));
+    }
+    const nextAnchors = normalizeOrchestrationHistoryAnchors([
+        ...previousAnchors.filter(existingAnchor => existingAnchor <= anchorPlayableFloor),
+        anchorPlayableFloor,
+    ]);
+    setLoadedOrchestrationHistoryIndex(chatKey, nextAnchors);
+    latestOrchestrationSnapshot = materializeOrchestrationSnapshot(chatKey, anchorPlayableFloor, nextSnapshot);
+    await persistOrchestratorChatState(context);
+    ensureUi();
+    return latestOrchestrationSnapshot;
+}
+
+function updateOrchestrationHistoryStatusAfterInvalidation(context) {
+    const entry = getLatestOrchestrationEntry(context);
+    if (entry?.anchorPlayableFloor) {
+        updateUiStatus(i18nFormat('Orchestration history invalidated. Rolled back to user turn ${0}.', entry.anchorPlayableFloor));
+        return;
+    }
+    updateUiStatus(i18n('Orchestration history invalidated. No valid stored result remains.'));
+}
+
+async function invalidateStoredOrchestrationAnchors(context, thresholdPlayableFloor = 0, { inclusive = true } = {}) {
+    const chatKey = getChatKey(context);
+    if (!chatKey) {
+        latestOrchestrationSnapshot = null;
+        latestOrchestrationHistoryIndex = null;
+        clearCapsulePrompt(context);
+        ensureUi();
+        return false;
+    }
+
+    const currentAnchors = getLoadedOrchestrationHistoryAnchors(context);
+    const normalizedThreshold = normalizeAnchorPlayableFloor(thresholdPlayableFloor);
+    const removedAnchors = normalizedThreshold > 0
+        ? currentAnchors.filter(anchorPlayableFloor => inclusive ? anchorPlayableFloor >= normalizedThreshold : anchorPlayableFloor > normalizedThreshold)
+        : currentAnchors.slice();
+    if (removedAnchors.length === 0) {
+        clearCapsulePrompt(context);
+        ensureUi();
+        return false;
+    }
+
+    await deleteStoredOrchestrationAnchors(context, removedAnchors);
+    const nextAnchors = currentAnchors.filter(anchorPlayableFloor => !removedAnchors.includes(anchorPlayableFloor));
+    setLoadedOrchestrationHistoryIndex(chatKey, nextAnchors);
+    await persistOrchestratorChatState(context);
+    await selectLatestValidOrchestrationSnapshot(context, { persistCleanup: true });
+    clearCapsulePrompt(context);
+    updateOrchestrationHistoryStatusAfterInvalidation(context);
+    ensureUi();
+    return true;
 }
 
 function getEffectiveProfile(context) {
@@ -3165,7 +3459,7 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
     const { message: lastUser } = extractLastUserMessage(messages);
     const previousOutputs = buildPreviousOutputsMarkdown(previousNodeOutputs);
     const distillerOutput = buildDistillerOutputMarkdown(previousNodeOutputs);
-    const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
+    const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
     const hasRerunReason = Object.prototype.hasOwnProperty.call(options || {}, 'rerunReason');
     const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
         previousOrchestration,
@@ -3387,7 +3681,7 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
         .join('\n');
     const { message: lastUser } = extractLastUserMessage(messages);
-    const previousOrchestration = getPreviousOrchestrationCapsuleText(context, payload);
+    const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
     const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
         previousOrchestration,
     });
@@ -3788,10 +4082,9 @@ function reapplyLatestCapsuleInjection(context) {
     latestOrchestrationSnapshot = {
         ...latestOrchestrationSnapshot,
         capsuleText: nextText,
-        updatedAt: new Date().toISOString(),
     };
     clearCapsulePrompt(context);
-    void persistOrchestratorChatState(context);
+    void persistStoredOrchestrationSnapshot(context, latestOrchestrationSnapshot.anchorPlayableFloor, latestOrchestrationSnapshot);
 }
 
 async function onWorldInfoFinalized(payload) {
@@ -3810,7 +4103,7 @@ async function onWorldInfoFinalized(payload) {
     if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
         await loadOrchestratorChatState(context, { force: false });
         clearCapsulePrompt(context);
-        clearLastOrchestrationSnapshot(context, { persist: true });
+        await selectLatestValidOrchestrationSnapshot(context, { persistCleanup: true });
         updateUiStatus(i18n('Generation aborted. Skipped orchestration.'));
         return;
     }
@@ -3848,13 +4141,12 @@ async function onWorldInfoFinalized(payload) {
         if (messages.length === 0) {
             clearLatestOrchestrationRuntimeTrace(context);
             clearCapsulePrompt(context);
-            clearLastOrchestrationSnapshot(context, { persist: true });
+            await selectLatestValidOrchestrationSnapshot(context, { persistCleanup: true });
             return;
         }
-        const generationType = String(payload?.type || '').trim().toLowerCase();
         const chatKey = getChatKey(context);
         const anchor = buildLastUserAnchor(context, messages);
-        if (ORCH_REUSE_GENERATION_TYPES.has(generationType) && canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
+        if (canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
                 const reuseTrace = createOrchestrationRuntimeTrace(context, payload, sanitizeSpec(profile.spec)?.stages || [], {
@@ -3867,13 +4159,6 @@ async function onWorldInfoFinalized(payload) {
                     note: i18n('Reused previous orchestration snapshot. No nodes executed.'),
                 });
                 injectCapsuleToPayload(payload, capsuleText, settings);
-                latestOrchestrationSnapshot = {
-                    ...latestOrchestrationSnapshot,
-                    chatKey,
-                    updatedAt: new Date().toISOString(),
-                    targetLayer: getTargetAssistantLayer(payload),
-                };
-                await persistOrchestratorChatState(context);
                 throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
                 updateUiStatus(i18n('Orchestrator completed.'));
                 clearRunInfoToast();
@@ -3906,7 +4191,6 @@ async function onWorldInfoFinalized(payload) {
                 note: i18n('Orchestration cancelled by user before completion.'),
             });
             clearCapsulePrompt(context);
-            clearLastOrchestrationSnapshot(context, { persist: true });
             updateUiStatus(i18n('Orchestrator cancelled by user.'));
             return;
         }
@@ -3916,21 +4200,11 @@ async function onWorldInfoFinalized(payload) {
         const capsuleText = buildCapsule(finalRun.stageOutputs || []);
         throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
         injectCapsuleToPayload(payload, capsuleText, settings);
-        latestOrchestrationSnapshot = {
-            chatKey,
-            anchorFloor: Number(anchor?.floor || 0),
-            anchorPlayableFloor: Number(anchor?.playableFloor || 0),
-            anchorHash: String(anchor?.hash || ''),
-            capsuleText,
-            updatedAt: new Date().toISOString(),
-            targetLayer: getTargetAssistantLayer(payload),
-            stageOutputs: compactStageOutputs(finalRun.stageOutputs || []),
-        };
+        await storeCompletedOrchestrationSnapshot(context, anchor, capsuleText, finalRun.stageOutputs || []);
         finalizeOrchestrationRuntimeTrace(finalRun?.runtimeTrace || getLatestOrchestrationRuntimeTrace(context), 'completed', {
             capsuleText,
             reviewRerunCount: Number(finalRun?.reviewRerunCount || 0),
         });
-        await persistOrchestratorChatState(context);
         throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
@@ -3942,7 +4216,6 @@ async function onWorldInfoFinalized(payload) {
                     : i18n('Orchestration cancelled by user.'),
             });
             clearCapsulePrompt(context);
-            clearLastOrchestrationSnapshot(context, { persist: true });
             const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
             updateUiStatus(generationAborted
                 ? i18n('Generation aborted. Skipped orchestration.')
@@ -3954,7 +4227,6 @@ async function onWorldInfoFinalized(payload) {
             error: String(error?.message || error),
         });
         clearCapsulePrompt(context);
-        clearLastOrchestrationSnapshot(context, { persist: true });
         console.warn(`[${MODULE_NAME}] Orchestration failed`, error);
         const failText = i18nFormat('Orchestrator failed: ${0}', String(error?.message || error));
         updateUiStatus(failText);
@@ -3970,61 +4242,72 @@ async function onWorldInfoFinalized(payload) {
     }
 }
 
-function onMessageDeleted(_chatLength, details) {
+async function onMessageDeleted(_chatLength, details) {
     const context = getContext();
-    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
-        clearCapsulePrompt(context);
+    await loadOrchestratorChatState(context, { force: false });
+    const deletedPlayableFrom = normalizeAnchorPlayableFloor(details?.deletedPlayableSeqFrom);
+    const deletedPlayableTo = normalizeAnchorPlayableFloor(details?.deletedPlayableSeqTo);
+    const deletedAssistantFrom = Math.max(0, Math.floor(Number(details?.deletedAssistantSeqFrom) || 0));
+    const deletedAssistantTo = Math.max(0, Math.floor(Number(details?.deletedAssistantSeqTo) || 0));
+    const deletedPlayableCount = deletedPlayableFrom > 0 && deletedPlayableTo >= deletedPlayableFrom
+        ? (deletedPlayableTo - deletedPlayableFrom + 1)
+        : 0;
+    const deletedAssistantCount = deletedAssistantFrom > 0 && deletedAssistantTo >= deletedAssistantFrom
+        ? (deletedAssistantTo - deletedAssistantFrom + 1)
+        : 0;
+    const deletedUserCount = Math.max(deletedPlayableCount - deletedAssistantCount, 0);
+
+    if (!deletedPlayableCount && !deletedAssistantCount) {
+        await invalidateStoredOrchestrationAnchors(context, 0, { inclusive: true });
         return;
     }
-
-    const chatKey = getChatKey(context);
-    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
-        clearCapsulePrompt(context);
+    if (deletedUserCount > 0 && deletedPlayableFrom > 0) {
+        await invalidateStoredOrchestrationAnchors(context, deletedPlayableFrom, { inclusive: true });
         return;
     }
-
-    const anchorPlayableFloor = Number(latestOrchestrationSnapshot.anchorPlayableFloor);
-    const deletedFrom = Number(details?.deletedPlayableSeqFrom);
-    const deletedTo = Number(details?.deletedPlayableSeqTo);
-
-    // Regenerate/swipe-style tail deletion removes only assistant content after last user.
-    // Keep snapshot in that case so reuse can still hit on the next generation.
-    const deletedStrictlyAfterAnchor = Number.isFinite(anchorPlayableFloor)
-        && anchorPlayableFloor > 0
-        && Number.isFinite(deletedFrom)
-        && Number.isFinite(deletedTo)
-        && deletedFrom > anchorPlayableFloor
-        && deletedTo > anchorPlayableFloor;
-
-    if (deletedStrictlyAfterAnchor) {
-        clearCapsulePrompt(context);
+    if (deletedPlayableTo > 0) {
+        const changed = await invalidateStoredOrchestrationAnchors(context, deletedPlayableTo, { inclusive: false });
+        if (!changed) {
+            clearCapsulePrompt(context);
+            ensureUi();
+        }
         return;
     }
 
     clearCapsulePrompt(context);
-    clearLastOrchestrationSnapshot(context, { persist: true });
+    ensureUi();
 }
 
-function onMessageEdited(_messageId) {
+async function onMessageEdited(messageId, mutationMeta = null) {
     const context = getContext();
-    if (!latestOrchestrationSnapshot || typeof latestOrchestrationSnapshot !== 'object') {
+    await loadOrchestratorChatState(context, { force: false });
+    const sourceMessages = Array.isArray(context?.chat) ? context.chat : [];
+    const resolvedMessageId = Math.floor(Number(messageId));
+    const meta = mutationMeta && typeof mutationMeta === 'object'
+        ? mutationMeta
+        : null;
+    const message = Number.isInteger(resolvedMessageId) && resolvedMessageId >= 0 && resolvedMessageId < sourceMessages.length
+        ? sourceMessages[resolvedMessageId]
+        : null;
+    const playableSeq = normalizeAnchorPlayableFloor(meta?.playableSeq ?? (
+        message && !message.is_system
+            ? sourceMessages.slice(0, resolvedMessageId + 1).reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0)
+            : 0
+    ));
+    const isUser = meta ? Boolean(meta.isUser) : Boolean(message?.is_user);
+    const isAssistant = meta ? Boolean(meta.isAssistant) : Boolean(message && !message.is_system && !message.is_user);
+    const isSystem = meta ? Boolean(meta.isSystem) : Boolean(message?.is_system);
+
+    if (isSystem || !playableSeq) {
+        await invalidateStoredOrchestrationAnchors(context, 0, { inclusive: true });
+        return;
+    }
+
+    const changed = await invalidateStoredOrchestrationAnchors(context, playableSeq, { inclusive: isUser || !isAssistant });
+    if (!changed) {
         clearCapsulePrompt(context);
-        return;
+        ensureUi();
     }
-
-    const chatKey = getChatKey(context);
-    if (String(latestOrchestrationSnapshot.chatKey || '') !== String(chatKey || '')) {
-        clearCapsulePrompt(context);
-        return;
-    }
-
-    const currentAnchor = buildLastUserAnchor(context, Array.isArray(context?.chat) ? context.chat : []);
-    if (currentAnchor && canReuseLatestOrchestrationSnapshot(chatKey, currentAnchor)) {
-        return;
-    }
-
-    clearCapsulePrompt(context);
-    clearLastOrchestrationSnapshot(context, { persist: true });
 }
 
 function notifyInfo(message) {
@@ -4522,6 +4805,18 @@ function renderEditorWorkspace(scope, editor, title) {
 </div>`;
 }
 
+function buildLatestOrchestrationStateSummary(context) {
+    const entry = getLatestOrchestrationEntry(context);
+    const anchorCount = getLoadedOrchestrationHistoryAnchors(context).length;
+    if (entry?.anchorPlayableFloor) {
+        return i18nFormat('Last run state: user turn ${0} · stored anchors ${1}', entry.anchorPlayableFloor, anchorCount);
+    }
+    if (anchorCount > 0) {
+        return i18nFormat('Last run state: none · stored anchors ${0}', anchorCount);
+    }
+    return i18n('Last run state: none');
+}
+
 function renderDynamicPanels(root, context) {
     const settings = getSettings();
     const singleModeEnabled = Boolean(settings.singleAgentModeEnabled);
@@ -4546,6 +4841,9 @@ function renderDynamicPanels(root, context) {
             ? (isOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
             : i18n('Global profile (no character override for current card)'),
     );
+    const hasLastRun = Boolean(getLatestOrchestrationEntry(context));
+    root.find('[data-luker-action="view-last-run"]').toggleClass('luker_orch_button_disabled', !hasLastRun);
+    root.find('#luker_orch_last_run_state').text(buildLatestOrchestrationStateSummary(context));
     root.find('[data-luker-ai-goal-input]').val(String(uiState.aiGoal || ''));
     root.find('.luker_orch_board').toggle(!singleModeEnabled);
     root.find('#luker_orch_single_mode_runtime_tools').toggle(singleModeEnabled);
@@ -8009,8 +8307,17 @@ function ensureStyles() {
     padding: 10px;
     background: linear-gradient(160deg, rgba(29,46,39,0.28), rgba(21,31,43,0.2));
 }
+#${UI_BLOCK_ID} .luker_orch_button_disabled {
+    opacity: 0.45;
+    pointer-events: none;
+}
 #${UI_BLOCK_ID} .luker_orch_single_mode_tools {
     margin-top: 8px;
+}
+#${UI_BLOCK_ID} .luker_orch_state_summary {
+    display: block;
+    margin-top: 8px;
+    opacity: 0.82;
 }
 #${UI_BLOCK_ID} .luker_orch_workspace_grid {
     display: grid;
@@ -8939,6 +9246,7 @@ function ensureUi() {
                 </div>
             </div>
 
+            <small id="luker_orch_last_run_state" class="luker_orch_state_summary"></small>
             <small id="luker_orch_status" style="opacity:0.8"></small>
         </div>
     </div>
@@ -8986,6 +9294,7 @@ jQuery(() => {
         abortActiveOrchestratorRun();
         loadedChatStateKey = '';
         latestOrchestrationSnapshot = null;
+        latestOrchestrationHistoryIndex = null;
         clearLatestOrchestrationRuntimeTrace();
         clearCapsulePrompt(liveContext);
         void loadOrchestratorChatState(liveContext, { force: true }).finally(() => ensureUi());
