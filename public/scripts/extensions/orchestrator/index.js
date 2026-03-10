@@ -83,6 +83,34 @@ const ORCH_AI_QUALITY_AXES = {
     human_realism: 'Increase human-like behavior through natural uncertainty, bounded knowledge, and believable pacing.',
     world_autonomy: 'Keep the world autonomous; events should not always orbit the user.',
 };
+const ORCH_CRITIC_REQUIRED_GATES = Object.freeze([
+    'continuity and timeline coherence',
+    'causality and action-consequence coherence',
+    'character/role consistency and anti-OOC drift',
+    'active lorebook/world-info hard constraints',
+    'anti-data/report-tone/weather-broadcast violations',
+    'over-interpretation or unsupported escalation',
+    'human realism and situational plausibility',
+    'world autonomy and avoiding user-centric collapse',
+]);
+const ORCH_CRITIC_PROMPT_AUTHORING_RULE = 'The critic/review preset itself must hardcode the review checklist and decision gate. Do not assume node.type, stage position, or preset name alone will make the model audit outputs.';
+const ORCH_CRITIC_DECISION_RULE = 'Approve only when every required gate passes. If any material issue exists, request rerun of the minimal specific earlier worker node ids. Never emit synthesis, replacement guidance, or silent approval.';
+
+function getCriticPromptReminderLines() {
+    return [
+        ORCH_CRITIC_PROMPT_AUTHORING_RULE,
+        `For every critic/review preset, explicitly hardcode these checks in prompt text: ${ORCH_CRITIC_REQUIRED_GATES.join(', ')}.`,
+        ORCH_CRITIC_DECISION_RULE,
+    ];
+}
+
+function getCriticReviewNodeContractShape() {
+    return {
+        prompt_authoring_rule: ORCH_CRITIC_PROMPT_AUTHORING_RULE,
+        required_checks: ORCH_CRITIC_REQUIRED_GATES,
+        decision_rule: ORCH_CRITIC_DECISION_RULE,
+    };
+}
 
 function getDefaultAiSuggestSystemPrompt() {
     return [
@@ -99,6 +127,7 @@ function getDefaultAiSuggestSystemPrompt() {
         'Review nodes inspect already-executed worker outputs, then either approve or request rerun of specific earlier worker node ids.',
         'Review nodes do not add downstream guidance of their own; later stages keep consuming passthrough worker outputs.',
         'Do not place review nodes in the final stage. Prefer a dedicated serial review stage after the workers it audits.',
+        ...getCriticPromptReminderLines(),
         'Last-stage nodes must return function-call payload with a single field `text`.',
         'Runtime injects the `text` content directly as-is (no YAML wrapping).',
         'Do NOT hardcode any fixed narrator persona/identity/roleplay character in system prompts.',
@@ -170,8 +199,8 @@ const defaultPresets = {
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
-        systemPrompt: 'You are a hard-gate critic. Detect quality violations before final drafting. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Review prior agent outputs for continuity, causality, role consistency, OOC risk, over-interpretation, and pacing mismatch.\n- If specific earlier agents must be recomputed, request rerun for only those agent ids.\n- If prior outputs are acceptable, approve immediately.\n- Do not produce any rewritten guidance, summaries, or synthesis of your own.\n\nReturn review tool calls only.',
+        systemPrompt: 'You are a hard-gate critic.\n- Actively audit prior worker outputs against explicit review gates before approving.\n- Do not assume node type, stage placement, or preset name alone is enough; you must run the checklist.\n- Never emit synthesis or replacement guidance; return only review decisions.\n- Output one concise <thought>...</thought> before your function call.',
+        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Treat approval as allowed only if all required gates pass: continuity/timeline coherence, causality/action-consequence coherence, character/role consistency, anti-OOC/persona drift, active lorebook/world-info hard constraints, anti-data/report-tone/weather-broadcast violations, over-interpretation, human realism/plausibility, and world autonomy.\n- If any material issue exists, request rerun for the minimal specific earlier worker node ids responsible; do not rerun everything by default.\n- If upstream outputs are missing a required constraint/check, treat that as a review failure instead of filling the gap yourself.\n- If prior outputs are acceptable, approve immediately.\n- Do not produce any rewritten guidance, summaries, or synthesis of your own.\n\nReturn review tool calls only.',
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
@@ -4220,6 +4249,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
         'Runtime prepends previous orchestration result before node template text; do not add placeholders for that context.',
         'If you use a critic/reviewer, model it as a review node that approves or requests rerun of earlier worker node ids.',
+        ...getCriticPromptReminderLines(),
         'Review nodes do not emit synthesis. Downstream stages must continue from passthrough worker outputs.',
         'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
     ].join('\n');
@@ -4264,7 +4294,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
-                critic: 'Audit prior worker outputs, then either approve or request rerun of specific earlier worker nodes. Do not emit synthesis.',
+                critic: 'Audit prior worker outputs against an explicit hardcoded checklist, then either approve or request rerun of specific earlier worker nodes. Do not emit synthesis.',
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
                 synthesizer: 'Merge the approved worker outputs into one draft-ready final guidance.',
             },
@@ -4294,6 +4324,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 type_field: `Set node.type to "${ORCH_NODE_TYPE_REVIEW}" for review nodes. Omit or use "${ORCH_NODE_TYPE_WORKER}" for normal worker nodes.`,
                 runtime_behavior: 'Review nodes inspect current available worker outputs, may request rerun of specific earlier worker node ids, and produce no downstream output of their own.',
                 topology_rule: 'Prefer a dedicated serial review stage after the worker stage being audited. Do not place review nodes in the final stage.',
+                ...getCriticReviewNodeContractShape(),
             },
             append_stage: {
                 function: 'luker_orch_append_stage',
@@ -5615,6 +5646,7 @@ function buildAiIterationSystemPrompt(settings) {
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
         '- Runtime prepends previous orchestration result before node template text; do not use placeholders for that context.',
         '- Nodes can be worker or review. Review nodes inspect already-executed worker outputs, may rerun specific earlier worker node ids, and do not generate downstream guidance.',
+        ...getCriticPromptReminderLines().map(line => `- ${line}`),
         '- Keep approved worker outputs as passthrough context after review; do not invent critic summaries to replace them.',
         '- Prefer dedicated serial review stages after the worker stages they audit. Do not place review nodes in the final stage.',
         `- Use luker_orch_set_node.type to set "${ORCH_NODE_TYPE_REVIEW}" when a node should behave as a reviewer.`,
@@ -5685,6 +5717,7 @@ function buildAiIterationUserPrompt(session, userInputText, {
             runtime_behavior: 'Review nodes inspect currently available worker outputs, request rerun for specific earlier worker node ids when needed, and otherwise approve without adding new output.',
             downstream_behavior: 'Later stages keep receiving passthrough worker outputs; critic/review nodes do not replace them with summaries.',
             topology_rule: 'Prefer dedicated serial review stages after the workers being audited. Do not place review nodes in the final stage.',
+            ...getCriticReviewNodeContractShape(),
         }, '{}'),
         '```',
         '',
