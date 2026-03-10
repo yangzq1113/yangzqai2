@@ -916,6 +916,7 @@ const memoryLoadTasks = new Map();
 const rollbackHistoryCache = new Map();
 const pendingMutationInvalidations = new Map();
 let activeRuntimeInfoToast = null;
+let activePersistentRuntimeNoticeToast = null;
 let activeRecallAbortController = null;
 let activeExtractionAbortController = null;
 let activeRecallRunToken = 0;
@@ -7541,6 +7542,7 @@ async function injectMemoryPrompts(context, payload) {
 async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_info_scan') {
     const settings = getSettings();
     const generationType = String(payload?.type || '').trim().toLowerCase();
+    clearPersistentRuntimeNotice();
     const shouldShowRuntimeToast = settings.enabled
         && settings.recallEnabled
         && RECALL_ALLOWED_GENERATION_TYPES.has(generationType)
@@ -7622,6 +7624,7 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
                 payload.requestRescan = false;
             }
             updateUiStatus(i18n('Memory recall cancelled by user.'));
+            clearPersistentRuntimeNotice();
             return false;
         }
         syncMutableGenerationPayloadState(payload, effectivePayload);
@@ -7629,6 +7632,7 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
         if (injected && payload && typeof payload === 'object') {
             payload.__lukerRpgMemoryInjected = true;
         }
+        clearPersistentRuntimeNotice();
         return Boolean(injected);
     } catch (error) {
         syncMutableGenerationPayloadState(payload, effectivePayload);
@@ -7641,14 +7645,17 @@ async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_
             updateUiStatus(generationAborted
                 ? i18n('Generation aborted. Skipped memory recall.')
                 : i18n('Memory recall cancelled by user.'));
+            clearPersistentRuntimeNotice();
             return false;
         }
         console.error(`[${MODULE_NAME}] Recall injection failed during ${trigger}`, error);
-        updateUiStatus(i18nFormat(
+        const failureText = i18nFormat(
             'Recall injection failed (${0}): ${1}',
             trigger,
             String(error?.message || error),
-        ));
+        );
+        updateUiStatus(failureText);
+        showPersistentRuntimeNotice(failureText);
         return false;
     } finally {
         linkedAbort.cleanup();
@@ -7773,15 +7780,19 @@ function scheduleExtraction(context) {
                 Number(debug.latestSeq || 0),
                 Number(debug.coveredSeqTo || 0),
             ));
+            clearPersistentRuntimeNotice();
             refreshUiStats();
         } catch (error) {
             if (isAbortError(error, extractionAbortController.signal)) {
                 updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                clearPersistentRuntimeNotice();
                 refreshUiStats();
                 return;
             }
             console.warn(`[${MODULE_NAME}] Extraction failed`, error);
-            updateUiStatus(i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error)));
+            const failureText = i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error));
+            updateUiStatus(failureText);
+            showPersistentRuntimeNotice(failureText);
         } finally {
             if (activeExtractionAbortController === extractionAbortController) {
                 activeExtractionAbortController = null;
@@ -9205,6 +9216,40 @@ function notifyInfo(message) {
     }
 }
 
+function showPersistentRuntimeNotice(message, { level = 'error' } = {}) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    clearPersistentRuntimeNotice();
+    const method = typeof toastr?.[level] === 'function' ? level : 'error';
+    const toast = toastr[method](String(message || ''), i18n('Memory Graph'), {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: true,
+        closeButton: true,
+        progressBar: false,
+        newestOnTop: true,
+        onHidden: () => {
+            if (activePersistentRuntimeNoticeToast === toast) {
+                activePersistentRuntimeNoticeToast = null;
+            }
+        },
+    });
+    if (toast?.length) {
+        toast.addClass('luker-persistent-toast');
+        activePersistentRuntimeNoticeToast = toast;
+    }
+}
+
+function clearPersistentRuntimeNotice() {
+    if (typeof toastr === 'undefined' || !activePersistentRuntimeNoticeToast) {
+        return;
+    }
+    const toast = activePersistentRuntimeNoticeToast;
+    activePersistentRuntimeNoticeToast = null;
+    toastr.clear(toast);
+}
+
 function notifyEventCompressionIfAny(compressionStats) {
     const eventRounds = getCompressionRoundsByType(compressionStats, 'event');
     if (eventRounds <= 0) {
@@ -9217,6 +9262,7 @@ function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
     if (typeof toastr === 'undefined') {
         return;
     }
+    clearPersistentRuntimeNotice();
     if (activeRuntimeInfoToast) {
         toastr.clear(activeRuntimeInfoToast);
         activeRuntimeInfoToast = null;
@@ -11564,7 +11610,7 @@ jQuery(() => {
                 if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
                     if (isCurrentChat) {
                         clearRuntimeInfoToast();
-                        notifyInfo(mutationInterruptedToastText);
+                        showPersistentRuntimeNotice(mutationInterruptedToastText, { level: 'warning' });
                     }
                     activeExtractionAbortController.abort();
                 }

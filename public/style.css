@@ -4114,6 +4114,10 @@ body #toast-container>div {
     width: 300px;
 }
 
+body #toast-container>div.luker-persistent-toast {
+    cursor: pointer;
+}
+
 body #toast-container .toast-success {
     background-color: #5d9e5d;
 }
