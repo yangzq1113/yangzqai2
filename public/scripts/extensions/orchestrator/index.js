@@ -4548,6 +4548,7 @@ function renderDynamicPanels(root, context) {
     );
     root.find('[data-luker-ai-goal-input]').val(String(uiState.aiGoal || ''));
     root.find('.luker_orch_board').toggle(!singleModeEnabled);
+    root.find('#luker_orch_single_mode_runtime_tools').toggle(singleModeEnabled);
     root.find('#luker_orch_single_mode_hint').toggle(singleModeEnabled);
     root.find('#luker_orch_single_agent_fields').toggle(singleModeEnabled);
     refreshOrchestrationEditorPopup(context, settings);
@@ -8008,6 +8009,9 @@ function ensureStyles() {
     padding: 10px;
     background: linear-gradient(160deg, rgba(29,46,39,0.28), rgba(21,31,43,0.2));
 }
+#${UI_BLOCK_ID} .luker_orch_single_mode_tools {
+    margin-top: 8px;
+}
 #${UI_BLOCK_ID} .luker_orch_workspace_grid {
     display: grid;
     grid-template-columns: 1.2fr 1fr;
@@ -8913,6 +8917,12 @@ function ensureUi() {
             <label for="luker_orch_capsule_custom_instruction">${escapeHtml(i18n('Custom orchestration result instruction (prepended before analysis)'))}</label>
             <textarea id="luker_orch_capsule_custom_instruction" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('e.g. Follow this guidance first, then write final reply in-character.'))}"></textarea>
             <small id="luker_orch_single_mode_hint" style="opacity:0.8">${escapeHtml(i18n('Single-agent mode is enabled. Workflow board is hidden and runtime uses the simplified single node profile.'))}</small>
+            <div id="luker_orch_single_mode_runtime_tools" class="luker_orch_board luker_orch_single_mode_tools">
+                <div class="flex-container">
+                    <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
+                    <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+                </div>
+            </div>
 
             <hr>
             <div class="luker_orch_board">
