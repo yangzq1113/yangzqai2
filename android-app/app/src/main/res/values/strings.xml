@@ -32,7 +32,7 @@
     <string name="endpoint_dialog_hint">http://192.168.1.20:8000</string>
     <string name="endpoint_dialog_save">保存</string>
     <string name="endpoint_dialog_reset_default">重置默认端点</string>
-    <string name="endpoint_dialog_continue">继续</string>
+    <string name="endpoint_dialog_continue">取消</string>
     <string name="endpoint_invalid_url">请输入有效的 http(s) 端点</string>
     <string name="endpoint_saved">已切换到端点：%1$s</string>
     <string name="endpoint_reset_default_done">已恢复默认本地端点</string>
