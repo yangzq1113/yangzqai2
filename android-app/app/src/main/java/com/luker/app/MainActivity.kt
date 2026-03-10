@@ -150,6 +150,9 @@ class MainActivity : AppCompatActivity() {
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) {
             Log.w(tag, "Notification permission denied. Foreground runtime notification may be hidden.")
+            LukerEndpointStatusNotification.clear(applicationContext)
+        } else {
+            LukerEndpointStatusNotification.sync(applicationContext)
         }
     }
     private val saveFileLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -911,6 +914,7 @@ class MainActivity : AppCompatActivity() {
         val bootstrapToken = bootstrapSequence.incrementAndGet()
         runtimeFailureDialogShown = false
         loadingOverlay.visibility = View.VISIBLE
+        LukerEndpointStatusNotification.sync(applicationContext, selection)
 
         if (!selection.usesDefaultLocalRuntime) {
             val baseUrl = selection.resolveBaseUrl()

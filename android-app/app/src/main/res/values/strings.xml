@@ -21,6 +21,10 @@
     <string name="runtime_notification_endpoint">端点</string>
     <string name="runtime_notification_exit">退出应用</string>
     <string name="loading_custom_endpoint">正在连接端点：%1$s</string>
+    <string name="endpoint_status_notification_channel_name">Luker 自定义端点</string>
+    <string name="endpoint_status_notification_channel_description">在未启动本地服务时保留端点配置入口</string>
+    <string name="endpoint_status_notification_title">Luker 自定义端点</string>
+    <string name="endpoint_status_notification_text">当前使用自定义端点：%1$s。点击可修改或重置端点。</string>
     <string name="endpoint_dialog_title">配置服务端点</string>
     <string name="endpoint_dialog_current_default">当前：默认本地端点</string>
     <string name="endpoint_dialog_current_custom">当前：%1$s</string>
