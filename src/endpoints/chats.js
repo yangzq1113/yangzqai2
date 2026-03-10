@@ -542,7 +542,7 @@ class IntegrityMismatchError extends Error {
 }
 
 function sendIntegrityConflict(response, error) {
-    console.error(error.message);
+    console.warn(error.message);
     return response.status(409).send({
         error: 'integrity',
         current_integrity: typeof error?.currentIntegrity === 'string' ? error.currentIntegrity : '',

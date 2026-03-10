@@ -9835,15 +9835,49 @@ function invalidateCurrentChatWriteSnapshot() {
     }
 }
 
-async function shouldRetryChatWriteOnConflict(response, retryCount = 0) {
-    if (!response || response.status !== 409 || retryCount > 0) {
-        return false;
+async function readChatWriteConflictPayload(response) {
+    if (!response || typeof response.clone !== 'function') {
+        return null;
     }
+
+    try {
+        return await response.clone().json();
+    } catch {
+        return null;
+    }
+}
+
+async function resolveChatWriteConflict(response, retryCount = 0) {
+    if (!response || response.status !== 409 || retryCount > 0) {
+        return 'none';
+    }
+
+    const payload = await readChatWriteConflictPayload(response);
+    const errorType = String(payload?.error || '').trim().toLowerCase();
+    const currentIntegrity = typeof payload?.current_integrity === 'string'
+        ? payload.current_integrity.trim()
+        : '';
+
+    if (errorType === 'integrity') {
+        if (chat_metadata && typeof chat_metadata === 'object') {
+            if (currentIntegrity) {
+                chat_metadata.integrity = currentIntegrity;
+            } else {
+                delete chat_metadata.integrity;
+            }
+        }
+        return 'integrity';
+    }
+
     // Keep local in-memory edits/generation state intact. Reloading chat here can
     // overwrite current local mutations (e.g. regenerate/edit-in-progress) and
     // make behavior look like random refresh or duplicate replies.
     invalidateCurrentChatWriteSnapshot();
-    return true;
+    return 'snapshot';
+}
+
+async function shouldRetryChatWriteOnConflict(response, retryCount = 0) {
+    return (await resolveChatWriteConflict(response, retryCount)) !== 'none';
 }
 
 /**
@@ -9883,8 +9917,9 @@ export async function appendChatMessages(messages, retryCount = 0) {
                 rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
                 return true;
             }
-            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return false;
+            const conflictResolution = await resolveChatWriteConflict(response, retryCount);
+            if (conflictResolution !== 'none') {
+                return await appendChatMessages(messages, retryCount + 1);
             }
             return false;
         }
@@ -9917,8 +9952,9 @@ export async function appendChatMessages(messages, retryCount = 0) {
             rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
             return true;
         }
-        if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-            return false;
+        const conflictResolution = await resolveChatWriteConflict(response, retryCount);
+        if (conflictResolution !== 'none') {
+            return await appendChatMessages(messages, retryCount + 1);
         }
         return false;
     } catch (error) {
@@ -9972,7 +10008,11 @@ export async function patchChatMessages(operations, retryCount = 0) {
                 rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
                 return true;
             }
-            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+            const conflictResolution = await resolveChatWriteConflict(response, retryCount);
+            if (conflictResolution === 'integrity') {
+                return await patchChatMessages(normalizedOperations, retryCount + 1);
+            }
+            if (conflictResolution === 'snapshot') {
                 return false;
             }
             return false;
@@ -10006,7 +10046,11 @@ export async function patchChatMessages(operations, retryCount = 0) {
             rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
             return true;
         }
-        if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
+        const conflictResolution = await resolveChatWriteConflict(response, retryCount);
+        if (conflictResolution === 'integrity') {
+            return await patchChatMessages(normalizedOperations, retryCount + 1);
+        }
+        if (conflictResolution === 'snapshot') {
             return false;
         }
         return false;
