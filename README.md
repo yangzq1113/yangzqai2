@@ -30,6 +30,8 @@ Use `getContext()` as the primary integration surface.
   - `GENERATION_WORLD_INFO_FINALIZED`
   - `GENERATION_BEFORE_API_REQUEST`
   - `GENERATION_STARTED` / `GENERATION_STOPPED` / `GENERATION_ENDED`
+  - `MESSAGE_EDITED` → `(messageId, meta?)`
+  - `MESSAGE_DELETED` → `(chatLength, meta?)`
 
 Detailed migration and API notes:
 - [`docs/luker-api-migration.md`](docs/luker-api-migration.md)

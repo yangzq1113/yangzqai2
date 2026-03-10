@@ -22,6 +22,7 @@ import {
     extractMessageBias,
     generateQuietPrompt,
     generateRaw,
+    getChatMessageMutationMeta,
     getCurrentChatDetails,
     getCurrentChatId,
     getFirstDisplayedMessageId,
@@ -4694,7 +4695,7 @@ async function messageRoleCallback(args, role) {
     }
     message.is_user = role === 'user';
 
-    await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt);
+    await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt, getChatMessageMutationMeta(modifyAt));
     const existingMessage = chatElement.find(`.mes[mesid="${modifyAt}"]`);
     if (existingMessage.length) {
         const newMessageElement = addOneMessage(message, { forceId: modifyAt, scroll: false, showSwipes: false, insert: false });
@@ -4760,7 +4761,7 @@ async function messageNameCallback(args, name) {
         }
     }
 
-    await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt);
+    await eventSource.emit(event_types.MESSAGE_EDITED, modifyAt, getChatMessageMutationMeta(modifyAt));
     const existingMessage = chatElement.find(`.mes[mesid="${modifyAt}"]`);
     if (existingMessage.length) {
         const newMessageElement = addOneMessage(message, { forceId: modifyAt, scroll: false, showSwipes: false, insert: false });

@@ -483,6 +483,35 @@ Chat lifecycle hooks commonly used by plugins:
 - `CHAT_CREATED`
 - `GROUP_CHAT_CREATED`
 - `CHAT_BRANCH_CREATED`
+- `MESSAGE_EDITED`
+- `MESSAGE_DELETED`
+
+`MESSAGE_EDITED` is emitted as:
+
+```ts
+(messageId: number, meta?: {
+  messageId: number,
+  playableSeq: number | null,
+  assistantSeq: number | null,
+  isUser: boolean,
+  isAssistant: boolean,
+  isSystem: boolean,
+})
+```
+
+The second `meta` argument is backward-compatible and may be absent for older emitters. Use it when your plugin needs immediate invalidation based on the edited message position/type.
+
+`MESSAGE_DELETED` is emitted as:
+
+```ts
+(chatLength: number, meta?: {
+  kind: 'delete',
+  deletedPlayableSeqFrom: number | null,
+  deletedPlayableSeqTo: number | null,
+  deletedAssistantSeqFrom: number | null,
+  deletedAssistantSeqTo: number | null,
+})
+```
 
 `CHAT_BRANCH_CREATED` is emitted after the new branch chat file is saved and before the UI switches into that branch. This is intended for chat-bound plugin state that needs to be copied or truncated for the new branch.
 

@@ -9580,6 +9580,41 @@ export function getChatMessageSnapshot(target = null) {
 }
 
 /**
+ * Builds lightweight mutation metadata for a chat message index.
+ * @param {number} messageId Message index in current chat array.
+ * @param {object[]} [messages=chat] Source messages.
+ * @returns {{messageId:number, playableSeq:number|null, assistantSeq:number|null, isUser:boolean, isAssistant:boolean, isSystem:boolean}|null}
+ */
+export function getChatMessageMutationMeta(messageId, messages = chat) {
+    const source = Array.isArray(messages) ? messages : [];
+    const resolvedId = Math.floor(Number(messageId));
+    if (!Number.isInteger(resolvedId) || resolvedId < 0 || resolvedId >= source.length) {
+        return null;
+    }
+
+    const message = source[resolvedId];
+    if (!message) {
+        return null;
+    }
+
+    const playableSeq = !message.is_system
+        ? source.slice(0, resolvedId + 1).reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0)
+        : null;
+    const assistantSeq = !message.is_system && !message.is_user
+        ? source.slice(0, resolvedId + 1).reduce((count, item) => count + (item && !item.is_system && !item.is_user ? 1 : 0), 0)
+        : null;
+
+    return {
+        messageId: resolvedId,
+        playableSeq,
+        assistantSeq,
+        isUser: Boolean(message.is_user),
+        isAssistant: Boolean(!message.is_system && !message.is_user),
+        isSystem: Boolean(message.is_system),
+    };
+}
+
+/**
  * Gets chat-bound plugin state payload from server side.
  * @param {string} namespace Chat state namespace.
  * @param {object} [options] Additional options.
@@ -11362,7 +11397,7 @@ async function messageEditDone(div) {
 
     let { mesBlock, text, mes, bias } = updateMessage(div);
 
-    await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id);
+    await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id, getChatMessageMutationMeta(this_edit_mes_id));
     text = chat[this_edit_mes_id]?.mes ?? text;
     mesBlock.find('.mes_text').empty();
     mesBlock.find('.mes_edit_buttons').css('display', 'none');
