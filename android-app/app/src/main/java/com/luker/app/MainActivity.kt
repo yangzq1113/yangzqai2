@@ -18,6 +18,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.text.InputType
 import android.util.Base64
 import android.util.Log
 import android.view.View
@@ -31,6 +32,8 @@ import android.webkit.ValueCallback
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -49,6 +52,7 @@ import java.io.File
 import java.io.IOException
 import java.io.PrintWriter
 import java.io.StringWriter
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : AppCompatActivity() {
     private val tag = "LukerMainActivity"
@@ -61,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
+    private var endpointDialog: AlertDialog? = null
     @Volatile
     private var runtimeFailureDialogShown: Boolean = false
     private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
@@ -77,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private var contentRootBasePaddingRight: Int = 0
     private var contentRootBasePaddingBottom: Int = 0
     private var lastAppliedImeOverlapBottom: Int = -1
+    private val bootstrapSequence = AtomicInteger(0)
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             if (immersiveModeEnabled) {
@@ -297,7 +303,16 @@ class MainActivity : AppCompatActivity() {
         registerApkDownloadReceiver()
         ensureNotificationPermissionIfNeeded()
 
-        bootstrapRuntime()
+        val launchAction = intent?.action
+        bootstrapConfiguredEndpoint()
+        handleLaunchIntent(intent)
+        maybePromptForCustomEndpointOnLaunch(savedInstanceState, launchAction)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleLaunchIntent(intent)
     }
 
     private fun ensureNotificationPermissionIfNeeded() {
@@ -891,24 +906,54 @@ class MainActivity : AppCompatActivity() {
         return input.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { fallback }
     }
 
-    private fun bootstrapRuntime() {
+    private fun bootstrapConfiguredEndpoint() {
+        val selection = LukerEndpointConfig.load(applicationContext)
+        val bootstrapToken = bootstrapSequence.incrementAndGet()
+        runtimeFailureDialogShown = false
+        loadingOverlay.visibility = View.VISIBLE
+
+        if (!selection.usesDefaultLocalRuntime) {
+            val baseUrl = selection.resolveBaseUrl()
+            LukerRuntimeForegroundService.stop(applicationContext)
+            loadingText.text = getString(R.string.loading_custom_endpoint, baseUrl)
+            webView.stopLoading()
+            webView.loadUrl(baseUrl)
+            return
+        }
+
         loadingText.setText(R.string.loading_runtime)
 
         Thread {
             try {
+                if (!isBootstrapCurrent(bootstrapToken)) {
+                    return@Thread
+                }
                 val result = LukerRuntimeManager.startIfNeeded(applicationContext)
                 if (!result.ok) {
+                    if (!isBootstrapCurrent(bootstrapToken)) {
+                        return@Thread
+                    }
                     val detail = result.error?.trim()?.takeIf { it.isNotEmpty() }
                     val diagnostics = collectRuntimeDiagnosticsSafe()
                     Log.e(tag, "Runtime start failed: ${detail ?: "unknown"}\n$diagnostics")
                     reportRuntimeFailure(detail ?: "unknown", diagnostics)
                     return@Thread
                 }
+                if (!isBootstrapCurrent(bootstrapToken)) {
+                    return@Thread
+                }
                 LukerRuntimeForegroundService.start(applicationContext)
 
-                runOnUiThread { loadingText.setText(R.string.loading_webview) }
-                waitUntilServerReady(240, 1000)
+                runOnUiThread {
+                    if (isBootstrapCurrent(bootstrapToken)) {
+                        loadingText.setText(R.string.loading_webview)
+                    }
+                }
+                waitUntilServerReady(240, 1000, bootstrapToken)
             } catch (t: Throwable) {
+                if (!isBootstrapCurrent(bootstrapToken)) {
+                    return@Thread
+                }
                 Log.e(tag, "bootstrapRuntime crashed", t)
                 val diagnostics = collectRuntimeDiagnosticsSafe()
                 reportRuntimeFailure(t.message ?: "unknown error", diagnostics, t)
@@ -916,11 +961,15 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun waitUntilServerReady(maxAttempts: Int, delayMs: Long) {
+    private fun waitUntilServerReady(maxAttempts: Int, delayMs: Long, bootstrapToken: Int) {
         var remaining = maxAttempts
-        while (!isDestroyed && !isFinishing) {
+        while (isBootstrapCurrent(bootstrapToken)) {
             if (LukerRuntimeManager.isServerReady()) {
-                runOnUiThread { webView.loadUrl(LukerRuntimeManager.SERVER_URL) }
+                runOnUiThread {
+                    if (isBootstrapCurrent(bootstrapToken)) {
+                        webView.loadUrl(LukerRuntimeManager.SERVER_URL)
+                    }
+                }
                 return
             }
 
@@ -941,6 +990,114 @@ class MainActivity : AppCompatActivity() {
             remaining -= 1
             Thread.sleep(delayMs)
         }
+    }
+
+    private fun isBootstrapCurrent(bootstrapToken: Int): Boolean {
+        return bootstrapSequence.get() == bootstrapToken && !isDestroyed && !isFinishing
+    }
+
+    private fun maybePromptForCustomEndpointOnLaunch(savedInstanceState: Bundle?, launchAction: String?) {
+        if (savedInstanceState != null || launchAction == ACTION_OPEN_ENDPOINT_SETTINGS) {
+            return
+        }
+        val selection = LukerEndpointConfig.load(applicationContext)
+        if (!selection.usesDefaultLocalRuntime) {
+            window.decorView.post { showEndpointDialog() }
+        }
+    }
+
+    private fun handleLaunchIntent(intent: Intent?) {
+        if (intent?.action != ACTION_OPEN_ENDPOINT_SETTINGS) {
+            return
+        }
+        intent.action = null
+        window.decorView.post { showEndpointDialog() }
+    }
+
+    private fun showEndpointDialog() {
+        if (isFinishing || isDestroyed) {
+            return
+        }
+        endpointDialog?.takeIf { it.isShowing }?.let { return }
+
+        val selection = LukerEndpointConfig.load(applicationContext)
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, 0)
+        }
+        val descriptionView = TextView(this).apply {
+            text = buildString {
+                append(
+                    if (selection.usesDefaultLocalRuntime) {
+                        getString(R.string.endpoint_dialog_current_default)
+                    } else {
+                        getString(R.string.endpoint_dialog_current_custom, selection.resolveBaseUrl())
+                    },
+                )
+                append("\n\n")
+                append(getString(R.string.endpoint_dialog_message))
+            }
+        }
+        val inputView = EditText(this).apply {
+            hint = getString(R.string.endpoint_dialog_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+            setText(selection.customBaseUrl.orEmpty())
+            setSelection(text.length)
+        }
+        container.addView(descriptionView)
+        container.addView(
+            inputView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.endpoint_dialog_title)
+            .setView(container)
+            .setPositiveButton(R.string.endpoint_dialog_save, null)
+            .setNeutralButton(R.string.endpoint_dialog_reset_default, null)
+            .setNegativeButton(R.string.endpoint_dialog_continue, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val normalizedEndpoint = LukerEndpointConfig.normalizeCustomBaseUrl(inputView.text?.toString())
+                if (normalizedEndpoint == null) {
+                    inputView.error = getString(R.string.endpoint_invalid_url)
+                    return@setOnClickListener
+                }
+                LukerEndpointConfig.saveCustom(applicationContext, normalizedEndpoint)
+                Toast.makeText(
+                    this,
+                    getString(R.string.endpoint_saved, normalizedEndpoint),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                dialog.dismiss()
+                bootstrapConfiguredEndpoint()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                LukerEndpointConfig.resetToDefault(applicationContext)
+                Toast.makeText(
+                    this,
+                    getString(R.string.endpoint_reset_default_done),
+                    Toast.LENGTH_SHORT,
+                ).show()
+                dialog.dismiss()
+                bootstrapConfiguredEndpoint()
+            }
+        }
+        dialog.setOnDismissListener {
+            if (endpointDialog === dialog) {
+                endpointDialog = null
+            }
+        }
+
+        endpointDialog = dialog
+        dialog.show()
     }
 
     private fun collectRuntimeDiagnosticsSafe(): String {
@@ -982,7 +1139,7 @@ class MainActivity : AppCompatActivity() {
 
         return buildString {
             append("reason=").append(reason).append('\n')
-            append("server=").append(LukerRuntimeManager.SERVER_URL).append('\n')
+            append("server=").append(LukerEndpointConfig.load(applicationContext).resolveBaseUrl()).append('\n')
             append("device=").append(android.os.Build.MANUFACTURER)
                 .append(' ')
                 .append(android.os.Build.MODEL)
@@ -1047,6 +1204,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        endpointDialog?.dismiss()
+        endpointDialog = null
         pendingFilePathCallback?.onReceiveValue(null)
         pendingFilePathCallback = null
         pendingWebPermissionRequest?.deny()
@@ -1061,5 +1220,9 @@ class MainActivity : AppCompatActivity() {
             apkDownloadReceiverRegistered = false
         }
         super.onDestroy()
+    }
+
+    companion object {
+        const val ACTION_OPEN_ENDPOINT_SETTINGS = "com.luker.app.action.OPEN_ENDPOINT_SETTINGS"
     }
 }

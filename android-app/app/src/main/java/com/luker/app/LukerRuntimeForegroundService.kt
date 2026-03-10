@@ -69,9 +69,18 @@ class LukerRuntimeForegroundService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val exitIntent = PendingIntent.getService(
+        val endpointIntent = PendingIntent.getActivity(
             this,
             1,
+            Intent(this, MainActivity::class.java).apply {
+                action = MainActivity.ACTION_OPEN_ENDPOINT_SETTINGS
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val exitIntent = PendingIntent.getService(
+            this,
+            2,
             Intent(this, LukerRuntimeForegroundService::class.java).apply {
                 action = ACTION_EXIT_APP
             },
@@ -87,6 +96,11 @@ class LukerRuntimeForegroundService : Service() {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .addAction(
+                android.R.drawable.ic_menu_manage,
+                getString(R.string.runtime_notification_endpoint),
+                endpointIntent,
+            )
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 getString(R.string.runtime_notification_exit),
@@ -107,6 +121,10 @@ class LukerRuntimeForegroundService : Service() {
             } else {
                 context.startService(intent)
             }
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, LukerRuntimeForegroundService::class.java))
         }
     }
 }
