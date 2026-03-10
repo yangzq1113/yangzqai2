@@ -5545,7 +5545,7 @@ function renderAiIterationMessageBodyHtml(content, { auto = false } = {}) {
 <details class="luker_orch_iter_msg_folded">
     <summary>${escapeHtml(summary)}</summary>
     ${preview ? `<div class="luker_orch_iter_msg_preview"><b>${escapeHtml(i18n('Preview'))}:</b> ${escapeHtml(preview)}${text.length > preview.length ? ' ...' : ''}</div>` : ''}
-    <pre class="luker_orch_iter_msg_full">${escapeHtml(text)}</pre>
+    <div class="luker_orch_iter_msg_full">${escapeHtml(text)}</div>
 </details>`;
 }
 
@@ -8764,16 +8764,16 @@ function ensureStyles() {
     margin-top: 6px;
     opacity: 0.92;
 }
+.luker_orch_iter_msg_folded[open] .luker_orch_iter_msg_preview {
+    display: none;
+}
 .luker_orch_iter_msg_full {
     margin-top: 6px;
-    max-height: 260px;
-    overflow: auto;
     white-space: pre-wrap;
     word-break: break-word;
-    background: rgba(0,0,0,0.14);
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 6px;
-    padding: 8px;
+}
+.luker_orch_iter_msg_folded:not([open]) .luker_orch_iter_msg_full {
+    display: none;
 }
 .luker_orch_iter_msg.loading .luker_orch_iter_msg_body {
     display: inline-flex;
