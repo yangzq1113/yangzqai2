@@ -421,6 +421,7 @@ function registerLocaleData() {
         'Stage': '阶段',
         'Node': '节点',
         'Summary': '摘要',
+        'Status': '状态',
         'Directives': '执行指令',
         'Risks': '风险',
         'Tags': '标签',
@@ -447,12 +448,48 @@ function registerLocaleData() {
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
         'Open Orchestration Editor': '打开编排编辑器',
         'View Last Run': '查看最近一轮',
+        'View Runtime Trace': '查看运行态轨迹',
         'Latest Orchestration Result': '最近编排结果',
+        'Orchestration Runtime Trace': '编排运行态轨迹',
         'Edit Result': '编辑结果',
         'Edit latest orchestration result text.': '编辑最近一轮编排结果文本。',
         'Orchestration result cannot be empty.': '编排结果不能为空。',
         'Saved latest orchestration result.': '最近一轮编排结果已保存。',
         'No recent orchestration result available for this chat.': '当前聊天暂无最近编排结果。',
+        'No runtime orchestration trace available for this chat yet.': '当前聊天暂无可查看的运行态编排轨迹。',
+        'This trace is in-memory only and clears when chat changes.': '该轨迹仅保存在内存中，切换聊天时会清空。',
+        'Trace is still running. Close and reopen to refresh.': '轨迹仍在运行中；关闭后重新打开即可刷新。',
+        'Flow Graph': '流程图',
+        'Execution Timeline': '执行时间线',
+        'Flow Events': '流程事件',
+        'Latest capsule text': '最新注入文本',
+        'Raw runtime trace': '原始运行态轨迹',
+        'Node Attempts': '节点执行次数',
+        'Review Reruns': 'Review 重跑次数',
+        'Generation Type': '生成类型',
+        'Target Layer': '目标层',
+        'Finished At': '结束时间',
+        'Attempt ${0}': '第 ${0} 次执行',
+        'Rerun reason': '重跑原因',
+        'Targets': '目标节点',
+        'Decision': '决策',
+        'Replay result': '重放结果',
+        'Output': '输出',
+        'Previous result': '上一次结果',
+        'Current result': '当前结果',
+        'Rerun diff': '重跑前后对比',
+        'No events recorded.': '暂无事件记录。',
+        'No node attempts recorded.': '暂无节点执行记录。',
+        'Reused previous orchestration snapshot. No nodes executed.': '已复用上一轮编排快照，本次未重新执行节点。',
+        'Orchestration cancelled by user before completion.': '编排在完成前被用户取消。',
+        'Generation aborted before orchestration completed.': '生成在编排完成前已中止。',
+        'Orchestration cancelled by user.': '编排已被用户取消。',
+        'Running': '运行中',
+        'Completed': '已完成',
+        'Cancelled': '已取消',
+        'Failed': '失败',
+        'Reused': '复用',
+        'Idle': '空闲',
         'Created At': '创建时间',
         'Updated At': '更新时间',
         'AI Iteration Studio': 'AI 迭代工作台',
@@ -624,6 +661,7 @@ function registerLocaleData() {
         'Tags': '標籤',
         'Patch Last User': '使用者訊息修訂建議',
         'Structured Notes': '結構化補充',
+        'Status': '狀態',
         'Current card:': '目前角色卡：',
         '(No character card)': '（無角色卡）',
         '(No character selected)': '（未選擇角色卡）',
@@ -644,12 +682,48 @@ function registerLocaleData() {
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
         'Open Orchestration Editor': '開啟編排編輯器',
         'View Last Run': '查看最近一輪',
+        'View Runtime Trace': '查看執行態軌跡',
         'Latest Orchestration Result': '最近編排結果',
+        'Orchestration Runtime Trace': '編排執行態軌跡',
         'Edit Result': '編輯結果',
         'Edit latest orchestration result text.': '編輯最近一輪編排結果文本。',
         'Orchestration result cannot be empty.': '編排結果不能為空。',
         'Saved latest orchestration result.': '最近一輪編排結果已儲存。',
         'No recent orchestration result available for this chat.': '目前聊天暫無最近編排結果。',
+        'No runtime orchestration trace available for this chat yet.': '目前聊天尚無可檢視的執行態編排軌跡。',
+        'This trace is in-memory only and clears when chat changes.': '此軌跡僅保存在記憶體中，切換聊天時會清空。',
+        'Trace is still running. Close and reopen to refresh.': '軌跡仍在執行中；關閉後重新打開即可刷新。',
+        'Flow Graph': '流程圖',
+        'Execution Timeline': '執行時間線',
+        'Flow Events': '流程事件',
+        'Latest capsule text': '最新注入文本',
+        'Raw runtime trace': '原始執行態軌跡',
+        'Node Attempts': '節點執行次數',
+        'Review Reruns': 'Review 重跑次數',
+        'Generation Type': '生成類型',
+        'Target Layer': '目標層',
+        'Finished At': '結束時間',
+        'Attempt ${0}': '第 ${0} 次執行',
+        'Rerun reason': '重跑原因',
+        'Targets': '目標節點',
+        'Decision': '決策',
+        'Replay result': '重放結果',
+        'Output': '輸出',
+        'Previous result': '上一次結果',
+        'Current result': '目前結果',
+        'Rerun diff': '重跑前後對比',
+        'No events recorded.': '暫無事件記錄。',
+        'No node attempts recorded.': '暫無節點執行記錄。',
+        'Reused previous orchestration snapshot. No nodes executed.': '已沿用上一輪編排快照，本次未重新執行節點。',
+        'Orchestration cancelled by user before completion.': '編排在完成前被使用者取消。',
+        'Generation aborted before orchestration completed.': '生成在編排完成前已中止。',
+        'Orchestration cancelled by user.': '編排已被使用者取消。',
+        'Running': '執行中',
+        'Completed': '已完成',
+        'Cancelled': '已取消',
+        'Failed': '失敗',
+        'Reused': '沿用',
+        'Idle': '閒置',
         'Created At': '建立時間',
         'Updated At': '更新時間',
         'AI Iteration Studio': 'AI 迭代工作台',
@@ -793,6 +867,7 @@ let activeAiIterationAbortController = null;
 let activeOrchRunAbortController = null;
 let activeAiBuildAbortController = null;
 let latestOrchestrationSnapshot = null;
+let latestOrchestrationRuntimeTrace = null;
 let loadedChatStateKey = '';
 
 function cloneDefault(value) {
@@ -964,6 +1039,295 @@ function clearCapsulePrompt(context) {
     );
 }
 
+function cloneOrchestrationTraceValue(value) {
+    if (typeof value === 'string') {
+        return String(value);
+    }
+    if (value && typeof value === 'object') {
+        return structuredClone(value);
+    }
+    return value;
+}
+
+function buildOrchestrationRuntimeSlotKey(stageIndex, nodeIndex, nodeId = '') {
+    return [Number(stageIndex), Number(nodeIndex), String(nodeId || '').trim()].join(':');
+}
+
+function serializeOrchestrationRuntimeValue(value) {
+    if (typeof value === 'string') {
+        return String(value || '');
+    }
+    if (value && typeof value === 'object') {
+        return toReadableYamlText(value, '{}');
+    }
+    if (value === undefined || value === null) {
+        return '';
+    }
+    return String(value);
+}
+
+function truncateOrchestrationRuntimePreview(value, maxChars = 240) {
+    const text = String(value || '').trim();
+    if (!text) {
+        return '';
+    }
+    return text.length > maxChars
+        ? `${text.slice(0, maxChars).trimEnd()}…`
+        : text;
+}
+
+function buildOrchestrationRuntimeStageLayout(stages = []) {
+    return (Array.isArray(stages) ? stages : []).map((stage, stageIndex) => ({
+        stageIndex,
+        id: String(stage?.id || `stage_${stageIndex + 1}`),
+        mode: getStageRuntimeMode(stage),
+        nodes: (Array.isArray(stage?.nodes) ? stage.nodes : []).map((rawNode, nodeIndex) => {
+            const nodeSpec = normalizeNodeSpec(rawNode);
+            return {
+                stageIndex,
+                nodeIndex,
+                slotKey: buildOrchestrationRuntimeSlotKey(stageIndex, nodeIndex, nodeSpec.id),
+                id: String(nodeSpec?.id || ''),
+                preset: String(nodeSpec?.preset || ''),
+                type: normalizeNodeType(nodeSpec?.type),
+            };
+        }).filter(node => node.id),
+    }));
+}
+
+function createOrchestrationRuntimeTrace(context, payload, stages = [], extra = {}) {
+    const now = new Date().toISOString();
+    const trace = {
+        runId: `orch_runtime_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+        chatKey: String(extra?.chatKey || getChatKey(context) || ''),
+        status: String(extra?.status || 'running'),
+        startedAt: String(extra?.startedAt || now),
+        updatedAt: String(extra?.updatedAt || now),
+        finishedAt: String(extra?.finishedAt || ''),
+        generationType: String(payload?.type || extra?.generationType || '').trim().toLowerCase(),
+        targetLayer: Number.isFinite(Number(extra?.targetLayer))
+            ? Number(extra.targetLayer)
+            : getTargetAssistantLayer(payload),
+        note: String(extra?.note || ''),
+        capsuleText: String(extra?.capsuleText || ''),
+        error: String(extra?.error || ''),
+        stages: buildOrchestrationRuntimeStageLayout(stages),
+        attempts: [],
+        events: [],
+        nextEventSeq: 1,
+        nextAttemptId: 1,
+        reviewRerunCount: 0,
+    };
+    if (!extra?.skipStartEvent) {
+        recordOrchestrationRuntimeEvent(trace, 'run_started', {
+            status: trace.status,
+            generationType: trace.generationType,
+            targetLayer: trace.targetLayer,
+            note: trace.note,
+        });
+    }
+    latestOrchestrationRuntimeTrace = trace;
+    return trace;
+}
+
+function getLatestOrchestrationRuntimeTrace(context) {
+    const trace = latestOrchestrationRuntimeTrace;
+    if (!trace || typeof trace !== 'object') {
+        return null;
+    }
+    const chatKey = getChatKey(context);
+    if (String(trace.chatKey || '') !== String(chatKey || '')) {
+        return null;
+    }
+    return trace;
+}
+
+function clearLatestOrchestrationRuntimeTrace(context = null) {
+    if (!context) {
+        latestOrchestrationRuntimeTrace = null;
+        return;
+    }
+    const trace = latestOrchestrationRuntimeTrace;
+    if (!trace || typeof trace !== 'object') {
+        return;
+    }
+    const chatKey = getChatKey(context);
+    if (!chatKey || String(trace.chatKey || '') === String(chatKey || '')) {
+        latestOrchestrationRuntimeTrace = null;
+    }
+}
+
+function recordOrchestrationRuntimeEvent(trace, type, details = {}) {
+    if (!trace || typeof trace !== 'object') {
+        return null;
+    }
+    const event = {
+        seq: Number(trace.nextEventSeq || 1),
+        at: new Date().toISOString(),
+        type: String(type || 'event'),
+        ...structuredClone(details && typeof details === 'object' ? details : {}),
+    };
+    trace.nextEventSeq = event.seq + 1;
+    trace.updatedAt = event.at;
+    trace.events.push(event);
+    return event;
+}
+
+function finalizeOrchestrationRuntimeTrace(trace, status, details = {}) {
+    if (!trace || typeof trace !== 'object') {
+        return;
+    }
+    const normalizedStatus = String(status || trace.status || 'completed');
+    trace.status = normalizedStatus;
+    trace.updatedAt = new Date().toISOString();
+    trace.finishedAt = normalizedStatus === 'running' ? '' : trace.updatedAt;
+    if (Object.prototype.hasOwnProperty.call(details || {}, 'capsuleText')) {
+        trace.capsuleText = String(details?.capsuleText || '');
+    }
+    if (Object.prototype.hasOwnProperty.call(details || {}, 'note')) {
+        trace.note = String(details?.note || '');
+    }
+    if (Object.prototype.hasOwnProperty.call(details || {}, 'error')) {
+        trace.error = String(details?.error || '');
+    }
+    if (Object.prototype.hasOwnProperty.call(details || {}, 'reviewRerunCount')) {
+        trace.reviewRerunCount = Math.max(0, Math.floor(Number(details?.reviewRerunCount) || 0));
+    }
+    recordOrchestrationRuntimeEvent(trace, 'run_finished', {
+        status: normalizedStatus,
+        note: trace.note,
+        error: trace.error,
+        reviewRerunCount: Number(trace.reviewRerunCount || 0),
+    });
+}
+
+function beginOrchestrationRuntimeStage(trace, stage, stageIndex, options = {}) {
+    if (!trace || typeof trace !== 'object') {
+        return null;
+    }
+    const stageState = {
+        stageIndex: Number(stageIndex || 0),
+        stageId: String(stage?.id || `stage_${Number(stageIndex || 0) + 1}`),
+        mode: getStageRuntimeMode(stage),
+        replay: Boolean(options?.replay),
+        partial: Number.isInteger(options?.stopBeforeNodeIndex),
+        stopBeforeNodeIndex: Number.isInteger(options?.stopBeforeNodeIndex) ? Number(options.stopBeforeNodeIndex) : null,
+        startedAt: new Date().toISOString(),
+    };
+    recordOrchestrationRuntimeEvent(trace, 'stage_started', stageState);
+    return stageState;
+}
+
+function finishOrchestrationRuntimeStage(trace, stageState, details = {}) {
+    if (!trace || typeof trace !== 'object' || !stageState || typeof stageState !== 'object') {
+        return;
+    }
+    recordOrchestrationRuntimeEvent(trace, 'stage_finished', {
+        stageIndex: Number(stageState.stageIndex || 0),
+        stageId: String(stageState.stageId || ''),
+        mode: String(stageState.mode || 'serial'),
+        replay: Boolean(stageState.replay),
+        partial: Boolean(stageState.partial),
+        stopBeforeNodeIndex: Number.isInteger(stageState.stopBeforeNodeIndex) ? stageState.stopBeforeNodeIndex : null,
+        status: String(details?.status || 'completed'),
+        error: String(details?.error || ''),
+        stageOutput: cloneOrchestrationTraceValue(details?.stageOutput),
+    });
+}
+
+function beginOrchestrationRuntimeNodeAttempt(trace, meta = {}) {
+    if (!trace || typeof trace !== 'object') {
+        return null;
+    }
+    const attempt = {
+        attemptId: `attempt_${Number(trace.nextAttemptId || 1)}`,
+        sequence: Number(trace.nextEventSeq || 1),
+        stageIndex: Number(meta?.stageIndex || 0),
+        stageId: String(meta?.stageId || ''),
+        nodeIndex: Number(meta?.nodeIndex || 0),
+        nodeId: String(meta?.nodeId || ''),
+        preset: String(meta?.preset || ''),
+        nodeType: normalizeNodeType(meta?.nodeType),
+        slotKey: String(meta?.slotKey || buildOrchestrationRuntimeSlotKey(meta?.stageIndex, meta?.nodeIndex, meta?.nodeId)),
+        runKind: String(meta?.runKind || 'worker'),
+        round: Math.max(1, Math.floor(Number(meta?.round) || 1)),
+        startedAt: new Date().toISOString(),
+        endedAt: '',
+        status: 'running',
+        rerunReason: String(meta?.rerunReason || ''),
+        output: null,
+        outputText: '',
+        previewText: '',
+        action: '',
+        targetNodeIds: [],
+        reason: '',
+        replayResult: null,
+        error: '',
+    };
+    trace.nextAttemptId = Number(trace.nextAttemptId || 1) + 1;
+    trace.attempts.push(attempt);
+    recordOrchestrationRuntimeEvent(trace, 'node_started', {
+        attemptId: attempt.attemptId,
+        stageIndex: attempt.stageIndex,
+        stageId: attempt.stageId,
+        nodeIndex: attempt.nodeIndex,
+        nodeId: attempt.nodeId,
+        preset: attempt.preset,
+        nodeType: attempt.nodeType,
+        runKind: attempt.runKind,
+        round: attempt.round,
+        rerunReason: attempt.rerunReason,
+    });
+    return attempt;
+}
+
+function finishOrchestrationRuntimeNodeAttempt(trace, attempt, details = {}) {
+    if (!trace || typeof trace !== 'object' || !attempt || typeof attempt !== 'object') {
+        return;
+    }
+    attempt.endedAt = new Date().toISOString();
+    attempt.status = String(details?.status || attempt.status || 'completed');
+    attempt.action = String(details?.action || attempt.action || '');
+    attempt.reason = String(details?.reason || attempt.reason || '');
+    attempt.rerunReason = String(
+        Object.prototype.hasOwnProperty.call(details || {}, 'rerunReason')
+            ? details?.rerunReason
+            : attempt.rerunReason,
+    ) || '';
+    attempt.targetNodeIds = Array.isArray(details?.targetNodeIds)
+        ? details.targetNodeIds.map(item => String(item || '').trim()).filter(Boolean)
+        : (Array.isArray(attempt.targetNodeIds) ? attempt.targetNodeIds : []);
+    attempt.replayResult = Object.prototype.hasOwnProperty.call(details || {}, 'replayResult')
+        ? cloneOrchestrationTraceValue(details?.replayResult)
+        : attempt.replayResult;
+    attempt.error = String(details?.error || '');
+    if (Object.prototype.hasOwnProperty.call(details || {}, 'output')) {
+        attempt.output = cloneOrchestrationTraceValue(details?.output);
+        attempt.outputText = serializeOrchestrationRuntimeValue(details?.output);
+        attempt.previewText = truncateOrchestrationRuntimePreview(attempt.outputText);
+    }
+    const eventType = attempt.nodeType === ORCH_NODE_TYPE_REVIEW ? 'review_finished' : 'node_finished';
+    recordOrchestrationRuntimeEvent(trace, eventType, {
+        attemptId: attempt.attemptId,
+        stageIndex: attempt.stageIndex,
+        stageId: attempt.stageId,
+        nodeIndex: attempt.nodeIndex,
+        nodeId: attempt.nodeId,
+        preset: attempt.preset,
+        nodeType: attempt.nodeType,
+        runKind: attempt.runKind,
+        round: attempt.round,
+        status: attempt.status,
+        action: attempt.action,
+        reason: attempt.reason,
+        rerunReason: attempt.rerunReason,
+        targetNodeIds: Array.isArray(attempt.targetNodeIds) ? attempt.targetNodeIds.slice() : [],
+        previewText: attempt.previewText,
+        error: attempt.error,
+        replayResult: cloneOrchestrationTraceValue(attempt.replayResult),
+    });
+}
+
 function normalizeOrchestrationSnapshot(raw) {
     const source = raw && typeof raw === 'object' ? raw : null;
     if (!source) {
@@ -1132,6 +1496,293 @@ function renderLastOrchestrationResultHtml(context) {
     <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Updated At'))}</b>：${escapeHtml(updatedAt)}</div>
     <pre class="luker_orch_last_run_capsule">${escapeHtml(injectedText || i18n('Not set'))}</pre>
 </div>`;
+}
+
+function formatOrchestrationRuntimeStatusLabel(status) {
+    switch (String(status || '').trim().toLowerCase()) {
+        case 'running':
+            return i18n('Running');
+        case 'completed':
+            return i18n('Completed');
+        case 'cancelled':
+            return i18n('Cancelled');
+        case 'failed':
+            return i18n('Failed');
+        case 'reused':
+            return i18n('Reused');
+        default:
+            return i18n('Idle');
+    }
+}
+
+function buildOrchestrationRuntimeTraceNodeIndex(trace) {
+    const index = new Map();
+    for (const attempt of Array.isArray(trace?.attempts) ? trace.attempts : []) {
+        const slotKey = String(attempt?.slotKey || '');
+        if (!slotKey) {
+            continue;
+        }
+        if (!index.has(slotKey)) {
+            index.set(slotKey, []);
+        }
+        index.get(slotKey).push(attempt);
+    }
+    return index;
+}
+
+function renderOrchestrationRuntimeTraceGraphHtml(trace) {
+    const attemptIndex = buildOrchestrationRuntimeTraceNodeIndex(trace);
+    const stages = Array.isArray(trace?.stages) ? trace.stages : [];
+    if (stages.length === 0) {
+        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No node attempts recorded.'))}</div>`;
+    }
+
+    return stages.map((stage, stageIndex) => {
+        const stageNodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+        const nodeHtml = stageNodes.map((node) => {
+            const attempts = attemptIndex.get(String(node?.slotKey || '')) || [];
+            const latestAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : null;
+            const status = formatOrchestrationRuntimeStatusLabel(latestAttempt?.status || '');
+            const statusKey = String(latestAttempt?.status || 'idle').trim().toLowerCase() || 'idle';
+            const previewText = truncateOrchestrationRuntimePreview(String(latestAttempt?.previewText || ''), 120);
+            return `
+<div class="luker_orch_runtime_node luker_orch_runtime_status_${escapeHtml(statusKey)}">
+    <div class="luker_orch_runtime_node_head">
+        <div class="luker_orch_runtime_node_title">${escapeHtml(String(node?.id || ''))}</div>
+        <div class="luker_orch_runtime_status_badge">${escapeHtml(status)}</div>
+    </div>
+    <div class="luker_orch_runtime_node_meta">${escapeHtml(String(node?.type || 'worker'))} · ${escapeHtml(String(node?.preset || node?.id || ''))}</div>
+    <div class="luker_orch_runtime_node_meta">${escapeHtml(i18n('Node Attempts'))}: ${escapeHtml(String(attempts.length || 0))}</div>
+    ${previewText ? `<div class="luker_orch_runtime_node_preview">${escapeHtml(previewText)}</div>` : ''}
+</div>`;
+        }).join('');
+        return `
+<div class="luker_orch_runtime_stage">
+    <div class="luker_orch_runtime_stage_head">
+        <div class="luker_orch_runtime_stage_title">${escapeHtml(String(stage?.id || `stage_${stageIndex + 1}`))}</div>
+        <div class="luker_orch_runtime_stage_mode">${escapeHtml(String(stage?.mode || 'serial'))}</div>
+    </div>
+    <div class="luker_orch_runtime_stage_nodes">${nodeHtml || `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('Not set'))}</div>`}</div>
+</div>
+${stageIndex < stages.length - 1 ? '<div class="luker_orch_runtime_stage_arrow">→</div>' : ''}`;
+    }).join('');
+}
+
+function formatOrchestrationRuntimeEventSummary(event) {
+    const type = String(event?.type || '');
+    const stageId = String(event?.stageId || '');
+    const nodeId = String(event?.nodeId || '');
+    switch (type) {
+        case 'run_started':
+            return `Run started · ${String(event?.generationType || 'normal') || 'normal'}`;
+        case 'run_finished':
+            return `Run ${String(event?.status || 'completed')} · reruns=${Number(event?.reviewRerunCount || 0)}`;
+        case 'replay_started':
+            return `Replay started · ${String(event?.restartStageId || 'stage')} · ${Array.isArray(event?.targetNodeIds) ? event.targetNodeIds.join(', ') : ''}`.trim();
+        case 'replay_finished':
+            return `Replay finished · ${String(event?.restart_stage_id || 'stage')} · rerun ${Number(event?.rerun_round || 0)}`;
+        case 'stage_started':
+            return `${event?.replay ? 'Replay ' : ''}stage started · ${stageId || 'stage'}`;
+        case 'stage_finished':
+            return `${event?.replay ? 'Replay ' : ''}stage ${String(event?.status || 'completed')} · ${stageId || 'stage'}`;
+        case 'node_started':
+            return `${String(event?.nodeType || 'worker')} started · ${nodeId}`;
+        case 'node_finished':
+            return `worker ${String(event?.status || 'completed')} · ${nodeId}`;
+        case 'review_finished':
+            return `review ${String(event?.status || 'completed')} · ${nodeId}${event?.action ? ` · ${event.action}` : ''}`;
+        default:
+            return `${type || 'event'} · ${nodeId || stageId || ''}`.trim();
+    }
+}
+
+function renderOrchestrationRuntimeTraceEventsHtml(trace) {
+    const events = Array.isArray(trace?.events) ? trace.events : [];
+    if (events.length === 0) {
+        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No events recorded.'))}</div>`;
+    }
+    return events.map((event) => `
+<div class="luker_orch_runtime_event">
+    <div class="luker_orch_runtime_event_seq">#${escapeHtml(String(event?.seq || ''))}</div>
+    <div class="luker_orch_runtime_event_body">
+        <div class="luker_orch_runtime_event_text">${escapeHtml(formatOrchestrationRuntimeEventSummary(event))}</div>
+        <div class="luker_orch_runtime_event_meta">${escapeHtml(formatReadableTimestamp(event?.at))}</div>
+    </div>
+</div>`).join('');
+}
+
+function renderOrchestrationRuntimeAttemptHtml(attempt, previousOutputText = '', attemptNo = 1) {
+    const statusKey = String(attempt?.status || 'idle').trim().toLowerCase() || 'idle';
+    const statusLabel = formatOrchestrationRuntimeStatusLabel(attempt?.status || '');
+    const outputText = String(attempt?.outputText || '');
+    const hasOutputDiff = Boolean(previousOutputText && outputText && previousOutputText !== outputText);
+    const metaItems = [
+        `${String(attempt?.stageId || '')} · ${String(attempt?.nodeType || 'worker')}`,
+        String(attempt?.preset || ''),
+        i18nFormat('Attempt ${0}', attemptNo),
+    ].filter(Boolean);
+    if (attempt?.runKind === 'review') {
+        metaItems.push(`round ${Math.max(1, Number(attempt?.round || 1))}`);
+    }
+
+    return `
+<details class="luker_orch_runtime_attempt luker_orch_runtime_status_${escapeHtml(statusKey)}"${attemptNo > 1 || statusKey === 'running' || statusKey === 'failed' ? ' open' : ''}>
+    <summary class="luker_orch_runtime_attempt_head">
+        <span class="luker_orch_runtime_attempt_title">${escapeHtml(String(attempt?.nodeId || ''))}</span>
+        <span class="luker_orch_runtime_attempt_badges">
+            <span class="luker_orch_runtime_status_badge">${escapeHtml(statusLabel)}</span>
+            <span class="luker_orch_runtime_attempt_seq">#${escapeHtml(String(attempt?.sequence || ''))}</span>
+        </span>
+    </summary>
+    <div class="luker_orch_runtime_attempt_meta">${metaItems.map(item => escapeHtml(item)).join(' · ')}</div>
+    <div class="luker_orch_runtime_attempt_meta">${escapeHtml(i18n('Created At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.startedAt))}</div>
+    <div class="luker_orch_runtime_attempt_meta">${escapeHtml(i18n('Finished At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.endedAt || ''))}</div>
+    ${attempt?.rerunReason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Rerun reason'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.rerunReason || ''))}</pre>` : ''}
+    ${attempt?.action ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Decision'))}</div><div class="luker_orch_runtime_attempt_meta">${escapeHtml(String(attempt.action || ''))}</div>` : ''}
+    ${Array.isArray(attempt?.targetNodeIds) && attempt.targetNodeIds.length > 0 ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Targets'))}</div><div class="luker_orch_runtime_attempt_meta">${escapeHtml(attempt.targetNodeIds.join(', '))}</div>` : ''}
+    ${attempt?.reason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Rerun reason'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.reason || ''))}</pre>` : ''}
+    ${attempt?.replayResult ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Replay result'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(toReadableYamlText(attempt.replayResult, '{}'))}</pre>` : ''}
+    ${attempt?.error ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Failed'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.error || ''))}</pre>` : ''}
+    ${hasOutputDiff ? `
+        <div class="luker_orch_runtime_label">${escapeHtml(i18n('Rerun diff'))}</div>
+        ${renderIterationLineDiffHtml(previousOutputText, outputText, `${attempt?.nodeId || 'node'} rerun diff`)}
+        <div class="luker_orch_runtime_dual">
+            <div class="luker_orch_runtime_dual_col">
+                <div class="luker_orch_runtime_label">${escapeHtml(i18n('Previous result'))}</div>
+                <pre class="luker_orch_runtime_pre">${escapeHtml(previousOutputText)}</pre>
+            </div>
+            <div class="luker_orch_runtime_dual_col">
+                <div class="luker_orch_runtime_label">${escapeHtml(i18n('Current result'))}</div>
+                <pre class="luker_orch_runtime_pre">${escapeHtml(outputText)}</pre>
+            </div>
+        </div>` : ''}
+    ${outputText ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Output'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(outputText)}</pre>` : ''}
+</details>`;
+}
+
+function renderOrchestrationRuntimeTraceAttemptsHtml(trace) {
+    const attempts = Array.isArray(trace?.attempts) ? trace.attempts : [];
+    if (attempts.length === 0) {
+        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No node attempts recorded.'))}</div>`;
+    }
+    const attemptCountBySlot = new Map();
+    const lastOutputBySlot = new Map();
+    return attempts.map((attempt) => {
+        const slotKey = String(attempt?.slotKey || '');
+        const nextCount = Number(attemptCountBySlot.get(slotKey) || 0) + 1;
+        attemptCountBySlot.set(slotKey, nextCount);
+        const previousOutputText = lastOutputBySlot.get(slotKey) || '';
+        if (String(attempt?.outputText || '')) {
+            lastOutputBySlot.set(slotKey, String(attempt.outputText || ''));
+        }
+        return renderOrchestrationRuntimeAttemptHtml(attempt, previousOutputText, nextCount);
+    }).join('');
+}
+
+function renderOrchestrationRuntimeTraceHtml(context) {
+    const trace = getLatestOrchestrationRuntimeTrace(context);
+    if (!trace || typeof trace !== 'object') {
+        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No runtime orchestration trace available for this chat yet.'))}</div>`;
+    }
+
+    const notices = [
+        i18n('This trace is in-memory only and clears when chat changes.'),
+        trace.status === 'running' ? i18n('Trace is still running. Close and reopen to refresh.') : '',
+        String(trace.note || ''),
+    ].filter(Boolean);
+
+    return `
+<div class="luker_orch_runtime_popup">
+    <div class="luker_orch_runtime_notice">${notices.map(item => escapeHtml(String(item || ''))).join('<br />')}</div>
+    <div class="luker_orch_runtime_meta_grid">
+        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Status'))}</b><span>${escapeHtml(formatOrchestrationRuntimeStatusLabel(trace.status))}</span></div>
+        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Generation Type'))}</b><span>${escapeHtml(String(trace.generationType || 'normal'))}</span></div>
+        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Target Layer'))}</b><span>${escapeHtml(String(trace.targetLayer || 0))}</span></div>
+        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Node Attempts'))}</b><span>${escapeHtml(String(Array.isArray(trace.attempts) ? trace.attempts.length : 0))}</span></div>
+        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Review Reruns'))}</b><span>${escapeHtml(String(trace.reviewRerunCount || 0))}</span></div>
+        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Updated At'))}</b><span>${escapeHtml(formatReadableTimestamp(trace.updatedAt))}</span></div>
+    </div>
+    <div class="luker_orch_runtime_grid">
+        <div class="luker_orch_runtime_col">
+            <div class="luker_orch_runtime_col_title">${escapeHtml(i18n('Flow Graph'))}</div>
+            <div class="luker_orch_runtime_flow">${renderOrchestrationRuntimeTraceGraphHtml(trace)}</div>
+            <div class="luker_orch_runtime_col_title">${escapeHtml(i18n('Flow Events'))}</div>
+            <div class="luker_orch_runtime_events">${renderOrchestrationRuntimeTraceEventsHtml(trace)}</div>
+        </div>
+        <div class="luker_orch_runtime_col">
+            <div class="luker_orch_runtime_col_title">${escapeHtml(i18n('Execution Timeline'))}</div>
+            <div class="luker_orch_runtime_attempts">${renderOrchestrationRuntimeTraceAttemptsHtml(trace)}</div>
+        </div>
+    </div>
+    ${String(trace?.capsuleText || '').trim() ? `
+        <details class="luker_orch_runtime_raw">
+            <summary>${escapeHtml(i18n('Latest capsule text'))}</summary>
+            <pre class="luker_orch_runtime_pre">${escapeHtml(String(trace.capsuleText || ''))}</pre>
+        </details>` : ''}
+    <details class="luker_orch_runtime_raw">
+        <summary>${escapeHtml(i18n('Raw runtime trace'))}</summary>
+        <pre class="luker_orch_runtime_pre">${escapeHtml(JSON.stringify(trace, null, 2))}</pre>
+    </details>
+</div>`;
+}
+
+async function openOrchestrationRuntimeTrace(context) {
+    const popupId = `luker_orch_runtime_trace_${Date.now()}`;
+    const selector = `#${popupId}`;
+    const namespace = `.lukerOrchRuntimeTrace_${popupId}`;
+    const popupHtml = `<div id="${popupId}" class="luker_orch_runtime_popup_shell">${renderOrchestrationRuntimeTraceHtml(context)}</div>`;
+    const popupPromise = context.callGenericPopup(
+        popupHtml,
+        context.POPUP_TYPE.TEXT,
+        i18n('Orchestration Runtime Trace'),
+        {
+            wide: true,
+            wider: true,
+            large: true,
+            allowVerticalScrolling: true,
+            okButton: i18n('Close'),
+        },
+    );
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="expand-line-diff"]`, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rootElement = document.querySelector(selector);
+        openOrchExpandedDiff(rootElement, this);
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="close-line-diff-zoom"], ${selector} .luker_orch_line_diff_zoom_backdrop`, function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const rootElement = document.querySelector(selector);
+        closeOrchExpandedDiff(rootElement);
+    });
+
+    jQuery(document).on(`keydown${namespace}`, function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+        const rootElement = document.querySelector(selector);
+        const overlay = rootElement?.querySelector?.('.luker_orch_line_diff_zoom_overlay');
+        if (!(overlay instanceof HTMLElement)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        closeOrchExpandedDiff(rootElement);
+    });
+
+    jQuery(document).on(`pointerdown${namespace}`, `${selector} .luker_orch_line_diff_splitter`, function (event) {
+        beginOrchLineDiffResize(this, event.originalEvent || event);
+    });
+
+    try {
+        await popupPromise;
+    } finally {
+        const rootElement = document.querySelector(selector);
+        closeOrchExpandedDiff(rootElement);
+        jQuery(document).off(namespace);
+    }
 }
 
 async function editLastOrchestrationResult(context) {
@@ -2496,6 +3147,17 @@ function extractReviewDecision(toolCalls = [], nodeId = '') {
 async function runWorkerNode(context, payload, nodeSpec, preset, messages, previousNodeOutputs, abortSignal = null, options = {}) {
     throwIfAborted(abortSignal, 'Orchestration aborted.');
     const isFinalStage = Boolean(options?.isFinalStage);
+    const trace = options?.runtime?.trace;
+    const traceAttempt = beginOrchestrationRuntimeNodeAttempt(trace, {
+        stageIndex: Number(options?.stageIndex || 0),
+        stageId: String(options?.stageId || ''),
+        nodeIndex: Number(options?.nodeIndex || 0),
+        nodeId: nodeSpec?.id,
+        preset: nodeSpec?.preset || preset?.id || nodeSpec?.id,
+        nodeType: nodeSpec?.type,
+        runKind: 'worker',
+        rerunReason: String(options?.rerunReason || ''),
+    });
     const settings = extension_settings[MODULE_NAME];
     const recent = getRecentMessages(messages, settings.maxRecentMessages)
         .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
@@ -2535,81 +3197,101 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
     const maxRounds = getNodeIterationMaxRounds(settings);
     const outputToolName = isFinalStage ? 'luker_orch_final_guidance' : 'luker_orch_node_output';
     const runtimeToolMessages = [];
+    let lastRound = 0;
 
-    for (let round = 1; round <= maxRounds; round++) {
-        throwIfAborted(abortSignal, 'Orchestration aborted.');
-        const iterationPrompt = [
-            autoInjectedPrelude,
-            baseUserPrompt,
-            buildNodeIterationContractText(nodeSpec, { isFinalStage }),
-            '## node_iteration_round',
-            `${round}/${maxRounds}`,
-        ].filter(Boolean).join('\n\n');
+    try {
+        for (let round = 1; round <= maxRounds; round++) {
+            lastRound = round;
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
+            const iterationPrompt = [
+                autoInjectedPrelude,
+                baseUserPrompt,
+                buildNodeIterationContractText(nodeSpec, { isFinalStage }),
+                '## node_iteration_round',
+                `${round}/${maxRounds}`,
+            ].filter(Boolean).join('\n\n');
 
-        const basePromptMessages = await buildPresetAwareMessages(
-            context,
-            settings,
-            String(preset.systemPrompt || '').trim(),
-            iterationPrompt,
-            {
-                api,
-                promptPresetName,
-                worldInfoMessages: messages,
-                worldInfoType: String(payload?.type || 'quiet'),
-                runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
-                forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+            const basePromptMessages = await buildPresetAwareMessages(
+                context,
+                settings,
+                String(preset.systemPrompt || '').trim(),
+                iterationPrompt,
+                {
+                    api,
+                    promptPresetName,
+                    worldInfoMessages: messages,
+                    worldInfoType: String(payload?.type || 'quiet'),
+                    runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+                    forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+                    abortSignal,
+                },
+            );
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
+            const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
+
+            const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
+                tools,
+                allowedNames,
+                llmPresetName,
+                apiSettingsOverride,
                 abortSignal,
-            },
-        );
-        throwIfAborted(abortSignal, 'Orchestration aborted.');
-        const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
-
-        const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
-            tools,
-            allowedNames,
-            llmPresetName,
-            apiSettingsOverride,
-            abortSignal,
-            includeAssistantText: true,
-            allowNoToolCalls: false,
-            applyAgentTimeout: true,
-        });
-        throwIfAborted(abortSignal, 'Orchestration aborted.');
-        const calls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
-        if (calls.length === 0) {
-            throw new Error(`Node '${nodeSpec.id}' did not return tool calls.`);
-        }
-
-        let finalizedOutput = null;
-        for (const call of calls) {
-            const name = String(call?.name || '').trim();
-            if (!name) {
-                continue;
+                includeAssistantText: true,
+                allowNoToolCalls: false,
+                applyAgentTimeout: true,
+            });
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
+            const calls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
+            if (calls.length === 0) {
+                throw new Error(`Node '${nodeSpec.id}' did not return tool calls.`);
             }
-            if (name === outputToolName && finalizedOutput === null) {
-                finalizedOutput = call?.args && typeof call.args === 'object' ? call.args : {};
-                continue;
-            }
-        }
 
-        if (finalizedOutput !== null) {
-            if (isFinalStage) {
-                const finalText = String(finalizedOutput?.text ?? '');
-                if (!finalText.trim()) {
-                    throw new Error(`Node '${nodeSpec.id}' returned empty final guidance text.`);
+            let finalizedOutput = null;
+            for (const call of calls) {
+                const name = String(call?.name || '').trim();
+                if (!name) {
+                    continue;
                 }
-                return finalText;
+                if (name === outputToolName && finalizedOutput === null) {
+                    finalizedOutput = call?.args && typeof call.args === 'object' ? call.args : {};
+                    continue;
+                }
             }
-            if (finalizedOutput && typeof finalizedOutput === 'object') {
-                return finalizedOutput;
+
+            if (finalizedOutput !== null) {
+                if (isFinalStage) {
+                    const finalText = String(finalizedOutput?.text ?? '');
+                    if (!finalText.trim()) {
+                        throw new Error(`Node '${nodeSpec.id}' returned empty final guidance text.`);
+                    }
+                    finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
+                        status: 'completed',
+                        output: finalText,
+                    });
+                    return finalText;
+                }
+                if (finalizedOutput && typeof finalizedOutput === 'object') {
+                    finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
+                        status: 'completed',
+                        output: finalizedOutput,
+                    });
+                    return finalizedOutput;
+                }
+                throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
             }
-            throw new Error(`Node '${nodeSpec.id}' returned invalid tool call payload.`);
+
+            throw new Error(`Node '${nodeSpec.id}' did not return the required output tool '${outputToolName}'.`);
         }
 
-        throw new Error(`Node '${nodeSpec.id}' did not return the required output tool '${outputToolName}'.`);
+        throw new Error(`Node '${nodeSpec.id}' exceeded max iteration rounds (${maxRounds}) without ${outputToolName}.`);
+    } catch (error) {
+        finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
+            status: 'failed',
+            error: String(error?.message || error),
+            rerunReason: String(options?.rerunReason || ''),
+            round: lastRound,
+        });
+        throw error;
     }
-
-    throw new Error(`Node '${nodeSpec.id}' exceeded max iteration rounds (${maxRounds}) without ${outputToolName}.`);
 }
 
 async function replayStagesToReview(context, payload, messages, profile, runtime, {
@@ -2622,6 +3304,14 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
     const stages = Array.isArray(runtime?.stages) ? runtime.stages : [];
     const earliestStageIndex = Math.min(...targetEntries.map(entry => entry.stageIndex));
     const existingStageOutputs = Array.isArray(runtime?.stageOutputs) ? runtime.stageOutputs.slice() : [];
+    recordOrchestrationRuntimeEvent(runtime?.trace, 'replay_started', {
+        currentStageIndex: Number(currentStageIndex || 0),
+        currentNodeIndex: Number(currentNodeIndex || 0),
+        restartStageIndex: Number(earliestStageIndex || 0),
+        restartStageId: String(stages[earliestStageIndex]?.id || ''),
+        targetNodeIds: targetEntries.map(entry => entry.nodeId),
+        rerunReason: String(rerunReason || ''),
+    });
     const rerunTargetsByStage = new Map();
     const rerunReasonsByStage = new Map();
     for (const entry of targetEntries) {
@@ -2640,6 +3330,7 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
 
     for (let stageIndex = earliestStageIndex; stageIndex < currentStageIndex; stageIndex++) {
         const stageResult = await executeStage(context, payload, messages, profile, runtime, stageIndex, previousNodeOutputs, abortSignal, {
+            replay: true,
             rerunNodeIds: stageIndex === earliestStageIndex
                 ? (rerunTargetsByStage.get(stageIndex) || null)
                 : null,
@@ -2655,6 +3346,7 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
     }
 
     const currentStagePrefix = await executeStage(context, payload, messages, profile, runtime, currentStageIndex, previousNodeOutputs, abortSignal, {
+        replay: true,
         stopBeforeNodeIndex: currentNodeIndex,
         rerunNodeIds: earliestStageIndex === currentStageIndex
             ? (rerunTargetsByStage.get(currentStageIndex) || null)
@@ -2667,15 +3359,18 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
             : null,
     });
 
+    const replayResult = {
+        rerun_round: Number(runtime.reviewRerunCount || 0),
+        rerun_remaining: Math.max(getReviewRerunMaxRounds() - Number(runtime.reviewRerunCount || 0), 0),
+        restart_stage_id: String(stages[earliestStageIndex]?.id || ''),
+        target_node_ids: targetEntries.map(entry => entry.nodeId),
+    };
+    recordOrchestrationRuntimeEvent(runtime?.trace, 'replay_finished', replayResult);
+
     return {
         previousNodeOutputs: currentStagePrefix.previousNodeOutputs,
         currentStageWorkerOutputs: currentStagePrefix.stageWorkerOutputs,
-        result: {
-            rerun_round: Number(runtime.reviewRerunCount || 0),
-            rerun_remaining: Math.max(getReviewRerunMaxRounds() - Number(runtime.reviewRerunCount || 0), 0),
-            restart_stage_id: String(stages[earliestStageIndex]?.id || ''),
-            target_node_ids: targetEntries.map(entry => entry.nodeId),
-        },
+        result: replayResult,
     };
 }
 
@@ -2714,93 +3409,126 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
     let currentStageOutputs = mergeNodeOutputMaps(currentStageWorkerOutputs);
 
     for (let round = 1; round <= maxRounds; round++) {
-        throwIfAborted(abortSignal, 'Orchestration aborted.');
-        const availableOutputs = mergeNodeOutputMaps(currentPreviousNodeOutputs, currentStageOutputs);
-        const priorEntries = collectPriorNodeEntries(options?.runtime?.stages || [], Number(options?.stageIndex || 0), Number(options?.nodeIndex || 0));
-        const baseUserPrompt = renderTemplate(runtimeTemplate, {
-            recent_chat: recent,
-            last_user: String(lastUser?.mes || ''),
-            previous_outputs: buildPreviousOutputsMarkdown(availableOutputs),
-            distiller: buildDistillerOutputMarkdown(availableOutputs),
-            previous_snapshot: '',
-            previous_orchestration: AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE,
+        const trace = options?.runtime?.trace;
+        const traceAttempt = beginOrchestrationRuntimeNodeAttempt(trace, {
+            stageIndex: Number(options?.stageIndex || 0),
+            stageId: String(options?.stageId || ''),
+            nodeIndex: Number(options?.nodeIndex || 0),
+            nodeId: nodeSpec?.id,
+            preset: nodeSpec?.preset || preset?.id || nodeSpec?.id,
+            nodeType: nodeSpec?.type,
+            runKind: 'review',
+            round,
         });
-        const iterationPrompt = [
-            autoInjectedPrelude,
-            baseUserPrompt,
-            buildReviewRuntimeContextText({
-                currentNodeId: nodeSpec.id,
-                priorEntries,
-                rerunUsed: Number(options?.runtime?.reviewRerunCount || 0),
-                rerunMax: maxReruns,
-            }),
-            buildNodeIterationContractText(nodeSpec),
-            '## node_iteration_round',
-            `${round}/${maxRounds}`,
-        ].filter(Boolean).join('\n\n');
+        try {
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
+            const availableOutputs = mergeNodeOutputMaps(currentPreviousNodeOutputs, currentStageOutputs);
+            const priorEntries = collectPriorNodeEntries(options?.runtime?.stages || [], Number(options?.stageIndex || 0), Number(options?.nodeIndex || 0));
+            const baseUserPrompt = renderTemplate(runtimeTemplate, {
+                recent_chat: recent,
+                last_user: String(lastUser?.mes || ''),
+                previous_outputs: buildPreviousOutputsMarkdown(availableOutputs),
+                distiller: buildDistillerOutputMarkdown(availableOutputs),
+                previous_snapshot: '',
+                previous_orchestration: AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE,
+            });
+            const iterationPrompt = [
+                autoInjectedPrelude,
+                baseUserPrompt,
+                buildReviewRuntimeContextText({
+                    currentNodeId: nodeSpec.id,
+                    priorEntries,
+                    rerunUsed: Number(options?.runtime?.reviewRerunCount || 0),
+                    rerunMax: maxReruns,
+                }),
+                buildNodeIterationContractText(nodeSpec),
+                '## node_iteration_round',
+                `${round}/${maxRounds}`,
+            ].filter(Boolean).join('\n\n');
 
-        const basePromptMessages = await buildPresetAwareMessages(
-            context,
-            settings,
-            String(preset.systemPrompt || '').trim(),
-            iterationPrompt,
-            {
-                api,
-                promptPresetName,
-                worldInfoMessages: messages,
-                worldInfoType: String(payload?.type || 'quiet'),
-                runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
-                forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+            const basePromptMessages = await buildPresetAwareMessages(
+                context,
+                settings,
+                String(preset.systemPrompt || '').trim(),
+                iterationPrompt,
+                {
+                    api,
+                    promptPresetName,
+                    worldInfoMessages: messages,
+                    worldInfoType: String(payload?.type || 'quiet'),
+                    runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+                    forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+                    abortSignal,
+                },
+            );
+            const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
+            const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
+                tools,
+                allowedNames,
+                llmPresetName,
+                apiSettingsOverride,
                 abortSignal,
-            },
-        );
-        const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
-        const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
-            tools,
-            allowedNames,
-            llmPresetName,
-            apiSettingsOverride,
-            abortSignal,
-            includeAssistantText: true,
-            allowNoToolCalls: false,
-            applyAgentTimeout: true,
-        });
-        const decision = extractReviewDecision(detailed?.toolCalls || [], nodeSpec.id);
-        if (decision.action === 'approve') {
-            return {
-                previousNodeOutputs: currentPreviousNodeOutputs,
+                includeAssistantText: true,
+                allowNoToolCalls: false,
+                applyAgentTimeout: true,
+            });
+            const decision = extractReviewDecision(detailed?.toolCalls || [], nodeSpec.id);
+            if (decision.action === 'approve') {
+                finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
+                    status: 'completed',
+                    action: 'approve',
+                });
+                return {
+                    previousNodeOutputs: currentPreviousNodeOutputs,
+                    currentStageWorkerOutputs: currentStageOutputs,
+                };
+            }
+
+            if (Number(options?.runtime?.reviewRerunCount || 0) >= maxReruns) {
+                throw new Error(`Review rerun limit reached (${maxReruns}).`);
+            }
+
+            const targetEntries = resolveReviewTargetEntries(
+                options?.runtime?.stages || [],
+                Number(options?.stageIndex || 0),
+                Number(options?.nodeIndex || 0),
+                decision.targetNodeIds,
+            );
+            options.runtime.reviewRerunCount = Number(options.runtime.reviewRerunCount || 0) + 1;
+            if (trace && typeof trace === 'object') {
+                trace.reviewRerunCount = Number(options.runtime.reviewRerunCount || 0);
+            }
+            const replay = await replayStagesToReview(context, payload, messages, profile, options.runtime, {
+                currentStageIndex: Number(options?.stageIndex || 0),
+                currentNodeIndex: Number(options?.nodeIndex || 0),
+                targetEntries,
                 currentStageWorkerOutputs: currentStageOutputs,
-            };
+                rerunReason: decision.reason,
+            }, abortSignal);
+            currentPreviousNodeOutputs = replay.previousNodeOutputs;
+            currentStageOutputs = replay.currentStageWorkerOutputs;
+            finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
+                status: 'completed',
+                action: 'rerun',
+                reason: String(decision.reason || ''),
+                targetNodeIds: targetEntries.map(entry => entry.nodeId),
+                replayResult: replay.result,
+            });
+            appendStandardToolRoundMessages(runtimeToolMessages, [{
+                name: ORCH_REVIEW_TOOL_RERUN,
+                args: {
+                    target_node_ids: targetEntries.map(entry => entry.nodeId),
+                    reason: decision.reason,
+                },
+                result: replay.result,
+            }], detailed?.assistantText || '');
+        } catch (error) {
+            finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
+                status: 'failed',
+                error: String(error?.message || error),
+            });
+            throw error;
         }
-
-        if (Number(options?.runtime?.reviewRerunCount || 0) >= maxReruns) {
-            throw new Error(`Review rerun limit reached (${maxReruns}).`);
-        }
-
-        const targetEntries = resolveReviewTargetEntries(
-            options?.runtime?.stages || [],
-            Number(options?.stageIndex || 0),
-            Number(options?.nodeIndex || 0),
-            decision.targetNodeIds,
-        );
-        options.runtime.reviewRerunCount = Number(options.runtime.reviewRerunCount || 0) + 1;
-        const replay = await replayStagesToReview(context, payload, messages, profile, options.runtime, {
-            currentStageIndex: Number(options?.stageIndex || 0),
-            currentNodeIndex: Number(options?.nodeIndex || 0),
-            targetEntries,
-            currentStageWorkerOutputs: currentStageOutputs,
-            rerunReason: decision.reason,
-        }, abortSignal);
-        currentPreviousNodeOutputs = replay.previousNodeOutputs;
-        currentStageOutputs = replay.currentStageWorkerOutputs;
-        appendStandardToolRoundMessages(runtimeToolMessages, [{
-            name: ORCH_REVIEW_TOOL_RERUN,
-            args: {
-                target_node_ids: targetEntries.map(entry => entry.nodeId),
-                reason: decision.reason,
-            },
-            result: replay.result,
-        }], detailed?.assistantText || '');
     }
 
     throw new Error(`Review node '${nodeSpec.id}' exceeded max rounds (${maxRounds}).`);
@@ -2812,6 +3540,7 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
     const stopBeforeNodeIndex = Number.isInteger(options?.stopBeforeNodeIndex)
         ? Math.max(0, Math.min(nodes.length, Number(options.stopBeforeNodeIndex)))
         : null;
+    const stageId = String(stage?.id || `stage_${Number(stageIndex || 0) + 1}`);
     const seedStageWorkerOutputs = options?.seedStageWorkerOutputs instanceof Map
         ? mergeNodeOutputMaps(options.seedStageWorkerOutputs)
         : new Map();
@@ -2843,77 +3572,112 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
     const effectiveMode = getStageRuntimeMode(stage);
     const isFullStage = stopBeforeNodeIndex === null;
     const isFinalStage = isFullStage && stageIndex === Number(runtime?.stages?.length || 0) - 1;
+    const traceStageState = beginOrchestrationRuntimeStage(runtime?.trace, stage, stageIndex, {
+        replay: Boolean(options?.replay || options?.rerunNodeIds instanceof Set || options?.seedStageWorkerOutputs instanceof Map),
+        stopBeforeNodeIndex,
+    });
+    let traceStageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
 
-    if (effectiveMode === 'parallel' && isFullStage) {
-        const stageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
-        const outputs = await Promise.all(nodes
-            .filter(nodeSpec => shouldRunWorkerNode(nodeSpec.id) || !stageWorkerOutputs.has(nodeSpec.id))
-            .map(async (nodeSpec) => {
-                if (isReviewNodeSpec(nodeSpec)) {
-                    throw new Error(`Review node '${nodeSpec.id}' cannot run in a parallel execution stage.`);
-                }
-                return [
-                    nodeSpec.id,
-                    await runWorkerNode(context, payload, nodeSpec, profile.presets[nodeSpec.preset] || {}, messages, previousNodeOutputs, abortSignal, {
+    try {
+        if (effectiveMode === 'parallel' && isFullStage) {
+            const stageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
+            const outputs = await Promise.all(nodes
+                .map((nodeSpec, nodeIndex) => ({ nodeSpec, nodeIndex }))
+                .filter(({ nodeSpec }) => shouldRunWorkerNode(nodeSpec.id) || !stageWorkerOutputs.has(nodeSpec.id))
+                .map(async ({ nodeSpec, nodeIndex }) => {
+                    if (isReviewNodeSpec(nodeSpec)) {
+                        throw new Error(`Review node '${nodeSpec.id}' cannot run in a parallel execution stage.`);
+                    }
+                    return [
+                        nodeSpec.id,
+                        await runWorkerNode(context, payload, nodeSpec, profile.presets[nodeSpec.preset] || {}, messages, previousNodeOutputs, abortSignal, {
+                            isFinalStage,
+                            rerunReason: resolveRerunReasonForNode(nodeSpec.id),
+                            stageIndex,
+                            stageId,
+                            nodeIndex,
+                            runtime,
+                        }),
+                    ];
+                }));
+            for (const [nodeId, output] of outputs) {
+                stageWorkerOutputs.set(nodeId, output);
+            }
+            traceStageWorkerOutputs = mergeNodeOutputMaps(stageWorkerOutputs);
+            finishOrchestrationRuntimeStage(runtime?.trace, traceStageState, {
+                status: 'completed',
+                stageOutput: createStageOutputSnapshot(stage, stageWorkerOutputs),
+            });
+            return {
+                previousNodeOutputs: mergeNodeOutputMaps(previousNodeOutputs),
+                stageWorkerOutputs,
+            };
+        }
+
+        let currentPreviousNodeOutputs = mergeNodeOutputMaps(previousNodeOutputs);
+        let currentStageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
+        const limit = stopBeforeNodeIndex === null ? nodes.length : stopBeforeNodeIndex;
+
+        for (let nodeIndex = 0; nodeIndex < limit; nodeIndex++) {
+            const nodeSpec = nodes[nodeIndex];
+            const preset = profile.presets[nodeSpec.preset] || {};
+            if (isReviewNodeSpec(nodeSpec)) {
+                const reviewResult = await runReviewNode(
+                    context,
+                    payload,
+                    profile,
+                    nodeSpec,
+                    preset,
+                    messages,
+                    currentPreviousNodeOutputs,
+                    currentStageWorkerOutputs,
+                    abortSignal,
+                    {
                         isFinalStage,
-                        rerunReason: resolveRerunReasonForNode(nodeSpec.id),
-                    }),
-                ];
-            }));
-        for (const [nodeId, output] of outputs) {
-            stageWorkerOutputs.set(nodeId, output);
-        }
-        return {
-            previousNodeOutputs: mergeNodeOutputMaps(previousNodeOutputs),
-            stageWorkerOutputs,
-        };
-    }
+                        stageIndex,
+                        stageId,
+                        nodeIndex,
+                        runtime,
+                    },
+                );
+                currentPreviousNodeOutputs = reviewResult.previousNodeOutputs;
+                currentStageWorkerOutputs = reviewResult.currentStageWorkerOutputs;
+                traceStageWorkerOutputs = mergeNodeOutputMaps(currentStageWorkerOutputs);
+                continue;
+            }
 
-    let currentPreviousNodeOutputs = mergeNodeOutputMaps(previousNodeOutputs);
-    let currentStageWorkerOutputs = mergeNodeOutputMaps(seedStageWorkerOutputs);
-    const limit = stopBeforeNodeIndex === null ? nodes.length : stopBeforeNodeIndex;
-
-    for (let nodeIndex = 0; nodeIndex < limit; nodeIndex++) {
-        const nodeSpec = nodes[nodeIndex];
-        const preset = profile.presets[nodeSpec.preset] || {};
-        if (isReviewNodeSpec(nodeSpec)) {
-            const reviewResult = await runReviewNode(
-                context,
-                payload,
-                profile,
-                nodeSpec,
-                preset,
-                messages,
-                currentPreviousNodeOutputs,
-                currentStageWorkerOutputs,
-                abortSignal,
-                {
-                    isFinalStage,
-                    stageIndex,
-                    nodeIndex,
-                    runtime,
-                },
-            );
-            currentPreviousNodeOutputs = reviewResult.previousNodeOutputs;
-            currentStageWorkerOutputs = reviewResult.currentStageWorkerOutputs;
-            continue;
+            if (!shouldRunWorkerNode(nodeSpec.id) && currentStageWorkerOutputs.has(nodeSpec.id)) {
+                continue;
+            }
+            const output = await runWorkerNode(context, payload, nodeSpec, preset, messages, currentPreviousNodeOutputs, abortSignal, {
+                isFinalStage,
+                rerunReason: resolveRerunReasonForNode(nodeSpec.id),
+                stageIndex,
+                stageId,
+                nodeIndex,
+                runtime,
+            });
+            currentStageWorkerOutputs.set(nodeSpec.id, output);
+            traceStageWorkerOutputs = mergeNodeOutputMaps(currentStageWorkerOutputs);
+            throwIfAborted(abortSignal, 'Orchestration aborted.');
         }
 
-        if (!shouldRunWorkerNode(nodeSpec.id) && currentStageWorkerOutputs.has(nodeSpec.id)) {
-            continue;
-        }
-        const output = await runWorkerNode(context, payload, nodeSpec, preset, messages, currentPreviousNodeOutputs, abortSignal, {
-            isFinalStage,
-            rerunReason: resolveRerunReasonForNode(nodeSpec.id),
+        finishOrchestrationRuntimeStage(runtime?.trace, traceStageState, {
+            status: 'completed',
+            stageOutput: createStageOutputSnapshot(stage, currentStageWorkerOutputs),
         });
-        currentStageWorkerOutputs.set(nodeSpec.id, output);
-        throwIfAborted(abortSignal, 'Orchestration aborted.');
+        return {
+            previousNodeOutputs: currentPreviousNodeOutputs,
+            stageWorkerOutputs: currentStageWorkerOutputs,
+        };
+    } catch (error) {
+        finishOrchestrationRuntimeStage(runtime?.trace, traceStageState, {
+            status: 'failed',
+            error: String(error?.message || error),
+            stageOutput: createStageOutputSnapshot(stage, traceStageWorkerOutputs),
+        });
+        throw error;
     }
-
-    return {
-        previousNodeOutputs: currentPreviousNodeOutputs,
-        stageWorkerOutputs: currentStageWorkerOutputs,
-    };
 }
 
 async function runOrchestration(context, payload, messages, profile) {
@@ -2923,6 +3687,7 @@ async function runOrchestration(context, payload, messages, profile) {
         stages,
         stageOutputs: [],
         reviewRerunCount: 0,
+        trace: createOrchestrationRuntimeTrace(context, payload, stages),
     };
     let previousNodeOutputs = new Map();
     const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
@@ -2936,7 +3701,7 @@ async function runOrchestration(context, payload, messages, profile) {
         runtime.stageOutputs.push(createStageOutputSnapshot(stage, stageResult.stageWorkerOutputs));
     }
 
-    return { stageOutputs: runtime.stageOutputs, previousNodeOutputs };
+    return { stageOutputs: runtime.stageOutputs, previousNodeOutputs, runtimeTrace: runtime.trace, reviewRerunCount: runtime.reviewRerunCount };
 }
 
 function compactStageOutputs(stageOutputs) {
@@ -3081,6 +3846,7 @@ async function onWorldInfoFinalized(payload) {
         const profile = getEffectiveProfile(context);
         const messages = structuredClone(getCoreMessages(payload));
         if (messages.length === 0) {
+            clearLatestOrchestrationRuntimeTrace(context);
             clearCapsulePrompt(context);
             clearLastOrchestrationSnapshot(context, { persist: true });
             return;
@@ -3091,6 +3857,15 @@ async function onWorldInfoFinalized(payload) {
         if (ORCH_REUSE_GENERATION_TYPES.has(generationType) && canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
+                const reuseTrace = createOrchestrationRuntimeTrace(context, payload, sanitizeSpec(profile.spec)?.stages || [], {
+                    status: 'reused',
+                    note: i18n('Reused previous orchestration snapshot. No nodes executed.'),
+                    capsuleText,
+                });
+                finalizeOrchestrationRuntimeTrace(reuseTrace, 'reused', {
+                    capsuleText,
+                    note: i18n('Reused previous orchestration snapshot. No nodes executed.'),
+                });
                 injectCapsuleToPayload(payload, capsuleText, settings);
                 latestOrchestrationSnapshot = {
                     ...latestOrchestrationSnapshot,
@@ -3127,6 +3902,9 @@ async function onWorldInfoFinalized(payload) {
             stopRequestPromise,
         ]);
         if (raced?.stopped) {
+            finalizeOrchestrationRuntimeTrace(getLatestOrchestrationRuntimeTrace(context), 'cancelled', {
+                note: i18n('Orchestration cancelled by user before completion.'),
+            });
             clearCapsulePrompt(context);
             clearLastOrchestrationSnapshot(context, { persist: true });
             updateUiStatus(i18n('Orchestrator cancelled by user.'));
@@ -3148,12 +3926,21 @@ async function onWorldInfoFinalized(payload) {
             targetLayer: getTargetAssistantLayer(payload),
             stageOutputs: compactStageOutputs(finalRun.stageOutputs || []),
         };
+        finalizeOrchestrationRuntimeTrace(finalRun?.runtimeTrace || getLatestOrchestrationRuntimeTrace(context), 'completed', {
+            capsuleText,
+            reviewRerunCount: Number(finalRun?.reviewRerunCount || 0),
+        });
         await persistOrchestratorChatState(context);
         throwIfAborted(orchestrationPayload?.signal, 'Orchestration aborted.');
         updateUiStatus(i18n('Orchestrator completed.'));
         clearRunInfoToast();
     } catch (error) {
         if (isAbortError(error, orchestrationPayload?.signal)) {
+            finalizeOrchestrationRuntimeTrace(getLatestOrchestrationRuntimeTrace(context), 'cancelled', {
+                note: Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted)
+                    ? i18n('Generation aborted before orchestration completed.')
+                    : i18n('Orchestration cancelled by user.'),
+            });
             clearCapsulePrompt(context);
             clearLastOrchestrationSnapshot(context, { persist: true });
             const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
@@ -3163,6 +3950,9 @@ async function onWorldInfoFinalized(payload) {
             clearRunInfoToast();
             return;
         }
+        finalizeOrchestrationRuntimeTrace(getLatestOrchestrationRuntimeTrace(context), 'failed', {
+            error: String(error?.message || error),
+        });
         clearCapsulePrompt(context);
         clearLastOrchestrationSnapshot(context, { persist: true });
         console.warn(`[${MODULE_NAME}] Orchestration failed`, error);
@@ -7188,6 +7978,11 @@ function bindUi() {
             return;
         }
 
+        if (action === 'view-runtime-trace') {
+            await openOrchestrationRuntimeTrace(context);
+            return;
+        }
+
         if (action === 'open-orch-editor') {
             await openOrchestrationEditorPopup(context, settings);
             return;
@@ -7653,6 +8448,200 @@ function ensureStyles() {
     opacity: 0.85;
     padding: 8px;
 }
+.luker_orch_runtime_popup {
+    display: grid;
+    gap: 10px;
+}
+.luker_orch_runtime_notice {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: rgba(0,0,0,0.16);
+    line-height: 1.45;
+    opacity: 0.92;
+}
+.luker_orch_runtime_meta_grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 8px;
+}
+.luker_orch_runtime_meta_card,
+.luker_orch_runtime_col,
+.luker_orch_runtime_stage,
+.luker_orch_runtime_event,
+.luker_orch_runtime_attempt {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    background: rgba(0,0,0,0.16);
+}
+.luker_orch_runtime_meta_card {
+    display: grid;
+    gap: 4px;
+    padding: 8px;
+}
+.luker_orch_runtime_grid {
+    display: grid;
+    grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.15fr);
+    gap: 10px;
+}
+.luker_orch_runtime_col {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    min-width: 0;
+}
+.luker_orch_runtime_col_title,
+.luker_orch_runtime_label {
+    font-weight: 600;
+}
+.luker_orch_runtime_flow {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+}
+.luker_orch_runtime_stage {
+    min-width: 240px;
+    padding: 8px;
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_runtime_stage_head,
+.luker_orch_runtime_node_head,
+.luker_orch_runtime_attempt_head,
+.luker_orch_runtime_event {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+}
+.luker_orch_runtime_stage_title,
+.luker_orch_runtime_node_title,
+.luker_orch_runtime_attempt_title {
+    font-weight: 600;
+    line-height: 1.35;
+}
+.luker_orch_runtime_stage_mode,
+.luker_orch_runtime_node_meta,
+.luker_orch_runtime_attempt_meta,
+.luker_orch_runtime_event_meta,
+.luker_orch_runtime_attempt_seq {
+    opacity: 0.82;
+    font-size: 0.88rem;
+}
+.luker_orch_runtime_stage_nodes,
+.luker_orch_runtime_attempts,
+.luker_orch_runtime_events {
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_runtime_node {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.28));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(255,255,255,0.03);
+    display: grid;
+    gap: 4px;
+}
+.luker_orch_runtime_node_preview {
+    font-size: 0.84rem;
+    line-height: 1.35;
+    opacity: 0.9;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.luker_orch_runtime_stage_arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    opacity: 0.72;
+    font-size: 1.2rem;
+}
+.luker_orch_runtime_status_badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    background: rgba(255,255,255,0.06);
+    white-space: nowrap;
+}
+.luker_orch_runtime_status_running .luker_orch_runtime_status_badge { background: color-mix(in oklab, #2196f3 18%, transparent); }
+.luker_orch_runtime_status_completed .luker_orch_runtime_status_badge,
+.luker_orch_runtime_status_reused .luker_orch_runtime_status_badge { background: color-mix(in oklab, #4caf50 18%, transparent); }
+.luker_orch_runtime_status_failed .luker_orch_runtime_status_badge { background: color-mix(in oklab, #d9534f 18%, transparent); }
+.luker_orch_runtime_status_cancelled .luker_orch_runtime_status_badge { background: color-mix(in oklab, #ff9800 18%, transparent); }
+.luker_orch_runtime_attempt {
+    padding: 8px;
+}
+.luker_orch_runtime_attempt > summary {
+    cursor: pointer;
+    list-style: none;
+}
+.luker_orch_runtime_attempt > summary::-webkit-details-marker {
+    display: none;
+}
+.luker_orch_runtime_attempt_badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.luker_orch_runtime_pre {
+    margin: 4px 0 0;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.2);
+    max-height: 280px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+}
+.luker_orch_runtime_dual {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px;
+    margin-top: 6px;
+}
+.luker_orch_runtime_dual_col {
+    min-width: 0;
+}
+.luker_orch_runtime_event {
+    padding: 8px;
+}
+.luker_orch_runtime_event_seq {
+    min-width: 3em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    opacity: 0.8;
+}
+.luker_orch_runtime_event_body {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+.luker_orch_runtime_event_text {
+    line-height: 1.35;
+    word-break: break-word;
+}
+.luker_orch_runtime_empty {
+    opacity: 0.84;
+    padding: 8px;
+}
+.luker_orch_runtime_raw > summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+@media (max-width: 1100px) {
+    .luker_orch_runtime_grid {
+        grid-template-columns: 1fr;
+    }
+}
 .luker_orch_kb_popup {
     display: grid;
     gap: 10px;
@@ -7934,6 +8923,7 @@ function ensureUi() {
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
+                    <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
@@ -7986,6 +8976,7 @@ jQuery(() => {
         abortActiveOrchestratorRun();
         loadedChatStateKey = '';
         latestOrchestrationSnapshot = null;
+        clearLatestOrchestrationRuntimeTrace();
         clearCapsulePrompt(liveContext);
         void loadOrchestratorChatState(liveContext, { force: true }).finally(() => ensureUi());
     });
