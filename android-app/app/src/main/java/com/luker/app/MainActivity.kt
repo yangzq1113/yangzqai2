@@ -731,6 +731,7 @@ class MainActivity : AppCompatActivity() {
               if (window.__lukerAndroidDownloadBridgeInstalled) return;
               window.__lukerAndroidDownloadBridgeInstalled = true;
               if (!window.LukerAndroid || typeof window.LukerAndroid.saveFileFromDataUrl !== 'function') return;
+              const pendingBlobRevocations = new Map();
 
               const toDataUrl = (blob) => new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -763,15 +764,29 @@ class MainActivity : AppCompatActivity() {
               };
 
               const originalClick = HTMLAnchorElement.prototype.click;
+              const originalRevokeObjectURL = URL.revokeObjectURL.bind(URL);
               HTMLAnchorElement.prototype.click = function () {
                 if (this && this.hasAttribute('download')) {
                   const href = String(this.href || '');
                   if (href.startsWith('blob:') || href.startsWith('data:')) {
-                    handoffDownload(this);
+                    const pendingHandoff = Promise.resolve(handoffDownload(this))
+                      .finally(() => pendingBlobRevocations.delete(href));
+                    if (href.startsWith('blob:')) {
+                      pendingBlobRevocations.set(href, pendingHandoff);
+                    }
                     return;
                   }
                 }
                 return originalClick.call(this);
+              };
+              URL.revokeObjectURL = function (url) {
+                const href = String(url || '');
+                const pendingHandoff = pendingBlobRevocations.get(href);
+                if (pendingHandoff) {
+                  pendingHandoff.finally(() => originalRevokeObjectURL(href));
+                  return;
+                }
+                return originalRevokeObjectURL(href);
               };
             })();
         """.trimIndent()
@@ -784,17 +799,15 @@ class MainActivity : AppCompatActivity() {
         contentDisposition: String?,
         mimeType: String?,
     ) {
-        if (url.isNullOrBlank()) {
-            return
-        }
-        val parsedUri = runCatching { Uri.parse(url) }.getOrNull() ?: return
+        val resolvedUrl = resolveDownloadUrl(url) ?: return
+        val parsedUri = runCatching { Uri.parse(resolvedUrl) }.getOrNull() ?: return
         val scheme = parsedUri.scheme?.lowercase()
         if (scheme != "http" && scheme != "https") {
             return
         }
         try {
-            val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-            val request = DownloadManager.Request(Uri.parse(url)).apply {
+            val fileName = URLUtil.guessFileName(resolvedUrl, contentDisposition, mimeType)
+            val request = DownloadManager.Request(parsedUri).apply {
                 setTitle(fileName)
                 setMimeType(mimeType)
                 setDescription(getString(R.string.download_queued))
@@ -802,7 +815,7 @@ class MainActivity : AppCompatActivity() {
                 if (!userAgent.isNullOrBlank()) {
                     addRequestHeader("User-Agent", userAgent)
                 }
-                val cookies = CookieManager.getInstance().getCookie(url)
+                val cookies = CookieManager.getInstance().getCookie(resolvedUrl)
                 if (!cookies.isNullOrBlank()) {
                     addRequestHeader("Cookie", cookies)
                 }
@@ -812,10 +825,36 @@ class MainActivity : AppCompatActivity() {
             manager.enqueue(request)
             Toast.makeText(this, getString(R.string.download_started), Toast.LENGTH_SHORT).show()
         } catch (t: Throwable) {
-            Log.e(tag, "Failed to enqueue download: $url", t)
+            Log.e(tag, "Failed to enqueue download: $resolvedUrl", t)
             Toast.makeText(this, getString(R.string.download_failed), Toast.LENGTH_SHORT).show()
-            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, parsedUri)) }
         }
+    }
+
+    private fun resolveDownloadUrl(rawUrl: String?): String? {
+        val trimmedUrl = rawUrl?.trim().orEmpty()
+        if (trimmedUrl.isEmpty()) {
+            return null
+        }
+
+        val parsedUri = runCatching { Uri.parse(trimmedUrl) }.getOrNull() ?: return null
+        val scheme = parsedUri.scheme?.lowercase()
+        if (scheme == "http" || scheme == "https") {
+            return parsedUri.toString()
+        }
+        if (scheme != null) {
+            return null
+        }
+
+        val baseUrl = sequenceOf(
+            if (this::webView.isInitialized) webView.url else null,
+            LukerEndpointConfig.load(applicationContext).resolveBaseUrl(),
+            LukerRuntimeManager.SERVER_URL,
+        ).firstOrNull { !it.isNullOrBlank() } ?: return null
+
+        val resolved = runCatching { java.net.URI(baseUrl).resolve(trimmedUrl).toString() }.getOrNull() ?: return null
+        val resolvedScheme = runCatching { Uri.parse(resolved).scheme?.lowercase() }.getOrNull()
+        return resolved.takeIf { resolvedScheme == "http" || resolvedScheme == "https" }
     }
 
     private fun requestSaveFile(bytes: ByteArray, fileName: String, mimeType: String) {
