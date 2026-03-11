@@ -175,7 +175,8 @@ class MainActivity : AppCompatActivity() {
                     output.flush()
                 } ?: throw IOException("Unable to open output stream: $targetUri")
                 runOnUiThread {
-                    Toast.makeText(this, getString(R.string.download_saved, fileName ?: "file"), Toast.LENGTH_SHORT).show()
+                    val savedName = fileName ?: getString(R.string.download_saved_fallback_name)
+                    Toast.makeText(this, getString(R.string.download_saved, savedName), Toast.LENGTH_SHORT).show()
                 }
             } catch (t: Throwable) {
                 Log.e(tag, "Failed to save downloaded file (mime=$mimeType): $targetUri", t)
@@ -376,7 +377,7 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.message_notification_default_title)
         }
         val body = rawBody?.trim().orEmpty().ifBlank {
-            getString(R.string.message_notification_progress_body)
+            getString(R.string.message_notification_default_body)
         }
 
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -424,7 +425,7 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.message_notification_default_title)
         }
         val body = rawBody?.trim().orEmpty().ifBlank {
-            getString(R.string.message_notification_default_body)
+            getString(R.string.message_notification_progress_body)
         }
 
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -475,7 +476,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { Toast.makeText(this@MainActivity, getString(R.string.download_failed), Toast.LENGTH_SHORT).show() }
                 return
             }
-            val resolvedName = sanitizeFileName(suggestedName).ifBlank { "download" }
+            val resolvedName = sanitizeFileName(suggestedName)
             val resolvedMime = if (mimeType.isNullOrBlank()) parsed.first else mimeType
             runOnUiThread { requestSaveFile(parsed.second, resolvedName, resolvedMime) }
         }
@@ -815,7 +816,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val baseName = sanitizeFileName(suggestedName).ifBlank { "luker-update.apk" }
+        val baseName = sanitizeFileName(suggestedName, getString(R.string.update_default_apk_file_name))
         val fileName = if (baseName.lowercase().endsWith(".apk")) baseName else "$baseName.apk"
         try {
             val request = DownloadManager.Request(parsedUri).apply {
@@ -901,8 +902,10 @@ class MainActivity : AppCompatActivity() {
         return mimeType to bytes
     }
 
-    private fun sanitizeFileName(input: String?): String {
-        val fallback = "download"
+    private fun sanitizeFileName(
+        input: String?,
+        fallback: String = getString(R.string.download_default_file_name),
+    ): String {
         if (input.isNullOrBlank()) {
             return fallback
         }
@@ -939,8 +942,9 @@ class MainActivity : AppCompatActivity() {
                     }
                     val detail = result.error?.trim()?.takeIf { it.isNotEmpty() }
                     val diagnostics = collectRuntimeDiagnosticsSafe()
-                    Log.e(tag, "Runtime start failed: ${detail ?: "unknown"}\n$diagnostics")
-                    reportRuntimeFailure(detail ?: "unknown", diagnostics)
+                    val fallbackReason = getString(R.string.runtime_failure_reason_unknown)
+                    Log.e(tag, "Runtime start failed: ${detail ?: fallbackReason}\n$diagnostics")
+                    reportRuntimeFailure(detail ?: fallbackReason, diagnostics)
                     return@Thread
                 }
                 if (!isBootstrapCurrent(bootstrapToken)) {
@@ -960,7 +964,11 @@ class MainActivity : AppCompatActivity() {
                 }
                 Log.e(tag, "bootstrapRuntime crashed", t)
                 val diagnostics = collectRuntimeDiagnosticsSafe()
-                reportRuntimeFailure(t.message ?: "unknown error", diagnostics, t)
+                reportRuntimeFailure(
+                    t.message ?: getString(R.string.runtime_failure_reason_unknown_error),
+                    diagnostics,
+                    t,
+                )
             }
         }.start()
     }
@@ -980,7 +988,7 @@ class MainActivity : AppCompatActivity() {
             if (!LukerRuntimeManager.isNodeProcessRunning()) {
                 val diagnostics = LukerRuntimeManager.collectDiagnostics(applicationContext)
                 Log.e(tag, "Node runtime stopped before server became ready.\n$diagnostics")
-                reportRuntimeFailure("Node exited before startup completed", diagnostics)
+                reportRuntimeFailure(getString(R.string.runtime_failure_reason_node_exited), diagnostics)
                 return
             }
 
@@ -1114,7 +1122,7 @@ class MainActivity : AppCompatActivity() {
         diagnostics: String,
         throwable: Throwable? = null,
     ) {
-        val safeReason = reason.trim().ifEmpty { "unknown error" }
+        val safeReason = reason.trim().ifEmpty { getString(R.string.runtime_failure_reason_unknown_error) }
         val report = buildRuntimeFailureReport(safeReason, diagnostics, throwable)
         val reportFile = runCatching { persistRuntimeReport(report) }.getOrNull()
 
@@ -1196,7 +1204,7 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton(R.string.runtime_error_share) { _, _ ->
                 val shareIntent = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, "Luker runtime startup report")
+                    putExtra(Intent.EXTRA_SUBJECT, getString(R.string.runtime_error_share_subject))
                     putExtra(Intent.EXTRA_TEXT, report)
                 }
                 runCatching {

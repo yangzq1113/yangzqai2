@@ -58,7 +58,7 @@ object LukerRuntimeManager {
     @JvmStatic
     external fun isNodeProcessRunning(): Boolean
 
-    private fun ensureLibrariesLoaded(): StartResult {
+    private fun ensureLibrariesLoaded(context: Context): StartResult {
         if (librariesLoaded.get()) {
             return StartResult(ok = true)
         }
@@ -73,13 +73,17 @@ object LukerRuntimeManager {
                 StartResult(ok = true)
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to load native libraries", t)
-                StartResult(ok = false, error = "Native runtime load failed: ${t.message}")
+                val detail = t.message ?: context.getString(R.string.runtime_failure_reason_unknown_error)
+                StartResult(
+                    ok = false,
+                    error = context.getString(R.string.runtime_start_error_native_load_failed, detail),
+                )
             }
         }
     }
 
     fun startIfNeeded(context: Context): StartResult {
-        val libLoadResult = ensureLibrariesLoaded()
+        val libLoadResult = ensureLibrariesLoaded(context)
         if (!libLoadResult.ok) {
             return libLoadResult
         }
@@ -102,7 +106,7 @@ object LukerRuntimeManager {
                 val paths = prepareRuntime(context)
                 runtimeDir = paths.runtimeRoot
                 dataRootDir = paths.dataRoot
-                val selectedPort = selectServerPort(DEFAULT_SERVER_PORT, MAX_PORT_PROBE_ATTEMPTS)
+                val selectedPort = selectServerPort(context, DEFAULT_SERVER_PORT, MAX_PORT_PROBE_ATTEMPTS)
                 serverPort = selectedPort
 
                 val script = File(paths.runtimeRoot, "bootstrap.js")
@@ -123,7 +127,10 @@ object LukerRuntimeManager {
                 val exitCode = startNodeWithArguments(args)
                 if (exitCode != 0) {
                     Log.e(TAG, "startNodeWithArguments returned non-zero: $exitCode")
-                    return StartResult(ok = false, error = "Node process exited with code $exitCode")
+                    return StartResult(
+                        ok = false,
+                        error = context.getString(R.string.runtime_start_error_node_exit_code, exitCode),
+                    )
                 }
                 started.set(true)
                 Log.i(TAG, "Node runtime launch requested on port=$selectedPort. running=${isNodeProcessRunning()}")
@@ -135,14 +142,20 @@ object LukerRuntimeManager {
         }
     }
 
-    private fun selectServerPort(basePort: Int, maxAttempts: Int): Int {
+    private fun selectServerPort(context: Context, basePort: Int, maxAttempts: Int): Int {
         for (offset in 0 until maxAttempts) {
             val candidate = basePort + offset
             if (isPortAvailable(candidate)) {
                 return candidate
             }
         }
-        throw IllegalStateException("No available port in range $basePort..${basePort + maxAttempts - 1}")
+        throw IllegalStateException(
+            context.getString(
+                R.string.runtime_start_error_no_available_port,
+                basePort,
+                basePort + maxAttempts - 1,
+            ),
+        )
     }
 
     private fun isPortAvailable(port: Int): Boolean {

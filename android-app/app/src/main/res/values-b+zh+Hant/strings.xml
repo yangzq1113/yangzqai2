@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 FunnyCups (https://github.com/funnycups) -->
+<resources>
+    <string name="app_name">Luker</string>
+    <string name="loading_runtime">正在啟動本地 Luker 服務…</string>
+    <string name="loading_webview">服務已啟動，正在載入介面…</string>
+    <string name="loading_failed">服務啟動失敗，請重新啟動應用程式。</string>
+    <string name="loading_failed_with_reason">服務啟動失敗：%1$s</string>
+    <string name="loading_failed_timeout">服務啟動逾時：本地服務未在預期時間內就緒。</string>
+    <string name="runtime_error_dialog_title">啟動失敗診斷</string>
+    <string name="runtime_error_dialog_intro">請複製下方診斷資訊並回報給開發者。</string>
+    <string name="runtime_error_copy">複製報告</string>
+    <string name="runtime_error_share">分享報告</string>
+    <string name="runtime_error_copy_done">診斷資訊已複製</string>
+    <string name="runtime_error_report_saved">診斷報告已儲存到：%1$s</string>
+    <string name="runtime_error_share_subject">Luker 執行階段啟動報告</string>
+    <string name="runtime_notification_channel_name">Luker 背景服務</string>
+    <string name="runtime_notification_channel_description">保持本地 Luker 服務在背景執行</string>
+    <string name="runtime_notification_title">Luker</string>
+    <string name="runtime_notification_text">本地服務正在背景執行</string>
+    <string name="runtime_notification_endpoint">端點</string>
+    <string name="runtime_notification_exit">退出應用程式</string>
+    <string name="loading_custom_endpoint">正在連線到端點：%1$s</string>
+    <string name="endpoint_status_notification_channel_name">Luker 自訂端點</string>
+    <string name="endpoint_status_notification_channel_description">在未啟動本地服務時保留端點設定入口</string>
+    <string name="endpoint_status_notification_title">Luker 自訂端點</string>
+    <string name="endpoint_status_notification_text">目前使用自訂端點：%1$s。點擊即可修改或重設端點。</string>
+    <string name="endpoint_dialog_title">設定服務端點</string>
+    <string name="endpoint_dialog_current_default">目前：預設本地端點</string>
+    <string name="endpoint_dialog_current_custom">目前：%1$s</string>
+    <string name="endpoint_dialog_message">預設端點使用應用程式內建的本地服務。儲存自訂的 http(s):// 端點後，後續啟動將直接連線到該端點，不再自動啟動本地服務。</string>
+    <string name="endpoint_dialog_hint">http://192.168.1.20:8000</string>
+    <string name="endpoint_dialog_save">儲存</string>
+    <string name="endpoint_dialog_reset_default">重設預設端點</string>
+    <string name="endpoint_dialog_continue">取消</string>
+    <string name="endpoint_invalid_url">請輸入有效的 http(s) 端點</string>
+    <string name="endpoint_saved">已切換到端點：%1$s</string>
+    <string name="endpoint_reset_default_done">已恢復預設本地端點</string>
+    <string name="message_alert_channel_name">Luker 訊息提醒</string>
+    <string name="message_alert_channel_description">助手回覆完成或出錯時的提醒通知</string>
+    <string name="message_progress_channel_name">Luker 訊息進度</string>
+    <string name="message_progress_channel_description">助手回覆生成過程中的常駐狀態通知</string>
+    <string name="message_notification_default_title">Luker</string>
+    <string name="message_notification_default_body">新回覆已生成完成</string>
+    <string name="message_notification_progress_body">回覆生成中…</string>
+    <string name="download_queued">檔案下載已加入佇列</string>
+    <string name="download_started">開始下載檔案</string>
+    <string name="download_failed">下載失敗，請重試</string>
+    <string name="download_saved">檔案已儲存：%1$s</string>
+    <string name="download_saved_fallback_name">檔案</string>
+    <string name="download_in_progress">已有下載儲存作業進行中</string>
+    <string name="download_default_file_name">下載檔案</string>
+    <string name="update_download_queued">更新套件下載已加入佇列</string>
+    <string name="update_download_started">開始下載更新套件</string>
+    <string name="update_download_in_progress">已有更新套件下載任務正在進行</string>
+    <string name="update_install_prompt">下載完成，正在開啟安裝程式</string>
+    <string name="update_default_apk_file_name">luker-update.apk</string>
+    <string name="runtime_failure_reason_unknown">未知原因</string>
+    <string name="runtime_failure_reason_unknown_error">未知錯誤</string>
+    <string name="runtime_failure_reason_node_exited">Node 在啟動完成前已退出</string>
+    <string name="runtime_start_error_native_load_failed">原生執行階段載入失敗：%1$s</string>
+    <string name="runtime_start_error_node_exit_code">Node 行程退出，返回碼 %1$d</string>
+    <string name="runtime_start_error_no_available_port">在連接埠範圍 %1$d..%2$d 內沒有可用連接埠</string>
+</resources>
