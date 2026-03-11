@@ -121,7 +121,13 @@ class MainActivity : AppCompatActivity() {
     private val fileChooserLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val callback = pendingFilePathCallback ?: return@registerForActivityResult
         pendingFilePathCallback = null
-        val chosenUris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        val chosenUris = if (result.resultCode == RESULT_OK) {
+            val parsedUris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+            if (!parsedUris.isNullOrEmpty()) parsedUris else extractChosenFileUris(result.data)
+        } else {
+            null
+        }
+        persistChosenFilePermissions(result.data, chosenUris)
         callback.onReceiveValue(chosenUris)
     }
     private val webPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -235,6 +241,9 @@ class MainActivity : AppCompatActivity() {
                     type = "*/*"
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE)
                 }
+                chooserIntent.addCategory(Intent.CATEGORY_OPENABLE)
+                chooserIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                chooserIntent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
 
                 return try {
                     fileChooserLauncher.launch(chooserIntent)
@@ -311,6 +320,51 @@ class MainActivity : AppCompatActivity() {
         bootstrapConfiguredEndpoint()
         handleLaunchIntent(intent)
         maybePromptForCustomEndpointOnLaunch(savedInstanceState, launchAction)
+    }
+
+    private fun persistChosenFilePermissions(resultData: Intent?, chosenUris: Array<Uri>?) {
+        if (chosenUris.isNullOrEmpty()) {
+            return
+        }
+
+        val resultFlags = resultData?.flags ?: 0
+        val canPersist = (resultFlags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0
+        val readFlags = resultFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+        if (!canPersist || readFlags == 0) {
+            return
+        }
+
+        for (uri in chosenUris) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, readFlags)
+            } catch (error: SecurityException) {
+                Log.d(tag, "Chosen URI does not support persistable permission: $uri", error)
+            } catch (error: Throwable) {
+                Log.w(tag, "Failed to persist chosen file permission: $uri", error)
+            }
+        }
+    }
+
+    private fun extractChosenFileUris(resultData: Intent?): Array<Uri>? {
+        if (resultData == null) {
+            return null
+        }
+
+        val uris = linkedSetOf<Uri>()
+        resultData.data?.let(uris::add)
+        resultData.dataString
+            ?.takeIf { it.isNotBlank() }
+            ?.let(Uri::parse)
+            ?.let(uris::add)
+
+        val clipData = resultData.clipData
+        if (clipData != null) {
+            for (index in 0 until clipData.itemCount) {
+                clipData.getItemAt(index)?.uri?.let(uris::add)
+            }
+        }
+
+        return uris.takeIf { it.isNotEmpty() }?.toTypedArray()
     }
 
     override fun onNewIntent(intent: Intent?) {
