@@ -10,6 +10,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import _ from 'lodash';
 
 import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
+import { acknowledgeGenerationJobsForRequest } from './backends/luker-generation.js';
 import {
     getConfigValue,
     humanizedDateTime,
@@ -806,6 +807,44 @@ function isChatMessageLike(value) {
         && typeof value.is_system === 'boolean';
 }
 
+function collectLukerGenerationIds(value, generationIds = new Set(), depth = 0) {
+    if (depth > 8 || value === null || value === undefined) {
+        return generationIds;
+    }
+
+    const generationId = String(value?.extra?.luker_generation_id || '').trim();
+    if (generationId) {
+        generationIds.add(generationId);
+    }
+
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            collectLukerGenerationIds(item, generationIds, depth + 1);
+        }
+        return generationIds;
+    }
+
+    if (!_.isObjectLike(value) || isChatMessageLike(value)) {
+        return generationIds;
+    }
+
+    for (const nestedValue of Object.values(value)) {
+        if (nestedValue && typeof nestedValue === 'object') {
+            collectLukerGenerationIds(nestedValue, generationIds, depth + 1);
+        }
+    }
+
+    return generationIds;
+}
+
+function acknowledgeGenerationIdsFromValue(request, value) {
+    const generationIds = Array.from(collectLukerGenerationIds(value));
+    if (generationIds.length === 0) {
+        return [];
+    }
+    return acknowledgeGenerationJobsForRequest(request, generationIds);
+}
+
 /**
  * Decodes a single JSON Pointer segment.
  * @param {string} segment
@@ -934,6 +973,7 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
     const dedupedMessages = messages.slice();
     const lastStoredMessage = getLastChatMessage(filePath);
     const lastGenerationId = String(lastStoredMessage?.extra?.luker_generation_id || '');
+    let matchedExistingGenerationId = false;
     while (dedupedMessages.length > 0) {
         if (isChatMessageLike(lastStoredMessage) && isChatMessageLike(dedupedMessages[0]) && _.isEqual(lastStoredMessage, dedupedMessages[0])) {
             dedupedMessages.shift();
@@ -944,11 +984,18 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
         if (!lastGenerationId || !incomingGenerationId || incomingGenerationId !== lastGenerationId) {
             break;
         }
+        matchedExistingGenerationId = true;
         dedupedMessages.shift();
     }
 
     if (dedupedMessages.length === 0) {
-        return { appended: 0, created: false, skipped: messages.length, integrity: getCurrentChatIntegrity(filePath) };
+        return {
+            appended: 0,
+            created: false,
+            skipped: messages.length,
+            matched_existing_generation_id: matchedExistingGenerationId,
+            integrity: getCurrentChatIntegrity(filePath),
+        };
     }
 
     const dedupedSerializedMessages = dedupedMessages.map(message => JSON.stringify(message)).join('\n');
@@ -958,6 +1005,7 @@ export async function appendMessagesToChatFile({ filePath, messages, chatMetadat
         appended: dedupedMessages.length,
         created: false,
         skipped: messages.length - dedupedMessages.length,
+        matched_existing_generation_id: matchedExistingGenerationId,
         integrity: nextIntegrity,
     };
 }
@@ -1209,6 +1257,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 
         if (Array.isArray(chatData)) {
             const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
+            acknowledgeGenerationIdsFromValue(request, chatData);
             return response.send({ ok: true, integrity });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
@@ -1246,6 +1295,7 @@ router.post('/append', validateAvatarUrlMiddleware, async function (request, res
             force,
         });
 
+        acknowledgeGenerationIdsFromValue(request, messages);
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -1293,6 +1343,7 @@ router.post('/patch', validateAvatarUrlMiddleware, async function (request, resp
             throw error;
         }
 
+        acknowledgeGenerationIdsFromValue(request, operations);
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -1898,6 +1949,7 @@ router.post('/group/save', async function (request, response) {
 
         if (Array.isArray(chatData)) {
             const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
+            acknowledgeGenerationIdsFromValue(request, chatData);
             return response.send({ ok: true, integrity });
         }
         else {
@@ -1939,6 +1991,7 @@ router.post('/group/append', async function (request, response) {
             force,
         });
 
+        acknowledgeGenerationIdsFromValue(request, messages);
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -1989,6 +2042,7 @@ router.post('/group/patch', async function (request, response) {
             throw error;
         }
 
+        acknowledgeGenerationIdsFromValue(request, operations);
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {

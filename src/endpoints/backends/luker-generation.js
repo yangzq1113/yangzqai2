@@ -5,11 +5,13 @@ import path from 'node:path';
 import sanitize from 'sanitize-filename';
 
 import { appendMessagesToChatFile } from '../chats.js';
+import { getConfigValue } from '../../util.js';
 
 const generationJobs = new Map();
 const LUKER_GENERATION_JOB_MAX_ITEMS = 128;
 const LUKER_GENERATION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
 const LUKER_GENERATION_JOB_MAX_EVENTS = 8000;
+const LUKER_GENERATION_ACK_GRACE_MS = Math.max(1000, Number(getConfigValue('luker.generationAckGraceMs', 15_000, 'number')) || 15_000);
 
 function normalizePersistJsonlFileName(fileName) {
     const raw = String(fileName || '').trim();
@@ -145,14 +147,37 @@ function pruneGenerationJobs() {
     for (const [key, job] of generationJobs.entries()) {
         const updatedAt = Number(job?.updatedAt || job?.createdAt || 0);
         if (!updatedAt || (now - updatedAt) > LUKER_GENERATION_JOB_TTL_MS) {
+            clearGenerationJobPersistenceTimer(job);
             generationJobs.delete(key);
         }
     }
 
     while (generationJobs.size > LUKER_GENERATION_JOB_MAX_ITEMS) {
         const oldestKey = generationJobs.keys().next().value;
+        clearGenerationJobPersistenceTimer(generationJobs.get(oldestKey));
         generationJobs.delete(oldestKey);
     }
+}
+
+function clearGenerationJobPersistenceTimer(job) {
+    if (!job?.persistenceTimer) {
+        return;
+    }
+
+    clearTimeout(job.persistenceTimer);
+    job.persistenceTimer = null;
+}
+
+function buildGenerationJobRequestMeta(request, persistTarget) {
+    return {
+        api: String(request.body?.chat_completion_source || request.body?.api_type || request.body?.api || 'unknown'),
+        char_name: String(persistTarget?.char_name || request.body?.char_name || 'Assistant'),
+        model: String(request.body?.model || ''),
+        directories: {
+            chats: String(request.user?.directories?.chats || ''),
+            groupChats: String(request.user?.directories?.groupChats || ''),
+        },
+    };
 }
 
 export function getPersistChatKey(persistTarget) {
@@ -205,13 +230,28 @@ export function createGenerationJob(request, options) {
         chatKey,
         abortController: null,
         cancelledByUser: false,
+        acked: false,
+        ackedAt: null,
+        finishedAt: null,
+        persistenceTimer: null,
+        persistenceInFlight: false,
+        requestMeta: null,
+        modelName: '',
     };
 
+    clearGenerationJobPersistenceTimer(job);
     job.status = 'running';
     job.updatedAt = now;
     job.error = '';
+    job.persisted = false;
     job.persistTarget = persistTarget;
     job.chatKey = chatKey;
+    job.acked = false;
+    job.ackedAt = null;
+    job.finishedAt = null;
+    job.persistenceInFlight = false;
+    job.requestMeta = buildGenerationJobRequestMeta(request, persistTarget);
+    job.modelName = String(request.body?.model || '');
     if (!Array.isArray(job.events)) {
         job.events = [];
     }
@@ -260,6 +300,8 @@ export function failGenerationJob(job, errorMessage = 'Unknown error occurred') 
     if (job.status === 'cancelled') {
         return;
     }
+    clearGenerationJobPersistenceTimer(job);
+    job.persistenceInFlight = false;
     job.status = 'failed';
     job.error = String(errorMessage || 'Unknown error occurred');
     job.updatedAt = Date.now();
@@ -267,7 +309,8 @@ export function failGenerationJob(job, errorMessage = 'Unknown error occurred') 
     job.abortController = null;
 }
 
-async function persistGeneratedReply(request, persistTarget, text, generationId = '', modelName = '') {
+async function persistGeneratedReply(job, text, generationId = '', modelName = '') {
+    const persistTarget = job?.persistTarget;
     if (!persistTarget || typeof persistTarget !== 'object') {
         return false;
     }
@@ -278,26 +321,30 @@ async function persistGeneratedReply(request, persistTarget, text, generationId 
     }
 
     const message = {
-        name: String(persistTarget.char_name || request.body.char_name || 'Assistant'),
+        name: String(job?.requestMeta?.char_name || persistTarget.char_name || 'Assistant'),
         is_user: false,
         is_system: false,
         send_date: new Date().toISOString(),
         mes: finalText,
         extra: {
-            api: String(request.body?.chat_completion_source || request.body?.api_type || request.body?.api || 'unknown'),
-            model: modelName || request.body?.model,
+            api: String(job?.requestMeta?.api || 'unknown'),
+            model: modelName || job?.modelName || job?.requestMeta?.model || '',
             luker_server_persisted: true,
             ...(generationId ? { luker_generation_id: generationId } : {}),
         },
     };
 
+    const directories = job?.requestMeta?.directories;
+    const chatsDirectory = String(directories?.chats || '');
+    const groupChatsDirectory = String(directories?.groupChats || '');
+
     if (persistTarget.kind === 'group') {
         const groupId = String(persistTarget.id || '');
-        if (!groupId) {
+        if (!groupId || !groupChatsDirectory) {
             return false;
         }
 
-        const chatFilePath = path.join(request.user.directories.groupChats, sanitize(`${groupId}.jsonl`));
+        const chatFilePath = path.join(groupChatsDirectory, sanitize(`${groupId}.jsonl`));
         await appendMessagesToChatFile({
             filePath: chatFilePath,
             messages: [message],
@@ -310,12 +357,12 @@ async function persistGeneratedReply(request, persistTarget, text, generationId 
     if (persistTarget.kind === 'character') {
         const avatar = normalizePersistAvatarDirectory(persistTarget.avatar_url);
         const fileName = normalizePersistJsonlFileName(persistTarget.file_name);
-        if (!avatar || !fileName) {
+        if (!avatar || !fileName || !chatsDirectory) {
             return false;
         }
 
         const chatFilePath = path.join(
-            request.user.directories.chats,
+            chatsDirectory,
             avatar,
             fileName,
         );
@@ -336,6 +383,8 @@ export async function completeGenerationJobFromText(request, job, text, modelNam
         return false;
     }
     if (job.status === 'cancelled') {
+        clearGenerationJobPersistenceTimer(job);
+        job.persistenceInFlight = false;
         job.updatedAt = Date.now();
         job.finishedAt = Date.now();
         job.abortController = null;
@@ -345,12 +394,18 @@ export async function completeGenerationJobFromText(request, job, text, modelNam
 
     const finalText = String(text || '');
     job.text = finalText || job.text || '';
-    job.status = 'completed';
+    job.modelName = String(modelName || job.modelName || request.body?.model || '');
+    job.status = 'awaiting_ack';
     job.updatedAt = Date.now();
-    job.finishedAt = Date.now();
-    job.persisted = await persistGeneratedReply(request, job.persistTarget, job.text, job.id, modelName);
+    job.finishedAt = null;
+    job.persisted = false;
+    job.persistenceInFlight = false;
     job.abortController = null;
-    return Boolean(job.persisted);
+    clearGenerationJobPersistenceTimer(job);
+    job.persistenceTimer = setTimeout(() => {
+        void persistGenerationJobIfUnacked(job);
+    }, LUKER_GENERATION_ACK_GRACE_MS);
+    return false;
 }
 
 export async function completeGenerationJobFromPayload(request, job, payload, modelName = '') {
@@ -436,6 +491,8 @@ export function cancelGenerationJobForRequest(request, jobId, reason = 'Cancelle
         return { ok: true, status: 200, cancelled: false, job };
     }
 
+    clearGenerationJobPersistenceTimer(job);
+    job.persistenceInFlight = false;
     job.status = 'cancelled';
     job.cancelledByUser = true;
     job.error = String(reason || 'Cancelled by user');
@@ -453,6 +510,83 @@ export function cancelGenerationJobForRequest(request, jobId, reason = 'Cancelle
     job.abortController = null;
 
     return { ok: true, status: 200, cancelled: true, job };
+}
+
+async function persistGenerationJobIfUnacked(job) {
+    if (!job || job.status === 'cancelled' || job.status === 'failed' || job.persisted || job.acked) {
+        return Boolean(job?.persisted);
+    }
+
+    clearGenerationJobPersistenceTimer(job);
+
+    if (!job.text) {
+        job.status = 'completed';
+        job.updatedAt = Date.now();
+        job.finishedAt = Date.now();
+        return false;
+    }
+
+    job.status = 'persisting';
+    job.persistenceInFlight = true;
+    job.updatedAt = Date.now();
+
+    try {
+        const persisted = await persistGeneratedReply(job, job.text, job.id, job.modelName);
+        job.persisted = Boolean(persisted);
+        job.status = persisted ? 'completed' : 'failed';
+        job.error = persisted ? '' : 'Generation could not be persisted on server.';
+        job.updatedAt = Date.now();
+        job.finishedAt = Date.now();
+        return Boolean(job.persisted);
+    } catch (error) {
+        job.persisted = false;
+        job.status = 'failed';
+        job.error = String(error?.message || 'Generation could not be persisted on server.');
+        job.updatedAt = Date.now();
+        job.finishedAt = Date.now();
+        return false;
+    } finally {
+        job.persistenceInFlight = false;
+    }
+}
+
+export function acknowledgeGenerationJobsForRequest(request, generationIds = []) {
+    pruneGenerationJobs();
+    const handle = String(request?.user?.profile?.handle || '');
+    const ids = Array.from(new Set(
+        Array.isArray(generationIds)
+            ? generationIds.map(id => String(id || '').trim()).filter(Boolean)
+            : [],
+    ));
+
+    /** @type {string[]} */
+    const acknowledged = [];
+    const acknowledgedAt = Date.now();
+
+    for (const id of ids) {
+        const job = generationJobs.get(id);
+        if (!job || job.handle !== handle) {
+            continue;
+        }
+        if (job.persisted || job.persistenceInFlight) {
+            continue;
+        }
+        if (!['awaiting_ack', 'completed'].includes(String(job.status || ''))) {
+            continue;
+        }
+
+        clearGenerationJobPersistenceTimer(job);
+        job.acked = true;
+        job.ackedAt = acknowledgedAt;
+        job.status = 'completed';
+        job.error = '';
+        job.updatedAt = acknowledgedAt;
+        job.finishedAt = acknowledgedAt;
+        job.abortController = null;
+        acknowledged.push(id);
+    }
+
+    return acknowledged;
 }
 
 export async function forwardStreamingWithGenerationJob(fetchResponse, response, request, job, options = {}) {
@@ -577,7 +711,7 @@ export function getActiveGenerationJobsForRequest(request, persistTarget) {
     pruneGenerationJobs();
     const handle = request.user.profile.handle;
     return Array.from(generationJobs.values())
-        .filter(job => job.handle === handle && job.chatKey === chatKey && ['running', 'queued'].includes(job.status))
+        .filter(job => job.handle === handle && job.chatKey === chatKey && ['running', 'queued', 'awaiting_ack', 'persisting'].includes(job.status))
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
         .map(job => ({
             id: job.id,

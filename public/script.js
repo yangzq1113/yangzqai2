@@ -505,6 +505,9 @@ function getLukerPersistTargetForCurrentChat() {
         return {
             kind: 'group',
             id: group.chat_id,
+            char_name: name2,
+            chat_metadata: { ...chat_metadata },
+            integrity: chat_metadata?.integrity,
         };
     }
 
@@ -517,6 +520,9 @@ function getLukerPersistTargetForCurrentChat() {
         kind: 'character',
         avatar_url: character.avatar,
         file_name: character.chat,
+        char_name: name2,
+        chat_metadata: { ...chat_metadata },
+        integrity: chat_metadata?.integrity,
     };
 }
 
@@ -556,6 +562,10 @@ function renderLukerRecoveryPreview(text, status = 'running') {
         ? t`Generation failed on server`
         : status === 'completed'
             ? t`Generation completed on server`
+            : status === 'awaiting_ack'
+                ? t`Waiting for client save confirmation`
+                : status === 'persisting'
+                    ? t`Persisting generation on server`
             : t`Generation in progress on server`;
     preview.find('.luker_preview_status').text(statusText);
     preview.find('.luker_preview_text').text(String(text || ''));
@@ -9913,6 +9923,9 @@ export async function appendChatMessages(messages, retryCount = 0) {
 
             if (response.ok) {
                 const payload = await response.json().catch(() => null);
+                if (payload?.matched_existing_generation_id && Number(payload?.appended || 0) === 0) {
+                    return false;
+                }
                 applyIntegrityFromWritePayload(payload);
                 rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
                 return true;
@@ -9948,6 +9961,9 @@ export async function appendChatMessages(messages, retryCount = 0) {
 
         if (response.ok) {
             const payload = await response.json().catch(() => null);
+            if (payload?.matched_existing_generation_id && Number(payload?.appended || 0) === 0) {
+                return false;
+            }
             applyIntegrityFromWritePayload(payload);
             rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
             return true;
