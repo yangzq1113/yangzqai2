@@ -11502,6 +11502,8 @@ function renderEditedMessage(messageId, { messageElement = null, bias = undefine
     }
 
     const messageBlock = resolvedMessageElement.find('.mes_block');
+    messageBlock.find('.mes_edit_buttons').css('display', 'none');
+    messageBlock.find('.mes_buttons').css('display', '');
     const messageName = message.name || (message.is_user ? name1 : name2);
     messageBlock.find('.mes_text')
         .empty()
