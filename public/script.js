@@ -49,7 +49,6 @@ import {
     initWorldInfo,
     charUpdatePrimaryWorld,
     charSetAuxWorlds,
-    deleteWorldInfo,
     deleteWorldInfoWithUndo,
 } from './scripts/world-info.js';
 
@@ -566,7 +565,7 @@ function renderLukerRecoveryPreview(text, status = 'running') {
                 ? t`Waiting for client save confirmation`
                 : status === 'persisting'
                     ? t`Persisting generation on server`
-            : t`Generation in progress on server`;
+                    : t`Generation in progress on server`;
     preview.find('.luker_preview_status').text(statusText);
     preview.find('.luker_preview_text').text(String(text || ''));
 }
@@ -2212,6 +2211,237 @@ async function restoreCharacterChatSnapshot(characterId, fileName, chatFile) {
     });
 
     return response.ok;
+}
+
+function decodeBase64ToBytes(base64) {
+    const binary = atob(String(base64 || ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+}
+
+async function getCharacterDeletionUndoSnapshot(characterId, { includeChats = false, wasCurrentCharacter = false } = {}) {
+    await unshallowCharacter(characterId);
+
+    const character = characters[characterId];
+    if (!character?.avatar) {
+        return null;
+    }
+
+    const snapshotResponse = await fetch('/api/characters/snapshot', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        cache: 'no-cache',
+        body: JSON.stringify({ avatar_url: character.avatar }),
+    });
+
+    if (!snapshotResponse.ok) {
+        return null;
+    }
+
+    const snapshotData = await snapshotResponse.json();
+    if (!snapshotData?.card) {
+        return null;
+    }
+
+    const chats = [];
+    if (includeChats) {
+        const pastChats = await getPastCharacterChats(characterId);
+        for (const chatInfo of pastChats) {
+            const fileName = String(chatInfo?.file_name || '').trim().replace(/\.jsonl$/i, '');
+            if (!fileName) {
+                continue;
+            }
+
+            const chatData = await getRawCharacterChatSnapshot(characterId, fileName);
+            if (Array.isArray(chatData)) {
+                chats.push({ fileName, chat: structuredClone(chatData) });
+            }
+        }
+    }
+
+    return {
+        avatarUrl: character.avatar,
+        characterName: String(character.name || ''),
+        cardBase64: String(snapshotData.card),
+        states: Array.isArray(snapshotData.states) ? structuredClone(snapshotData.states) : [],
+        chats,
+        hadTagMap: Object.hasOwn(tag_map, character.avatar),
+        tagMap: structuredClone(tag_map[character.avatar] || []),
+        accountStorage: {
+            worldInfoAlert: accountStorage.getItem(`AlertWI_${character.avatar}`),
+            regexAlert: accountStorage.getItem(`AlertRegex_${character.avatar}`),
+            mediaWarning: accountStorage.getItem(`mediaWarningShown:${character.avatar}`),
+        },
+        wasCurrentCharacter,
+    };
+}
+
+function restoreDeletedCharacterAccountStorage(snapshot) {
+    const avatarUrl = String(snapshot?.avatarUrl || '').trim();
+    if (!avatarUrl) {
+        return;
+    }
+
+    const storageEntries = [
+        [`AlertWI_${avatarUrl}`, snapshot?.accountStorage?.worldInfoAlert],
+        [`AlertRegex_${avatarUrl}`, snapshot?.accountStorage?.regexAlert],
+        [`mediaWarningShown:${avatarUrl}`, snapshot?.accountStorage?.mediaWarning],
+    ];
+
+    for (const [key, value] of storageEntries) {
+        if (value === null || value === undefined || value === '') {
+            accountStorage.removeItem(key);
+        } else {
+            accountStorage.setItem(key, String(value));
+        }
+    }
+}
+
+async function restoreDeletedCharacterSnapshot(snapshot, { refreshCharacters = true } = {}) {
+    const avatarUrl = String(snapshot?.avatarUrl || '').trim();
+    if (!avatarUrl || !snapshot?.cardBase64) {
+        return false;
+    }
+
+    let importedAvatarUrl = '';
+    try {
+        const cardFile = new File([decodeBase64ToBytes(snapshot.cardBase64)], avatarUrl, { type: 'image/png' });
+        importedAvatarUrl = await importCharacter(cardFile, { preserveFileName: avatarUrl, suppressToast: true });
+        if (!importedAvatarUrl) {
+            return false;
+        }
+
+        for (const state of snapshot.states || []) {
+            const namespace = String(state?.namespace || '').trim();
+            if (!namespace || !state?.data || typeof state.data !== 'object' || Array.isArray(state.data)) {
+                continue;
+            }
+
+            const response = await fetch('/api/characters/state/set', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                cache: 'no-cache',
+                body: JSON.stringify({
+                    avatar_url: avatarUrl,
+                    namespace,
+                    data: structuredClone(state.data),
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to restore character state sidecar: ${namespace}`);
+            }
+        }
+
+        for (const chatSnapshot of snapshot.chats || []) {
+            const fileName = String(chatSnapshot?.fileName || '').trim();
+            if (!fileName || !Array.isArray(chatSnapshot?.chat)) {
+                continue;
+            }
+
+            const response = await fetch('/api/chats/save', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    ch_name: snapshot.characterName,
+                    file_name: fileName,
+                    chat: structuredClone(chatSnapshot.chat),
+                    avatar_url: avatarUrl,
+                    force: true,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to restore character chat: ${fileName}`);
+            }
+        }
+
+        if (snapshot.hadTagMap) {
+            tag_map[avatarUrl] = structuredClone(snapshot.tagMap);
+        } else {
+            delete tag_map[avatarUrl];
+        }
+
+        restoreDeletedCharacterAccountStorage(snapshot);
+        requestAsyncDiffForNextSettingsSave();
+        saveSettingsDebounced();
+        if (refreshCharacters) {
+            await getCharacters();
+        }
+        return true;
+    } catch (error) {
+        console.error('Failed to restore deleted character', error);
+        if (importedAvatarUrl) {
+            try {
+                await fetch('/api/characters/delete', {
+                    method: 'POST',
+                    headers: getRequestHeaders(),
+                    cache: 'no-cache',
+                    body: JSON.stringify({
+                        avatar_url: avatarUrl,
+                        delete_chats: Array.isArray(snapshot?.chats) && snapshot.chats.length > 0,
+                    }),
+                });
+            } catch (cleanupError) {
+                console.error('Failed to clean up partially restored character', cleanupError);
+            }
+        }
+        if (refreshCharacters) {
+            await getCharacters().catch(() => undefined);
+        }
+        return false;
+    }
+}
+
+async function commitDeletedCharacterUndoSnapshot(snapshot) {
+    if (!snapshot) {
+        return;
+    }
+
+    for (const chatName of snapshot.deletedChatNames || []) {
+        await eventSource.emit(event_types.CHAT_DELETED, chatName);
+    }
+
+    if (snapshot.deletedEvent) {
+        await eventSource.emit(event_types.CHARACTER_DELETED, snapshot.deletedEvent);
+    }
+}
+
+async function restoreDeletedCharacterUndoSnapshots(snapshots) {
+    const snapshotList = Array.isArray(snapshots) ? snapshots.filter(Boolean) : [];
+    const restoredSnapshots = [];
+    const failedSnapshots = [];
+
+    for (const snapshot of snapshotList) {
+        const restored = await restoreDeletedCharacterSnapshot(snapshot, { refreshCharacters: false });
+        if (restored) {
+            restoredSnapshots.push(snapshot);
+        } else {
+            failedSnapshots.push(snapshot);
+        }
+    }
+
+    if (restoredSnapshots.length > 0) {
+        await getCharacters();
+    }
+
+    for (const snapshot of failedSnapshots) {
+        await commitDeletedCharacterUndoSnapshot(snapshot);
+    }
+
+    const currentCharacterSnapshot = restoredSnapshots.find(snapshot => snapshot.wasCurrentCharacter);
+    if (currentCharacterSnapshot && !selected_group && this_chid === undefined) {
+        const restoredCharacterId = characters.findIndex(entry => entry.avatar === currentCharacterSnapshot.avatarUrl);
+        if (restoredCharacterId >= 0) {
+            await selectCharacterById(restoredCharacterId);
+        }
+    }
+
+    return { restoredSnapshots, failedSnapshots };
 }
 
 async function refreshVisibleDeletedChatViews(fileName = '') {
@@ -13586,9 +13816,10 @@ function selectImportedChar(charId) {
  * @param {object} [options] - Options
  * @param {string} [options.preserveFileName] Whether to preserve original file name
  * @param {Boolean} [options.importTags=false] Whether to import tags
+ * @param {Boolean} [options.suppressToast=false] Whether to suppress success toasts
  * @returns {Promise<string>}
  */
-async function importCharacter(file, { preserveFileName = '', importTags = false } = {}) {
+async function importCharacter(file, { preserveFileName = '', importTags = false, suppressToast = false } = {}) {
     if (is_group_generating || is_send_press) {
         toastr.error(t`Cannot import characters while generating. Stop the request and try again.`, t`Import aborted`);
         throw new Error('Cannot import character while generating');
@@ -13638,9 +13869,13 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
             $('#character_search_bar').val('').trigger('input');
 
             if (exists) {
-                toastr.success(t`Character Replaced: ${String(data.file_name).replace('.png', '')}`);
+                if (!suppressToast) {
+                    toastr.success(t`Character Replaced: ${String(data.file_name).replace('.png', '')}`);
+                }
             } else {
-                toastr.success(t`Character Created: ${String(data.file_name).replace('.png', '')}`);
+                if (!suppressToast) {
+                    toastr.success(t`Character Created: ${String(data.file_name).replace('.png', '')}`);
+                }
             }
             if (importTags) {
                 await importCharactersTags([avatarFileName]);
@@ -13891,6 +14126,9 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         characterKey = [characterKey];
     }
 
+    const normalizedCharacterKeys = characterKey.map(key => String(key));
+    const uniqueCharacterKeys = normalizedCharacterKeys.filter((key, index) => normalizedCharacterKeys.indexOf(key) === index);
+
     const inTempChat = this_chid === undefined && name2 === neutralCharacterName;
     if (inTempChat) {
         const confirmClose = await Popup.show.confirm(
@@ -13905,12 +14143,45 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
     cancelDebounce(saveCharacterDebounced);
     isCharacterDeletionInProgress = true;
     try {
+        const canOfferUndo = uniqueCharacterKeys.length > 0;
+        const activeAvatarBeforeDelete = this_chid !== undefined ? String(characters[this_chid]?.avatar || '') : '';
+        const pendingCharacterUndos = [];
+
+        if (canOfferUndo) {
+            let undoReady = true;
+            for (const key of uniqueCharacterKeys) {
+                const targetCharacter = characters.find(character => character?.avatar === key);
+                const targetCharacterId = targetCharacter ? characters.indexOf(targetCharacter) : -1;
+                if (targetCharacterId < 0) {
+                    undoReady = false;
+                    break;
+                }
+
+                const snapshot = await getCharacterDeletionUndoSnapshot(targetCharacterId, {
+                    includeChats: deleteChats,
+                    wasCurrentCharacter: activeAvatarBeforeDelete === targetCharacter.avatar,
+                });
+                if (!snapshot) {
+                    undoReady = false;
+                    break;
+                }
+
+                pendingCharacterUndos.push(snapshot);
+            }
+
+            if (!undoReady) {
+                pendingCharacterUndos.splice(0, pendingCharacterUndos.length);
+            }
+        }
+
         const closeChatResult = await closeCurrentChat();
         if (!closeChatResult) {
             return;
         }
 
-        for (const key of characterKey) {
+        const pendingCharacterUndoByAvatar = new Map(pendingCharacterUndos.map(snapshot => [snapshot.avatarUrl, snapshot]));
+
+        for (const key of uniqueCharacterKeys) {
             const character = characters.find(x => x.avatar == key);
             if (!character) {
                 toastr.warning(t`Character ${key} not found. Skipping deletion.`);
@@ -13964,17 +14235,59 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             delete tag_map[character.avatar];
             select_rm_info('char_delete', character.name);
 
-            if (deleteChats) {
-                for (const chat of pastChats) {
-                    const name = chat.file_name.replace('.jsonl', '');
-                    await eventSource.emit(event_types.CHAT_DELETED, name);
+            const pendingCharacterUndo = pendingCharacterUndoByAvatar.get(character.avatar);
+            const shouldDelayDeleteCommit = Boolean(pendingCharacterUndo);
+            if (shouldDelayDeleteCommit) {
+                pendingCharacterUndo.deletedEvent = { id: chid, character };
+                pendingCharacterUndo.deletedChatNames = deleteChats
+                    ? pastChats
+                        .map(chat => String(chat?.file_name || '').trim().replace(/\.jsonl$/i, ''))
+                        .filter(Boolean)
+                    : [];
+            } else {
+                if (deleteChats) {
+                    for (const chat of pastChats) {
+                        const name = chat.file_name.replace('.jsonl', '');
+                        await eventSource.emit(event_types.CHAT_DELETED, name);
+                    }
                 }
-            }
 
-            await eventSource.emit(event_types.CHARACTER_DELETED, { id: chid, character: character });
+                await eventSource.emit(event_types.CHARACTER_DELETED, { id: chid, character: character });
+            }
+        }
+
+        const hasIncompleteCharacterUndo = pendingCharacterUndos.some(snapshot => !snapshot.deletedEvent);
+        if (hasIncompleteCharacterUndo) {
+            for (const snapshot of pendingCharacterUndos.filter(snapshot => snapshot.deletedEvent)) {
+                await commitDeletedCharacterUndoSnapshot(snapshot);
+            }
+            pendingCharacterUndos.splice(0, pendingCharacterUndos.length);
         }
 
         await removeCharacterFromUI();
+
+        if (pendingCharacterUndos.length > 0) {
+            const deletedCharacterCount = pendingCharacterUndos.length;
+            showUndoToast({
+                message: deletedCharacterCount > 1 ? t`Characters deleted.` : t`Character deleted.`,
+                onUndo: async () => {
+                    const { restoredSnapshots, failedSnapshots } = await restoreDeletedCharacterUndoSnapshots(pendingCharacterUndos);
+                    if (restoredSnapshots.length === 0) {
+                        toastr.error(deletedCharacterCount > 1 ? t`Failed to restore characters.` : t`Failed to restore character.`);
+                        return;
+                    }
+
+                    if (failedSnapshots.length > 0) {
+                        toastr.error(t`Failed to restore some characters.`);
+                    }
+                },
+                onCommit: async () => {
+                    for (const snapshot of pendingCharacterUndos) {
+                        await commitDeletedCharacterUndoSnapshot(snapshot);
+                    }
+                },
+            });
+        }
     } finally {
         isCharacterDeletionInProgress = false;
     }

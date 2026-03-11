@@ -1510,6 +1510,51 @@ router.post('/get', validateAvatarUrlMiddleware, async function (request, respon
     }
 });
 
+router.post('/snapshot', validateAvatarUrlMiddleware, function (request, response) {
+    try {
+        const avatarUrl = sanitize(String(request.body?.avatar_url || '').trim());
+        if (!avatarUrl) {
+            return response.status(400).send({ error: 'Expected body.avatar_url string.' });
+        }
+
+        const characterPath = path.join(request.user.directories.characters, avatarUrl);
+        if (!fs.existsSync(characterPath)) {
+            return response.sendStatus(404);
+        }
+
+        const card = fs.readFileSync(characterPath).toString('base64');
+        const parsedCharacterPath = path.parse(characterPath);
+        const sidecarPrefix = `${parsedCharacterPath.name}${CHARACTER_STATE_FILE_PREFIX}`;
+        const states = getAllCharacterStateSidecarPaths(characterPath)
+            .map(sidecarPath => {
+                const raw = tryReadFileSync(sidecarPath);
+                if (!raw) {
+                    return null;
+                }
+
+                const data = tryParse(raw);
+                if (!_.isObjectLike(data) || Array.isArray(data)) {
+                    console.warn(`Invalid character state sidecar JSON: ${sidecarPath}`);
+                    return null;
+                }
+
+                const fileName = path.basename(sidecarPath);
+                const namespace = fileName.slice(sidecarPrefix.length, -CHARACTER_STATE_FILE_SUFFIX.length);
+                if (!namespace) {
+                    return null;
+                }
+
+                return { namespace, data };
+            })
+            .filter(Boolean);
+
+        return response.send({ ok: true, avatar_url: avatarUrl, card, states });
+    } catch (error) {
+        console.error('Error creating character snapshot:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
 router.post('/state/get', validateAvatarUrlMiddleware, function (request, response) {
     try {
         const avatarUrl = sanitize(String(request.body?.avatar_url || '').trim());
