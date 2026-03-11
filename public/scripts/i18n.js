@@ -4,6 +4,10 @@ import { updateSecretDisplay } from './secrets.js';
 const storageKey = 'language';
 const overrideLanguage = localStorage.getItem(storageKey);
 const localeFile = String(overrideLanguage || navigator.language || navigator.userLanguage || 'en').toLowerCase();
+const localeFallbacks = {
+    'zh-cn': ['zh-tw'],
+    'zh-tw': ['zh-cn'],
+};
 var langs;
 // Don't change to let/const! It will break module loading.
 // eslint-disable-next-line prefer-const
@@ -25,17 +29,30 @@ export function addLocaleData(localeId, data) {
         return;
     }
 
-    if (localeId !== localeFile) {
+    const localeLoadOrder = getLocaleLoadOrder(localeFile);
+
+    if (!localeLoadOrder.includes(localeId)) {
         console.debug('Ignoring addLocaleData call for different locale', localeId);
         return;
     }
 
+    const isPrimaryLocale = localeId === localeFile;
+
     for (const [key, value] of Object.entries(data)) {
-        // Overrides for default locale data are not allowed
-        if (!Object.hasOwn(localeData, key)) {
+        if (isPrimaryLocale || !Object.hasOwn(localeData, key)) {
             localeData[key] = value;
         }
     }
+}
+
+/**
+ * Gets the locale load order for the given language.
+ * Fallback locales are loaded first and the requested locale is loaded last.
+ * @param {string} language Language code
+ * @returns {string[]} Locale IDs to load in order
+ */
+function getLocaleLoadOrder(language) {
+    return [...new Set([...(localeFallbacks[language] || []), language])];
 }
 
 /**
@@ -111,11 +128,11 @@ export function translate(text, key = null) {
 }
 
 /**
- * Fetches the locale data for the given language.
+ * Fetches the raw locale data for the given language.
  * @param {string} language Language code
  * @returns {Promise<Record<string, string>>} Locale data
  */
-async function getLocaleData(language) {
+async function loadLocaleData(language) {
     let supportedLang = findLang(language);
     if (!supportedLang) {
         return {};
@@ -130,6 +147,23 @@ async function getLocaleData(language) {
     });
 
     return data;
+}
+
+/**
+ * Fetches the locale data for the given language.
+ * @param {string} language Language code
+ * @param {{ withFallback?: boolean }} [options] Options
+ * @returns {Promise<Record<string, string>>} Locale data
+ */
+async function getLocaleData(language, { withFallback = true } = {}) {
+    const localeLoadOrder = withFallback ? getLocaleLoadOrder(language) : [language];
+    const mergedData = {};
+
+    for (const localeId of localeLoadOrder) {
+        Object.assign(mergedData, await loadLocaleData(localeId));
+    }
+
+    return mergedData;
 }
 
 /**
@@ -189,7 +223,7 @@ async function getMissingTranslations() {
     const langsToProcess = isSupportedNonEnglish() ? [findLang(localeFile)] : langs;
 
     for (const language of langsToProcess) {
-        const localeData = await getLocaleData(language.lang);
+        const localeData = await getLocaleData(language.lang, { withFallback: false });
         $(document).find('[data-i18n]').each(function () {
             const keys = $(this).data('i18n').split(';'); // Multi-key entries are ; delimited
             for (const key of keys) {
