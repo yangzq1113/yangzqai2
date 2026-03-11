@@ -351,7 +351,10 @@ window['tts_preview'] = function (id) {
         audio.play();
     }
     else {
-        ttsProvider.previewTtsVoice(id);
+        void ttsProvider.previewTtsVoice(id).catch(error => {
+            toastr.error(error.toString(), 'TTS Preview Failed');
+            console.error(error);
+        });
     }
 };
 

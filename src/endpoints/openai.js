@@ -663,15 +663,41 @@ router.post('/generate-video', async (request, response) => {
 
 const custom = express.Router();
 
+function buildOpenAiCompatibleTtsRequestBody(body) {
+    return {
+        input: body.input ?? '',
+        response_format: body.response_format ?? 'mp3',
+        voice: body.voice ?? 'alloy',
+        speed: body.speed ?? 1,
+        model: body.model ?? 'tts-1',
+    };
+}
+
+async function readResponseTextSafely(result, context) {
+    try {
+        return await result.text();
+    } catch (error) {
+        console.error(`${context}: Failed to read response body`, error);
+        return '';
+    }
+}
+
 custom.post('/generate-voice', async (request, response) => {
+    const { provider_endpoint } = request.body;
+    const requestBody = buildOpenAiCompatibleTtsRequestBody(request.body);
+
     try {
         const key = readSecret(request.user.directories, SECRET_KEYS.CUSTOM_OPENAI_TTS);
-        const { input, provider_endpoint, response_format, voice, speed, model } = request.body;
 
         if (!provider_endpoint) {
             console.warn('No OpenAI-compatible TTS provider endpoint provided');
             return response.sendStatus(400);
         }
+
+        console.debug('OpenAI-compatible TTS request', {
+            provider_endpoint,
+            requestBody,
+        });
 
         const result = await fetch(provider_endpoint, {
             method: 'POST',
@@ -679,27 +705,49 @@ custom.post('/generate-voice', async (request, response) => {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${key ?? ''}`,
             },
-            body: JSON.stringify({
-                input: input ?? '',
-                response_format: response_format ?? 'mp3',
-                voice: voice ?? 'alloy',
-                speed: speed ?? 1,
-                model: model ?? 'tts-1',
-            }),
+            body: JSON.stringify(requestBody),
+            redirect: 'manual',
         });
 
+        if (result.status >= 300 && result.status < 400) {
+            const location = result.headers.get('location');
+            console.warn('OpenAI-compatible TTS provider returned redirect', {
+                provider_endpoint,
+                location,
+                status: result.status,
+                statusText: result.statusText,
+                requestBody,
+            });
+
+            const redirectMessage = location
+                ? `TTS provider returned redirect ${result.status} to ${location}. Use the final /audio/speech endpoint URL.`
+                : `TTS provider returned redirect ${result.status}. Use the final /audio/speech endpoint URL.`;
+            return response.status(502).send(redirectMessage);
+        }
+
         if (!result.ok) {
-            const text = await result.text();
-            console.warn('OpenAI request failed', result.statusText, text);
-            return response.status(500).send(text);
+            const text = await readResponseTextSafely(result, 'OpenAI-compatible TTS');
+            console.warn('OpenAI-compatible TTS request failed', {
+                provider_endpoint,
+                status: result.status,
+                statusText: result.statusText,
+                requestBody,
+                responseBody: text,
+            });
+            const statusCode = result.status >= 400 && result.status <= 599 ? result.status : 500;
+            return response.status(statusCode).send(text || `TTS Generation Failed: ${result.status} ${result.statusText}`);
         }
 
         const buffer = await result.arrayBuffer();
-        response.setHeader('Content-Type', 'audio/mpeg');
+        response.setHeader('Content-Type', result.headers.get('content-type') || 'audio/mpeg');
         return response.send(Buffer.from(buffer));
     } catch (error) {
-        console.error('OpenAI TTS generation failed', error);
-        response.status(500).send('Internal server error');
+        console.error('OpenAI-compatible TTS generation failed', {
+            provider_endpoint,
+            requestBody,
+            error,
+        });
+        response.status(500).send(`TTS Generation Failed: ${error.message || 'Internal server error'}`);
     }
 });
 
