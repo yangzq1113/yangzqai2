@@ -3561,7 +3561,14 @@ function getMessageFromTemplate({
  */
 export function updateMessageBlock(messageId, message, { rerenderMessage = true } = {}) {
     const messageElement = chatElement.find(`[mesid="${messageId}"]`);
-    if (rerenderMessage) {
+    if (messageElement.length === 0) {
+        return;
+    }
+
+    // MESSAGE_EDITED listeners may refresh the block before the editor fully closes.
+    // Preserve the live textarea so confirm/cancel can finish against the same DOM.
+    const hasActiveEditor = messageElement.find('.edit_textarea').length > 0;
+    if (rerenderMessage && !hasActiveEditor) {
         const text = message?.extra?.display_text ?? message.mes;
         messageElement.find('.mes_text').html(messageFormatting(text, message.name, message.is_system, message.is_user, messageId, {}, false));
     }
@@ -11471,6 +11478,53 @@ function updateMessage(div) {
     return { mesBlock, text, mes, bias };
 }
 
+/**
+ * Re-renders a message from the current chat state after exiting edit mode.
+ * @param {number} messageId
+ * @param {object} [options={}]
+ * @param {JQuery<HTMLElement>} [options.messageElement]
+ * @param {string|null|undefined} [options.bias]
+ * @param {boolean} [options.updateBias=false]
+ * @returns {JQuery<HTMLElement>}
+ */
+function renderEditedMessage(messageId, { messageElement = null, bias = undefined, updateBias = false } = {}) {
+    const message = chat[messageId];
+    if (!message) {
+        return $();
+    }
+
+    const resolvedMessageElement = messageElement?.length
+        ? messageElement
+        : chatElement.children('.mes').filter(`[mesid="${messageId}"]`);
+
+    if (resolvedMessageElement.length === 0) {
+        return resolvedMessageElement;
+    }
+
+    const messageBlock = resolvedMessageElement.find('.mes_block');
+    const messageName = message.name || (message.is_user ? name1 : name2);
+    messageBlock.find('.mes_text')
+        .empty()
+        .append(messageFormatting(
+            message.mes,
+            messageName,
+            message.is_system,
+            message.is_user,
+            messageId,
+            {},
+            false,
+        ));
+
+    if (updateBias) {
+        messageBlock.find('.mes_bias').empty();
+        messageBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
+    }
+
+    appendMediaToMessage(message, resolvedMessageElement);
+    addCopyToCodeBlocks(resolvedMessageElement);
+    return resolvedMessageElement;
+}
+
 function openMessageDelete(fromSlashCommand) {
     closeMessageEditor();
     hideSwipeButtons();
@@ -11581,7 +11635,10 @@ export async function messageEdit(editMessageId) {
  * @param {number} [messageId=this_edit_mes_id]
  */
 async function messageEditCancel(messageId = this_edit_mes_id) {
-    let text = chat[messageId]['mes'];
+    if (!(messageId >= 0) || !chat[messageId]) {
+        return;
+    }
+
     let thisMesDiv;
     // If this is the button then select it's parent. Otherwise, select by messageId.
     if (this?.classList?.contains('mes_edit_cancel')) {
@@ -11591,26 +11648,15 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
     }
 
     const thisMesBlock = thisMesDiv.find('.mes_block');
-    thisMesBlock.find('.mes_text').empty();
     thisMesDiv.find('.mes_edit_buttons').css('display', 'none');
     thisMesBlock.find('.mes_buttons').css('display', '');
-    thisMesBlock.find('.mes_text')
-        .append(messageFormatting(
-            text,
-            this_edit_mes_chname,
-            chat[messageId].is_system,
-            chat[messageId].is_user,
-            messageId,
-            {},
-            false,
-        ));
-    appendMediaToMessage(chat[messageId], thisMesDiv);
-    addCopyToCodeBlocks(thisMesDiv);
 
     const reasoningEditDone = thisMesBlock.find('.mes_reasoning_edit_cancel:visible');
     if (reasoningEditDone.length > 0) {
         reasoningEditDone.trigger('click');
     }
+
+    renderEditedMessage(messageId);
 
     if (messageId == this_edit_mes_id) {
         this_edit_mes_id = undefined;
@@ -11685,35 +11731,23 @@ async function messageEditDone(div) {
     }
     const editedMessageId = Number(this_edit_mes_id);
 
-    let { mesBlock, text, mes, bias } = updateMessage(div);
+    let { mesBlock, bias } = updateMessage(div);
 
-    await eventSource.emit(event_types.MESSAGE_EDITED, this_edit_mes_id, getChatMessageMutationMeta(this_edit_mes_id));
-    text = chat[this_edit_mes_id]?.mes ?? text;
-    mesBlock.find('.mes_text').empty();
-    mesBlock.find('.mes_edit_buttons').css('display', 'none');
+    const messageElement = chatElement.children('.mes').filter(`[mesid="${editedMessageId}"]`);
+    messageElement.find('.mes_edit_buttons').css('display', 'none');
     mesBlock.find('.mes_buttons').css('display', '');
-    mesBlock.find('.mes_text').append(
-        messageFormatting(
-            text,
-            this_edit_mes_chname,
-            mes.is_system,
-            mes.is_user,
-            this_edit_mes_id,
-            {},
-            false,
-        ),
-    );
-    mesBlock.find('.mes_bias').empty();
-    mesBlock.find('.mes_bias').append(messageFormatting(bias, '', false, false, -1, {}, false));
-    appendMediaToMessage(mes, div.closest('.mes'));
-    addCopyToCodeBlocks(div.closest('.mes'));
 
     const reasoningEditDone = mesBlock.find('.mes_reasoning_edit_done:visible');
     if (reasoningEditDone.length > 0) {
         reasoningEditDone.trigger('click');
     }
 
-    await eventSource.emit(event_types.MESSAGE_UPDATED, this_edit_mes_id);
+    await eventSource.emit(event_types.MESSAGE_EDITED, editedMessageId, getChatMessageMutationMeta(editedMessageId));
+    renderEditedMessage(editedMessageId, {
+        bias: chat[editedMessageId]?.extra?.bias ?? bias,
+        updateBias: true,
+    });
+    await eventSource.emit(event_types.MESSAGE_UPDATED, editedMessageId);
     this_edit_mes_id = undefined;
     const patched = await patchChatMessages([
         { op: 'replace', path: `/${editedMessageId}`, value: chat[editedMessageId] },
