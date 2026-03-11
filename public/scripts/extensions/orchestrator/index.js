@@ -58,6 +58,7 @@ const ORCH_NODE_TYPE_WORKER = 'worker';
 const ORCH_NODE_TYPE_REVIEW = 'review';
 const ORCH_REVIEW_TOOL_APPROVE = 'luker_orch_review_approve';
 const ORCH_REVIEW_TOOL_RERUN = 'luker_orch_request_rerun';
+const ORCH_REVIEW_FEEDBACK_FIELD = 'review_feedback';
 const SUPPORTED_WORLD_INFO_POSITIONS = Object.freeze([
     world_info_position.before,
     world_info_position.after,
@@ -94,7 +95,7 @@ const ORCH_CRITIC_REQUIRED_GATES = Object.freeze([
     'world autonomy and avoiding user-centric collapse',
 ]);
 const ORCH_CRITIC_PROMPT_AUTHORING_RULE = 'The critic/review preset itself must hardcode the review checklist and decision gate. Do not assume node.type, stage position, or preset name alone will make the model audit outputs.';
-const ORCH_CRITIC_DECISION_RULE = 'Approve only when every required gate passes. If any material issue exists, request rerun of the minimal specific earlier worker node ids. Never emit synthesis, replacement guidance, or silent approval.';
+const ORCH_CRITIC_DECISION_RULE = `Approve only when every required gate passes. If any material issue exists, request rerun of the minimal specific earlier worker node ids. Every approve/rerun tool call must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Never emit synthesis, replacement guidance, or silent approval.`;
 
 function getCriticPromptReminderLines() {
     return [
@@ -109,6 +110,16 @@ function getCriticReviewNodeContractShape() {
         prompt_authoring_rule: ORCH_CRITIC_PROMPT_AUTHORING_RULE,
         required_checks: ORCH_CRITIC_REQUIRED_GATES,
         decision_rule: ORCH_CRITIC_DECISION_RULE,
+        tool_payload_contract: {
+            approve: {
+                [ORCH_REVIEW_FEEDBACK_FIELD]: 'required string',
+            },
+            rerun: {
+                target_node_ids: ['required string'],
+                [ORCH_REVIEW_FEEDBACK_FIELD]: 'required string',
+            },
+        },
+        feedback_runtime_behavior: `Approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` is auto-injected into later nodes. Rerun \`${ORCH_REVIEW_FEEDBACK_FIELD}\` is auto-injected into the targeted rerun nodes.`,
     };
 }
 
@@ -124,8 +135,9 @@ function getDefaultAiSuggestSystemPrompt() {
         'Only the LAST stage outputs are injected into the final generation context.',
         'Design a clear pipeline: state distillation -> reasoning workers -> review gate -> final synthesis.',
         'Worker nodes before the final stage should return structured tool-call fields for machine processing.',
-        'Review nodes inspect already-executed worker outputs, then either approve or request rerun of specific earlier worker node ids.',
-        'Review nodes do not add downstream guidance of their own; later stages keep consuming passthrough worker outputs.',
+        `Review nodes inspect already-executed worker outputs, then either approve or request rerun of specific earlier worker node ids.`,
+        `Review nodes must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` on both approve and rerun decisions.`,
+        `Runtime preserves passthrough worker outputs and auto-injects approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into later nodes.`,
         'Do not place review nodes in the final stage. Prefer a dedicated serial review stage after the workers it audits.',
         ...getCriticPromptReminderLines(),
         'Last-stage nodes must return function-call payload with a single field `text`.',
@@ -199,8 +211,8 @@ const defaultPresets = {
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
-        systemPrompt: 'You are a hard-gate critic.\n- Actively audit prior worker outputs against explicit review gates before approving.\n- Do not assume node type, stage placement, or preset name alone is enough; you must run the checklist.\n- Never emit synthesis or replacement guidance; return only review decisions.\n- Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Treat approval as allowed only if all required gates pass: continuity/timeline coherence, causality/action-consequence coherence, character/role consistency, anti-OOC/persona drift, active lorebook/world-info hard constraints, anti-data/report-tone/weather-broadcast violations, over-interpretation, human realism/plausibility, and world autonomy.\n- If any material issue exists, request rerun for the minimal specific earlier worker node ids responsible; do not rerun everything by default.\n- If upstream outputs are missing a required constraint/check, treat that as a review failure instead of filling the gap yourself.\n- If prior outputs are acceptable, approve immediately.\n- Do not produce any rewritten guidance, summaries, or synthesis of your own.\n\nReturn review tool calls only.',
+        systemPrompt: `You are a hard-gate critic.\n- Actively audit prior worker outputs against explicit review gates before approving.\n- Do not assume node type, stage placement, or preset name alone is enough; you must run the checklist.\n- Never emit synthesis or replacement guidance; return only review decisions.\n- Every review decision tool call must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` for downstream runtime use.\n- Output one concise <thought>...</thought> before your function call.`,
+        userPromptTemplate: `Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Treat approval as allowed only if all required gates pass: continuity/timeline coherence, causality/action-consequence coherence, character/role consistency, anti-OOC/persona drift, active lorebook/world-info hard constraints, anti-data/report-tone/weather-broadcast violations, over-interpretation, human realism/plausibility, and world autonomy.\n- If any material issue exists, request rerun for the minimal specific earlier worker node ids responsible; do not rerun everything by default.\n- If upstream outputs are missing a required constraint/check, treat that as a review failure instead of filling the gap yourself.\n- If prior outputs are acceptable, approve immediately.\n- In both approve and rerun calls, \`${ORCH_REVIEW_FEEDBACK_FIELD}\` is mandatory and should contain concise audit conclusions, preserved constraints, and concrete downstream improvement guidance.\n- \`${ORCH_REVIEW_FEEDBACK_FIELD}\` may refine later nodes, but do not rewrite the final synthesis yourself.\n- Do not produce any rewritten guidance, summaries, or synthesis outside review tool-call fields.\n\nReturn review tool calls only.`,
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
@@ -208,7 +220,7 @@ const defaultPresets = {
     },
     synthesizer: {
         systemPrompt: 'You are the final orchestration synthesizer. Produce the single draft-ready guidance for generation. Output one concise <thought>...</thought> before your function call.',
-        userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge the approved worker outputs into one coherent final guidance.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field `text` (string).\nThe `text` content is injected directly as-is.',
+        userPromptTemplate: `Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Merge the approved worker outputs into one coherent final guidance.\n- Also obey the auto-injected approved review feedback as a refinement layer on top of prior worker outputs.\n- Preserve lorebook hard constraints and anti-data writing policy in final directives.\n- Prioritize actionable directives and keep risk notes concise.\n- Keep output compact and directly usable for roleplay drafting.\n\nReturn function-call fields only.\nPut final injected guidance in field \`text\` (string).\nThe \`text\` content is injected directly as-is.`,
     },
 };
 
@@ -473,6 +485,7 @@ function registerLocaleData() {
         'Raw runtime trace': '原始运行态轨迹',
         'Node Attempts': '节点执行次数',
         'Review Reruns': 'Review 重跑次数',
+        'Review feedback': '审查反馈',
         'Generation Type': '生成类型',
         'Target Layer': '目标层',
         'Finished At': '结束时间',
@@ -561,7 +574,7 @@ function registerLocaleData() {
         'Worker': '工作节点',
         'Review': '审查节点',
         'Node Prompt Template (optional)': '节点提示词模板（可选）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上轮编排结果会自动注入。',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result and approved review feedback are auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上轮编排结果和已批准的审查反馈会自动注入。',
         'Execution': '执行方式',
         'Serial': '串行',
         'Parallel': '并行',
@@ -714,6 +727,7 @@ function registerLocaleData() {
         'Raw runtime trace': '原始執行態軌跡',
         'Node Attempts': '節點執行次數',
         'Review Reruns': 'Review 重跑次數',
+        'Review feedback': '審查回饋',
         'Generation Type': '生成類型',
         'Target Layer': '目標層',
         'Finished At': '結束時間',
@@ -802,7 +816,7 @@ function registerLocaleData() {
         'Worker': '工作節點',
         'Review': '審查節點',
         'Node Prompt Template (optional)': '節點提示詞模板（可選）',
-        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上輪編排結果會自動注入。',
+        'Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result and approved review feedback are auto-injected.': '可用 {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}。上輪編排結果和已批准的審查回饋會自動注入。',
         'Execution': '執行方式',
         'Serial': '串行',
         'Parallel': '並行',
@@ -1855,10 +1869,10 @@ function renderOrchestrationRuntimeAttemptHtml(attempt, previousOutputText = '',
     <div class="luker_orch_runtime_attempt_meta">${metaItems.map(item => escapeHtml(item)).join(' · ')}</div>
     <div class="luker_orch_runtime_attempt_meta">${escapeHtml(i18n('Created At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.startedAt))}</div>
     <div class="luker_orch_runtime_attempt_meta">${escapeHtml(i18n('Finished At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.endedAt || ''))}</div>
-    ${attempt?.rerunReason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Rerun reason'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.rerunReason || ''))}</pre>` : ''}
+    ${attempt?.rerunReason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Review feedback'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.rerunReason || ''))}</pre>` : ''}
     ${attempt?.action ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Decision'))}</div><div class="luker_orch_runtime_attempt_meta">${escapeHtml(String(attempt.action || ''))}</div>` : ''}
     ${Array.isArray(attempt?.targetNodeIds) && attempt.targetNodeIds.length > 0 ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Targets'))}</div><div class="luker_orch_runtime_attempt_meta">${escapeHtml(attempt.targetNodeIds.join(', '))}</div>` : ''}
-    ${attempt?.reason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Rerun reason'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.reason || ''))}</pre>` : ''}
+    ${attempt?.reason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Review feedback'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.reason || ''))}</pre>` : ''}
     ${attempt?.replayResult ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Replay result'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(toReadableYamlText(attempt.replayResult, '{}'))}</pre>` : ''}
     ${attempt?.error ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Failed'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.error || ''))}</pre>` : ''}
     ${hasOutputDiff ? `
@@ -2795,8 +2809,102 @@ function sanitizeProfileForAiPrompt(profile = null) {
     };
 }
 
+function normalizeApprovedReviewFeedbackEntry(entry = {}) {
+    const feedback = String(entry?.feedback || '').trim();
+    const nodeId = String(entry?.nodeId || '').trim();
+    if (!feedback || !nodeId) {
+        return null;
+    }
+    return {
+        stageIndex: Math.max(0, Math.floor(Number(entry?.stageIndex) || 0)),
+        stageId: String(entry?.stageId || '').trim(),
+        nodeIndex: Math.max(0, Math.floor(Number(entry?.nodeIndex) || 0)),
+        nodeId,
+        feedback,
+    };
+}
+
+function getRuntimeApprovedReviewFeedbackEntries(runtime = null) {
+    if (!Array.isArray(runtime?.approvedReviewFeedbackEntries)) {
+        return [];
+    }
+    return runtime.approvedReviewFeedbackEntries
+        .map(entry => normalizeApprovedReviewFeedbackEntry(entry))
+        .filter(Boolean)
+        .sort((left, right) => (
+            Number(left.stageIndex || 0) - Number(right.stageIndex || 0)
+            || Number(left.nodeIndex || 0) - Number(right.nodeIndex || 0)
+            || String(left.nodeId || '').localeCompare(String(right.nodeId || ''))
+        ));
+}
+
+function upsertRuntimeApprovedReviewFeedbackEntry(runtime = null, entry = {}) {
+    if (!runtime || typeof runtime !== 'object') {
+        return;
+    }
+    const normalized = normalizeApprovedReviewFeedbackEntry(entry);
+    if (!normalized) {
+        return;
+    }
+    if (!Array.isArray(runtime.approvedReviewFeedbackEntries)) {
+        runtime.approvedReviewFeedbackEntries = [];
+    }
+    const index = runtime.approvedReviewFeedbackEntries.findIndex(item => (
+        Number(item?.stageIndex || 0) === normalized.stageIndex
+        && Number(item?.nodeIndex || 0) === normalized.nodeIndex
+        && String(item?.nodeId || '') === normalized.nodeId
+    ));
+    if (index >= 0) {
+        runtime.approvedReviewFeedbackEntries[index] = normalized;
+    } else {
+        runtime.approvedReviewFeedbackEntries.push(normalized);
+    }
+}
+
+function trimRuntimeApprovedReviewFeedbackEntries(runtime = null, keepBeforeStageIndex = 0) {
+    if (!runtime || typeof runtime !== 'object' || !Array.isArray(runtime.approvedReviewFeedbackEntries)) {
+        return;
+    }
+    const safeStageIndex = Math.max(0, Math.floor(Number(keepBeforeStageIndex) || 0));
+    runtime.approvedReviewFeedbackEntries = runtime.approvedReviewFeedbackEntries
+        .map(entry => normalizeApprovedReviewFeedbackEntry(entry))
+        .filter(entry => entry && entry.stageIndex < safeStageIndex);
+}
+
+function buildReviewFeedbackPrelude({
+    approvedReviewFeedbackEntries = [],
+    rerunReason = undefined,
+} = {}) {
+    const approved = (Array.isArray(approvedReviewFeedbackEntries) ? approvedReviewFeedbackEntries : [])
+        .map(entry => normalizeApprovedReviewFeedbackEntry(entry))
+        .filter(Boolean)
+        .map((entry) => ({
+            stage_id: String(entry.stageId || ''),
+            review_node_id: String(entry.nodeId || ''),
+            feedback: String(entry.feedback || ''),
+        }));
+    const payload = {};
+    if (approved.length > 0) {
+        payload.approved_review_feedback = approved;
+    }
+    if (rerunReason !== undefined) {
+        const text = String(rerunReason || '').trim();
+        payload.current_rerun_review_feedback = text || '(no review feedback provided by review node)';
+    }
+    if (Object.keys(payload).length === 0) {
+        return '';
+    }
+    return [
+        '## auto_injected_review_feedback',
+        '```yaml',
+        toReadableYamlText(payload, '{}'),
+        '```',
+    ].join('\n');
+}
+
 function buildAutoInjectedNodePromptPrelude({
     previousOrchestration = '',
+    approvedReviewFeedbackEntries = [],
     rerunReason = undefined,
 } = {}) {
     const orchestrationText = String(previousOrchestration || '').trim();
@@ -2809,14 +2917,12 @@ function buildAutoInjectedNodePromptPrelude({
             '```',
         ].join('\n'));
     }
-    if (rerunReason !== undefined) {
-        const reasonText = String(rerunReason || '').trim();
-        sections.push([
-            '## auto_injected_review_rerun_reason',
-            '```text',
-            reasonText || '(no reason provided by review node)',
-            '```',
-        ].join('\n'));
+    const reviewFeedbackPrelude = buildReviewFeedbackPrelude({
+        approvedReviewFeedbackEntries,
+        rerunReason,
+    });
+    if (reviewFeedbackPrelude) {
+        sections.push(reviewFeedbackPrelude);
     }
     return sections.join('\n\n');
 }
@@ -3082,9 +3188,14 @@ function buildNodeToolSet(nodeSpec, { isFinalStage = false } = {}) {
                 type: 'function',
                 function: {
                     name: ORCH_REVIEW_TOOL_APPROVE,
-                    description: 'Approve prior worker outputs and continue without adding any new output.',
+                    description: `Approve prior worker outputs and provide mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` for downstream runtime injection.`,
                     parameters: {
                         type: 'object',
+                        properties: {
+                            [ORCH_REVIEW_FEEDBACK_FIELD]: { type: 'string' },
+                            reason: { type: 'string' },
+                        },
+                        required: [ORCH_REVIEW_FEEDBACK_FIELD],
                         additionalProperties: false,
                     },
                 },
@@ -3093,7 +3204,7 @@ function buildNodeToolSet(nodeSpec, { isFinalStage = false } = {}) {
                 type: 'function',
                 function: {
                     name: ORCH_REVIEW_TOOL_RERUN,
-                    description: 'Request rerun for specific previously executed worker node ids.',
+                    description: `Request rerun for specific previously executed worker node ids and include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
                     parameters: {
                         type: 'object',
                         properties: {
@@ -3102,9 +3213,10 @@ function buildNodeToolSet(nodeSpec, { isFinalStage = false } = {}) {
                                 items: { type: 'string' },
                                 minItems: 1,
                             },
+                            [ORCH_REVIEW_FEEDBACK_FIELD]: { type: 'string' },
                             reason: { type: 'string' },
                         },
-                        required: ['target_node_ids'],
+                        required: ['target_node_ids', ORCH_REVIEW_FEEDBACK_FIELD],
                         additionalProperties: false,
                     },
                 },
@@ -3161,9 +3273,10 @@ function buildNodeIterationContractText(nodeSpec, { isFinalStage = false } = {})
     if (isReviewNodeSpec(nodeSpec)) {
         return [
             '## node_iteration_contract',
-            `- If prior worker outputs are acceptable, call ${ORCH_REVIEW_TOOL_APPROVE} exactly once.`,
-            `- If specific prior worker nodes must be recomputed, call ${ORCH_REVIEW_TOOL_RERUN} exactly once with target_node_ids.`,
-            '- Do not emit any summaries, rewritten outputs, or synthesis of your own.',
+            `- If prior worker outputs are acceptable, call ${ORCH_REVIEW_TOOL_APPROVE} exactly once with mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
+            `- If specific prior worker nodes must be recomputed, call ${ORCH_REVIEW_TOOL_RERUN} exactly once with target_node_ids and mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
+            `- \`${ORCH_REVIEW_FEEDBACK_FIELD}\` should contain concise audit conclusions, preserved constraints, and concrete downstream refinement guidance.`,
+            '- Do not emit rewritten final synthesis of your own.',
         ].join('\n');
     }
 
@@ -3403,6 +3516,11 @@ function buildReviewRuntimeContextText({
 function extractReviewDecision(toolCalls = [], nodeId = '') {
     let approveCall = null;
     let rerunCall = null;
+    const readReviewFeedback = (args = {}) => String(
+        args?.[ORCH_REVIEW_FEEDBACK_FIELD]
+        || args?.reason
+        || '',
+    ).trim();
 
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
         const name = String(call?.name || '').trim();
@@ -3424,15 +3542,26 @@ function extractReviewDecision(toolCalls = [], nodeId = '') {
         if (targetNodeIds.length === 0) {
             throw new Error(`Review node '${nodeId}' requested rerun without target_node_ids.`);
         }
+        const reviewFeedback = readReviewFeedback(rerunCall?.args);
+        if (!reviewFeedback) {
+            throw new Error(`Review node '${nodeId}' requested rerun without ${ORCH_REVIEW_FEEDBACK_FIELD}.`);
+        }
         return {
             action: 'rerun',
             targetNodeIds,
-            reason: String(rerunCall?.args?.reason || '').trim(),
+            reason: reviewFeedback,
         };
     }
 
     if (approveCall) {
-        return { action: 'approve' };
+        const reviewFeedback = readReviewFeedback(approveCall?.args);
+        if (!reviewFeedback) {
+            throw new Error(`Review node '${nodeId}' approved without ${ORCH_REVIEW_FEEDBACK_FIELD}.`);
+        }
+        return {
+            action: 'approve',
+            reason: reviewFeedback,
+        };
     }
 
     throw new Error(`Review node '${nodeId}' did not return a review decision tool call.`);
@@ -3460,9 +3589,11 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
     const previousOutputs = buildPreviousOutputsMarkdown(previousNodeOutputs);
     const distillerOutput = buildDistillerOutputMarkdown(previousNodeOutputs);
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
+    const approvedReviewFeedbackEntries = getRuntimeApprovedReviewFeedbackEntries(options?.runtime);
     const hasRerunReason = Object.prototype.hasOwnProperty.call(options || {}, 'rerunReason');
     const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
         previousOrchestration,
+        approvedReviewFeedbackEntries,
         rerunReason: hasRerunReason ? String(options?.rerunReason ?? '') : undefined,
     });
 
@@ -3619,6 +3750,7 @@ async function replayStagesToReview(context, payload, messages, profile, runtime
         rerunReasonsByStage.get(entry.stageIndex).set(entry.nodeId, String(rerunReason || ''));
     }
 
+    trimRuntimeApprovedReviewFeedbackEntries(runtime, earliestStageIndex);
     runtime.stageOutputs = existingStageOutputs.slice(0, earliestStageIndex);
     let previousNodeOutputs = buildNodeOutputMapFromStageOutputs(runtime.stageOutputs);
 
@@ -3682,9 +3814,6 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
         .join('\n');
     const { message: lastUser } = extractLastUserMessage(messages);
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
-    const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
-        previousOrchestration,
-    });
     const runtimeTemplate = normalizeTemplateForRuntime(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '');
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
     const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
@@ -3718,6 +3847,10 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
             throwIfAborted(abortSignal, 'Orchestration aborted.');
             const availableOutputs = mergeNodeOutputMaps(currentPreviousNodeOutputs, currentStageOutputs);
             const priorEntries = collectPriorNodeEntries(options?.runtime?.stages || [], Number(options?.stageIndex || 0), Number(options?.nodeIndex || 0));
+            const autoInjectedPrelude = buildAutoInjectedNodePromptPrelude({
+                previousOrchestration,
+                approvedReviewFeedbackEntries: getRuntimeApprovedReviewFeedbackEntries(options?.runtime),
+            });
             const baseUserPrompt = renderTemplate(runtimeTemplate, {
                 recent_chat: recent,
                 last_user: String(lastUser?.mes || ''),
@@ -3768,9 +3901,17 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
             });
             const decision = extractReviewDecision(detailed?.toolCalls || [], nodeSpec.id);
             if (decision.action === 'approve') {
+                upsertRuntimeApprovedReviewFeedbackEntry(options?.runtime, {
+                    stageIndex: Number(options?.stageIndex || 0),
+                    stageId: String(options?.stageId || ''),
+                    nodeIndex: Number(options?.nodeIndex || 0),
+                    nodeId: String(nodeSpec?.id || ''),
+                    feedback: String(decision.reason || ''),
+                });
                 finishOrchestrationRuntimeNodeAttempt(trace, traceAttempt, {
                     status: 'completed',
                     action: 'approve',
+                    reason: String(decision.reason || ''),
                 });
                 return {
                     previousNodeOutputs: currentPreviousNodeOutputs,
@@ -3812,7 +3953,7 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
                 name: ORCH_REVIEW_TOOL_RERUN,
                 args: {
                     target_node_ids: targetEntries.map(entry => entry.nodeId),
-                    reason: decision.reason,
+                    [ORCH_REVIEW_FEEDBACK_FIELD]: decision.reason,
                 },
                 result: replay.result,
             }], detailed?.assistantText || '');
@@ -3981,6 +4122,7 @@ async function runOrchestration(context, payload, messages, profile) {
         stages,
         stageOutputs: [],
         reviewRerunCount: 0,
+        approvedReviewFeedbackEntries: [],
         trace: createOrchestrationRuntimeTrace(context, payload, stages),
     };
     let previousNodeOutputs = new Map();
@@ -4734,7 +4876,7 @@ function renderWorkflowBoard(scope, editor) {
         <option value="${ORCH_NODE_TYPE_REVIEW}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_REVIEW ? ' selected' : ''}>${escapeHtml(i18n('Review'))}</option>
     </select>
     <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result is auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result and approved review feedback are auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
 </div>`).join('');
 
         return `
@@ -5336,10 +5478,10 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         `Must include dedicated required node ids: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
-        'Runtime prepends previous orchestration result before node template text; do not add placeholders for that context.',
+        `Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not add placeholders for that context.`,
         'If you use a critic/reviewer, model it as a review node that approves or requests rerun of earlier worker node ids.',
         ...getCriticPromptReminderLines(),
-        'Review nodes do not emit synthesis. Downstream stages must continue from passthrough worker outputs.',
+        `Review nodes do not emit synthesis. Downstream stages continue from passthrough worker outputs plus approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
         'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
     ].join('\n');
     const suggestUserPrompt = buildAiSuggestInputXml({
@@ -5383,9 +5525,9 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
-                critic: 'Audit prior worker outputs against an explicit hardcoded checklist, then either approve or request rerun of specific earlier worker nodes. Do not emit synthesis.',
+                critic: `Audit prior worker outputs against an explicit hardcoded checklist, then either approve or request rerun of specific earlier worker nodes. Always include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Do not emit synthesis.`,
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
-                synthesizer: 'Merge the approved worker outputs into one draft-ready final guidance.',
+                synthesizer: `Merge the approved worker outputs and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into one draft-ready final guidance.`,
             },
             last_stage_rule: 'Prefer single synthesizer node as final stage output.',
             innovation_policy: {
@@ -5411,7 +5553,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         toolProtocol: {
             review_node_contract: {
                 type_field: `Set node.type to "${ORCH_NODE_TYPE_REVIEW}" for review nodes. Omit or use "${ORCH_NODE_TYPE_WORKER}" for normal worker nodes.`,
-                runtime_behavior: 'Review nodes inspect current available worker outputs, may request rerun of specific earlier worker node ids, and produce no downstream output of their own.',
+                runtime_behavior: `Review nodes inspect current available worker outputs, may request rerun of specific earlier worker node ids, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Approved feedback is auto-injected into later nodes; rerun feedback is auto-injected into the targeted rerun nodes.`,
                 topology_rule: 'Prefer a dedicated serial review stage after the worker stage being audited. Do not place review nodes in the final stage.',
                 ...getCriticReviewNodeContractShape(),
             },
@@ -6733,10 +6875,10 @@ function buildAiIterationSystemPrompt(settings) {
         '- You are editing an existing orchestration profile incrementally (diff-style).',
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
-        '- Runtime prepends previous orchestration result before node template text; do not use placeholders for that context.',
-        '- Nodes can be worker or review. Review nodes inspect already-executed worker outputs, may rerun specific earlier worker node ids, and do not generate downstream guidance.',
+        `- Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not use placeholders for that context.`,
+        `- Nodes can be worker or review. Review nodes inspect already-executed worker outputs, may rerun specific earlier worker node ids, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
         ...getCriticPromptReminderLines().map(line => `- ${line}`),
-        '- Keep approved worker outputs as passthrough context after review; do not invent critic summaries to replace them.',
+        `- Keep approved worker outputs as passthrough context after review; treat approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` as supplemental refinement, not a replacement summary.`,
         '- Prefer dedicated serial review stages after the worker stages they audit. Do not place review nodes in the final stage.',
         `- Use luker_orch_set_node.type to set "${ORCH_NODE_TYPE_REVIEW}" when a node should behave as a reviewer.`,
         '- If user asks to test, call luker_orch_simulate with suitable input.',
@@ -6803,8 +6945,8 @@ function buildAiIterationUserPrompt(session, userInputText, {
                 worker: ORCH_NODE_TYPE_WORKER,
                 review: ORCH_NODE_TYPE_REVIEW,
             },
-            runtime_behavior: 'Review nodes inspect currently available worker outputs, request rerun for specific earlier worker node ids when needed, and otherwise approve without adding new output.',
-            downstream_behavior: 'Later stages keep receiving passthrough worker outputs; critic/review nodes do not replace them with summaries.',
+            runtime_behavior: `Review nodes inspect currently available worker outputs, request rerun for specific earlier worker node ids when needed, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` on both approve and rerun decisions.`,
+            downstream_behavior: `Later stages keep receiving passthrough worker outputs plus approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\`; critic/review nodes do not replace them with summaries.`,
             topology_rule: 'Prefer dedicated serial review stages after the workers being audited. Do not place review nodes in the final stage.',
             ...getCriticReviewNodeContractShape(),
         }, '{}'),
