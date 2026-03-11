@@ -27,7 +27,6 @@ const DEFAULT_SETTINGS = {
 
 // Commands that can record an empty value into the profile
 const ALLOW_EMPTY = [
-    'stop-strings',
     'start-reply-with',
     'custom-include-body',
     'custom-exclude-body',
@@ -530,6 +529,13 @@ async function renderDetailsContent(detailsContent) {
             }
             if (profile.mode === 'cc' && Object.hasOwn(profile, 'preset')) {
                 delete profile.preset;
+                migrated = true;
+            }
+            // `stop-strings` already has an explicit empty representation: `[]`.
+            // Clean up older profiles that recorded an empty string and would otherwise
+            // clear the global setting to `[]` when applied.
+            if (profile['stop-strings'] === '') {
+                delete profile['stop-strings'];
                 migrated = true;
             }
         }
