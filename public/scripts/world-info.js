@@ -4847,7 +4847,9 @@ export async function deleteWorldInfoWithUndo(worldInfoName) {
 
                 const restoredSelectedWorlds = snapshot.selectedWorldInfo.filter(name => world_names.includes(name));
                 selected_world_info.splice(0, selected_world_info.length, ...restoredSelectedWorlds);
-                $('#world_info').val(restoredSelectedWorlds).trigger('change');
+                syncGlobalWorldInfoSettingsState();
+                syncGlobalWorldInfoSelectionUi();
+                await eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
 
                 if (snapshot.characterWorld === worldInfoName) {
                     $('#character_world').val(worldInfoName).trigger('change');
