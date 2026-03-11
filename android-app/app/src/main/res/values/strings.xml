@@ -29,7 +29,7 @@
     <string name="endpoint_dialog_title">Configure Service Endpoint</string>
     <string name="endpoint_dialog_current_default">Current: default local endpoint</string>
     <string name="endpoint_dialog_current_custom">Current: %1$s</string>
-    <string name="endpoint_dialog_message">The default endpoint uses the app&apos;s built-in local service. After saving a custom http(s):// endpoint, future launches will connect to that endpoint directly and will no longer start the local service automatically.</string>
+    <string name="endpoint_dialog_message">The default endpoint uses the app\'s built-in local service. After saving a custom http(s):// endpoint, future launches will connect to that endpoint directly and will no longer start the local service automatically.</string>
     <string name="endpoint_dialog_hint">http://192.168.1.20:8000</string>
     <string name="endpoint_dialog_save">Save</string>
     <string name="endpoint_dialog_reset_default">Reset to Default Endpoint</string>
