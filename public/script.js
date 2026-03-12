@@ -11764,13 +11764,16 @@ async function messageEditDone(div) {
         reasoningEditDone.trigger('click');
     }
 
-    await eventSource.emit(event_types.MESSAGE_EDITED, editedMessageId, getChatMessageMutationMeta(editedMessageId));
+    // Close the editor before async MESSAGE_EDITED listeners run, so slow listeners
+    // cannot leave the textarea stranded after the action buttons disappear.
     renderEditedMessage(editedMessageId, {
         bias: chat[editedMessageId]?.extra?.bias ?? bias,
         updateBias: true,
     });
-    await eventSource.emit(event_types.MESSAGE_UPDATED, editedMessageId);
     this_edit_mes_id = undefined;
+
+    await eventSource.emit(event_types.MESSAGE_EDITED, editedMessageId, getChatMessageMutationMeta(editedMessageId));
+    await eventSource.emit(event_types.MESSAGE_UPDATED, editedMessageId);
     const patched = await patchChatMessages([
         { op: 'replace', path: `/${editedMessageId}`, value: chat[editedMessageId] },
     ]);
