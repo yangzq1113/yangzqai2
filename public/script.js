@@ -13635,7 +13635,11 @@ export async function swipe(event, direction, { source, repeated, message = chat
             appendMediaToMessage(chat[mesId], thisMesDiv);
         }
 
-        await eventSource.emit(event_types.MESSAGE_SWIPED, (mesId));
+        await eventSource.emit(event_types.MESSAGE_SWIPED, mesId, {
+            pendingGeneration: Boolean(run_generate),
+            previousSwipeId: originalSwipeId,
+            nextSwipeId: newSwipeId,
+        });
 
         if (run_generate && !is_send_press) {
             is_send_press = true;
