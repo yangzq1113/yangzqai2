@@ -462,14 +462,51 @@ for (const call of searchCalls) {
 - `loadWorldInfo(name)`
 - `saveWorldInfo(name, data, immediately?)` (patch-first RFC6902 persistence path)
 
-## 2) Generation Hook Order (Recommended)
+## 2) Generation Hooks and Event Ordering (Recommended)
 
 Register generation-time logic with:
 
+- `context.eventSource.on(context.eventTypes.GENERATION_CONTEXT_READY, handler)`
 - `context.eventSource.on(context.eventTypes.GENERATION_BEFORE_WORLD_INFO_SCAN, handler)`
 - `context.eventSource.on(context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN, handler)`
 - `context.eventSource.on(context.eventTypes.GENERATION_WORLD_INFO_FINALIZED, handler)`
 - `context.eventSource.on(context.eventTypes.GENERATION_BEFORE_API_REQUEST, handler)`
+
+`GENERATION_CONTEXT_READY` is emitted before world-info scanning and lets plugins adjust the core chat slice or effective context limit for the current request.
+
+Payload shape:
+
+```ts
+{
+  type: string,
+  dryRun: boolean,
+  isContinue: boolean,
+  isImpersonate: boolean,
+  coreChat: ChatMessage[],
+  maxContext: number,
+}
+```
+
+### Listener ordering semantics
+
+Luker event listeners are awaited serially. Listener execution order is:
+
+1. Explicit per-event plugin order (`pluginOrder`) when provided by `eventSource.setOrderConfig(...)` or the built-in Hook Order extension.
+2. Listener `priority` passed as the third argument to `eventSource.on(...)` (higher number runs earlier).
+3. Listener registration order (earlier registration runs earlier).
+
+Useful APIs:
+
+- `context.eventSource.on(eventName, handler, { priority })`
+- `context.eventSource.makeFirst(eventName, handler)`
+- `context.eventSource.makeLast(eventName, handler)`
+- `context.eventSource.getListenersMeta(eventName)`
+
+Practical notes:
+
+- The built-in Hook Order extension writes per-event `pluginOrder` for selected core hooks. If no explicit order is configured, default priority/registration ordering applies.
+- Plugin identity for ordering/debugging is inferred from the extension path, including third-party extensions (`third-party/<name>`).
+- `APP_READY` is auto-fired: listeners registered after app startup still receive the last emitted `APP_READY` arguments immediately.
 
 Lifecycle hooks:
 
@@ -483,8 +520,23 @@ Chat lifecycle hooks commonly used by plugins:
 - `CHAT_CREATED`
 - `GROUP_CHAT_CREATED`
 - `CHAT_BRANCH_CREATED`
+- `USER_MESSAGE_RENDERED`
+- `CHARACTER_MESSAGE_RENDERED`
+- `MESSAGE_SENT`
+- `MESSAGE_RECEIVED`
 - `MESSAGE_EDITED`
+- `MESSAGE_UPDATED`
 - `MESSAGE_DELETED`
+- `MESSAGE_SWIPED`
+- `MESSAGE_SWIPE_DELETED`
+
+`MESSAGE_RECEIVED` is emitted as:
+
+```ts
+(messageId: number, type?: string)
+```
+
+Common `type` values include normal generation modes such as `swipe`, `continue`, `append`, `appendfinal`, plus non-standard sources like `first_message`, `command`, or `extension`.
 
 `MESSAGE_EDITED` is emitted as:
 
@@ -501,6 +553,14 @@ Chat lifecycle hooks commonly used by plugins:
 
 The second `meta` argument is backward-compatible and may be absent for older emitters. Use it when your plugin needs immediate invalidation based on the edited message position/type.
 
+`MESSAGE_UPDATED` is emitted as:
+
+```ts
+(messageId: number)
+```
+
+Use `MESSAGE_UPDATED` for lightweight "message content changed locally" notifications when you do not need the richer edit/delete mutation metadata.
+
 `MESSAGE_DELETED` is emitted as:
 
 ```ts
@@ -510,6 +570,26 @@ The second `meta` argument is backward-compatible and may be absent for older em
   deletedPlayableSeqTo: number | null,
   deletedAssistantSeqFrom: number | null,
   deletedAssistantSeqTo: number | null,
+})
+```
+
+`MESSAGE_SWIPED` is emitted as:
+
+```ts
+(messageId: number, meta?: {
+  pendingGeneration: boolean,
+  previousSwipeId: number | null,
+  nextSwipeId: number | null,
+})
+```
+
+`MESSAGE_SWIPE_DELETED` is emitted as:
+
+```ts
+({
+  messageId: number,
+  swipeId: number,
+  newSwipeId: number | null,
 })
 ```
 
