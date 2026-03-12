@@ -25,6 +25,7 @@ import android.view.View
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
+import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.URLUtil
@@ -52,6 +53,7 @@ import java.io.File
 import java.io.IOException
 import java.io.PrintWriter
 import java.io.StringWriter
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : AppCompatActivity() {
@@ -61,6 +63,15 @@ class MainActivity : AppCompatActivity() {
     private val messageProgressNotificationChannelId = "luker_message_progress_v1"
     private val messageNotificationId = 12001
     private val messageProgressNotificationId = 12002
+    private val broadFileChooserExtensions = setOf(
+        "byaf",
+        "charx",
+        "jsonl",
+        "preset",
+        "settings",
+        "yaml",
+        "yml",
+    )
     private lateinit var contentRoot: View
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
@@ -231,15 +242,15 @@ class MainActivity : AppCompatActivity() {
                 pendingFilePathCallback?.onReceiveValue(null)
                 pendingFilePathCallback = filePathCallback
 
-                val chooserIntent = try {
-                    fileChooserParams?.createIntent()
-                } catch (t: Throwable) {
-                    Log.w(tag, "Failed to create file chooser intent", t)
-                    null
-                } ?: Intent(Intent.ACTION_GET_CONTENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE)
+                val chooserIntent = if (fileChooserParams?.isCaptureEnabled == true) {
+                    try {
+                        fileChooserParams.createIntent()
+                    } catch (t: Throwable) {
+                        Log.w(tag, "Failed to create capture file chooser intent", t)
+                        null
+                    } ?: buildFileChooserIntent(fileChooserParams)
+                } else {
+                    buildFileChooserIntent(fileChooserParams)
                 }
                 chooserIntent.addCategory(Intent.CATEGORY_OPENABLE)
                 chooserIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -321,6 +332,86 @@ class MainActivity : AppCompatActivity() {
         handleLaunchIntent(intent)
         maybePromptForCustomEndpointOnLaunch(savedInstanceState, launchAction)
     }
+
+    private fun buildFileChooserIntent(fileChooserParams: WebChromeClient.FileChooserParams?): Intent {
+        val mimeSelection = resolveAcceptedMimeTypes(fileChooserParams)
+        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, fileChooserParams?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
+
+            when {
+                mimeSelection.requiresBroadFilter || mimeSelection.mimeTypes.isEmpty() -> {
+                    // Non-standard extensions such as .jsonl are frequently exposed as generic files by Android providers.
+                    type = "*/*"
+                }
+                mimeSelection.mimeTypes.size == 1 -> {
+                    type = mimeSelection.mimeTypes.first()
+                }
+                else -> {
+                    type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, mimeSelection.mimeTypes.toTypedArray())
+                }
+            }
+        }
+    }
+
+    private fun resolveAcceptedMimeTypes(fileChooserParams: WebChromeClient.FileChooserParams?): MimeSelection {
+        val mimeTypes = linkedSetOf<String>()
+        var requiresBroadFilter = false
+
+        for (acceptType in tokenizeAcceptedFileTypes(fileChooserParams)) {
+            val resolved = resolveAcceptTypeToMimeTypes(acceptType)
+            if (resolved == null) {
+                requiresBroadFilter = true
+                continue
+            }
+            mimeTypes += resolved
+        }
+
+        return MimeSelection(
+            mimeTypes = mimeTypes,
+            requiresBroadFilter = requiresBroadFilter,
+        )
+    }
+
+    private fun tokenizeAcceptedFileTypes(fileChooserParams: WebChromeClient.FileChooserParams?): List<String> {
+        return fileChooserParams?.acceptTypes
+            ?.asSequence()
+            ?.flatMap { value -> value.split(',').asSequence() }
+            ?.map { value -> value.trim() }
+            ?.filter { value -> value.isNotEmpty() }
+            ?.toList()
+            .orEmpty()
+    }
+
+    private fun resolveAcceptTypeToMimeTypes(rawAcceptType: String): Set<String>? {
+        val acceptType = rawAcceptType.trim().lowercase(Locale.ROOT)
+        if (acceptType.isEmpty()) {
+            return emptySet()
+        }
+
+        if (!acceptType.startsWith('.')) {
+            return setOf(acceptType)
+        }
+
+        val extension = acceptType.removePrefix(".")
+        if (extension in broadFileChooserExtensions) {
+            return null
+        }
+
+        val mimeTypes = linkedSetOf<String>()
+        MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)?.let(mimeTypes::add)
+        when (extension) {
+            "json" -> mimeTypes.add("application/json")
+        }
+
+        return mimeTypes.takeIf { it.isNotEmpty() }
+    }
+
+    private data class MimeSelection(
+        val mimeTypes: Set<String>,
+        val requiresBroadFilter: Boolean,
+    )
 
     private fun persistChosenFilePermissions(resultData: Intent?, chosenUris: Array<Uri>?) {
         if (chosenUris.isNullOrEmpty()) {
