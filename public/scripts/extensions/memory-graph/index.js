@@ -6698,7 +6698,54 @@ function buildFocusTablesText(nodes, settings, options = {}, context = null) {
     return blocks.join('\n\n');
 }
 
-function createRuntimeLorebookEntry(uid, comment, content, order) {
+const DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG = Object.freeze({
+    position: Number(newWorldInfoEntryTemplate.position ?? world_info_position.before),
+    depth: Math.max(0, Math.min(10000, Math.floor(Number(newWorldInfoEntryTemplate.depth ?? 4) || 0))),
+    role: [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+        .includes(Number(newWorldInfoEntryTemplate.role))
+        ? Number(newWorldInfoEntryTemplate.role)
+        : extension_prompt_roles.SYSTEM,
+});
+
+function normalizeManagedLorebookEntryConfig(entryConfig = {}, fallbackConfig = DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG) {
+    const fallback = fallbackConfig && typeof fallbackConfig === 'object'
+        ? fallbackConfig
+        : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG;
+    const fallbackPosition = SUPPORTED_WORLD_INFO_POSITIONS.includes(Number(fallback.position))
+        ? Number(fallback.position)
+        : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.position;
+    const fallbackDepth = Math.max(
+        0,
+        Math.min(10000, Math.floor(Number(fallback.depth ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.depth) || 0)),
+    );
+    const fallbackRole = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+        .includes(Number(fallback.role))
+        ? Number(fallback.role)
+        : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.role;
+    const numericPosition = Number(entryConfig?.position);
+    const numericRole = Number(entryConfig?.role);
+
+    return {
+        position: SUPPORTED_WORLD_INFO_POSITIONS.includes(numericPosition) ? numericPosition : fallbackPosition,
+        depth: Math.max(0, Math.min(10000, Math.floor(Number(entryConfig?.depth ?? fallbackDepth) || 0))),
+        role: [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+            .includes(numericRole) ? numericRole : fallbackRole,
+    };
+}
+
+function getProjectionLorebookEntryConfig(commentPrefix, settings) {
+    if (String(commentPrefix || '').trim() === RUNTIME_LOREBOOK_COMMENT_PREFIX) {
+        return normalizeManagedLorebookEntryConfig({
+            position: normalizeRecallInjectPosition(settings?.recallInjectPosition),
+            depth: normalizeRecallInjectDepth(settings?.recallInjectDepth),
+            role: normalizeRecallInjectRole(settings?.recallInjectRole),
+        });
+    }
+    return DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG;
+}
+
+function createRuntimeLorebookEntry(uid, comment, content, order, entryConfig = DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG) {
+    const normalizedEntryConfig = normalizeManagedLorebookEntryConfig(entryConfig);
     return {
         uid,
         ...structuredClone(newWorldInfoEntryTemplate),
@@ -6714,8 +6761,9 @@ function createRuntimeLorebookEntry(uid, comment, content, order) {
         excludeRecursion: true,
         useProbability: true,
         probability: 100,
-        depth: 4,
-        role: 0,
+        position: normalizedEntryConfig.position,
+        depth: normalizedEntryConfig.depth,
+        role: normalizedEntryConfig.role,
     };
 }
 
@@ -6788,6 +6836,15 @@ function getManagedLorebookEntries(data, commentPrefix) {
             comment: String(entry?.comment || ''),
             content: normalizeMultilineText(entry?.content || ''),
             order: Number(entry?.order || 0),
+            position: Number(entry?.position ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.position),
+            depth: Math.max(
+                0,
+                Math.min(10000, Math.floor(Number(entry?.depth ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.depth) || 0)),
+            ),
+            role: [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+                .includes(Number(entry?.role))
+                ? Number(entry.role)
+                : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.role,
         }));
 }
 
@@ -6798,9 +6855,16 @@ function getNextLorebookUid(entries) {
         .reduce((max, value) => Math.max(max, value), -1) + 1;
 }
 
-function areManagedLorebookEntriesEqual(existingEntries, sections, commentPrefix, baseOrder) {
+function areManagedLorebookEntriesEqual(
+    existingEntries,
+    sections,
+    commentPrefix,
+    baseOrder,
+    entryConfig = DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG,
+) {
     const normalizedSections = Array.isArray(sections) ? sections : [];
     const normalizedExisting = Array.isArray(existingEntries) ? existingEntries : [];
+    const normalizedEntryConfig = normalizeManagedLorebookEntryConfig(entryConfig);
     if (normalizedExisting.length !== normalizedSections.length) {
         return false;
     }
@@ -6823,6 +6887,21 @@ function areManagedLorebookEntriesEqual(existingEntries, sections, commentPrefix
         if (Number(existing.order || 0) !== expectedOrder) {
             return false;
         }
+        if (Number(existing.position ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.position) !== normalizedEntryConfig.position) {
+            return false;
+        }
+        if (Math.max(
+            0,
+            Math.min(10000, Math.floor(Number(existing.depth ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.depth) || 0)),
+        ) !== normalizedEntryConfig.depth) {
+            return false;
+        }
+        if (([extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+            .includes(Number(existing.role))
+            ? Number(existing.role)
+            : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.role) !== normalizedEntryConfig.role) {
+            return false;
+        }
     }
     return true;
 }
@@ -6832,11 +6911,15 @@ async function upsertManagedLorebookProjection(context, settings, {
     sections,
     orderBase,
     allowCreate = true,
+    entryConfig = undefined,
 } = {}) {
     const prefix = String(commentPrefix || '').trim();
     if (!prefix) {
         return { changed: false, bookName: '' };
     }
+    const resolvedEntryConfig = normalizeManagedLorebookEntryConfig(
+        entryConfig ?? getProjectionLorebookEntryConfig(prefix, settings),
+    );
     const normalizedSections = (Array.isArray(sections) ? sections : [])
         .map((section) => [String(section?.[0] || '').trim(), normalizeMultilineText(section?.[1] || '')])
         .filter(([name, text]) => Boolean(name) && Boolean(text));
@@ -6862,7 +6945,7 @@ async function upsertManagedLorebookProjection(context, settings, {
 
     const baseOrder = Math.max(100, Number(orderBase || settings?.lorebookEntryOrderBase || 9800));
     const existingEntries = getManagedLorebookEntries(data, prefix);
-    if (areManagedLorebookEntriesEqual(existingEntries, normalizedSections, prefix, baseOrder)) {
+    if (areManagedLorebookEntriesEqual(existingEntries, normalizedSections, prefix, baseOrder, resolvedEntryConfig)) {
         return { changed: false, bookName };
     }
 
@@ -6878,6 +6961,7 @@ async function upsertManagedLorebookProjection(context, settings, {
             `${prefix}::${name}`,
             text,
             baseOrder + i,
+            resolvedEntryConfig,
         );
         nextUid += 1;
     }
