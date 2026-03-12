@@ -5507,13 +5507,6 @@ body:not(.caption) .mes_img_caption {
 
 }
 
-#immersive_mode_toggle {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    justify-content: center;
-}
-
 body.luker-immersive-mode #top-bar,
 body.luker-immersive-mode #top-settings-holder {
     display: none !important;

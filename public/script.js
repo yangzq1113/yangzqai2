@@ -929,16 +929,36 @@ async function exitImmersiveFullscreen() {
 }
 
 function updateImmersiveModeUi() {
+    const toggle = $('#immersive_mode_toggle');
     const icon = $('#immersiveModeIcon');
-    if (!icon.length) {
+    const label = $('#immersiveModeLabel');
+    const translationKey = isImmersiveModeEnabled ? 'Exit immersive mode' : 'Enter immersive mode';
+    const title = isImmersiveModeEnabled ? t`Exit immersive mode` : t`Enter immersive mode`;
+
+    if (!icon.length && !toggle.length) {
         return;
     }
+
     icon
         .toggleClass('fa-expand', !isImmersiveModeEnabled)
         .toggleClass('fa-compress', isImmersiveModeEnabled)
-        .toggleClass('closedIcon', !isImmersiveModeEnabled)
-        .toggleClass('openIcon', isImmersiveModeEnabled)
-        .attr('title', isImmersiveModeEnabled ? t`Exit immersive mode` : t`Enter immersive mode`);
+        .attr('title', title);
+
+    if (icon.hasClass('drawer-icon')) {
+        icon
+            .toggleClass('closedIcon', !isImmersiveModeEnabled)
+            .toggleClass('openIcon', isImmersiveModeEnabled);
+    }
+
+    toggle
+        .attr('data-i18n', `[title]${translationKey}`)
+        .attr('title', title)
+        .attr('aria-pressed', String(isImmersiveModeEnabled));
+
+    if (label.length) {
+        label.attr('data-i18n', translationKey);
+        label.text(title);
+    }
 }
 
 async function onImmersiveFullscreenChanged() {
