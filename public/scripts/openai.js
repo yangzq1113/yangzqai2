@@ -5512,7 +5512,8 @@ async function onExportPresetClick() {
 async function onLogitBiasPresetImportFileChange(e) {
     const file = e.target.files[0];
 
-    if (!file || file.type !== 'application/json') {
+    const isJsonFile = file && (file.type === 'application/json' || file.name.toLowerCase().endsWith('.json'));
+    if (!isJsonFile) {
         return;
     }
 
