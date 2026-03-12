@@ -6734,7 +6734,7 @@ function normalizeManagedLorebookEntryConfig(entryConfig = {}, fallbackConfig = 
 }
 
 function getProjectionLorebookEntryConfig(commentPrefix, settings) {
-    if (String(commentPrefix || '').trim() === RUNTIME_LOREBOOK_COMMENT_PREFIX) {
+    if ([PERSISTENT_LOREBOOK_COMMENT_PREFIX, RUNTIME_LOREBOOK_COMMENT_PREFIX].includes(String(commentPrefix || '').trim())) {
         return normalizeManagedLorebookEntryConfig({
             position: normalizeRecallInjectPosition(settings?.recallInjectPosition),
             depth: normalizeRecallInjectDepth(settings?.recallInjectDepth),
@@ -11034,18 +11034,23 @@ function bindUi() {
     root.find('#luker_rpg_memory_recall_inject_position').off('change').on('change', function () {
         settings.recallInjectPosition = normalizeRecallInjectPosition(jQuery(this).val());
         jQuery(this).val(String(settings.recallInjectPosition));
+        void syncPersistentProjectionForCurrentChat(getContext());
         saveSettingsDebounced();
     });
 
-    root.find('#luker_rpg_memory_recall_inject_depth').off('change input').on('change input', function () {
+    root.find('#luker_rpg_memory_recall_inject_depth').off('change input').on('change input', function (event) {
         settings.recallInjectDepth = normalizeRecallInjectDepth(jQuery(this).val());
         jQuery(this).val(String(settings.recallInjectDepth));
+        if (event?.type === 'change') {
+            void syncPersistentProjectionForCurrentChat(getContext());
+        }
         saveSettingsDebounced();
     });
 
     root.find('#luker_rpg_memory_recall_inject_role').off('change').on('change', function () {
         settings.recallInjectRole = normalizeRecallInjectRole(jQuery(this).val());
         jQuery(this).val(String(settings.recallInjectRole));
+        void syncPersistentProjectionForCurrentChat(getContext());
         saveSettingsDebounced();
     });
 
