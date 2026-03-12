@@ -11776,7 +11776,10 @@ jQuery(() => {
         queueMutationInvalidation(fromSeq, { scheduleReplay: true });
     });
     if (context.eventTypes.MESSAGE_SWIPED) {
-        context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, (messageId) => {
+        context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, (messageId, meta) => {
+            if (meta?.pendingGeneration === true) {
+                return;
+            }
             const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
             queueMutationInvalidation(fromSeq, { scheduleReplay: true });
         });
@@ -11790,7 +11793,7 @@ jQuery(() => {
     if (context.eventTypes.MESSAGE_RECEIVED) {
         context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, (messageId, generationType) => {
             const normalizedType = String(generationType || '').trim().toLowerCase();
-            if (!['continue', 'append', 'appendfinal'].includes(normalizedType)) {
+            if (!['swipe', 'continue', 'append', 'appendfinal'].includes(normalizedType)) {
                 return;
             }
             const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
