@@ -95,11 +95,21 @@ const ORCH_CRITIC_REQUIRED_GATES = Object.freeze([
     'world autonomy and avoiding user-centric collapse',
 ]);
 const ORCH_CRITIC_PROMPT_AUTHORING_RULE = 'The critic/review preset itself must hardcode the review checklist and decision gate. Do not assume node.type, stage position, or preset name alone will make the model audit outputs.';
-const ORCH_CRITIC_DECISION_RULE = `Approve only when every required gate passes. If any material issue exists, request rerun of the minimal specific earlier worker node ids. Every approve/rerun tool call must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Never emit synthesis, replacement guidance, or silent approval.`;
+const ORCH_REVIEW_LAYERING_RULE = 'Treat orchestration as explicit hierarchical layers. A critic/review node audits only the immediately preceding worker layer, not the full earlier pipeline.';
+const ORCH_REVIEW_VISIBILITY_RULE = 'Critic visibility is local: do not make a critic depend on or audit non-adjacent earlier-stage nodes. If an older layer also needs review, add another critic immediately after that layer.';
+const ORCH_REVIEW_RERUN_SCOPE_RULE = 'A critic may request rerun only for the minimal specific worker node ids in the directly adjacent previous layer it audits.';
+const ORCH_REVIEW_MULTI_CRITIC_RULE = 'If multiple layers need review gates, insert critics after those specific layers as needed. Multiple critics are valid; do not collapse all review into one final critic.';
+const ORCH_REVIEW_REDUNDANCY_RULE = 'Do not place two critic/review stages or nodes back-to-back with no worker layer between them; adjacent critics are redundant and meaningless.';
+const ORCH_CRITIC_DECISION_RULE = `Approve only when every required gate passes. If any material issue exists, request rerun of the minimal specific worker node ids from the directly adjacent previous layer only. Every approve/rerun tool call must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Never emit synthesis, replacement guidance, or silent approval.`;
 
 function getCriticPromptReminderLines() {
     return [
         ORCH_CRITIC_PROMPT_AUTHORING_RULE,
+        ORCH_REVIEW_LAYERING_RULE,
+        ORCH_REVIEW_VISIBILITY_RULE,
+        ORCH_REVIEW_RERUN_SCOPE_RULE,
+        ORCH_REVIEW_MULTI_CRITIC_RULE,
+        ORCH_REVIEW_REDUNDANCY_RULE,
         `For every critic/review preset, explicitly hardcode these checks in prompt text: ${ORCH_CRITIC_REQUIRED_GATES.join(', ')}.`,
         ORCH_CRITIC_DECISION_RULE,
     ];
@@ -108,6 +118,11 @@ function getCriticPromptReminderLines() {
 function getCriticReviewNodeContractShape() {
     return {
         prompt_authoring_rule: ORCH_CRITIC_PROMPT_AUTHORING_RULE,
+        layering_rule: ORCH_REVIEW_LAYERING_RULE,
+        visibility_scope: ORCH_REVIEW_VISIBILITY_RULE,
+        rerun_scope: ORCH_REVIEW_RERUN_SCOPE_RULE,
+        multi_critic_policy: ORCH_REVIEW_MULTI_CRITIC_RULE,
+        redundancy_rule: ORCH_REVIEW_REDUNDANCY_RULE,
         required_checks: ORCH_CRITIC_REQUIRED_GATES,
         decision_rule: ORCH_CRITIC_DECISION_RULE,
         tool_payload_contract: {
@@ -134,11 +149,14 @@ function getDefaultAiSuggestSystemPrompt() {
         'Keep stages concise, operational, and easy to run in a single request turn.',
         'Only the LAST stage outputs are injected into the final generation context.',
         'Design a clear pipeline: state distillation -> reasoning workers -> review gate -> final synthesis.',
+        'Treat stages as strict hierarchical layers with local dependencies, not a flat pool of globally visible nodes.',
         'Worker nodes before the final stage should return structured tool-call fields for machine processing.',
-        `Review nodes inspect already-executed worker outputs, then either approve or request rerun of specific earlier worker node ids.`,
+        `Review nodes inspect only the immediately previous worker layer outputs, then either approve or request rerun of specific node ids from that directly adjacent layer.`,
         `Review nodes must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` on both approve and rerun decisions.`,
         `Runtime preserves passthrough worker outputs and auto-injects approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into later nodes.`,
-        'Do not place review nodes in the final stage. Prefer a dedicated serial review stage after the workers it audits.',
+        'If multiple layers need audit gates, place separate review stages immediately after those layers; multiple critics are allowed and often preferable to one final critic.',
+        'Do not place review nodes in the final stage. Prefer a dedicated serial review stage immediately after the worker layer it audits.',
+        'Do not place two review/critic stages back-to-back with no worker stage between them.',
         ...getCriticPromptReminderLines(),
         'Last-stage nodes must return function-call payload with a single field `text`.',
         'Runtime injects the `text` content directly as-is (no YAML wrapping).',
@@ -5478,8 +5496,11 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         `Must include dedicated required node ids: ${REQUIRED_AI_BUILD_NODE_IDS.join(', ')}.`,
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
+        'Treat the orchestration as hierarchical layers. Critic scope is local to the directly adjacent previous worker layer.',
         `Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not add placeholders for that context.`,
-        'If you use a critic/reviewer, model it as a review node that approves or requests rerun of earlier worker node ids.',
+        'If you use a critic/reviewer, model it as a review node that approves or requests rerun only for node ids in the directly adjacent previous worker layer.',
+        'If grounding, reasoning, or other layers each need audit, add separate critics after those layers instead of deferring all review to one final critic.',
+        'Never create consecutive review-only stages or back-to-back critics with no worker layer between them.',
         ...getCriticPromptReminderLines(),
         `Review nodes do not emit synthesis. Downstream stages continue from passthrough worker outputs plus approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
         'When deviating, explicitly optimize for this character card while preserving hard gates and final function-call text contract.',
@@ -5516,8 +5537,9 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             stages: [
                 { id: 'distill', mode: 'serial', nodes: ['distiller'] },
                 { id: 'grounding', mode: 'parallel', nodes: ['lorebook_reader', 'anti_data_guard'] },
+                { id: 'grounding_review', mode: 'serial', nodes: [{ id: 'grounding_critic', preset: 'critic', type: ORCH_NODE_TYPE_REVIEW }] },
                 { id: 'reason', mode: 'parallel', nodes: ['planner', 'recall_relevance'] },
-                { id: 'review', mode: 'serial', nodes: [{ id: 'critic', preset: 'critic', type: ORCH_NODE_TYPE_REVIEW }] },
+                { id: 'reason_review', mode: 'serial', nodes: [{ id: 'reason_critic', preset: 'critic', type: ORCH_NODE_TYPE_REVIEW }] },
                 { id: 'finalize', mode: 'serial', nodes: ['synthesizer'] },
             ],
             role_contracts: {
@@ -5525,9 +5547,17 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
-                critic: `Audit prior worker outputs against an explicit hardcoded checklist, then either approve or request rerun of specific earlier worker nodes. Always include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Do not emit synthesis.`,
+                critic: `Audit only the directly adjacent previous worker layer against an explicit hardcoded checklist, then either approve or request rerun of specific node ids from that layer only. Always include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Do not emit synthesis.`,
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
                 synthesizer: `Merge the approved worker outputs and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into one draft-ready final guidance.`,
+            },
+            layering_policy: {
+                strict_hierarchy: true,
+                critic_visibility_scope: 'Only the immediately previous worker layer.',
+                critic_rerun_scope: 'Only node ids from the directly adjacent previous worker layer.',
+                multi_critic_allowed: true,
+                place_critic_after_each_audited_layer: true,
+                no_adjacent_critics: true,
             },
             last_stage_rule: 'Prefer single synthesizer node as final stage output.',
             innovation_policy: {
@@ -5553,8 +5583,8 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         toolProtocol: {
             review_node_contract: {
                 type_field: `Set node.type to "${ORCH_NODE_TYPE_REVIEW}" for review nodes. Omit or use "${ORCH_NODE_TYPE_WORKER}" for normal worker nodes.`,
-                runtime_behavior: `Review nodes inspect current available worker outputs, may request rerun of specific earlier worker node ids, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Approved feedback is auto-injected into later nodes; rerun feedback is auto-injected into the targeted rerun nodes.`,
-                topology_rule: 'Prefer a dedicated serial review stage after the worker stage being audited. Do not place review nodes in the final stage.',
+                runtime_behavior: `Treat review nodes as auditing only the directly adjacent previous worker layer. They may request rerun only for specific node ids from that adjacent layer, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Approved feedback is auto-injected into later nodes; rerun feedback is auto-injected into the targeted rerun nodes.`,
+                topology_rule: 'Prefer a dedicated serial review stage immediately after the worker stage being audited. If multiple layers need audits, add multiple review stages. Do not place review nodes in the final stage or back-to-back with another review stage.',
                 ...getCriticReviewNodeContractShape(),
             },
             append_stage: {
@@ -6876,10 +6906,13 @@ function buildAiIterationSystemPrompt(settings) {
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
         `- Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not use placeholders for that context.`,
-        `- Nodes can be worker or review. Review nodes inspect already-executed worker outputs, may rerun specific earlier worker node ids, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
+        '- Treat the working profile as hierarchical layers. Preserve or improve that layering when editing.',
+        `- Nodes can be worker or review. Review nodes inspect only the directly adjacent previous worker layer, may rerun only specific node ids from that layer, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
         ...getCriticPromptReminderLines().map(line => `- ${line}`),
         `- Keep approved worker outputs as passthrough context after review; treat approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` as supplemental refinement, not a replacement summary.`,
-        '- Prefer dedicated serial review stages after the worker stages they audit. Do not place review nodes in the final stage.',
+        '- If more than one layer needs audit, insert multiple review stages after those specific layers instead of using one late critic for everything.',
+        '- Prefer dedicated serial review stages immediately after the worker stages they audit. Do not place review nodes in the final stage.',
+        '- Do not create back-to-back review stages or consecutive critics with no worker layer between them.',
         `- Use luker_orch_set_node.type to set "${ORCH_NODE_TYPE_REVIEW}" when a node should behave as a reviewer.`,
         '- If user asks to test, call luker_orch_simulate with suitable input.',
         '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
@@ -6945,9 +6978,9 @@ function buildAiIterationUserPrompt(session, userInputText, {
                 worker: ORCH_NODE_TYPE_WORKER,
                 review: ORCH_NODE_TYPE_REVIEW,
             },
-            runtime_behavior: `Review nodes inspect currently available worker outputs, request rerun for specific earlier worker node ids when needed, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` on both approve and rerun decisions.`,
+            runtime_behavior: `Treat review nodes as auditing only the directly adjacent previous worker layer. They request rerun only for specific node ids from that adjacent layer when needed, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` on both approve and rerun decisions.`,
             downstream_behavior: `Later stages keep receiving passthrough worker outputs plus approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\`; critic/review nodes do not replace them with summaries.`,
-            topology_rule: 'Prefer dedicated serial review stages after the workers being audited. Do not place review nodes in the final stage.',
+            topology_rule: 'Prefer dedicated serial review stages immediately after the workers being audited. If multiple layers need audit, add multiple review stages. Do not place review nodes in the final stage or back-to-back with another review stage.',
             ...getCriticReviewNodeContractShape(),
         }, '{}'),
         '```',
