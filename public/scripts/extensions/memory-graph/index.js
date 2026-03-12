@@ -11715,7 +11715,13 @@ jQuery(() => {
                 try {
                     await persistMemoryStoreByChatKey(liveContext, chatKey, store);
                     if (isCurrentChat) {
-                        await clearAllMemoryLorebookProjection(liveContext, getSettings());
+                        const effectiveSettings = getEffectiveSettings(liveContext, getSettings());
+                        if (!effectiveSettings.enabled) {
+                            await clearAllMemoryLorebookProjection(liveContext, effectiveSettings);
+                        } else {
+                            await clearRuntimeLorebookProjection(liveContext, effectiveSettings);
+                            await syncPersistentLorebookProjection(liveContext, effectiveSettings, store);
+                        }
                     }
                     refreshUiStats();
                     if (isCurrentChat) {
