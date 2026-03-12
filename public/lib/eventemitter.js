@@ -48,7 +48,7 @@ function inferExtensionIdFromStack(stack) {
     }
 
     const normalized = stack.replaceAll('\\', '/');
-    const match = normalized.match(/\/scripts\/extensions\/([^/\s:()]+)\//);
+    const match = normalized.match(/\/scripts\/extensions\/(third-party\/[^/\s:()]+|[^/\s:()]+)\//);
     return match ? String(match[1] || '').trim() : '';
 }
 
