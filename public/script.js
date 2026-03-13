@@ -6132,8 +6132,13 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             const deletedAssistantSeq = deletedMessage && !deletedMessage.is_system && !deletedMessage.is_user
                 ? chat.reduce((count, message) => count + (message && !message.is_system && !message.is_user ? 1 : 0), 0)
                 : null;
+            const removedMessageIndex = chat.length - 1;
             chat.length = chat.length - 1;
             await removeLastMessage();
+            const patchedRemove = await patchChatMessages([{ op: 'remove', path: `/${removedMessageIndex}` }]);
+            if (!patchedRemove) {
+                await saveChatConditional();
+            }
             await eventSource.emit(event_types.MESSAGE_DELETED, chat.length, {
                 kind: 'delete',
                 deletedPlayableSeqFrom: deletedPlayableSeq,
