@@ -253,7 +253,7 @@ import {
     updatePersonaConnectionsAvatarList,
     isPersonaPanelOpen,
 } from './scripts/personas.js';
-import { getBackgrounds, initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
+import { initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
 import { hideLoader, showLoader } from './scripts/loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
@@ -1592,7 +1592,6 @@ async function firstLoadInit() {
     initBookmarks();
     await getUserAvatars(true, user_avatar);
     await getCharacters();
-    await getBackgrounds();
     await initTokenizers();
     initBackgrounds();
     initAuthorsNote();
@@ -3763,6 +3762,231 @@ export function getMediaIndex(mes) {
     return value;
 }
 
+const MESSAGE_MEDIA_SELECTOR = '.mes_text img, .mes_text video, .mes_media_wrapper img, .mes_media_wrapper video';
+const MESSAGE_MEDIA_LAZY_ROOT_MARGIN = '200px 0px';
+let messageMediaObserver = null;
+let messageMediaMutationObserver = null;
+
+/**
+ * Determines whether lazy loading of message media should be used.
+ * @returns {boolean}
+ */
+function isMessageMediaLazyLoadEnabled() {
+    return power_user.message_media_lazy_load && typeof IntersectionObserver === 'function';
+}
+
+/**
+ * Determines whether a media element opted out from core lazy loading.
+ * @param {Element} element Media element
+ * @returns {boolean}
+ */
+function shouldSkipMessageMediaLazyLoad(element) {
+    return Boolean(element.closest?.('[data-no-lazy-media]'));
+}
+
+/**
+ * Applies low-priority loading hints to message media.
+ * @param {HTMLImageElement|HTMLVideoElement} element Media element
+ */
+function applyMessageMediaHints(element) {
+    if (shouldSkipMessageMediaLazyLoad(element)) {
+        if (element instanceof HTMLVideoElement) {
+            element.preload = 'metadata';
+        }
+        return;
+    }
+
+    if (element instanceof HTMLImageElement) {
+        element.loading = 'lazy';
+        element.decoding = 'async';
+        element.setAttribute('fetchpriority', 'low');
+        return;
+    }
+
+    if (element instanceof HTMLVideoElement) {
+        element.preload = 'none';
+    }
+}
+
+/**
+ * Activates a deferred media element by assigning its real source.
+ * @param {Element} target Deferred media element
+ */
+function activateDeferredMessageMedia(target) {
+    if (!(target instanceof HTMLImageElement || target instanceof HTMLVideoElement)) {
+        return;
+    }
+
+    const sourceUrl = target.dataset.lazyMediaSource;
+    if (!sourceUrl) {
+        return;
+    }
+
+    if (target instanceof HTMLImageElement) {
+        if (target.getAttribute('src') !== sourceUrl) {
+            target.setAttribute('src', sourceUrl);
+        }
+    } else {
+        target.preload = target.dataset.lazyMediaPreload || 'metadata';
+        if (target.getAttribute('src') !== sourceUrl) {
+            target.setAttribute('src', sourceUrl);
+        }
+        target.load();
+    }
+
+    target.dataset.lazyMediaActive = 'true';
+    delete target.dataset.lazyMediaSource;
+    delete target.dataset.lazyMediaPreload;
+
+    if (messageMediaObserver) {
+        messageMediaObserver.unobserve(target);
+    }
+}
+
+/**
+ * Gets the shared observer used for deferred message media.
+ * @returns {IntersectionObserver|null}
+ */
+function getMessageMediaObserver() {
+    if (messageMediaObserver || typeof IntersectionObserver !== 'function') {
+        return messageMediaObserver;
+    }
+
+    messageMediaObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting) {
+                activateDeferredMessageMedia(entry.target);
+            }
+        }
+    }, {
+        root: chatElement.get(0) || null,
+        rootMargin: MESSAGE_MEDIA_LAZY_ROOT_MARGIN,
+        threshold: 0.01,
+    });
+
+    return messageMediaObserver;
+}
+
+/**
+ * Defers the loading of a message media element until it enters the viewport.
+ * @param {HTMLImageElement|HTMLVideoElement} element Media element
+ * @param {string} sourceUrl Media source URL
+ */
+function deferMessageMediaLoad(element, sourceUrl) {
+    element.dataset.lazyMediaSource = sourceUrl;
+    delete element.dataset.lazyMediaActive;
+
+    if (element instanceof HTMLImageElement) {
+        element.removeAttribute('src');
+    } else {
+        element.dataset.lazyMediaPreload = 'metadata';
+        element.removeAttribute('src');
+        element.load();
+    }
+
+    if (element.isConnected) {
+        getMessageMediaObserver()?.observe(element);
+    }
+}
+
+/**
+ * Prepares a media element for eager or deferred loading.
+ * @param {Element} target Media element
+ * @param {object} [options]
+ * @param {string} [options.sourceUrl] Explicit media source
+ * @param {boolean} [options.preserveExistingSource=true] Keep already-assigned sources intact
+ */
+function prepareMessageMediaElement(target, { sourceUrl, preserveExistingSource = true } = {}) {
+    if (!(target instanceof HTMLImageElement || target instanceof HTMLVideoElement)) {
+        return;
+    }
+
+    applyMessageMediaHints(target);
+
+    const resolvedSource = sourceUrl || target.dataset.lazyMediaSource || target.getAttribute('src') || target.currentSrc;
+    if (!resolvedSource) {
+        return;
+    }
+
+    if (shouldSkipMessageMediaLazyLoad(target) || !isMessageMediaLazyLoadEnabled()) {
+        activateDeferredMessageMedia(target);
+        if (target instanceof HTMLImageElement) {
+            target.setAttribute('src', resolvedSource);
+        } else {
+            target.preload = 'metadata';
+            target.setAttribute('src', resolvedSource);
+            target.load();
+        }
+        return;
+    }
+
+    if (preserveExistingSource && (target.getAttribute('src') || target.currentSrc)) {
+        return;
+    }
+
+    deferMessageMediaLoad(target, resolvedSource);
+}
+
+/**
+ * Gets all managed media elements within a message subtree.
+ * @param {ParentNode | Element} root Root element
+ * @returns {(HTMLImageElement|HTMLVideoElement)[]}
+ */
+function getMessageMediaTargets(root) {
+    if (!(root instanceof Element || root instanceof DocumentFragment)) {
+        return [];
+    }
+
+    const matches = [];
+    if (root instanceof Element && root.matches(MESSAGE_MEDIA_SELECTOR)) {
+        matches.push(root);
+    }
+
+    matches.push(...Array.from(root.querySelectorAll(MESSAGE_MEDIA_SELECTOR)));
+    return matches.filter((element) => element instanceof HTMLImageElement || element instanceof HTMLVideoElement);
+}
+
+/**
+ * Applies message media optimizations to an existing subtree.
+ * @param {ParentNode | Element | null | undefined} root Root element
+ * @param {object} [options]
+ * @param {boolean} [options.preserveExistingSource=true] Keep already-assigned sources intact
+ */
+function enhanceMessageMediaTree(root, { preserveExistingSource = true } = {}) {
+    for (const element of getMessageMediaTargets(root)) {
+        prepareMessageMediaElement(element, { preserveExistingSource });
+    }
+}
+
+/**
+ * Starts observing chat DOM mutations so plugin-added media at least receives lazy hints.
+ */
+function ensureMessageMediaMutationObserver() {
+    if (messageMediaMutationObserver || typeof MutationObserver !== 'function') {
+        return;
+    }
+
+    const chatRoot = chatElement.get(0);
+    if (!chatRoot) {
+        return;
+    }
+
+    messageMediaMutationObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node instanceof Element) {
+                    enhanceMessageMediaTree(node, { preserveExistingSource: true });
+                }
+            }
+        }
+    });
+
+    messageMediaMutationObserver.observe(chatRoot, {
+        childList: true,
+        subtree: true,
+    });
+}
+
 /**
  * Appends image or file to the message element.
  * @param {ChatMessage} mes Message object
@@ -3820,7 +4044,13 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
         template.attr('data-index', index);
 
         const image = template.find('.mes_img');
-        image.attr('src', attachment.url);
+        const imageElement = image.get(0);
+        if (imageElement instanceof HTMLImageElement) {
+            prepareMessageMediaElement(imageElement, {
+                sourceUrl: attachment.url,
+                preserveExistingSource: false,
+            });
+        }
         image.attr('title', attachment.title || mes.extra.title || '');
         mediaPromises.push(new Promise((resolve) => {
             function onLoad() {
@@ -3833,7 +4063,7 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
                 image.addClass('error');
                 resolve();
             }
-            if (image.prop('complete')) {
+            if (imageElement instanceof HTMLImageElement && imageElement.complete && imageElement.naturalWidth > 0) {
                 onLoad();
             } else {
                 image.off('load').on('load', onLoad);
@@ -3856,7 +4086,13 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
         template.attr('data-index', index);
 
         const video = template.find('.mes_video');
-        video.attr('src', attachment.url);
+        const videoElement = video.get(0);
+        if (videoElement instanceof HTMLVideoElement) {
+            prepareMessageMediaElement(videoElement, {
+                sourceUrl: attachment.url,
+                preserveExistingSource: false,
+            });
+        }
         video.attr('title', attachment.title || mes.extra.title || '');
         mediaPromises.push(new Promise((resolve) => {
             function onLoad() {
@@ -3866,7 +4102,7 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
                 video.addClass('error');
                 resolve();
             }
-            if (video.prop('readyState') >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            if (videoElement instanceof HTMLVideoElement && videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
                 onLoad();
             } else {
                 video.off('loadeddata').on('loadeddata', onLoad);
@@ -4022,6 +4258,8 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
     // Early return if no media
     if (!hasMedia) {
         mediaWrapper.empty();
+        ensureMessageMediaMutationObserver();
+        enhanceMessageMediaTree(messageElement.get(0));
         doAdjustScroll();
         return;
     }
@@ -4030,6 +4268,9 @@ export function appendMediaToMessage(mes, messageElement, scrollBehavior = SCROL
     Promise.race([Promise.all(mediaPromises), delay(debounce_timeout.short)]).then(() => {
         const states = saveMediaStates();
         mediaWrapper.empty().append(mediaBlocks);
+        ensureMessageMediaMutationObserver();
+        enhanceMessageMediaTree(mediaWrapper.get(0), { preserveExistingSource: false });
+        enhanceMessageMediaTree(messageElement.get(0));
         restoreMediaStates(states);
         doAdjustScroll();
     });

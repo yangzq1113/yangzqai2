@@ -5344,6 +5344,10 @@
                                     <input id="forbid_external_media" type="checkbox" />
                                     <small data-i18n="Forbid External Media">Forbid External Media</small>
                                 </label>
+                                <label class="checkbox_label" for="message_media_lazy_load" title="Lazy-load message images and videos to reduce chat rendering cost. Plugins can opt out by adding data-no-lazy-media." data-i18n="[title]Lazy-load message images and videos to reduce chat rendering cost. Plugins can opt out by adding data-no-lazy-media.">
+                                    <input id="message_media_lazy_load" type="checkbox" />
+                                    <small data-i18n="Lazy-load Message Media">Lazy-load Message Media</small>
+                                </label>
                                 <label class="checkbox_label" for="allow_name2_display">
                                     <input id="allow_name2_display" type="checkbox" />
                                     <small data-i18n="Allow {{char}}: in bot messages">Show {{char}}: in responses</small>
@@ -7566,7 +7570,7 @@
                     <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
                     <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
                 </div>
-                <img class="mes_img" src="" />
+                <img class="mes_img" loading="lazy" decoding="async" fetchpriority="low" />
             </div>
         </div>
 
@@ -7577,7 +7581,7 @@
                     <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
                     <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
                 </div>
-                <video class="mes_video" controls preload="metadata"></video>
+                <video class="mes_video" controls preload="none"></video>
             </div>
         </div>
 

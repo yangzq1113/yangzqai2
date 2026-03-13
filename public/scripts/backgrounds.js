@@ -91,6 +91,8 @@ let lazyLoadObserver = null;
  * @type {string[]}
  */
 let cachedSystemBackgrounds = [];
+let backgroundsLoaded = false;
+let backgroundsLoadPromise = null;
 
 export let background_settings = {
     name: '__transparent.png',
@@ -470,7 +472,7 @@ async function onRenameBackgroundClick(e) {
     });
 
     if (response.ok) {
-        await getBackgrounds();
+        await refreshBackgrounds();
         highlightNewBackground(bgNames.newBg);
     } else {
         toastr.warning('Failed to rename background');
@@ -632,23 +634,50 @@ function renderChatBackgrounds(backgrounds) {
 }
 
 export async function getBackgrounds() {
-    const metadataPromise = preloadImageMetadata();
+    if (backgroundsLoadPromise) {
+        return backgroundsLoadPromise;
+    }
 
-    const response = await fetch('/api/backgrounds/all', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-    });
-    if (response.ok) {
-        const { images, config } = await response.json();
-        Object.assign(THUMBNAIL_CONFIG, config);
-
-        cachedSystemBackgrounds = images;
-
-        await metadataPromise;
-
-        renderSystemBackgrounds(images);
+    if (backgroundsLoaded) {
+        renderSystemBackgrounds(cachedSystemBackgrounds);
         highlightSelectedBackground();
+        return;
+    }
+
+    return refreshBackgrounds();
+}
+
+async function refreshBackgrounds() {
+    if (backgroundsLoadPromise) {
+        await backgroundsLoadPromise;
+    }
+
+    backgroundsLoadPromise = (async () => {
+        const metadataPromise = preloadImageMetadata();
+
+        const response = await fetch('/api/backgrounds/all', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+        });
+        if (response.ok) {
+            const { images, config } = await response.json();
+            Object.assign(THUMBNAIL_CONFIG, config);
+
+            cachedSystemBackgrounds = images;
+
+            await metadataPromise;
+
+            renderSystemBackgrounds(images);
+            highlightSelectedBackground();
+            backgroundsLoaded = true;
+        }
+    })();
+
+    try {
+        await backgroundsLoadPromise;
+    } finally {
+        backgroundsLoadPromise = null;
     }
 }
 
@@ -876,7 +905,7 @@ async function uploadBackground(formData) {
 
         const bg = await response.text();
         setBackground(bg, generateUrlParameter(bg, false));
-        await getBackgrounds();
+        await refreshBackgrounds();
         highlightNewBackground(bg);
     } catch (error) {
         console.error('Error uploading background:', error);
@@ -1083,8 +1112,14 @@ export function initBackgrounds() {
         saveSettingsDebounced();
 
         // Refresh background thumbnails
-        await getBackgrounds();
+        await refreshBackgrounds();
         await onChatChanged();
+    });
+
+    $('#backgrounds-drawer-toggle').on('click', function () {
+        if ($('#Backgrounds').hasClass('closedDrawer')) {
+            void getBackgrounds();
+        }
     });
 
     Object.values(BG_TABS).forEach(tabId => {
