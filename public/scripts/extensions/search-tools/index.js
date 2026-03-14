@@ -2272,7 +2272,7 @@ function buildAgentTools() {
             type: 'function',
             function: {
                 name: TOOL_NAMES.AGENT_FINALIZE,
-                description: 'Finish the current search-agent run.',
+                description: `Finish the current search-agent run. Rejected if called in the same response as ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT}.`,
                 parameters: {
                     type: 'object',
                     properties: {
@@ -2393,6 +2393,12 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             abortSignal: payload?.signal || null,
         });
         throwIfAborted(payload?.signal, 'Search agent aborted.');
+        const toolCalls = Array.isArray(response.toolCalls) ? response.toolCalls : [];
+        // Fresh source text is only visible to the model on the next round, so same-response finalization must be rejected.
+        const responseHasFreshSourceCalls = !isFinalStage && toolCalls.some((call) => {
+            const callName = String(call?.name || '').trim();
+            return callName === TOOL_NAMES.AGENT_SEARCH || callName === TOOL_NAMES.AGENT_VISIT;
+        });
 
         const executedCalls = [];
         let lorebookDirty = false;
@@ -2400,7 +2406,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         let hasSourceGatheringCalls = false;
         let hasLorebookMutationCalls = false;
 
-        for (const call of Array.isArray(response.toolCalls) ? response.toolCalls : []) {
+        for (const call of toolCalls) {
             throwIfAborted(payload?.signal, 'Search agent aborted.');
             const callName = String(call?.name || '').trim();
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
@@ -2451,12 +2457,19 @@ async function runPreRequestSearchAgent(context, settings, payload) {
                     mutationCount += Number(result.deleted?.length || 0);
                 }
             } else if (callName === TOOL_NAMES.AGENT_FINALIZE) {
-                lastSummary = normalizeWhitespace(args?.summary || '');
-                result = {
-                    done: true,
-                    summary: lastSummary,
-                };
-                shouldFinalize = true;
+                if (responseHasFreshSourceCalls) {
+                    result = buildRecoverableToolErrorResult(
+                        new Error(`Cannot call ${TOOL_NAMES.AGENT_FINALIZE} in the same response as ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT}. Wait for those tool results first.`),
+                        'Finalize rejected.',
+                    );
+                } else {
+                    lastSummary = normalizeWhitespace(args?.summary || '');
+                    result = {
+                        done: true,
+                        summary: lastSummary,
+                    };
+                    shouldFinalize = true;
+                }
             }
 
             executedCalls.push({
