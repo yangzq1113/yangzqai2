@@ -278,6 +278,12 @@ function notifySuccess(message) {
     }
 }
 
+function notifyInfo(message) {
+    if (typeof toastr !== 'undefined') {
+        toastr.info(String(message || ''));
+    }
+}
+
 function notifyWarning(message) {
     if (typeof toastr !== 'undefined') {
         toastr.warning(String(message || ''));
