@@ -25,6 +25,7 @@ const SHARED_LOREBOOK_NAME = '__SEARCH_TOOLS__';
 const MANAGED_COMMENT_PREFIX = 'SEARCH_TOOLS';
 const SEARCH_CHAT_STATE_NAMESPACE = 'luker_search_tools_state';
 const SEARCH_CHAT_STATE_VERSION = 2;
+const AGENT_TOOL_CHAIN_HARD_LIMIT = 12;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const TOOL_NAMES = Object.freeze({
@@ -56,6 +57,27 @@ const LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = [
 ].join('\n');
 
 const DEFAULT_AGENT_SYSTEM_PROMPT = [
+    'You are a pre-request web research agent for roleplay generation.',
+    'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
+    'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
+    'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
+    'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
+    'Do not rewrite source-backed facts to fit the current plot, scene mood, or roleplay direction.',
+    'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
+    'If a source is ambiguous, keep wording neutral or do not write it.',
+    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
+    'Search and visit are optional. You may use existing managed search entries as your own database.',
+    'If information is uncertain, highly time-sensitive, or search snippets are insufficient, prefer search plus visit before writing.',
+    `Call ${TOOL_NAMES.AGENT_FINALIZE} only when you are ready to end the run.`,
+    `If you call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT}, do not call ${TOOL_NAMES.AGENT_FINALIZE} in that same response. Wait for tool results first.`,
+    'Only delete entries that are explicitly listed as deletable.',
+    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
+    'Do not move or redesign lorebook layout. Runtime controls managed entry position/depth/role/order from current settings.',
+    'Use function calls only. Do not output plain prose outside tool calls.',
+].join('\n');
+
+const PREVIOUS_DEFAULT_AGENT_SYSTEM_PROMPT = [
     'You are a pre-request web research agent for roleplay generation.',
     'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
     'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
@@ -294,6 +316,7 @@ function ensureSettings() {
     settings.agentPresetName = String(settings.agentPresetName ?? DEFAULT_SETTINGS.agentPresetName).trim();
     const normalizedAgentSystemPrompt = String(settings.agentSystemPrompt ?? DEFAULT_SETTINGS.agentSystemPrompt).trim();
     settings.agentSystemPrompt = normalizedAgentSystemPrompt === LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT
+        || normalizedAgentSystemPrompt === PREVIOUS_DEFAULT_AGENT_SYSTEM_PROMPT
         ? DEFAULT_SETTINGS.agentSystemPrompt
         : (normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt);
     settings.agentFinalStagePrompt = String(settings.agentFinalStagePrompt ?? DEFAULT_SETTINGS.agentFinalStagePrompt).trim()
@@ -1840,9 +1863,11 @@ function buildSearchAgentUserPrompt(payload, {
         '## Output contract',
         `- Use only these function tools: ${(isFinalStage ? finalStageToolNames : allToolNames).join(', ')}`,
         isFinalStage ? `- Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.` : null,
+        !isFinalStage ? `- If you call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT}, do not call ${TOOL_NAMES.AGENT_FINALIZE} in the same response. Wait for the tool results first.` : null,
+        !isFinalStage ? `- You may use multiple ${TOOL_NAMES.AGENT_SEARCH}/${TOOL_NAMES.AGENT_VISIT} follow-ups before you write or finalize.` : null,
         isFinalStage ? `- If any lorebook mutation is still needed, do it in this response and also call ${TOOL_NAMES.AGENT_FINALIZE}.` : null,
         isFinalStage ? `- If no mutation is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.` : null,
-        `- End with ${TOOL_NAMES.AGENT_FINALIZE}.`,
+        isFinalStage ? `- End with ${TOOL_NAMES.AGENT_FINALIZE}.` : `- Call ${TOOL_NAMES.AGENT_FINALIZE} only when you are done with this run.`,
         '- Do not output plain prose.',
     ].filter(Boolean).join('\n');
 }
@@ -2004,7 +2029,8 @@ async function runPreRequestSearchAgent(context, settings, payload) {
     let lorebookBookName = '';
     let lorebookData = null;
 
-    for (let phaseIndex = 1; phaseIndex <= searchRoundCount + 1; phaseIndex += 1) {
+    let helperOnlyChainSteps = 0;
+    for (let phaseIndex = 1; phaseIndex <= searchRoundCount + 1;) {
         if (payload?.signal?.aborted) {
             throw Object.assign(new Error('Search agent aborted.'), { name: 'AbortError' });
         }
@@ -2052,6 +2078,8 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         const executedCalls = [];
         let lorebookDirty = false;
         let shouldFinalize = false;
+        let hasSourceGatheringCalls = false;
+        let hasLorebookMutationCalls = false;
 
         for (const call of Array.isArray(response.toolCalls) ? response.toolCalls : []) {
             throwIfAborted(payload?.signal, 'Search agent aborted.');
@@ -2060,6 +2088,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             let result = null;
 
             if (callName === TOOL_NAMES.AGENT_SEARCH) {
+                hasSourceGatheringCalls = true;
                 try {
                     result = await searchWeb(args, { abortSignal: payload?.signal || null });
                     throwIfAborted(payload?.signal, 'Search agent aborted.');
@@ -2070,6 +2099,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
                     result = buildRecoverableToolErrorResult(error, 'Search tool failed.');
                 }
             } else if (callName === TOOL_NAMES.AGENT_VISIT) {
+                hasSourceGatheringCalls = true;
                 try {
                     result = await visitWebPage(args, { abortSignal: payload?.signal || null });
                     throwIfAborted(payload?.signal, 'Search agent aborted.');
@@ -2080,6 +2110,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
                     result = buildRecoverableToolErrorResult(error, 'Visit tool failed.');
                 }
             } else if (callName === TOOL_NAMES.AGENT_UPSERT) {
+                hasLorebookMutationCalls = true;
                 if (!lorebookData) {
                     const createdLorebook = await ensureSharedLorebook(context, true);
                     throwIfAborted(payload?.signal, 'Search agent aborted.');
@@ -2094,6 +2125,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
                     mutationCount += 1;
                 }
             } else if (callName === TOOL_NAMES.AGENT_DELETE) {
+                hasLorebookMutationCalls = true;
                 result = deleteManagedEntries(lorebookData, args?.entry_ids || []);
                 lorebookDirty = lorebookDirty || Boolean(result?.changed);
                 if (result?.changed) {
@@ -2126,6 +2158,18 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             roundStoppedByFinalize = true;
             break;
         }
+
+        if (!isFinalStage && hasSourceGatheringCalls && !hasLorebookMutationCalls) {
+            helperOnlyChainSteps += 1;
+            if (helperOnlyChainSteps >= AGENT_TOOL_CHAIN_HARD_LIMIT) {
+                console.warn(`[${MODULE_NAME}] Search agent helper chain exceeded internal safety limit (${AGENT_TOOL_CHAIN_HARD_LIMIT}). Forcing final stage.`);
+                phaseIndex = searchRoundCount + 1;
+            }
+            continue;
+        }
+
+        helperOnlyChainSteps = 0;
+        phaseIndex += 1;
     }
 
     const finalLorebook = lorebookData
