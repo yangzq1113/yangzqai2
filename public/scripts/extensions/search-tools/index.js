@@ -24,7 +24,8 @@ const CHAT_LOREBOOK_METADATA_KEY = 'world_info';
 const SHARED_LOREBOOK_NAME = '__SEARCH_TOOLS__';
 const MANAGED_COMMENT_PREFIX = 'SEARCH_TOOLS';
 const SEARCH_CHAT_STATE_NAMESPACE = 'luker_search_tools_state';
-const SEARCH_CHAT_STATE_VERSION = 2;
+const SEARCH_CHAT_STATE_VERSION = 3;
+const SEARCH_CHAT_CONTENT_NAMESPACE_PREFIX = `${SEARCH_CHAT_STATE_NAMESPACE}_anchor_`;
 const AGENT_TOOL_CHAIN_HARD_LIMIT = 12;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
@@ -108,6 +109,27 @@ const DEFAULT_AGENT_FINAL_STAGE_PROMPT = [
     'If a source is ambiguous, keep wording neutral or do not write it.',
     'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
     'Only delete entries that are explicitly listed as deletable.',
+    'Delete any managed search entries that are no longer needed, outdated for the current chat branch, duplicated, or unsupported by the gathered evidence.',
+    'Do not preserve stale managed search entries just because they already exist.',
+    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
+    'Use function calls only. Do not output plain prose outside tool calls.',
+    `If any lorebook change is still needed, do it now and also call ${TOOL_NAMES.AGENT_FINALIZE} in the same response.`,
+    `If no lorebook change is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.`,
+    `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
+].join('\n');
+
+const PREVIOUS_DEFAULT_AGENT_FINAL_STAGE_PROMPT = [
+    'You are the final-stage web research agent for roleplay generation.',
+    'This stage exists to finish the pre-request search pass using only evidence already gathered earlier in this run.',
+    `Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.`,
+    'Use only managed search entries, previous search results, and visited page text already available in the conversation.',
+    'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
+    'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
+    'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
+    'If a source is ambiguous, keep wording neutral or do not write it.',
+    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
+    'Only delete entries that are explicitly listed as deletable.',
     'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
     'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
     'Use function calls only. Do not output plain prose outside tool calls.',
@@ -161,6 +183,7 @@ let activeAgentRunToken = 0;
 let activeAgentRunInfoToast = null;
 let activeAgentAbortController = null;
 let latestSearchAgentSnapshot = null;
+let latestSearchHistoryIndex = null;
 let latestManagedEntries = [];
 let loadedChatStateKey = '';
 
@@ -174,6 +197,10 @@ function clampInteger(value, min, max, fallback) {
         return fallback;
     }
     return Math.max(min, Math.min(max, parsed));
+}
+
+function normalizeAnchorPlayableFloor(value) {
+    return Math.max(0, Math.floor(Number(value) || 0));
 }
 
 function getAvailableSearchProviders() {
@@ -319,8 +346,10 @@ function ensureSettings() {
         || normalizedAgentSystemPrompt === PREVIOUS_DEFAULT_AGENT_SYSTEM_PROMPT
         ? DEFAULT_SETTINGS.agentSystemPrompt
         : (normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt);
-    settings.agentFinalStagePrompt = String(settings.agentFinalStagePrompt ?? DEFAULT_SETTINGS.agentFinalStagePrompt).trim()
-        || DEFAULT_SETTINGS.agentFinalStagePrompt;
+    const normalizedAgentFinalStagePrompt = String(settings.agentFinalStagePrompt ?? DEFAULT_SETTINGS.agentFinalStagePrompt).trim();
+    settings.agentFinalStagePrompt = normalizedAgentFinalStagePrompt === PREVIOUS_DEFAULT_AGENT_FINAL_STAGE_PROMPT
+        ? DEFAULT_SETTINGS.agentFinalStagePrompt
+        : (normalizedAgentFinalStagePrompt || DEFAULT_SETTINGS.agentFinalStagePrompt);
     settings.agentMaxRounds = clampInteger(
         settings.agentMaxRounds ?? DEFAULT_SETTINGS.agentMaxRounds,
         1,
@@ -408,8 +437,8 @@ function normalizeSearchAgentSnapshot(raw) {
 
     return {
         chatKey,
-        anchorFloor: Number(source.anchorFloor || 0),
-        anchorPlayableFloor: Number(source.anchorPlayableFloor || 0),
+        anchorFloor: normalizeAnchorPlayableFloor(source.anchorFloor),
+        anchorPlayableFloor: normalizeAnchorPlayableFloor(source.anchorPlayableFloor || source.anchorFloor),
         anchorHash,
         updatedAt: String(source.updatedAt || '').trim(),
         summary: normalizeWhitespace(source.summary || ''),
@@ -450,13 +479,121 @@ function normalizeStoredManagedEntries(raw) {
     return output.sort((a, b) => String(a.entryId || '').localeCompare(String(b.entryId || '')));
 }
 
+function normalizeSearchHistoryAnchors(raw) {
+    if (!Array.isArray(raw)) {
+        return [];
+    }
+
+    const anchors = [];
+    const seen = new Set();
+    for (const value of raw) {
+        const normalized = normalizeAnchorPlayableFloor(value);
+        if (!normalized || seen.has(normalized)) {
+            continue;
+        }
+        seen.add(normalized);
+        anchors.push(normalized);
+    }
+    return anchors.sort((left, right) => left - right);
+}
+
+function equalNumberArrays(left = [], right = []) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+        return false;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+        if (Number(left[index]) !== Number(right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function normalizeStoredSearchAgentSnapshot(raw) {
+    const source = raw && typeof raw === 'object' ? raw : null;
+    if (!source) {
+        return null;
+    }
+
+    const anchorHash = String(source.anchorHash || '').trim();
+    if (!anchorHash) {
+        return null;
+    }
+
+    const managedEntries = normalizeStoredManagedEntries(source.managedEntries);
+    return {
+        anchorHash,
+        updatedAt: String(source.updatedAt || '').trim(),
+        summary: normalizeWhitespace(source.summary || ''),
+        mutationCount: Math.max(0, Math.floor(Number(source.mutationCount || 0))),
+        managedEntryCount: Math.max(0, Math.floor(Number(source.managedEntryCount ?? managedEntries.length))),
+        bookName: normalizeWhitespace(source.bookName || ''),
+        managedEntries,
+    };
+}
+
+function materializeSearchAgentSnapshot(chatKey, anchorPlayableFloor, snapshot) {
+    const normalizedSnapshot = normalizeStoredSearchAgentSnapshot(snapshot);
+    const normalizedChatKey = String(chatKey || '').trim();
+    const normalizedAnchor = normalizeAnchorPlayableFloor(anchorPlayableFloor);
+    if (!normalizedSnapshot || !normalizedChatKey || !normalizedAnchor) {
+        return null;
+    }
+
+    const managedEntries = normalizeStoredManagedEntries(normalizedSnapshot.managedEntries);
+    return {
+        chatKey: normalizedChatKey,
+        anchorFloor: normalizedAnchor,
+        anchorPlayableFloor: normalizedAnchor,
+        anchorHash: String(normalizedSnapshot.anchorHash || '').trim(),
+        updatedAt: normalizedSnapshot.updatedAt,
+        summary: normalizedSnapshot.summary,
+        mutationCount: normalizedSnapshot.mutationCount,
+        managedEntryCount: managedEntries.length,
+        bookName: normalizedSnapshot.bookName,
+        managedEntries,
+    };
+}
+
 function normalizeSearchToolsChatState(raw) {
     const source = raw && typeof raw === 'object' ? raw : {};
     return {
         version: Number(source.version || SEARCH_CHAT_STATE_VERSION),
-        snapshot: normalizeSearchAgentSnapshot(source.snapshot),
+        anchors: normalizeSearchHistoryAnchors(source.anchors),
+        legacySnapshot: normalizeSearchAgentSnapshot(source.snapshot),
         managedEntries: normalizeStoredManagedEntries(source.managedEntries),
     };
+}
+
+function setLoadedSearchHistoryIndex(chatKey, anchors) {
+    const normalizedChatKey = String(chatKey || '').trim();
+    if (!normalizedChatKey) {
+        latestSearchHistoryIndex = null;
+        return;
+    }
+    latestSearchHistoryIndex = {
+        chatKey: normalizedChatKey,
+        anchors: normalizeSearchHistoryAnchors(anchors),
+    };
+}
+
+function getLoadedSearchHistoryAnchors(context) {
+    const chatKey = getChatKey(context);
+    if (!latestSearchHistoryIndex || typeof latestSearchHistoryIndex !== 'object') {
+        return [];
+    }
+    if (String(latestSearchHistoryIndex.chatKey || '') !== String(chatKey || '')) {
+        return [];
+    }
+    return normalizeSearchHistoryAnchors(latestSearchHistoryIndex.anchors);
+}
+
+function getSearchAgentSnapshotNamespace(anchorPlayableFloor) {
+    const normalized = normalizeAnchorPlayableFloor(anchorPlayableFloor);
+    if (!normalized) {
+        return '';
+    }
+    return `${SEARCH_CHAT_CONTENT_NAMESPACE_PREFIX}${normalized}`;
 }
 
 function getChatKey(context) {
@@ -483,6 +620,7 @@ async function loadSearchToolsChatState(context, { force = false } = {}) {
     const chatKey = getChatKey(context);
     if (!chatKey) {
         latestSearchAgentSnapshot = null;
+        latestSearchHistoryIndex = null;
         latestManagedEntries = [];
         loadedChatStateKey = '';
         return;
@@ -496,9 +634,30 @@ async function loadSearchToolsChatState(context, { force = false } = {}) {
         payload = await context.getChatState(SEARCH_CHAT_STATE_NAMESPACE, {});
     }
     const normalized = normalizeSearchToolsChatState(payload);
-    latestSearchAgentSnapshot = normalized.snapshot;
-    latestManagedEntries = normalized.managedEntries;
     loadedChatStateKey = chatKey;
+    let nextAnchors = normalized.anchors.slice();
+    let migratedLegacySnapshot = false;
+    if (normalized.legacySnapshot) {
+        const legacyAnchor = normalizeAnchorPlayableFloor(normalized.legacySnapshot.anchorPlayableFloor || normalized.legacySnapshot.anchorFloor);
+        if (legacyAnchor) {
+            await persistStoredSearchAgentSnapshot(context, legacyAnchor, {
+                anchorHash: normalized.legacySnapshot.anchorHash,
+                updatedAt: normalized.legacySnapshot.updatedAt,
+                summary: normalized.legacySnapshot.summary,
+                mutationCount: normalized.legacySnapshot.mutationCount,
+                managedEntryCount: Math.max(normalized.legacySnapshot.managedEntryCount, normalized.managedEntries.length),
+                bookName: normalized.legacySnapshot.bookName,
+                managedEntries: normalized.managedEntries,
+            });
+            nextAnchors = normalizeSearchHistoryAnchors([...nextAnchors, legacyAnchor]);
+            migratedLegacySnapshot = true;
+        }
+    }
+    setLoadedSearchHistoryIndex(chatKey, nextAnchors);
+    await selectLatestValidSearchAgentSnapshot(context, { persistCleanup: true });
+    if (!latestSearchAgentSnapshot && nextAnchors.length === 0 && !normalized.legacySnapshot) {
+        latestManagedEntries = normalized.managedEntries;
+    }
 
     if (latestManagedEntries.length === 0) {
         const migratedEntries = await loadLegacyManagedEntries(context);
@@ -507,34 +666,148 @@ async function loadSearchToolsChatState(context, { force = false } = {}) {
             await persistSearchToolsChatState(context);
         }
     }
+    if (migratedLegacySnapshot) {
+        await persistSearchToolsChatState(context);
+    }
 }
 
 async function persistSearchToolsChatState(context) {
     const chatKey = getChatKey(context);
-    if (!chatKey || typeof context?.updateChatState !== 'function') {
+    if (!chatKey) {
         return;
     }
 
     loadedChatStateKey = chatKey;
-    const snapshot = normalizeSearchAgentSnapshot(latestSearchAgentSnapshot);
+    const anchors = getLoadedSearchHistoryAnchors(context);
+    const fallbackManagedEntries = anchors.length === 0 ? normalizeStoredManagedEntries(latestManagedEntries) : [];
+    if (anchors.length === 0 && fallbackManagedEntries.length === 0 && typeof context?.deleteChatState === 'function') {
+        await context.deleteChatState(SEARCH_CHAT_STATE_NAMESPACE, {});
+        return;
+    }
+    if (typeof context?.updateChatState !== 'function') {
+        return;
+    }
     await context.updateChatState(SEARCH_CHAT_STATE_NAMESPACE, () => ({
         version: SEARCH_CHAT_STATE_VERSION,
-        snapshot,
-        managedEntries: normalizeStoredManagedEntries(latestManagedEntries),
+        anchors,
+        managedEntries: fallbackManagedEntries,
     }), { maxOperations: 2000, maxRetries: 1 });
 }
 
-function clearLastSearchAgentSnapshot(context, { persist = false } = {}) {
-    const chatKey = getChatKey(context);
-    if (!latestSearchAgentSnapshot || typeof latestSearchAgentSnapshot !== 'object') {
-        return;
+async function loadStoredSearchAgentSnapshot(context, anchorPlayableFloor) {
+    const namespace = getSearchAgentSnapshotNamespace(anchorPlayableFloor);
+    if (!namespace || typeof context?.getChatState !== 'function') {
+        return null;
     }
-    if (String(latestSearchAgentSnapshot.chatKey || '') === String(chatKey || '')) {
-        latestSearchAgentSnapshot = null;
-        if (persist) {
-            void persistSearchToolsChatState(context);
+    const payload = await context.getChatState(namespace, {});
+    return normalizeStoredSearchAgentSnapshot(payload);
+}
+
+async function persistStoredSearchAgentSnapshot(context, anchorPlayableFloor, snapshot) {
+    const namespace = getSearchAgentSnapshotNamespace(anchorPlayableFloor);
+    const normalized = normalizeStoredSearchAgentSnapshot(snapshot);
+    if (!namespace || !normalized || typeof context?.updateChatState !== 'function') {
+        return false;
+    }
+    const result = await context.updateChatState(namespace, () => ({
+        anchorHash: String(normalized.anchorHash || '').trim(),
+        updatedAt: normalized.updatedAt,
+        summary: normalized.summary,
+        mutationCount: normalized.mutationCount,
+        managedEntryCount: normalized.managedEntries.length,
+        bookName: normalized.bookName,
+        managedEntries: normalizeStoredManagedEntries(normalized.managedEntries),
+    }), { maxOperations: 2000, maxRetries: 1 });
+    return Boolean(result?.ok);
+}
+
+async function deleteStoredSearchAgentSnapshot(context, anchorPlayableFloor) {
+    const namespace = getSearchAgentSnapshotNamespace(anchorPlayableFloor);
+    if (!namespace || typeof context?.deleteChatState !== 'function') {
+        return false;
+    }
+    return Boolean(await context.deleteChatState(namespace, {}));
+}
+
+async function deleteStoredSearchAgentAnchors(context, anchors) {
+    const normalizedAnchors = normalizeSearchHistoryAnchors(anchors);
+    for (const anchorPlayableFloor of normalizedAnchors) {
+        await deleteStoredSearchAgentSnapshot(context, anchorPlayableFloor);
+    }
+}
+
+function getPlayableMessageAt(messages, playableFloor) {
+    const source = Array.isArray(messages) ? messages : [];
+    const targetPlayableFloor = normalizeAnchorPlayableFloor(playableFloor);
+    if (!targetPlayableFloor) {
+        return null;
+    }
+    let playableSeq = 0;
+    for (let index = 0; index < source.length; index += 1) {
+        const message = source[index];
+        if (!message || message.is_system) {
+            continue;
+        }
+        playableSeq += 1;
+        if (playableSeq === targetPlayableFloor) {
+            return { index, message };
         }
     }
+    return null;
+}
+
+function isStoredSearchAgentSnapshotValidForMessages(anchorPlayableFloor, snapshot, messages) {
+    const normalizedSnapshot = normalizeStoredSearchAgentSnapshot(snapshot);
+    if (!normalizedSnapshot) {
+        return false;
+    }
+    const target = getPlayableMessageAt(messages, anchorPlayableFloor);
+    if (!target?.message || target.message.is_system || !target.message.is_user) {
+        return false;
+    }
+    const storedHash = String(normalizedSnapshot.anchorHash || '').trim();
+    if (!storedHash) {
+        return false;
+    }
+    const currentHash = String(getStringHash(String(target.message.mes ?? '')));
+    return currentHash === storedHash;
+}
+
+async function selectLatestValidSearchAgentSnapshot(context, { persistCleanup = false } = {}) {
+    const chatKey = getChatKey(context);
+    if (!chatKey) {
+        latestSearchAgentSnapshot = null;
+        latestSearchHistoryIndex = null;
+        latestManagedEntries = [];
+        return null;
+    }
+
+    const messages = Array.isArray(context?.chat) ? context.chat : [];
+    const previousAnchors = getLoadedSearchHistoryAnchors(context);
+    const nextAnchors = previousAnchors.slice();
+    let nextSnapshot = null;
+
+    for (let index = nextAnchors.length - 1; index >= 0; index -= 1) {
+        const anchorPlayableFloor = nextAnchors[index];
+        const snapshot = await loadStoredSearchAgentSnapshot(context, anchorPlayableFloor);
+        if (!snapshot || !isStoredSearchAgentSnapshotValidForMessages(anchorPlayableFloor, snapshot, messages)) {
+            nextAnchors.splice(index, 1);
+            if (persistCleanup) {
+                await deleteStoredSearchAgentSnapshot(context, anchorPlayableFloor);
+            }
+            continue;
+        }
+        nextSnapshot = materializeSearchAgentSnapshot(chatKey, anchorPlayableFloor, snapshot);
+        break;
+    }
+
+    setLoadedSearchHistoryIndex(chatKey, nextAnchors);
+    latestSearchAgentSnapshot = nextSnapshot;
+    latestManagedEntries = nextSnapshot ? normalizeStoredManagedEntries(nextSnapshot.managedEntries) : [];
+    if (persistCleanup && !equalNumberArrays(previousAnchors, nextAnchors)) {
+        await persistSearchToolsChatState(context);
+    }
+    return nextSnapshot;
 }
 
 function getOpenAIPresetNames(context) {
@@ -1731,9 +2004,9 @@ function buildLastUserAnchorFromMessages(messages) {
     }
 
     const text = String(message.mes ?? '');
-    const playableFloor = messages
+    const playableFloor = normalizeAnchorPlayableFloor(messages
         .slice(0, index + 1)
-        .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0);
+        .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0));
     return {
         floor: index + 1,
         playableFloor,
@@ -1786,6 +2059,99 @@ function buildSearchAgentStatusText(result, { reused = false } = {}) {
     return mutationCount
         ? i18n(`Search agent updated lorebook (${mutationCount} changes, ${managedEntryCount} managed entries).${summary}`)
         : i18n(`Search agent finished with no lorebook changes (${managedEntryCount} managed entries).${summary}`);
+}
+
+async function storeCompletedSearchAgentSnapshot(context, anchor, result) {
+    const chatKey = getChatKey(context);
+    const anchorPlayableFloor = normalizeAnchorPlayableFloor(anchor?.playableFloor);
+    const anchorHash = String(anchor?.hash || '').trim();
+    const managedEntries = normalizeStoredManagedEntries(result?.managedEntries);
+    if (!chatKey || !anchorPlayableFloor || !anchorHash) {
+        latestSearchAgentSnapshot = null;
+        latestManagedEntries = managedEntries;
+        await persistSearchToolsChatState(context);
+        return null;
+    }
+
+    const nextSnapshot = {
+        anchorHash,
+        updatedAt: new Date().toISOString(),
+        summary: normalizeWhitespace(result?.summary || ''),
+        mutationCount: Math.max(0, Math.floor(Number(result?.mutationCount || 0))),
+        managedEntryCount: managedEntries.length,
+        bookName: normalizeWhitespace(result?.bookName || ''),
+        managedEntries,
+    };
+    const previousAnchors = getLoadedSearchHistoryAnchors(context);
+    const removedAnchors = previousAnchors.filter(existingAnchor => existingAnchor > anchorPlayableFloor);
+    if (removedAnchors.length > 0) {
+        await deleteStoredSearchAgentAnchors(context, removedAnchors);
+    }
+    const ok = await persistStoredSearchAgentSnapshot(context, anchorPlayableFloor, nextSnapshot);
+    if (!ok) {
+        throw new Error(i18n('Failed to persist search agent snapshot.'));
+    }
+    const nextAnchors = normalizeSearchHistoryAnchors([
+        ...previousAnchors.filter(existingAnchor => existingAnchor <= anchorPlayableFloor),
+        anchorPlayableFloor,
+    ]);
+    setLoadedSearchHistoryIndex(chatKey, nextAnchors);
+    latestSearchAgentSnapshot = materializeSearchAgentSnapshot(chatKey, anchorPlayableFloor, nextSnapshot);
+    latestManagedEntries = managedEntries;
+    await persistSearchToolsChatState(context);
+    return latestSearchAgentSnapshot;
+}
+
+function getLatestSearchAgentEntry(context) {
+    const chatKey = getChatKey(context);
+    if (!latestSearchAgentSnapshot || typeof latestSearchAgentSnapshot !== 'object') {
+        return null;
+    }
+    if (String(latestSearchAgentSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return null;
+    }
+    return {
+        anchorPlayableFloor: normalizeAnchorPlayableFloor(latestSearchAgentSnapshot.anchorPlayableFloor),
+        managedEntryCount: normalizeStoredManagedEntries(latestManagedEntries).length,
+    };
+}
+
+function updateSearchHistoryStatusAfterInvalidation(context) {
+    const entry = getLatestSearchAgentEntry(context);
+    if (entry?.anchorPlayableFloor) {
+        updateUiStatus(i18n(`Search history invalidated. Rolled back to user turn ${entry.anchorPlayableFloor}.`));
+        return;
+    }
+    updateUiStatus(i18n('Search history invalidated. No valid stored result remains.'));
+}
+
+async function invalidateStoredSearchAgentAnchors(context, thresholdPlayableFloor = 0, { inclusive = true } = {}) {
+    const chatKey = getChatKey(context);
+    if (!chatKey) {
+        latestSearchAgentSnapshot = null;
+        latestSearchHistoryIndex = null;
+        latestManagedEntries = [];
+        await syncSharedLorebookForCurrentChat(context);
+        return false;
+    }
+
+    const currentAnchors = getLoadedSearchHistoryAnchors(context);
+    const normalizedThreshold = normalizeAnchorPlayableFloor(thresholdPlayableFloor);
+    const removedAnchors = normalizedThreshold > 0
+        ? currentAnchors.filter(anchorPlayableFloor => inclusive ? anchorPlayableFloor >= normalizedThreshold : anchorPlayableFloor > normalizedThreshold)
+        : currentAnchors.slice();
+    if (removedAnchors.length === 0) {
+        return false;
+    }
+
+    await deleteStoredSearchAgentAnchors(context, removedAnchors);
+    const nextAnchors = currentAnchors.filter(anchorPlayableFloor => !removedAnchors.includes(anchorPlayableFloor));
+    setLoadedSearchHistoryIndex(chatKey, nextAnchors);
+    await persistSearchToolsChatState(context);
+    await selectLatestValidSearchAgentSnapshot(context, { persistCleanup: true });
+    await syncSharedLorebookForCurrentChat(context);
+    updateSearchHistoryStatusAfterInvalidation(context);
+    return true;
 }
 
 function buildManagedEntryCatalog(entries = []) {
@@ -1843,6 +2209,7 @@ function buildSearchAgentUserPrompt(payload, {
             ? 'This is the mandatory finalization stage. No new searching or visiting is allowed.'
             : 'Search and visit are optional. Visit is recommended when snippets are weak or the topic is time-sensitive.',
         'Only delete entry_ids from the managed entry list below.',
+        'Delete any managed search entries that are no longer needed, duplicated, outdated for this chat branch, or unsupported by the gathered evidence.',
         'For non-always_inject entries, provide activation keywords.',
         '',
         '## Source fidelity rules',
@@ -1867,6 +2234,7 @@ function buildSearchAgentUserPrompt(payload, {
         !isFinalStage ? `- You may use multiple ${TOOL_NAMES.AGENT_SEARCH}/${TOOL_NAMES.AGENT_VISIT} follow-ups before you write or finalize.` : null,
         isFinalStage ? `- If any lorebook mutation is still needed, do it in this response and also call ${TOOL_NAMES.AGENT_FINALIZE}.` : null,
         isFinalStage ? `- If no mutation is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.` : null,
+        isFinalStage ? `- Before finalizing, delete any managed search entries that are unnecessary, duplicated, stale for the current chat branch, or not supported by the gathered evidence.` : null,
         isFinalStage ? `- End with ${TOOL_NAMES.AGENT_FINALIZE}.` : `- Call ${TOOL_NAMES.AGENT_FINALIZE} only when you are done with this run.`,
         '- Do not output plain prose.',
     ].filter(Boolean).join('\n');
@@ -2177,13 +2545,15 @@ async function runPreRequestSearchAgent(context, settings, payload) {
         : await ensureSharedLorebook(context, true);
     throwIfAborted(payload?.signal, 'Search agent aborted.');
     const finalManagedEntries = finalLorebook?.data ? listManagedEntries(finalLorebook.data) : [];
-    latestManagedEntries = normalizeStoredManagedEntries(finalManagedEntries);
+    const normalizedManagedEntries = normalizeStoredManagedEntries(finalManagedEntries);
+    latestManagedEntries = normalizedManagedEntries;
     return {
         mutationCount,
         finalized: roundStoppedByFinalize,
         summary: lastSummary,
         bookName: finalLorebook?.bookName || '',
         managedEntryCount: finalManagedEntries.length,
+        managedEntries: normalizedManagedEntries,
     };
 }
 
@@ -2274,20 +2644,7 @@ async function maybeRunPreRequestSearchAgent(payload) {
         if (runToken !== activeAgentRunToken) {
             return;
         }
-        latestSearchAgentSnapshot = anchor
-            ? {
-                chatKey,
-                anchorFloor: Number(anchor.floor || 0),
-                anchorPlayableFloor: Number(anchor.playableFloor || 0),
-                anchorHash: String(anchor.hash || ''),
-                updatedAt: new Date().toISOString(),
-                summary: normalizeWhitespace(result?.summary || ''),
-                mutationCount: Math.max(0, Math.floor(Number(result?.mutationCount || 0))),
-                managedEntryCount: Math.max(0, Math.floor(Number(result?.managedEntryCount || 0))),
-                bookName: normalizeWhitespace(result?.bookName || ''),
-            }
-            : null;
-        await persistSearchToolsChatState(context);
+        await storeCompletedSearchAgentSnapshot(context, anchor, result);
         updateUiStatus(buildSearchAgentStatusText(result));
     } catch (error) {
         syncMutableGenerationPayloadState(payload, effectivePayload);
@@ -2311,32 +2668,33 @@ async function maybeRunPreRequestSearchAgent(payload) {
     }
 }
 
-function onMessageDeleted(_chatLength, details) {
+async function onMessageDeleted(_chatLength, details) {
     const context = getContext();
-    if (!latestSearchAgentSnapshot || typeof latestSearchAgentSnapshot !== 'object') {
+    await loadSearchToolsChatState(context, { force: false });
+    const deletedPlayableFrom = normalizeAnchorPlayableFloor(details?.deletedPlayableSeqFrom);
+    const deletedPlayableTo = normalizeAnchorPlayableFloor(details?.deletedPlayableSeqTo);
+    const deletedAssistantFrom = Math.max(0, Math.floor(Number(details?.deletedAssistantSeqFrom) || 0));
+    const deletedAssistantTo = Math.max(0, Math.floor(Number(details?.deletedAssistantSeqTo) || 0));
+    const deletedPlayableCount = deletedPlayableFrom > 0 && deletedPlayableTo >= deletedPlayableFrom
+        ? (deletedPlayableTo - deletedPlayableFrom + 1)
+        : 0;
+    const deletedAssistantCount = deletedAssistantFrom > 0 && deletedAssistantTo >= deletedAssistantFrom
+        ? (deletedAssistantTo - deletedAssistantFrom + 1)
+        : 0;
+    const deletedUserCount = Math.max(deletedPlayableCount - deletedAssistantCount, 0);
+
+    if (!deletedPlayableCount && !deletedAssistantCount) {
+        await invalidateStoredSearchAgentAnchors(context, 0, { inclusive: true });
         return;
     }
-
-    const chatKey = getChatKey(context);
-    if (String(latestSearchAgentSnapshot.chatKey || '') !== String(chatKey || '')) {
+    if (deletedUserCount > 0 && deletedPlayableFrom > 0) {
+        await invalidateStoredSearchAgentAnchors(context, deletedPlayableFrom, { inclusive: true });
         return;
     }
-
-    const anchorPlayableFloor = Number(latestSearchAgentSnapshot.anchorPlayableFloor);
-    const deletedFrom = Number(details?.deletedPlayableSeqFrom);
-    const deletedTo = Number(details?.deletedPlayableSeqTo);
-    const deletedStrictlyAfterAnchor = Number.isFinite(anchorPlayableFloor)
-        && anchorPlayableFloor > 0
-        && Number.isFinite(deletedFrom)
-        && Number.isFinite(deletedTo)
-        && deletedFrom > anchorPlayableFloor
-        && deletedTo > anchorPlayableFloor;
-
-    if (deletedStrictlyAfterAnchor) {
+    if (deletedPlayableTo > 0) {
+        await invalidateStoredSearchAgentAnchors(context, deletedPlayableTo, { inclusive: false });
         return;
     }
-
-    clearLastSearchAgentSnapshot(context, { persist: true });
 }
 
 function renderSearchProviderOptions(selectedProvider = '') {
@@ -2860,6 +3218,7 @@ jQuery(() => {
             abortActiveSearchAgentRun();
             loadedChatStateKey = '';
             latestSearchAgentSnapshot = null;
+            latestSearchHistoryIndex = null;
             latestManagedEntries = [];
             const liveContext = getContext();
             void loadSearchToolsChatState(liveContext, { force: true })
