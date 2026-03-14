@@ -10116,6 +10116,124 @@ export function getChatMessageSnapshot(target = null) {
     return Array.isArray(snapshot) ? cloneJsonValue(snapshot) : null;
 }
 
+function syncCurrentChatIntegrityFromMetadata(metadata = null) {
+    if (!chat_metadata || typeof chat_metadata !== 'object') {
+        return;
+    }
+
+    const nextIntegrity = typeof metadata?.integrity === 'string'
+        ? metadata.integrity.trim()
+        : '';
+
+    if (nextIntegrity) {
+        chat_metadata.integrity = nextIntegrity;
+    } else {
+        delete chat_metadata.integrity;
+    }
+}
+
+async function fetchCurrentServerChatSnapshot(target = resolveChatStateTarget()) {
+    const resolvedTarget = resolveChatStateTarget(target);
+    if (!resolvedTarget) {
+        return null;
+    }
+
+    try {
+        let response;
+
+        if (resolvedTarget.is_group) {
+            response = await fetch('/api/chats/group/get', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    id: resolvedTarget.id,
+                }),
+            });
+        } else {
+            const charName = characters[this_chid]?.name;
+            if (!charName) {
+                return null;
+            }
+
+            response = await fetch('/api/chats/get', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    ch_name: charName,
+                    file_name: resolvedTarget.file_name,
+                    avatar_url: resolvedTarget.avatar_url,
+                }),
+            });
+        }
+
+        if (!response.ok) {
+            return null;
+        }
+
+        const payload = await response.json().catch(() => null);
+        if (!Array.isArray(payload) || payload.length === 0) {
+            return {
+                target: resolvedTarget,
+                metadata: {},
+                messages: [],
+            };
+        }
+
+        const [header, ...rawMessages] = payload;
+        const metadata = isPlainObject(header?.chat_metadata)
+            ? cloneJsonValue(header.chat_metadata)
+            : {};
+        const messages = rawMessages
+            .map(message => cloneJsonValue(message))
+            .filter(message => message && typeof message === 'object');
+
+        messages.forEach(ensureMessageMediaIsArray);
+
+        return {
+            target: resolvedTarget,
+            metadata,
+            messages,
+        };
+    } catch (error) {
+        console.warn('Failed to fetch current server chat snapshot', error);
+        return null;
+    }
+}
+
+async function refreshChatWriteSnapshotsFromServer(target = resolveChatStateTarget()) {
+    const snapshot = await fetchCurrentServerChatSnapshot(target);
+    if (!snapshot) {
+        return null;
+    }
+
+    rememberChatMetadataSnapshot(snapshot.target, snapshot.metadata);
+    rememberChatMessageSnapshot(snapshot.target, snapshot.messages);
+
+    if (getChatStateTargetKey(snapshot.target) === getChatStateTargetKey(resolveChatStateTarget())) {
+        syncCurrentChatIntegrityFromMetadata(snapshot.metadata);
+    }
+
+    return snapshot;
+}
+
+async function rebuildChatMessagePatchOperationsFromServer(desiredMessages = chat, target = resolveChatStateTarget()) {
+    const snapshot = await refreshChatWriteSnapshotsFromServer(target);
+    if (!snapshot) {
+        return null;
+    }
+
+    const nextMessages = Array.isArray(desiredMessages)
+        ? cloneJsonValue(desiredMessages)
+        : [];
+
+    return {
+        ...snapshot,
+        operations: buildChatMessagePatchOperations(snapshot.messages, nextMessages),
+    };
+}
+
 /**
  * Builds lightweight mutation metadata for a chat message index.
  * @param {number} messageId Message index in current chat array.
@@ -10497,6 +10615,8 @@ export async function appendChatMessages(messages, retryCount = 0) {
     }
 
     try {
+        const target = resolveChatStateTarget();
+
         if (selected_group) {
             const group = groups.find(x => x.id == selected_group);
             const groupChatId = group?.chat_id;
@@ -10519,7 +10639,8 @@ export async function appendChatMessages(messages, retryCount = 0) {
             if (response.ok) {
                 const payload = await response.json().catch(() => null);
                 if (payload?.matched_existing_generation_id && Number(payload?.appended || 0) === 0) {
-                    return false;
+                    const refreshed = await refreshChatWriteSnapshotsFromServer(target);
+                    return Boolean(refreshed && lodash.isEqual(refreshed.messages, chat));
                 }
                 applyIntegrityFromWritePayload(payload);
                 rememberChatMessageSnapshot({ is_group: true, id: groupChatId }, chat);
@@ -10527,6 +10648,9 @@ export async function appendChatMessages(messages, retryCount = 0) {
             }
             const conflictResolution = await resolveChatWriteConflict(response, retryCount);
             if (conflictResolution !== 'none') {
+                if (conflictResolution === 'integrity') {
+                    await refreshChatWriteSnapshotsFromServer(target);
+                }
                 return await appendChatMessages(messages, retryCount + 1);
             }
             return false;
@@ -10557,7 +10681,8 @@ export async function appendChatMessages(messages, retryCount = 0) {
         if (response.ok) {
             const payload = await response.json().catch(() => null);
             if (payload?.matched_existing_generation_id && Number(payload?.appended || 0) === 0) {
-                return false;
+                const refreshed = await refreshChatWriteSnapshotsFromServer(target);
+                return Boolean(refreshed && lodash.isEqual(refreshed.messages, chat));
             }
             applyIntegrityFromWritePayload(payload);
             rememberChatMessageSnapshot({ is_group: false, avatar_url: avatar, file_name: fileName }, chat);
@@ -10565,6 +10690,9 @@ export async function appendChatMessages(messages, retryCount = 0) {
         }
         const conflictResolution = await resolveChatWriteConflict(response, retryCount);
         if (conflictResolution !== 'none') {
+            if (conflictResolution === 'integrity') {
+                await refreshChatWriteSnapshotsFromServer(target);
+            }
             return await appendChatMessages(messages, retryCount + 1);
         }
         return false;
@@ -10621,7 +10749,15 @@ export async function patchChatMessages(operations, retryCount = 0) {
             }
             const conflictResolution = await resolveChatWriteConflict(response, retryCount);
             if (conflictResolution === 'integrity') {
-                return await patchChatMessages(normalizedOperations, retryCount + 1);
+                const rebuilt = await rebuildChatMessagePatchOperationsFromServer(chat, target);
+                if (!rebuilt) {
+                    return false;
+                }
+                if (rebuilt.operations.length === 0) {
+                    rememberChatMessageSnapshot(target, chat);
+                    return true;
+                }
+                return await patchChatMessages(rebuilt.operations, retryCount + 1);
             }
             if (conflictResolution === 'snapshot') {
                 return false;
@@ -10659,7 +10795,15 @@ export async function patchChatMessages(operations, retryCount = 0) {
         }
         const conflictResolution = await resolveChatWriteConflict(response, retryCount);
         if (conflictResolution === 'integrity') {
-            return await patchChatMessages(normalizedOperations, retryCount + 1);
+            const rebuilt = await rebuildChatMessagePatchOperationsFromServer(chat, target);
+            if (!rebuilt) {
+                return false;
+            }
+            if (rebuilt.operations.length === 0) {
+                rememberChatMessageSnapshot(target, chat);
+                return true;
+            }
+            return await patchChatMessages(rebuilt.operations, retryCount + 1);
         }
         if (conflictResolution === 'snapshot') {
             return false;
@@ -10843,9 +10987,15 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, _
                     return;
                 }
 
-                if (!force && await shouldRetryChatWriteOnConflict(patchResult, _retryAttempt)) {
-                    await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
-                    return;
+                if (!force) {
+                    const conflictResolution = await resolveChatWriteConflict(patchResult, _retryAttempt);
+                    if (conflictResolution !== 'none') {
+                        if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
+                            await refreshChatWriteSnapshotsFromServer(target);
+                        }
+                        await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
+                        return;
+                    }
                 }
             } else {
                 const metadataSaved = await saveChatMetadata(withMetadata);
@@ -10878,9 +11028,15 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, _
             return;
         }
 
-        if (!force && await shouldRetryChatWriteOnConflict(result, _retryAttempt)) {
-            await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
-            return;
+        if (!force) {
+            const conflictResolution = await resolveChatWriteConflict(result, _retryAttempt);
+            if (conflictResolution !== 'none') {
+                if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
+                    await refreshChatWriteSnapshotsFromServer(target);
+                }
+                await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
+                return;
+            }
         }
 
         throw new Error(result.statusText);
