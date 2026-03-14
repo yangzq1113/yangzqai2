@@ -1227,6 +1227,7 @@ export const wi_anchor_position = {
  * */
 export const worldInfoCache = new StructuredCloneMap({ cloneOnGet: true, cloneOnSet: false });
 const worldInfoSnapshotCache = new Map();
+const worldInfoRequestCache = new Map();
 
 function isPlainObject(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -2445,38 +2446,89 @@ export async function showWorldEditor(name) {
  * @param {string} name - The name of the world to load
  * @return {Promise<Object|null>} A promise that resolves to the loaded world information, or null if the request fails.
  */
+export async function loadWorldInfoBatch(names) {
+    const uniqueNames = [...new Set((Array.isArray(names) ? names : []).map((name) => String(name || '').trim()).filter(Boolean))];
+    const results = new Map();
+    const awaitedRequests = [];
+    const pendingNames = [];
+
+    for (const name of uniqueNames) {
+        if (worldInfoCache.has(name)) {
+            const cached = worldInfoCache.get(name);
+            if (!worldInfoSnapshotCache.has(name)) {
+                rememberWorldInfoSnapshot(name, cached);
+            }
+            results.set(name, cached);
+            continue;
+        }
+
+        if (worldInfoRequestCache.has(name)) {
+            awaitedRequests.push(worldInfoRequestCache.get(name).then((data) => {
+                results.set(name, data);
+            }));
+            continue;
+        }
+
+        pendingNames.push(name);
+    }
+
+    if (pendingNames.length) {
+        const batchPromise = (async () => {
+            const response = await fetch('/api/worldinfo/get-batch', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({ names: pendingNames }),
+                cache: 'no-cache',
+            });
+
+            if (!response.ok) {
+                return new Map(pendingNames.map((name) => [name, null]));
+            }
+
+            const payload = await response.json();
+            const batchResults = new Map();
+            for (const name of pendingNames) {
+                const data = isPlainObject(payload?.data?.[name]) ? payload.data[name] : null;
+                if (data) {
+                    cacheWorldInfoData(name, data);
+                }
+                batchResults.set(name, data);
+            }
+            return batchResults;
+        })();
+
+        for (const name of pendingNames) {
+            worldInfoRequestCache.set(name, batchPromise.then((batchResults) => batchResults.get(name) ?? null));
+        }
+
+        try {
+            const batchResults = await batchPromise;
+            for (const name of pendingNames) {
+                results.set(name, batchResults.get(name) ?? null);
+            }
+        } finally {
+            pendingNames.forEach((name) => worldInfoRequestCache.delete(name));
+        }
+    }
+
+    if (awaitedRequests.length) {
+        await Promise.all(awaitedRequests);
+    }
+
+    return results;
+}
+
 export async function loadWorldInfo(name) {
     if (!name) {
         return;
     }
 
-    if (worldInfoCache.has(name)) {
-        const cached = worldInfoCache.get(name);
-        if (!worldInfoSnapshotCache.has(name)) {
-            rememberWorldInfoSnapshot(name, cached);
-        }
-        return cached;
-    }
-
-    const response = await fetch('/api/worldinfo/get', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ name: name }),
-        cache: 'no-cache',
-    });
-
-    if (response.ok) {
-        const data = await response.json();
-        worldInfoCache.set(name, data);
-        rememberWorldInfoSnapshot(name, data);
-        return data;
-    }
-
-    return null;
+    const results = await loadWorldInfoBatch([name]);
+    return results.get(name) ?? null;
 }
 
 export async function updateWorldInfoList() {
-    const result = await fetch('/api/settings/get', {
+    const result = await fetch('/api/worldinfo/list-lite', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({}),
@@ -2485,7 +2537,7 @@ export async function updateWorldInfoList() {
     if (result.ok) {
         const data = await result.json();
         const editorSelected = String($('#world_editor_select').find(':selected').text());
-        world_names = data.world_names?.length ? data.world_names : [];
+        world_names = data.names?.length ? data.names : [];
         $('#world_info').find('option[value!=""]').remove();
         $('#world_editor_select').find('option[value!=""]').remove();
 
@@ -2498,6 +2550,11 @@ export async function updateWorldInfoList() {
             $('#world_editor_select').append(editorListOption);
         });
     }
+}
+
+function cacheWorldInfoData(name, data) {
+    worldInfoCache.set(name, data);
+    rememberWorldInfoSnapshot(name, data);
 }
 
 function syncGlobalWorldInfoSettingsState() {
@@ -4989,6 +5046,11 @@ async function getCharacterLore() {
         return [];
     }
 
+    const worldsToLoad = [...worldsToSearch].filter((worldName) =>
+        !selected_world_info.includes(worldName)
+        && chat_metadata[METADATA_KEY] !== worldName
+        && power_user.persona_description_lorebook !== worldName);
+    const worldData = await loadWorldInfoBatch(worldsToLoad);
     let entries = [];
     for (const worldName of worldsToSearch) {
         if (selected_world_info.includes(worldName)) {
@@ -5006,7 +5068,7 @@ async function getCharacterLore() {
             continue;
         }
 
-        const data = await loadWorldInfo(worldName);
+        const data = worldData.get(worldName);
         const newEntries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: worldName, ...rest })) : [];
         entries = entries.concat(newEntries);
 
@@ -5024,9 +5086,10 @@ async function getGlobalLore() {
         return [];
     }
 
+    const worldData = await loadWorldInfoBatch(selected_world_info);
     let entries = [];
     for (const worldName of selected_world_info) {
-        const data = await loadWorldInfo(worldName);
+        const data = worldData.get(worldName);
         const newEntries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: worldName, ...rest })) : [];
         entries = entries.concat(newEntries);
     }

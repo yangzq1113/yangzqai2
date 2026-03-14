@@ -649,6 +649,26 @@ function getAllChatStateSidecarPaths(chatFilePath) {
         .map(fileName => path.join(parsed.dir, fileName));
 }
 
+function readChatStateData(chatFilePath, namespace) {
+    const stateFilePath = getChatStateSidecarPath(chatFilePath, namespace);
+    if (!stateFilePath || !fs.existsSync(stateFilePath)) {
+        return null;
+    }
+
+    const raw = tryReadFileSync(stateFilePath);
+    if (!raw) {
+        return null;
+    }
+
+    const parsed = tryParse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+        console.warn(`Invalid chat state sidecar JSON: ${stateFilePath}`);
+        return null;
+    }
+
+    return parsed;
+}
+
 /**
  * Renames all state sidecars from one chat base name to another.
  * @param {string} sourceChatFilePath Source chat file path.
@@ -1527,26 +1547,34 @@ router.post('/state/get', function (request, response) {
         if (!namespace) {
             return response.status(400).send({ error: 'Expected body.namespace string.' });
         }
-
-        const stateFilePath = getChatStateSidecarPath(chatFilePath, namespace);
-        if (!stateFilePath || !fs.existsSync(stateFilePath)) {
-            return response.send({ ok: true, data: null });
-        }
-
-        const raw = tryReadFileSync(stateFilePath);
-        if (!raw) {
-            return response.send({ ok: true, data: null });
-        }
-
-        const parsed = tryParse(raw);
-        if (!parsed || typeof parsed !== 'object') {
-            console.warn(`Invalid chat state sidecar JSON: ${stateFilePath}`);
-            return response.send({ ok: true, data: null });
-        }
-
-        return response.send({ ok: true, data: parsed });
+        return response.send({ ok: true, data: readChatStateData(chatFilePath, namespace) });
     } catch (error) {
         console.error('Error reading chat state sidecar:', error);
+        return response.status(500).send({ error: true });
+    }
+});
+
+router.post('/state/get-batch', function (request, response) {
+    try {
+        const chatFilePath = resolveChatFilePathForStateTarget(request, request.body || {});
+        const namespaces = [...new Set((Array.isArray(request.body?.namespaces) ? request.body.namespaces : [])
+            .map((namespace) => normalizeChatStateNamespace(namespace))
+            .filter(Boolean))];
+        if (!chatFilePath) {
+            return response.status(400).send({ error: 'Invalid state target payload.' });
+        }
+        if (!namespaces.length) {
+            return response.status(400).send({ error: 'Expected body.namespaces array.' });
+        }
+
+        const data = {};
+        for (const namespace of namespaces) {
+            data[namespace] = readChatStateData(chatFilePath, namespace);
+        }
+
+        return response.send({ ok: true, data });
+    } catch (error) {
+        console.error('Error reading chat state sidecars:', error);
         return response.status(500).send({ error: true });
     }
 });

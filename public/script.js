@@ -9670,6 +9670,24 @@ function resolveChatStateTarget(target = null) {
         : null;
 }
 
+const chatStateRequestCache = new Map();
+
+function getChatStateTargetKey(target) {
+    if (!target || typeof target !== 'object') {
+        return '';
+    }
+
+    if (target.is_group) {
+        return `group:${String(target.id || '').trim()}`;
+    }
+
+    return `chat:${String(target.avatar_url || '').trim()}:${String(target.file_name || '').trim()}`;
+}
+
+function getChatStateRequestKey(target, namespace) {
+    return `${getChatStateTargetKey(target)}::${String(namespace || '').trim().toLowerCase()}`;
+}
+
 function isPlainObject(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
         return false;
@@ -10135,41 +10153,109 @@ export function getChatMessageMutationMeta(messageId, messages = chat) {
 
 /**
  * Gets chat-bound plugin state payload from server side.
+ * @param {string[]} namespaces Chat state namespaces.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit chat target.
+ * @returns {Promise<Map<string, object|null>>} Stored state payloads keyed by namespace.
+ */
+export async function getChatStateBatch(namespaces, options = {}) {
+    try {
+        const requestedNamespaces = [...new Set((Array.isArray(namespaces) ? namespaces : [])
+            .map((namespace) => String(namespace || '').trim().toLowerCase())
+            .filter(Boolean))];
+        if (!requestedNamespaces.length) {
+            return new Map();
+        }
+
+        const target = resolveChatStateTarget(options?.target || null);
+        if (!target) {
+            return new Map();
+        }
+
+        const results = new Map();
+        const awaitedRequests = [];
+        const pendingNamespaces = [];
+
+        for (const namespace of requestedNamespaces) {
+            const requestKey = getChatStateRequestKey(target, namespace);
+            if (chatStateRequestCache.has(requestKey)) {
+                awaitedRequests.push(chatStateRequestCache.get(requestKey).then((data) => {
+                    results.set(namespace, cloneJsonValue(data));
+                }));
+                continue;
+            }
+
+            pendingNamespaces.push(namespace);
+        }
+
+        if (pendingNamespaces.length) {
+            const batchPromise = (async () => {
+                const response = await fetch('/api/chats/state/get-batch', {
+                    method: 'POST',
+                    cache: 'no-cache',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({
+                        ...target,
+                        namespaces: pendingNamespaces,
+                    }),
+                });
+
+                if (!response.ok) {
+                    return new Map(pendingNamespaces.map((namespace) => [namespace, null]));
+                }
+
+                const payload = await response.json();
+                const batchResults = new Map();
+                for (const namespace of pendingNamespaces) {
+                    const data = payload?.data?.[namespace];
+                    batchResults.set(namespace, data && typeof data === 'object' ? data : null);
+                }
+                return batchResults;
+            })();
+
+            for (const namespace of pendingNamespaces) {
+                const requestKey = getChatStateRequestKey(target, namespace);
+                chatStateRequestCache.set(requestKey, batchPromise.then((batchResults) => batchResults.get(namespace) ?? null));
+            }
+
+            try {
+                const batchResults = await batchPromise;
+                for (const namespace of pendingNamespaces) {
+                    results.set(namespace, cloneJsonValue(batchResults.get(namespace) ?? null));
+                }
+            } finally {
+                for (const namespace of pendingNamespaces) {
+                    chatStateRequestCache.delete(getChatStateRequestKey(target, namespace));
+                }
+            }
+        }
+
+        if (awaitedRequests.length) {
+            await Promise.all(awaitedRequests);
+        }
+
+        return results;
+    } catch (error) {
+        console.warn('Incremental chat state batch get failed', error);
+        return new Map();
+    }
+}
+
+/**
+ * Gets chat-bound plugin state payload from server side.
  * @param {string} namespace Chat state namespace.
  * @param {object} [options] Additional options.
  * @param {object|null} [options.target] Optional explicit chat target.
  * @returns {Promise<object|null>} Stored state object or null when not found/failed.
  */
 export async function getChatState(namespace, options = {}) {
-    try {
-        const stateNamespace = String(namespace || '').trim();
-        if (!stateNamespace) {
-            return null;
-        }
-        const target = resolveChatStateTarget(options?.target || null);
-        if (!target) {
-            return null;
-        }
-
-        const response = await fetch('/api/chats/state/get', {
-            method: 'POST',
-            cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ...target,
-                namespace: stateNamespace,
-            }),
-        });
-        if (!response.ok) {
-            return null;
-        }
-
-        const payload = await response.json();
-        return payload?.data && typeof payload.data === 'object' ? payload.data : null;
-    } catch (error) {
-        console.warn('Incremental chat state get failed', error);
+    const stateNamespace = String(namespace || '').trim().toLowerCase();
+    if (!stateNamespace) {
         return null;
     }
+
+    const results = await getChatStateBatch([stateNamespace], options);
+    return results.get(stateNamespace) ?? null;
 }
 
 /**

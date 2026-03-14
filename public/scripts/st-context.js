@@ -60,6 +60,7 @@ import {
     patchChatMessages,
     saveChatMetadata,
     getChatState,
+    getChatStateBatch,
     patchChatState,
     updateChatState,
     deleteChatState,
@@ -111,7 +112,7 @@ import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
 import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
-import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, reloadEditor, saveWorldInfo, updateWorldInfoList, wi_anchor_position } from './world-info.js';
+import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, loadWorldInfoBatch, reloadEditor, saveWorldInfo, updateWorldInfoList, wi_anchor_position } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
 import { ConnectionManagerRequestService } from './extensions/shared.js';
 import { updateReasoningUI, parseReasoningFromString, getReasoningTemplateByName } from './reasoning.js';
@@ -1303,6 +1304,7 @@ export function getContext() {
         patchChatMessages,
         saveChatMetadata,
         getChatState,
+        getChatStateBatch,
         patchChatState,
         updateChatState,
         deleteChatState,
@@ -1426,6 +1428,7 @@ export function getContext() {
             },
         },
         loadWorldInfo,
+        loadWorldInfoBatch,
         saveWorldInfo,
         reloadWorldInfoEditor: reloadEditor,
         updateWorldInfoList,

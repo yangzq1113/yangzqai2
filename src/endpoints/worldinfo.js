@@ -107,6 +107,20 @@ router.post('/list', async (request, response) => {
     }
 });
 
+router.post('/list-lite', async (request, response) => {
+    try {
+        const names = (await fs.promises.readdir(request.user.directories.worlds, { withFileTypes: true }))
+            .filter((file) => file.isFile() && path.extname(file.name).toLowerCase() === '.json')
+            .map((file) => path.parse(file.name).name)
+            .sort((a, b) => a.localeCompare(b));
+
+        return response.send({ names });
+    } catch (err) {
+        console.error('Error reading World Info names:', err);
+        return response.sendStatus(500);
+    }
+});
+
 router.post('/get', (request, response) => {
     if (!request.body?.name) {
         return response.sendStatus(400);
@@ -115,6 +129,24 @@ router.post('/get', (request, response) => {
     const file = readWorldInfoFile(request.user.directories, request.body.name, true);
 
     return response.send(file);
+});
+
+router.post('/get-batch', (request, response) => {
+    const names = [...new Set((Array.isArray(request.body?.names) ? request.body.names : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean))];
+
+    if (!names.length) {
+        return response.send({ data: {} });
+    }
+
+    const data = {};
+    for (const name of names) {
+        const file = readWorldInfoFile(request.user.directories, name, true);
+        data[name] = _.isObjectLike(file) && !Array.isArray(file) ? file : null;
+    }
+
+    return response.send({ data });
 });
 
 router.post('/delete', (request, response) => {
