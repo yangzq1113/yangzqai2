@@ -255,7 +255,7 @@ const defaultSettings = {
     agentTimeoutSeconds: 0,
     maxRecentMessages: 14,
     capsuleInjectPosition: world_info_position.atDepth,
-    capsuleInjectDepth: 9999,
+    capsuleInjectDepth: 0,
     capsuleInjectRole: extension_prompt_roles.SYSTEM,
     capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
     orchestrationSpec: defaultSpec,
