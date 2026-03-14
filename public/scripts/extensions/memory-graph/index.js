@@ -7774,6 +7774,10 @@ async function captureLatestAssistantAfterGeneration() {
 }
 
 function scheduleExtraction(context) {
+    const settings = getEffectiveSettings(context, getSettings());
+    if (!settings.enabled) {
+        return;
+    }
     const chatKey = getChatKey(context);
     if (!chatKey || chatKey === 'invalid_target') {
         return;
@@ -7792,6 +7796,10 @@ function scheduleExtraction(context) {
         activeExtractionAbortController = extractionAbortController;
         try {
             const settings = getEffectiveSettings(context, getSettings());
+            if (!settings.enabled) {
+                refreshUiStats();
+                return;
+            }
             alignStoreCoverageToChat(store, context, settings);
             const preview = computeExtractionWindow(context, store, null, settings);
             if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
@@ -9399,6 +9407,32 @@ function clearRuntimeInfoToast() {
     }
     toastr.clear(activeRuntimeInfoToast);
     activeRuntimeInfoToast = null;
+}
+
+async function stopMemoryRuntimeWork() {
+    clearRuntimeInfoToast();
+    clearPersistentRuntimeNotice();
+
+    for (const timer of extractionTimers.values()) {
+        clearTimeout(timer);
+    }
+    extractionTimers.clear();
+
+    const recallRunToken = Number(activeRecallRunToken || 0);
+    if (recallRunToken > 0) {
+        activeRecallRunToken += 1;
+    }
+
+    if (activeRecallAbortController && !activeRecallAbortController.signal.aborted) {
+        activeRecallAbortController.abort();
+    }
+    if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+        activeExtractionAbortController.abort();
+    }
+
+    if (recallRunToken > 0) {
+        await abortActiveRecallRequests(recallRunToken);
+    }
 }
 
 function updateUiStatus(text) {
@@ -11022,6 +11056,9 @@ function bindUi() {
         void syncMemoryLorebookActivation(getContext(), settings);
         if (settings.enabled) {
             void syncPersistentProjectionForCurrentChat(getContext());
+        } else {
+            void stopMemoryRuntimeWork();
+            updateUiStatus(i18n('Memory disabled, cleared memory lorebook injections.'));
         }
         saveSettingsDebounced();
     });
