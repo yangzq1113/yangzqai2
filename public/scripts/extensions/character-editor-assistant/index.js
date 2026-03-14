@@ -133,6 +133,8 @@ function registerLocaleData() {
         'Type your requirement to continue this conversation...': '输入你的要求继续对话...',
         'Assistant is thinking...': '模型思考中...',
         'Applying approved changes...': '正在应用已批准变更...',
+        'Stop': '终止',
+        'Request cancelled.': '请求已终止。',
         'Message cannot be empty.': '消息不能为空。',
         'Model reply failed: ${0}': '模型回复失败：${0}',
         'Round diff': '本轮差异',
@@ -227,6 +229,8 @@ function registerLocaleData() {
         'Type your requirement to continue this conversation...': '輸入你的要求繼續對話...',
         'Assistant is thinking...': '模型思考中...',
         'Applying approved changes...': '正在套用已批准變更...',
+        'Stop': '終止',
+        'Request cancelled.': '請求已終止。',
         'Message cannot be empty.': '訊息不能為空。',
         'Model reply failed: ${0}': '模型回覆失敗：${0}',
         'Round diff': '本輪差異',
@@ -1580,6 +1584,38 @@ function getLorebookEntryByUid(entries, uid) {
     return null;
 }
 
+function isAbortSignalLike(value) {
+    return Boolean(value && typeof value === 'object' && 'aborted' in value);
+}
+
+function isAbortError(error, abortSignal = null) {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        return true;
+    }
+    const name = String(error?.name || '').toLowerCase();
+    if (name === 'aborterror') {
+        return true;
+    }
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('aborted') || message.includes('abort');
+}
+
+function createAbortError(message = 'Operation aborted.') {
+    try {
+        return new DOMException(String(message || 'Operation aborted.'), 'AbortError');
+    } catch {
+        const error = new Error(String(message || 'Operation aborted.'));
+        error.name = 'AbortError';
+        return error;
+    }
+}
+
+function throwIfAborted(abortSignal, message = 'Operation aborted.') {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        throw createAbortError(message);
+    }
+}
+
 function collectLorebookEntryUids(entries) {
     const output = new Set();
     for (const [rawUid, entry] of Object.entries(entries && typeof entries === 'object' ? entries : {})) {
@@ -2586,6 +2622,7 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
     tools = [],
     allowedNames = null,
     requestPresetOptions = null,
+    abortSignal = null,
 } = {}) {
     if (!Array.isArray(tools) || tools.length === 0) {
         return {
@@ -2604,8 +2641,9 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
 
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
+        throwIfAborted(abortSignal, 'Character editor request aborted.');
         try {
-            const responseData = await sendOpenAIRequest('quiet', promptMessages, null, {
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, abortSignal, {
                 tools,
                 toolChoice,
                 replaceTools: true,
@@ -2630,6 +2668,9 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
             return { calls, assistantText };
         } catch (error) {
             lastError = error;
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
             if (attempt >= retries) {
                 throw error;
             }
@@ -3246,7 +3287,7 @@ async function buildCharacterEditorContextPayload(context, avatar = '') {
     };
 }
 
-async function requestModelCharacterEditorConversationReply(context, conversationMessages, { avatar = '', rejectedOperationKeys = [] } = {}) {
+async function requestModelCharacterEditorConversationReply(context, conversationMessages, { avatar = '', rejectedOperationKeys = [], abortSignal = null } = {}) {
     const payload = await buildCharacterEditorContextPayload(context, avatar);
     const history = (Array.isArray(conversationMessages) ? conversationMessages : [])
         .map(item => ({
@@ -3296,6 +3337,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
     let lastAssistantText = '';
 
     for (let round = 1; round <= CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT; round++) {
+        throwIfAborted(abortSignal, 'Character editor request aborted.');
         const userPrompt = [
             'Character editor conversation payload:',
             JSON.stringify({
@@ -3321,12 +3363,14 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 tools: modelTools,
                 allowedNames: allowedToolNames,
                 requestPresetOptions,
+                abortSignal,
             },
         );
         lastAssistantText = String(assistantText || '').trim();
 
         const { editCalls, helperCalls } = splitCharacterEditorToolCalls(rawCalls, helperToolApis);
         if (helperCalls.length === 0) {
+            throwIfAborted(abortSignal, 'Character editor request aborted.');
             return {
                 assistantText: lastAssistantText,
                 operations: normalizeCharacterEditorOperationsFromCalls(editCalls),
@@ -3335,6 +3379,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
 
         const executedHelperCalls = [];
         for (const call of helperCalls) {
+            throwIfAborted(abortSignal, 'Character editor request aborted.');
             const name = String(call?.name || '').trim();
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
             const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
@@ -3659,7 +3704,10 @@ function buildCharacterEditorPopupHtml(record) {
     <div class="cea_sync_chat" data-cea-editor-chat></div>
     <div class="cea_sync_composer">
         <textarea class="text_pole textarea_compact" rows="4" data-cea-editor-input placeholder="${escapeHtml(i18n('Type your requirement to continue this conversation...'))}"></textarea>
-        <div class="menu_button menu_button_small" data-cea-editor-send>${escapeHtml(i18n('Send'))}</div>
+        <div class="cea_sync_composer_actions">
+            <div class="menu_button menu_button_small" data-cea-editor-send>${escapeHtml(i18n('Send'))}</div>
+            <div class="menu_button menu_button_small disabled" data-cea-editor-stop>${escapeHtml(i18n('Stop'))}</div>
+        </div>
     </div>
     <div data-cea-editor-pending></div>
     <details class="cea_sync_history">
@@ -3692,6 +3740,7 @@ async function openCharacterEditorPopup(context = getContext()) {
     const conversationMessages = [];
     let pendingApproval = null;
     let isSending = false;
+    let activeRequestAbortController = null;
     const rejectedOperationKeys = new Set();
 
     const popup = new Popup(
@@ -3708,9 +3757,10 @@ async function openCharacterEditorPopup(context = getContext()) {
                 const chat = instance?.content?.querySelector('[data-cea-editor-chat]');
                 const input = instance?.content?.querySelector('[data-cea-editor-input]');
                 const sendBtn = instance?.content?.querySelector('[data-cea-editor-send]');
+                const stopBtn = instance?.content?.querySelector('[data-cea-editor-stop]');
                 const pendingSlot = instance?.content?.querySelector('[data-cea-editor-pending]');
                 const history = instance?.content?.querySelector('[data-cea-editor-history]');
-                if (!(chat instanceof HTMLElement) || !(input instanceof HTMLTextAreaElement) || !(sendBtn instanceof HTMLElement) || !(pendingSlot instanceof HTMLElement) || !(history instanceof HTMLElement)) {
+                if (!(chat instanceof HTMLElement) || !(input instanceof HTMLTextAreaElement) || !(sendBtn instanceof HTMLElement) || !(stopBtn instanceof HTMLElement) || !(pendingSlot instanceof HTMLElement) || !(history instanceof HTMLElement)) {
                     return;
                 }
                 const renderConversation = (loading = false, loadingText = '') => {
@@ -3728,9 +3778,12 @@ async function openCharacterEditorPopup(context = getContext()) {
                         history.innerHTML = `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
                     }
                 };
-                const setComposerState = (disabled) => {
-                    input.disabled = Boolean(disabled);
-                    sendBtn.classList.toggle('disabled', Boolean(disabled));
+                const syncComposerState = () => {
+                    const disabled = Boolean(isSending);
+                    const canStop = Boolean(activeRequestAbortController && !activeRequestAbortController.signal.aborted);
+                    input.disabled = disabled;
+                    sendBtn.classList.toggle('disabled', disabled);
+                    stopBtn.classList.toggle('disabled', !canStop);
                 };
                 const handleSend = async () => {
                     if (isSending || input.disabled) {
@@ -3747,8 +3800,10 @@ async function openCharacterEditorPopup(context = getContext()) {
                     }
                     conversationMessages.push({ role: 'user', content: userText });
                     input.value = '';
+                    const controller = new AbortController();
+                    activeRequestAbortController = controller;
                     isSending = true;
-                    setComposerState(true);
+                    syncComposerState();
                     renderConversation(true, i18n('Assistant is thinking...'));
                     try {
                         const reply = await requestModelCharacterEditorConversationReply(
@@ -3757,12 +3812,15 @@ async function openCharacterEditorPopup(context = getContext()) {
                             {
                                 avatar,
                                 rejectedOperationKeys: Array.from(rejectedOperationKeys.values()),
+                                abortSignal: controller.signal,
                             },
                         );
+                        throwIfAborted(controller.signal, 'Character editor request aborted.');
                         const rawOperations = Array.isArray(reply?.operations) ? reply.operations : [];
                         const round = rawOperations.length > 0
                             ? await buildCharacterEditorDiffPreviews(context, rawOperations, { avatar })
                             : { operations: [], previews: [] };
+                        throwIfAborted(controller.signal, 'Character editor request aborted.');
                         const operations = Array.isArray(round?.operations) ? round.operations : [];
                         const diffPreviews = Array.isArray(round?.previews) ? round.previews : [];
                         const assistantText = String(reply?.assistantText || '').trim()
@@ -3781,18 +3839,32 @@ async function openCharacterEditorPopup(context = getContext()) {
                         pendingApproval = operations.length > 0 ? { operations, diffPreviews } : null;
                         renderPending();
                     } catch (error) {
-                        conversationMessages.push({
-                            role: 'assistant',
-                            content: i18nFormat('Model reply failed: ${0}', String(error?.message || error || '')),
-                        });
+                        conversationMessages.push(isAbortError(error, controller.signal)
+                            ? {
+                                role: 'assistant',
+                                content: i18n('Request cancelled.'),
+                            }
+                            : {
+                                role: 'assistant',
+                                content: i18nFormat('Model reply failed: ${0}', String(error?.message || error || '')),
+                            });
                     } finally {
+                        if (activeRequestAbortController === controller) {
+                            activeRequestAbortController = null;
+                        }
                         isSending = false;
-                        setComposerState(false);
+                        syncComposerState();
                         renderConversation(false);
                     }
                 };
 
                 sendBtn.addEventListener('click', () => void handleSend());
+                stopBtn.addEventListener('click', () => {
+                    if (activeRequestAbortController && !activeRequestAbortController.signal.aborted) {
+                        activeRequestAbortController.abort();
+                        syncComposerState();
+                    }
+                });
                 input.addEventListener('keydown', (event) => {
                     if (event.key !== 'Enter' || event.shiftKey) {
                         return;
@@ -3824,7 +3896,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                         pendingApproval = null;
                         renderPending();
                         isSending = true;
-                        setComposerState(true);
+                        syncComposerState();
                         renderConversation(true, i18n('Applying approved changes...'));
                         try {
                             const result = await submitGeneratedOperations(
@@ -3847,7 +3919,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                             conversationMessages.push({ role: 'assistant', content: i18nFormat('Apply failed: ${0}', String(error?.message || error || '')) });
                         } finally {
                             isSending = false;
-                            setComposerState(false);
+                            syncComposerState();
                             renderConversation(false);
                         }
                     }
@@ -3930,6 +4002,7 @@ async function openCharacterEditorPopup(context = getContext()) {
 
                 renderConversation(false);
                 renderPending();
+                syncComposerState();
                 void renderHistory();
             },
             onClosing: () => {
@@ -5088,10 +5161,14 @@ function ensureStyles() {
 .popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
 .popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
 .popup .cea_sync_composer { display:flex; flex-direction:column; gap:8px; }
-.popup .cea_sync_composer [data-cea-sync-send] {
-    align-self:flex-end;
+.popup .cea_sync_composer [data-cea-sync-send] { align-self:flex-end; }
+.popup .cea_sync_composer_actions { display:flex; justify-content:flex-end; gap:6px; flex-wrap:wrap; }
+.popup .cea_sync_composer [data-cea-sync-send],
+.popup .cea_sync_composer [data-cea-editor-send],
+.popup .cea_sync_composer [data-cea-editor-stop] {
     width: fit-content;
     min-width: 4.2em;
+    white-space: nowrap;
 }
 .popup .cea_editor_pending { margin-top:8px; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
 .popup .cea_editor_pending_hint { opacity:0.92; font-weight:600; }
