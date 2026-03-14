@@ -5,7 +5,7 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
-import { tryParse } from '../util.js';
+import { findNameMatch, tryParse } from '../util.js';
 import { applyPatch as applyJsonPatch } from '../../public/scripts/util/fast-json-patch.js';
 
 /**
@@ -22,7 +22,7 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
         return dummyObject;
     }
 
-    const filename = sanitize(`${worldInfoName}.json`);
+    const filename = resolveWorldInfoFilename(directories.worlds, worldInfoName);
     const pathToWorldInfo = path.join(directories.worlds, filename);
 
     if (!fs.existsSync(pathToWorldInfo)) {
@@ -33,6 +33,31 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
     const worldInfoText = fs.readFileSync(pathToWorldInfo, 'utf8');
     const worldInfo = JSON.parse(worldInfoText);
     return worldInfo;
+}
+
+/**
+ * Resolves a world info filename from a display name.
+ * Falls back to tolerant matching so emoji variation selectors do not break lookups.
+ * @param {string} directory
+ * @param {string} worldInfoName
+ * @returns {string}
+ */
+function resolveWorldInfoFilename(directory, worldInfoName) {
+    const requested = String(worldInfoName || '').trim();
+    const exactFilename = sanitize(`${requested}.json`);
+    const exactPath = path.join(directory, exactFilename);
+    if (requested && fs.existsSync(exactPath)) {
+        return exactFilename;
+    }
+
+    const jsonFiles = fs.readdirSync(directory)
+        .filter(file => path.extname(file).toLowerCase() === '.json');
+    const matchedName = findNameMatch(jsonFiles.map(file => path.parse(file).name), requested);
+    if (!matchedName) {
+        return exactFilename;
+    }
+
+    return jsonFiles.find(file => path.parse(file).name === matchedName) || sanitize(`${matchedName}.json`);
 }
 
 export const router = express.Router();
@@ -155,7 +180,7 @@ router.post('/delete', (request, response) => {
     }
 
     const worldInfoName = request.body.name;
-    const filename = sanitize(`${worldInfoName}.json`);
+    const filename = resolveWorldInfoFilename(request.user.directories.worlds, worldInfoName);
     const pathToWorldInfo = path.join(request.user.directories.worlds, filename);
 
     if (!fs.existsSync(pathToWorldInfo)) {
@@ -219,7 +244,7 @@ router.post('/edit', (request, response) => {
         return response.status(400).send('Is not a valid world info file');
     }
 
-    const filename = sanitize(`${request.body.name}.json`);
+    const filename = resolveWorldInfoFilename(request.user.directories.worlds, request.body.name);
     const pathToFile = path.join(request.user.directories.worlds, filename);
 
     writeFileAtomicSync(pathToFile, JSON.stringify(request.body.data, null, 4));
@@ -244,7 +269,7 @@ router.post('/patch', (request, response) => {
             return response.status(400).send({ error: 'No world info patch operations found. Expected body.operations or body.operation.' });
         }
 
-        const filename = sanitize(`${worldInfoName}.json`);
+        const filename = resolveWorldInfoFilename(request.user.directories.worlds, worldInfoName);
         const pathToFile = path.join(request.user.directories.worlds, filename);
         let current = { entries: {} };
         if (fs.existsSync(pathToFile)) {

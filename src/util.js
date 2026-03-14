@@ -384,6 +384,50 @@ export function normalizeZipEntryPath(entryName) {
     return normalized;
 }
 
+const LOOKUP_VARIATION_SELECTORS_RE = /[\uFE0E\uFE0F\u{E0100}-\u{E01EF}]/gu;
+
+/**
+ * Normalizes a human-readable name for tolerant lookup.
+ * Keeps the visible text intact except for emoji/text presentation selectors.
+ * @param {string} value
+ * @returns {string}
+ */
+export function normalizeLookupText(value) {
+    const text = String(value ?? '').trim();
+    if (!text) {
+        return '';
+    }
+
+    return text.normalize('NFC').replace(LOOKUP_VARIATION_SELECTORS_RE, '');
+}
+
+/**
+ * Finds the best matching candidate for a name lookup.
+ * Prefers exact matches, then falls back to variation-selector-insensitive matches.
+ * @param {Iterable<string>} candidates
+ * @param {string} target
+ * @returns {string}
+ */
+export function findNameMatch(candidates, target) {
+    const requested = String(target ?? '').trim();
+    if (!requested) {
+        return '';
+    }
+
+    const names = Array.from(candidates ?? [], value => String(value ?? '').trim()).filter(Boolean);
+    const exact = names.find(name => name === requested);
+    if (exact) {
+        return exact;
+    }
+
+    const normalizedRequested = normalizeLookupText(requested);
+    if (!normalizedRequested) {
+        return '';
+    }
+
+    return names.find(name => normalizeLookupText(name) === normalizedRequested) || '';
+}
+
 /**
  * Extracts multiple files from an ArrayBuffer containing a ZIP archive.
  * @param {ArrayBufferLike} archiveBuffer Buffer containing a ZIP archive

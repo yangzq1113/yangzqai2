@@ -110,7 +110,7 @@ import { getTextGenServer, textgenerationwebui_settings } from './textgen-settin
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
+import { findCanonicalNameInList, timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
 import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
 import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, loadWorldInfoBatch, reloadEditor, saveWorldInfo, updateWorldInfoList, wi_anchor_position } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
@@ -146,14 +146,14 @@ function isPresetAvailable(manager, presetName) {
     if (!Array.isArray(names)) {
         return false;
     }
-    return names.some(name => String(name || '') === String(presetName || ''));
+    return Boolean(findCanonicalNameInList(names, presetName));
 }
 
 function getPresetSnapshot(apiId, presetName = '') {
     const api = normalizePresetApi(apiId);
     const manager = getPresetManager(api);
     const selectedName = manager?.getSelectedPresetName?.() || '';
-    const requestedName = String(presetName || '').trim();
+    const requestedName = findCanonicalNameInList(manager?.getAllPresets?.() || [], presetName) || String(presetName || '').trim();
     const targetName = requestedName || String(selectedName || '');
 
     let settings = {};

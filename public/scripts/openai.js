@@ -50,6 +50,7 @@ import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { getEventSourceStream } from './sse-stream.js';
 import {
+    findCanonicalNameInList,
     createThumbnail,
     delay,
     download,
@@ -496,7 +497,7 @@ export function stripOpenAIConnectionFieldsFromPreset(preset) {
 }
 
 function getOpenAIPresetByName(presetName) {
-    const targetName = String(presetName || '').trim();
+    const targetName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), presetName) || String(presetName || '').trim();
     if (!targetName) {
         return null;
     }
@@ -4845,7 +4846,7 @@ function getCharacterById(characterId = this_chid) {
 }
 
 function applyPresetByName(presetName) {
-    const target = String(presetName ?? '').trim();
+    const target = findCanonicalNameInList(Object.keys(openai_setting_names || {}), presetName) || String(presetName ?? '').trim();
     if (!target) {
         return false;
     }
@@ -5268,8 +5269,9 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
     if (savePresetSettings.ok) {
         const data = await savePresetSettings.json();
 
-        if (Object.keys(openai_setting_names).includes(data.name)) {
-            const value = openai_setting_names[data.name];
+        const existingName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), data.name);
+        if (existingName) {
+            const value = openai_setting_names[existingName];
             for (const key of Object.keys(settingsToUpdate)) {
                 if (isOpenAIConnectionPresetField(key)) {
                     delete openai_settings[value]?.[key];
@@ -5277,7 +5279,7 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
             }
             Object.assign(openai_settings[value], presetBody);
             if (triggerUi) {
-                oai_settings.preset_settings_openai = data.name;
+                oai_settings.preset_settings_openai = existingName;
                 $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
                 $('#settings_preset_openai').trigger('change');
             }
@@ -5482,9 +5484,10 @@ async function onPresetImportFileChange(e) {
 
     const data = await savePresetSettings.json();
 
-    if (Object.keys(openai_setting_names).includes(data.name)) {
-        oai_settings.preset_settings_openai = data.name;
-        const value = openai_setting_names[data.name];
+    const existingName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), data.name);
+    if (existingName) {
+        oai_settings.preset_settings_openai = existingName;
+        const value = openai_setting_names[existingName];
         for (const key of Object.keys(settingsToUpdate)) {
             if (isOpenAIConnectionPresetField(key)) {
                 delete openai_settings[value]?.[key];

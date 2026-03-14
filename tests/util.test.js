@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { CHAT_COMPLETION_SOURCES } from '../src/constants';
-import { flattenSchema } from '../src/util';
+import { findNameMatch, flattenSchema, normalizeLookupText } from '../src/util';
 
 describe('flattenSchema', () => {
     test('should return the schema if it is not an object', () => {
@@ -103,5 +103,19 @@ describe('flattenSchema', () => {
             },
         };
         expect(flattenSchema(schema, 'some-other-api')).toEqual(expected);
+    });
+});
+
+describe('lookup name normalization', () => {
+    test('should ignore emoji variation selectors when resolving names', () => {
+        expect(normalizeLookupText('❤️World')).toBe('❤World');
+        expect(findNameMatch(['❤️World'], '❤World')).toBe('❤️World');
+        expect(findNameMatch(['⭐️Preset'], '⭐Preset')).toBe('⭐️Preset');
+    });
+
+    test('should prefer exact matches before tolerant matches', () => {
+        const names = ['❤World', '❤️World'];
+        expect(findNameMatch(names, '❤World')).toBe('❤World');
+        expect(findNameMatch(names, '❤️World')).toBe('❤️World');
     });
 });

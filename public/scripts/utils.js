@@ -164,6 +164,70 @@ export function sanitizeSelector(str, replacement = '_') {
     return String(str).replace(/[^a-z0-9_-]/ig, replacement);
 }
 
+const LOOKUP_VARIATION_SELECTORS_RE = /[\uFE0E\uFE0F\u{E0100}-\u{E01EF}]/gu;
+
+/**
+ * Normalizes a visible name for tolerant lookups.
+ * Exact display strings are preserved elsewhere; this is only for comparisons.
+ * @param {string} value
+ * @returns {string}
+ */
+export function normalizeLookupText(value) {
+    const text = String(value ?? '').trim();
+    if (!text) {
+        return '';
+    }
+
+    return text.normalize('NFC').replace(LOOKUP_VARIATION_SELECTORS_RE, '');
+}
+
+/**
+ * Compares two names using tolerant lookup normalization.
+ * Prefers exact string equality before falling back to normalized comparison.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+export function areLookupNamesEqual(a, b) {
+    const left = String(a ?? '').trim();
+    const right = String(b ?? '').trim();
+    if (!left || !right) {
+        return left === right;
+    }
+    if (left === right) {
+        return true;
+    }
+    return normalizeLookupText(left) === normalizeLookupText(right);
+}
+
+/**
+ * Finds the canonical name from a list for a given lookup target.
+ * @param {string[]} list
+ * @param {string} name
+ * @returns {string}
+ */
+export function findCanonicalNameInList(list, name) {
+    const requested = String(name ?? '').trim();
+    if (!requested || !Array.isArray(list)) {
+        return '';
+    }
+
+    return list.find(item => String(item ?? '').trim() === requested)
+        || list.find(item => areLookupNamesEqual(item, requested))
+        || '';
+}
+
+/**
+ * Finds the canonical index from a list for a given lookup target.
+ * @param {string[]} list
+ * @param {string} name
+ * @returns {number}
+ */
+export function findCanonicalIndexInList(list, name) {
+    const canonical = findCanonicalNameInList(list, name);
+    return canonical ? list.indexOf(canonical) : -1;
+}
+
 export function isValidUrl(value) {
     try {
         new URL(value);
@@ -2101,8 +2165,8 @@ export function compareIgnoreCaseAndAccents(a, b, comparisonFunction) {
     if (!a || !b) return comparisonFunction(a, b); // Return the comparison result if either string is empty
 
     // Normalize and remove diacritics, then convert to lower case
-    const normalizedA = a.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    const normalizedB = b.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const normalizedA = normalizeLookupText(a).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const normalizedB = normalizeLookupText(b).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
     // Check if the normalized strings are equal
     return comparisonFunction(normalizedA, normalizedB);

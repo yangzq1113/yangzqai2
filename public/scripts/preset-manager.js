@@ -41,7 +41,7 @@ import {
     textgenerationwebui_preset_names,
     textgenerationwebui_presets,
 } from './textgen-settings.js';
-import { download, ensurePlainObject, equalsIgnoreCaseAndAccents, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
+import { areLookupNamesEqual, download, ensurePlainObject, equalsIgnoreCaseAndAccents, findCanonicalNameInList, getSanitizedFilename, parseJsonFile, waitUntilCondition } from './utils.js';
 import {
     PRESET_LINKED_LOREBOOK_KEY,
     createPresetLinkedLorebookPayload,
@@ -563,13 +563,23 @@ class PresetManager {
     }
 
     /**
+     * Resolves a preset name to the canonical name currently present in the UI.
+     * @param {string} name
+     * @returns {string}
+     */
+    resolvePresetName(name) {
+        return findCanonicalNameInList(this.getAllPresets(), name) || String(name || '').trim();
+    }
+
+    /**
      * Finds a preset by name.
      * @param {string} name Preset name
      * @returns {any} Preset value
      */
     findPreset(name) {
+        const resolvedName = this.resolvePresetName(name);
         return $(this.select).find('option').filter(function () {
-            return $(this).text() === name;
+            return $(this).text() === resolvedName;
         }).val();
     }
 
@@ -940,15 +950,18 @@ class PresetManager {
         // Retrieve a completion preset by name. Return undefined if not found.
         let { presets, preset_names } = this.getPresetList();
         let preset;
+        const resolvedName = Array.isArray(preset_names)
+            ? (findCanonicalNameInList(preset_names, name) || String(name || '').trim())
+            : (findCanonicalNameInList(Object.keys(preset_names || {}), name) || String(name || '').trim());
 
         // Some APIs use an array of names, others use an object of {name: index}
         if (Array.isArray(preset_names)) {  // array of names
-            if (preset_names.includes(name)) {
-                preset = presets[preset_names.indexOf(name)];
+            if (preset_names.includes(resolvedName)) {
+                preset = presets[preset_names.indexOf(resolvedName)];
             }
         } else {  // object of {names: index}
-            if (preset_names[name] !== undefined) {
-                preset = presets[preset_names[name]];
+            if (preset_names[resolvedName] !== undefined) {
+                preset = presets[preset_names[resolvedName]];
             }
         }
 
@@ -966,7 +979,7 @@ class PresetManager {
      * @returns {any}
      */
     getStoredPreset(name) {
-        const presetName = name || this.getSelectedPresetName();
+        const presetName = this.resolvePresetName(name || this.getSelectedPresetName());
         const { presets, preset_names } = this.getPresetList();
 
         if (this.isKeyedApi()) {
@@ -984,8 +997,9 @@ class PresetManager {
      */
     async deletePreset(name) {
         const { preset_names, presets } = this.getPresetList();
-        const value = name ? (this.isKeyedApi() ? this.findPreset(name) : name) : this.getSelectedPreset();
-        const nameToDelete = name || this.getSelectedPresetName();
+        const resolvedName = name ? this.resolvePresetName(name) : this.getSelectedPresetName();
+        const value = name ? (this.isKeyedApi() ? this.findPreset(resolvedName) : resolvedName) : this.getSelectedPreset();
+        const nameToDelete = resolvedName || this.getSelectedPresetName();
 
         if (value == 'gui') {
             toastr.info(t`Cannot delete GUI preset`);
@@ -1004,7 +1018,7 @@ class PresetManager {
         }
 
         // switch in UI only when deleting currently selected preset
-        const switchPresets = !name || this.getSelectedPresetName() == name;
+        const switchPresets = !name || areLookupNamesEqual(this.getSelectedPresetName(), nameToDelete);
 
         if (Object.keys(preset_names).length && switchPresets) {
             const nextPresetName = Object.keys(preset_names)[0];
@@ -1053,10 +1067,10 @@ class PresetManager {
     readPresetExtensionField({ name, path }) {
         const { settings } = this.getPresetList();
         const selectedName = this.getSelectedPresetName();
-        const presetName = name || selectedName;
+        const presetName = this.resolvePresetName(name || selectedName);
 
         // Read from settings if the selected preset is the same as the provided name
-        if (settings && selectedName === presetName) {
+        if (settings && areLookupNamesEqual(selectedName, presetName)) {
             const settingsExtensions = ensurePlainObject(settings.extensions || {});
             return path ? lodash.get(settingsExtensions, path, null) : settingsExtensions;
         }
@@ -1083,10 +1097,10 @@ class PresetManager {
     async writePresetExtensionField({ name, path, value }) {
         const { settings } = this.getPresetList();
         const selectedName = this.getSelectedPresetName();
-        const presetName = name || selectedName;
+        const presetName = this.resolvePresetName(name || selectedName);
 
         // Write to settings if the selected preset is the same as the provided name
-        if (settings && selectedName === presetName) {
+        if (settings && areLookupNamesEqual(selectedName, presetName)) {
             // Set the value at the specified path
             settings.extensions = ensurePlainObject(settings.extensions || {});
             path ? lodash.set(settings.extensions, path, value) : (settings.extensions = value);
