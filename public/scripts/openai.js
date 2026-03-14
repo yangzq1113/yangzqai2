@@ -10,6 +10,7 @@ import {
     cancelStatusCheck,
     chat_metadata,
     characters,
+    ensureFullSettingsLoaded,
     event_types,
     eventSource,
     extension_prompt_roles,
@@ -4673,13 +4674,21 @@ function migrateChatCompletionSettings(settings) {
  * @param {any} data Settings data from backend
  * @param {ChatCompletionSettings} settings Saved settings from backend
  */
+export function hydrateOpenAIPresetData(data = {}) {
+    openai_setting_names = Array.isArray(data.openai_setting_names) ? [...data.openai_setting_names] : [];
+    openai_settings = Array.isArray(data.openai_settings)
+        ? data.openai_settings.map((item) => {
+            if (typeof item !== 'string') {
+                return null;
+            }
+            const parsed = JSON.parse(item);
+            return stripOpenAIConnectionFieldsFromPreset(structuredClone(parsed));
+        })
+        : [];
+}
+
 function loadOpenAISettings(data, settings) {
-    openai_setting_names = data.openai_setting_names;
-    openai_settings = data.openai_settings;
-    openai_settings.forEach(function (item, i) {
-        const parsed = JSON.parse(item);
-        openai_settings[i] = stripOpenAIConnectionFieldsFromPreset(structuredClone(parsed));
-    });
+    hydrateOpenAIPresetData(data);
 
     $('#settings_preset_openai').empty();
     const settingNames = {};
@@ -5875,9 +5884,13 @@ async function onSettingsPresetChange(event) {
     if (!usingCharacterBoundPreset) {
         oai_settings.preset_settings_openai = presetName;
     }
-    const preset = usingCharacterBoundPreset
+    let preset = usingCharacterBoundPreset
         ? structuredClone(characterBoundPresetState.runtimePresetBody || {})
         : structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    if (!usingCharacterBoundPreset && (!preset || typeof preset !== 'object')) {
+        await ensureFullSettingsLoaded();
+        preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    }
     updateCharacterBoundPresetBadge(usingCharacterBoundPreset);
 
     if (!preset || typeof preset !== 'object') {

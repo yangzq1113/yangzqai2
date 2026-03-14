@@ -1,4 +1,5 @@
 import {
+    ensureFullSettingsLoaded,
     getRequestHeaders,
     saveSettingsDebounced,
     getStoppingStrings,
@@ -94,12 +95,15 @@ function selectKoboldGuiPreset() {
         .trigger('change');
 }
 
+export function hydrateKoboldPresetData(data = {}) {
+    koboldai_setting_names = Array.isArray(data.koboldai_setting_names) ? [...data.koboldai_setting_names] : [];
+    koboldai_settings = Array.isArray(data.koboldai_settings)
+        ? data.koboldai_settings.map((item) => typeof item === 'string' ? JSON.parse(item) : null)
+        : [];
+}
+
 export function loadKoboldSettings(data, preset, settings) {
-    koboldai_setting_names = data.koboldai_setting_names;
-    koboldai_settings = data.koboldai_settings;
-    koboldai_settings.forEach(function (item, i, arr) {
-        koboldai_settings[i] = JSON.parse(item);
-    });
+    hydrateKoboldPresetData(data);
 
     $('#settings_preset').empty();
     $('#settings_preset').append('<option value="gui">GUI KoboldAI Settings</option>');
@@ -533,7 +537,14 @@ export function initKoboldSettings() {
     $('#settings_preset').on('change', async function () {
         if ($('#settings_preset').find(':selected').val() != 'gui') {
             kai_settings.preset_settings = $('#settings_preset').find(':selected').text();
-            const preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
+            let preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
+            if (!preset) {
+                await ensureFullSettingsLoaded();
+                preset = koboldai_settings[koboldai_setting_names[kai_settings.preset_settings]];
+            }
+            if (!preset) {
+                return;
+            }
             loadKoboldSettingsFromPreset(preset);
             setGenerationParamsFromPreset(preset);
             $('#kobold_api-settings').find('input').prop('disabled', false);

@@ -1,5 +1,6 @@
 import {
     abortStatusCheck,
+    ensureFullSettingsLoaded,
     event_types,
     eventSource,
     getRequestHeaders,
@@ -213,12 +214,15 @@ export function loadNovelPreset(preset) {
     loadNovelSettingsUi(nai_settings);
 }
 
+export function hydrateNovelPresetData(data = {}) {
+    novelai_setting_names = Array.isArray(data.novelai_setting_names) ? [...data.novelai_setting_names] : [];
+    novelai_settings = Array.isArray(data.novelai_settings)
+        ? data.novelai_settings.map((item) => typeof item === 'string' ? JSON.parse(item) : null)
+        : [];
+}
+
 export function loadNovelSettings(data, settings) {
-    novelai_setting_names = data.novelai_setting_names;
-    novelai_settings = data.novelai_settings;
-    novelai_settings.forEach(function (item, i, arr) {
-        novelai_settings[i] = JSON.parse(item);
-    });
+    hydrateNovelPresetData(data);
 
     $('#settings_preset_novel').empty();
     const presetNames = {};
@@ -916,7 +920,14 @@ export function initNovelAISettings() {
 
     $('#settings_preset_novel').on('change', async function () {
         nai_settings.preset_settings_novel = $('#settings_preset_novel').find(':selected').text();
-        const preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
+        let preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
+        if (!preset) {
+            await ensureFullSettingsLoaded();
+            preset = novelai_settings[novelai_setting_names[nai_settings.preset_settings_novel]];
+        }
+        if (!preset) {
+            return;
+        }
         loadNovelPreset(preset);
         saveSettingsDebounced();
         await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'novel', name: nai_settings.preset_settings_novel });

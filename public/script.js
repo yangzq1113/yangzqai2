@@ -15,6 +15,7 @@ import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isM
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
+    hydrateKoboldPresetData,
     kai_settings,
     loadKoboldSettings,
     getKoboldGenerationData,
@@ -25,6 +26,7 @@ import {
 } from './scripts/kai-settings.js';
 
 import {
+    hydrateTextGenPresetData,
     textgenerationwebui_settings as textgen_settings,
     loadTextGenSettings,
     generateTextGenWithStreaming,
@@ -109,6 +111,7 @@ import {
     sendOpenAIRequest,
     isLastOpenAIReplyPersistedByServer,
     getLastOpenAIGenerationId,
+    hydrateOpenAIPresetData,
     loadOpenAISettings,
     oai_settings,
     openai_messages_count,
@@ -126,6 +129,7 @@ import {
     generateNovelWithStreaming,
     getNovelGenerationData,
     getKayraMaxContextTokens,
+    hydrateNovelPresetData,
     loadNovelSettings,
     nai_settings,
     adjustNovelInstructionPrompt,
@@ -1470,6 +1474,8 @@ let settingsSaveQueued = false;
 let settingsSaveQueuedOptions = null;
 let forceAsyncDiffForNextSettingsSave = false;
 let forceAsyncDiffForNextSettingsSaveTimer = null;
+let fullSettingsLoaded = false;
+let fullSettingsLoadPromise = null;
 export let amount_gen = 80; //default max length of AI generated responses
 export let max_context = 2048;
 
@@ -1585,7 +1591,7 @@ async function firstLoadInit() {
     ToolManager.initToolSlashCommands();
     await initPresetManager();
     await initSystemMessages();
-    await getSettings();
+    await getSettings({ bootstrap: true });
     initKeyboard();
     initDynamicStyles();
     initTags();
@@ -11360,8 +11366,8 @@ function reloadLoop() {
 
 //MARK: getSettings()
 ///////////////////////////////////////////
-export async function getSettings() {
-    const response = await fetch('/api/settings/get', {
+async function fetchSettingsPayload(endpoint, { silent = false } = {}) {
+    const response = await fetch(endpoint, {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({}),
@@ -11369,12 +11375,67 @@ export async function getSettings() {
     });
 
     if (!response.ok) {
-        reloadLoop();
-        toastr.error(t`Settings could not be loaded after multiple attempts. Please try again later.`);
-        throw new Error('Error getting settings');
+        if (!silent) {
+            reloadLoop();
+            toastr.error(t`Settings could not be loaded after multiple attempts. Please try again later.`);
+        }
+        throw new Error(`Error getting settings from ${endpoint}`);
     }
 
-    const data = await response.json();
+    return response.json();
+}
+
+function hydrateFullSettingsPresetData(data) {
+    hydrateKoboldPresetData(data);
+    hydrateNovelPresetData(data);
+    hydrateTextGenPresetData(data);
+    hydrateOpenAIPresetData(data);
+    fullSettingsLoaded = true;
+}
+
+async function warmPreloadFullSettings() {
+    if (fullSettingsLoaded) {
+        return true;
+    }
+
+    if (fullSettingsLoadPromise) {
+        return fullSettingsLoadPromise;
+    }
+
+    fullSettingsLoadPromise = (async () => {
+        try {
+            const data = await fetchSettingsPayload('/api/settings/get', { silent: true });
+            hydrateFullSettingsPresetData(data);
+            return true;
+        } catch (error) {
+            console.warn('Deferred settings preload failed', error);
+            return false;
+        }
+    })();
+
+    try {
+        return await fullSettingsLoadPromise;
+    } finally {
+        fullSettingsLoadPromise = null;
+    }
+}
+
+export async function ensureFullSettingsLoaded() {
+    if (fullSettingsLoaded) {
+        return true;
+    }
+
+    return await warmPreloadFullSettings();
+}
+
+export async function getSettings(options = {}) {
+    const useBootstrap = options?.bootstrap === true;
+    const data = await fetchSettingsPayload(useBootstrap ? '/api/settings/bootstrap' : '/api/settings/get');
+
+    if (!useBootstrap) {
+        hydrateFullSettingsPresetData(data);
+    }
+
     if (data.result != 'file not find' && data.settings) {
         settings = JSON.parse(data.settings);
         if (settings.username !== undefined && settings.username !== '') {
@@ -11486,6 +11547,10 @@ export async function getSettings() {
     rememberSettingsSnapshot(buildSettingsPayload());
     settingsReady = true;
     await eventSource.emit(event_types.SETTINGS_LOADED);
+
+    if (useBootstrap) {
+        void warmPreloadFullSettings();
+    }
 }
 
 function rememberSettingsSnapshot(nextSettings = null) {

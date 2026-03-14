@@ -112,6 +112,100 @@ function readPresetsFromDirectory(directoryPath, options = {}) {
     return { fileContents, fileNames };
 }
 
+function readWorldNames(directoryPath) {
+    return fs
+        .readdirSync(directoryPath)
+        .filter(file => path.extname(file).toLowerCase() === '.json')
+        .sort((a, b) => a.localeCompare(b))
+        .map(item => path.parse(item).name);
+}
+
+function retainSelectedPresetContents(fileContents, fileNames, selectedName) {
+    if (!Array.isArray(fileContents) || !Array.isArray(fileNames)) {
+        return [];
+    }
+
+    return fileNames.map((name, index) => name === selectedName ? fileContents[index] : null);
+}
+
+function buildSettingsResponse(request, { includePresetContents = true, includeQuickReplyPresets = true } = {}) {
+    let settings;
+    const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
+    settings = fs.readFileSync(pathToSettings, 'utf8');
+    const parsedSettings = JSON.parse(settings);
+
+    const { fileContents: novelai_settings, fileNames: novelai_setting_names }
+        = readPresetsFromDirectory(request.user.directories.novelAI_Settings, {
+            sortFunction: sortByName(request.user.directories.novelAI_Settings),
+            removeFileExtension: true,
+        });
+
+    const { fileContents: openai_settings, fileNames: openai_setting_names }
+        = readPresetsFromDirectory(request.user.directories.openAI_Settings, {
+            sortFunction: sortByName(request.user.directories.openAI_Settings),
+            removeFileExtension: true,
+        });
+
+    const { fileContents: textgenerationwebui_presets, fileNames: textgenerationwebui_preset_names }
+        = readPresetsFromDirectory(request.user.directories.textGen_Settings, {
+            sortFunction: sortByName(request.user.directories.textGen_Settings),
+            removeFileExtension: true,
+        });
+
+    const { fileContents: koboldai_settings, fileNames: koboldai_setting_names }
+        = readPresetsFromDirectory(request.user.directories.koboldAI_Settings, {
+            sortFunction: sortByName(request.user.directories.koboldAI_Settings),
+            removeFileExtension: true,
+        });
+
+    const world_names = readWorldNames(request.user.directories.worlds);
+
+    const themes = readAndParseFromDirectory(request.user.directories.themes);
+    const movingUIPresets = readAndParseFromDirectory(request.user.directories.movingUI);
+    const quickReplyPresets = includeQuickReplyPresets ? readAndParseFromDirectory(request.user.directories.quickreplies) : [];
+
+    const instruct = readAndParseFromDirectory(request.user.directories.instruct);
+    const context = readAndParseFromDirectory(request.user.directories.context);
+    const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt);
+    const reasoning = readAndParseFromDirectory(request.user.directories.reasoning);
+
+    const selectedKoboldPreset = parsedSettings?.kai_settings?.preset_settings ?? parsedSettings?.preset_settings;
+    const selectedNovelPreset = parsedSettings?.preset_settings_novel;
+    const selectedOpenAIPreset = parsedSettings?.oai_settings?.preset_settings_openai ?? parsedSettings?.preset_settings_openai;
+    const selectedTextGenPreset = parsedSettings?.textgenerationwebui_settings?.preset;
+
+    return {
+        settings,
+        koboldai_settings: includePresetContents
+            ? koboldai_settings
+            : retainSelectedPresetContents(koboldai_settings, koboldai_setting_names, selectedKoboldPreset),
+        koboldai_setting_names,
+        world_names,
+        novelai_settings: includePresetContents
+            ? novelai_settings
+            : retainSelectedPresetContents(novelai_settings, novelai_setting_names, selectedNovelPreset),
+        novelai_setting_names,
+        openai_settings: includePresetContents
+            ? openai_settings
+            : retainSelectedPresetContents(openai_settings, openai_setting_names, selectedOpenAIPreset),
+        openai_setting_names,
+        textgenerationwebui_presets: includePresetContents
+            ? textgenerationwebui_presets
+            : retainSelectedPresetContents(textgenerationwebui_presets, textgenerationwebui_preset_names, selectedTextGenPreset),
+        textgenerationwebui_preset_names,
+        themes,
+        movingUIPresets,
+        quickReplyPresets,
+        instruct,
+        context,
+        sysprompt,
+        reasoning,
+        enable_extensions: ENABLE_EXTENSIONS,
+        enable_extensions_auto_update: ENABLE_EXTENSIONS_AUTO_UPDATE,
+        enable_accounts: ENABLE_ACCOUNTS,
+    };
+}
+
 async function backupSettings() {
     try {
         const userHandles = await getAllUserHandles();
@@ -282,76 +376,22 @@ router.post('/save', function (request, response) {
 
 // Wintermute's code
 router.post('/get', (request, response) => {
-    let settings;
     try {
-        const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
-        settings = fs.readFileSync(pathToSettings, 'utf8');
+        return response.send(buildSettingsResponse(request));
     } catch (e) {
         return response.sendStatus(500);
     }
+});
 
-    // NovelAI Settings
-    const { fileContents: novelai_settings, fileNames: novelai_setting_names }
-        = readPresetsFromDirectory(request.user.directories.novelAI_Settings, {
-            sortFunction: sortByName(request.user.directories.novelAI_Settings),
-            removeFileExtension: true,
-        });
-
-    // OpenAI Settings
-    const { fileContents: openai_settings, fileNames: openai_setting_names }
-        = readPresetsFromDirectory(request.user.directories.openAI_Settings, {
-            sortFunction: sortByName(request.user.directories.openAI_Settings), removeFileExtension: true,
-        });
-
-    // TextGenerationWebUI Settings
-    const { fileContents: textgenerationwebui_presets, fileNames: textgenerationwebui_preset_names }
-        = readPresetsFromDirectory(request.user.directories.textGen_Settings, {
-            sortFunction: sortByName(request.user.directories.textGen_Settings), removeFileExtension: true,
-        });
-
-    //Kobold
-    const { fileContents: koboldai_settings, fileNames: koboldai_setting_names }
-        = readPresetsFromDirectory(request.user.directories.koboldAI_Settings, {
-            sortFunction: sortByName(request.user.directories.koboldAI_Settings), removeFileExtension: true,
-        });
-
-    const worldFiles = fs
-        .readdirSync(request.user.directories.worlds)
-        .filter(file => path.extname(file).toLowerCase() === '.json')
-        .sort((a, b) => a.localeCompare(b));
-    const world_names = worldFiles.map(item => path.parse(item).name);
-
-    const themes = readAndParseFromDirectory(request.user.directories.themes);
-    const movingUIPresets = readAndParseFromDirectory(request.user.directories.movingUI);
-    const quickReplyPresets = readAndParseFromDirectory(request.user.directories.quickreplies);
-
-    const instruct = readAndParseFromDirectory(request.user.directories.instruct);
-    const context = readAndParseFromDirectory(request.user.directories.context);
-    const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt);
-    const reasoning = readAndParseFromDirectory(request.user.directories.reasoning);
-
-    response.send({
-        settings,
-        koboldai_settings,
-        koboldai_setting_names,
-        world_names,
-        novelai_settings,
-        novelai_setting_names,
-        openai_settings,
-        openai_setting_names,
-        textgenerationwebui_presets,
-        textgenerationwebui_preset_names,
-        themes,
-        movingUIPresets,
-        quickReplyPresets,
-        instruct,
-        context,
-        sysprompt,
-        reasoning,
-        enable_extensions: ENABLE_EXTENSIONS,
-        enable_extensions_auto_update: ENABLE_EXTENSIONS_AUTO_UPDATE,
-        enable_accounts: ENABLE_ACCOUNTS,
-    });
+router.post('/bootstrap', (request, response) => {
+    try {
+        return response.send(buildSettingsResponse(request, {
+            includePresetContents: false,
+            includeQuickReplyPresets: false,
+        }));
+    } catch (e) {
+        return response.sendStatus(500);
+    }
 });
 
 router.post('/get-snapshots', async (request, response) => {

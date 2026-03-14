@@ -1,5 +1,6 @@
 import {
     abortStatusCheck,
+    ensureFullSettingsLoaded,
     eventSource,
     event_types,
     getRequestHeaders,
@@ -318,6 +319,11 @@ export const setting_names = [
 
 const DYNATEMP_BLOCK = document.getElementById('dynatemp_block_ooba');
 
+export function hydrateTextGenPresetData(data = {}) {
+    textgenerationwebui_presets = convertPresets(data.textgenerationwebui_presets ?? []);
+    textgenerationwebui_preset_names = Array.isArray(data.textgenerationwebui_preset_names) ? [...data.textgenerationwebui_preset_names] : [];
+}
+
 export function validateTextGenUrl() {
     const selector = SERVER_INPUTS[textgenerationwebui_settings.type];
 
@@ -363,7 +369,12 @@ export function getTextGenServer(type = null) {
 }
 
 async function selectPreset(name) {
-    const preset = textgenerationwebui_presets[textgenerationwebui_preset_names.indexOf(name)];
+    let preset = textgenerationwebui_presets[textgenerationwebui_preset_names.indexOf(name)];
+
+    if (!preset) {
+        await ensureFullSettingsLoaded();
+        preset = textgenerationwebui_presets[textgenerationwebui_preset_names.indexOf(name)];
+    }
 
     if (!preset) {
         return;
@@ -396,7 +407,7 @@ export function formatTextGenURL(value) {
 }
 
 function convertPresets(presets) {
-    return Array.isArray(presets) ? presets.map((p) => JSON.parse(p)) : [];
+    return Array.isArray(presets) ? presets.map((preset) => typeof preset === 'string' ? JSON.parse(preset) : null) : [];
 }
 
 function getTokenizerForTokenIds() {
@@ -540,8 +551,7 @@ function calculateLogitBias(settings = null) {
 
 export async function loadTextGenSettings(data, loadedSettings) {
     await loadApiSelectedSamplers();
-    textgenerationwebui_presets = convertPresets(data.textgenerationwebui_presets);
-    textgenerationwebui_preset_names = data.textgenerationwebui_preset_names ?? [];
+    hydrateTextGenPresetData(data);
     Object.assign(textgenerationwebui_settings, loadedSettings.textgenerationwebui_settings ?? {});
 
     if (loadedSettings.api_server_textgenerationwebui) {
@@ -553,7 +563,7 @@ export async function loadTextGenSettings(data, loadedSettings) {
 
     for (const [type, selector] of Object.entries(SERVER_INPUTS)) {
         const control = $(selector);
-        control.val(textgenerationwebui_settings.server_urls[type] ?? '').on('input', function () {
+        control.val(textgenerationwebui_settings.server_urls[type] ?? '').off('input').on('input', function () {
             textgenerationwebui_settings.server_urls[type] = String($(this).val()).trim();
             saveSettingsDebounced();
         });
@@ -563,6 +573,7 @@ export async function loadTextGenSettings(data, loadedSettings) {
         textgenerationwebui_settings.type = MANCER;
     }
 
+    $('#settings_preset_textgenerationwebui').empty();
     for (const name of textgenerationwebui_preset_names) {
         const option = document.createElement('option');
         option.value = name;
