@@ -4139,12 +4139,19 @@ button.toast-close-button {
     padding-top: 3px;
 }
 
+.menu_button.prompt-manager-toggle-undo-button,
 .menu_button.luker-toast-stop-button {
     width: auto;
     min-width: max-content;
+    max-width: 100%;
     white-space: nowrap;
-    margin-top: 8px;
     display: inline-flex;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
+.menu_button.luker-toast-stop-button {
+    margin-top: 8px;
 }
 
 #dialogue_del_mes {
