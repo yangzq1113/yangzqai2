@@ -43,6 +43,46 @@ const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
     'Put final injected guidance in field `text` (string).',
     'The `text` content is injected directly as-is.',
 ].join('\n');
+const ORCH_EXECUTION_MODE_SPEC = 'spec';
+const ORCH_EXECUTION_MODE_SINGLE = 'single';
+const ORCH_EXECUTION_MODE_AGENDA = 'agenda';
+const ORCH_EXECUTION_MODES = Object.freeze([
+    ORCH_EXECUTION_MODE_SPEC,
+    ORCH_EXECUTION_MODE_SINGLE,
+    ORCH_EXECUTION_MODE_AGENDA,
+]);
+const AGENDA_PLANNER_TOOL = 'luker_orch_planner_step';
+const AGENDA_RESULT_TOOL = 'luker_orch_submit_result';
+const DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT = 'You are an orchestration planner. Maintain a todo list, dispatch the minimum useful set of agents, read every returned result carefully, and stop when the final orchestration guidance is ready. Before the function call, provide one concise <thought>...</thought> that reflects current planning.';
+const DEFAULT_AGENDA_PLANNER_PROMPT = [
+    '# Planner Prompt',
+    '',
+    '## Mission',
+    'Maintain a compact todo list for this turn and produce high-quality orchestration guidance with the minimum necessary work.',
+    '',
+    '## Strong Requirements',
+    '- Preserve continuity, character consistency, active world-info constraints, and anti-OOC discipline.',
+    '- Prefer compact, actionable orchestration guidance over long analysis.',
+    '- Treat every agent run as evidence for planning; read complete outputs before deciding next steps.',
+    '',
+    '## Execution Loop',
+    '- Maintain todo list state explicitly.',
+    '- You may dispatch multiple independent agents in parallel when that clearly improves speed.',
+    '- Every dispatch must include a concrete task brief and explicit input_run_ids.',
+    '- Only add new todos when a returned result makes them justified.',
+    '- When more analysis is unlikely to materially improve the final guidance, finalize.',
+    '',
+    '## Sequencing Guidance',
+    '- Usually inspect current state and constraints before deeper branching.',
+    '- Use world/lore checks before high-freedom reasoning when possible.',
+    '- Use critics only when a meaningful audit is needed; do not add critique loops mechanically.',
+    '- Final guidance should be written only after the todo list is effectively resolved.',
+    '',
+    '## Branching Guidance',
+    '- Parallelize truly independent work such as per-character analysis.',
+    '- Do not branch for its own sake; if one good analysis is enough, keep the plan simple.',
+    '- Reuse prior agent runs whenever they already cover the need.',
+].join('\n');
 const TEMPLATE_PLACEHOLDER_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
 const AUTO_INJECTED_CONTEXT_VARS = ['previous_orchestration'];
 const LEGACY_REMOVED_CONTEXT_VARS = ['previous_snapshot'];
@@ -242,8 +282,32 @@ const defaultPresets = {
     },
 };
 
+const defaultAgendaAgents = {
+    distiller: {
+        systemPrompt: 'You are an agenda-mode state distiller. Read the current turn carefully, preserve visible facts, and return one complete useful result text through the required tool. Before the function call, provide one concise <thought>...</thought>.',
+        userPromptTemplate: 'Task:\n- Distill the current turn into a compact but complete state read.\n- Focus on user intent, active scene state, immediate tensions, and likely near-term direction.\n- Stay grounded in visible dialogue/actions and avoid unsupported interpretation.\n- Write for the planner and downstream agents, not for the final player-facing reply.',
+    },
+    lorebook_reader: {
+        systemPrompt: 'You are an agenda-mode lore and constraint reader. Extract only the world-info constraints that materially matter for this turn and return them as one complete useful result text through the required tool. Before the function call, provide one concise <thought>...</thought>.',
+        userPromptTemplate: 'Task:\n- Read active world-info/lore context and identify the constraints that should affect this turn.\n- Prioritize hard boundaries, role restrictions, taboo rules, narration bans, and continuity anchors.\n- Keep only high-impact constraints that the planner or final writer must actually obey.\n- Phrase the result as practical writing or behavior constraints, not as lorebook summary.',
+    },
+    planner: {
+        systemPrompt: 'You are an agenda-mode scene progression analyst. Think about believable next-step progression and return one complete useful result text through the required tool. Before the function call, provide one concise <thought>...</thought>.',
+        userPromptTemplate: 'Task:\n- Analyze what progression beats or decision points matter next.\n- Preserve causality, character independence, and world autonomy.\n- Avoid making the world revolve around the user by default.\n- Prefer practical next-step orchestration guidance over broad theory.',
+    },
+    critic: {
+        systemPrompt: 'You are an agenda-mode critic. Audit the assigned material for important problems and return one complete useful result text through the required tool. Before the function call, provide one concise <thought>...</thought>.',
+        userPromptTemplate: 'Task:\n- Audit the assigned material for continuity breaks, OOC drift, missing hard constraints, anti-data or report-tone issues, and implausible causality.\n- Be concrete about what is wrong and why it matters.\n- If the material is acceptable, say so plainly.\n- Do not rewrite the final orchestration guidance yourself; return audit conclusions and corrections only.',
+    },
+    finalizer: {
+        systemPrompt: 'You are the final orchestration writer. Read the completed agenda work and write one compact orchestration guidance text for the next reply. Before your function call, provide one concise <thought>...</thought> that reflects the final merge.',
+        userPromptTemplate: 'Read the planner prompt, current todo state, and all selected prior runs. Merge the resolved work into one concise orchestration guidance text that is directly usable for drafting the next reply. Preserve active constraints and keep unresolved risks implicit unless they matter for the guidance.',
+    },
+};
+
 const defaultSettings = {
     enabled: false,
+    executionMode: ORCH_EXECUTION_MODE_SPEC,
     singleAgentModeEnabled: false,
     singleAgentSystemPrompt: DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT,
     singleAgentUserPromptTemplate: DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE,
@@ -260,6 +324,12 @@ const defaultSettings = {
     capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
     orchestrationSpec: defaultSpec,
     presets: defaultPresets,
+    agendaPlannerPrompt: DEFAULT_AGENDA_PLANNER_PROMPT,
+    agendaAgents: defaultAgendaAgents,
+    agendaFinalAgentId: 'finalizer',
+    agendaPlannerMaxRounds: 6,
+    agendaMaxConcurrentAgents: 3,
+    agendaMaxTotalRuns: 24,
     chatOverrides: {},
     aiSuggestApiPresetName: '',
     aiSuggestPresetName: '',
@@ -272,6 +342,15 @@ function i18n(text) {
 
 function i18nFormat(key, ...values) {
     return i18n(key).replace(/\$\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+}
+
+function normalizeExecutionMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ORCH_EXECUTION_MODES.includes(normalized) ? normalized : ORCH_EXECUTION_MODE_SPEC;
+}
+
+function getExecutionMode(settings = extension_settings[MODULE_NAME]) {
+    return normalizeExecutionMode(settings?.executionMode);
 }
 
 function normalizeCapsuleInjectPosition(value) {
@@ -413,6 +492,10 @@ function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Orchestrator': '多智能体编排',
         'Enabled': '启用',
+        'Execution mode': '执行模式',
+        'Spec workflow': 'Spec 工作流',
+        'Single agent': '单 Agent',
+        'Agenda planner': 'Agenda 规划器',
         'Single-agent mode': '单 Agent 简化模式',
         'Single-agent system prompt': '单 Agent 系统提示词',
         'Single-agent user prompt template': '单 Agent 用户提示词模板',
@@ -477,6 +560,15 @@ function registerLocaleData() {
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
         'Open Orchestration Editor': '打开编排编辑器',
+        'Agenda Orchestration': 'Agenda 编排',
+        'Planner Prompt': 'Planner 提示词',
+        'Final Agent': '最终 Agent',
+        'Planner max rounds': 'Planner 最大轮数',
+        'Max concurrent agents': '最大并行 Agent 数',
+        'Max total agent runs': '最大 Agent 调用总数',
+        'Copy Spec Agents To Agenda': '复制 Spec Agents 到 Agenda',
+        'Copied spec agents into agenda as a starting point.': '已将 Spec agents 复制到 Agenda，作为初始参考。',
+        'Agenda Agents': 'Agenda Agents',
         'View Last Run': '查看最近一轮',
         'View Runtime Trace': '查看运行态轨迹',
         'Latest Orchestration Result': '最近编排结果',
@@ -656,6 +748,10 @@ function registerLocaleData() {
     addLocaleData('zh-tw', {
         'Orchestrator': '多智能體編排',
         'Enabled': '啟用',
+        'Execution mode': '執行模式',
+        'Spec workflow': 'Spec 工作流',
+        'Single agent': '單 Agent',
+        'Agenda planner': 'Agenda 規劃器',
         'Single-agent mode': '單 Agent 簡化模式',
         'Single-agent system prompt': '單 Agent 系統提示詞',
         'Single-agent user prompt template': '單 Agent 使用者提示詞模板',
@@ -719,6 +815,15 @@ function registerLocaleData() {
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
         'Open Orchestration Editor': '開啟編排編輯器',
+        'Agenda Orchestration': 'Agenda 編排',
+        'Planner Prompt': 'Planner 提示詞',
+        'Final Agent': '最終 Agent',
+        'Planner max rounds': 'Planner 最大輪數',
+        'Max concurrent agents': '最大並行 Agent 數',
+        'Max total agent runs': '最大 Agent 呼叫總數',
+        'Copy Spec Agents To Agenda': '複製 Spec Agents 到 Agenda',
+        'Copied spec agents into agenda as a starting point.': '已將 Spec agents 複製到 Agenda，作為初始參考。',
+        'Agenda Agents': 'Agenda Agents',
         'View Last Run': '查看最近一輪',
         'View Runtime Trace': '查看執行態軌跡',
         'Latest Orchestration Result': '最近編排結果',
@@ -1004,9 +1109,37 @@ function ensureSettings() {
             extension_settings[MODULE_NAME][key] = cloneDefault(value);
         }
     }
-    extension_settings[MODULE_NAME].singleAgentModeEnabled = Boolean(extension_settings[MODULE_NAME].singleAgentModeEnabled);
+    const hadLegacySingleMode = Boolean(extension_settings[MODULE_NAME].singleAgentModeEnabled);
+    extension_settings[MODULE_NAME].executionMode = normalizeExecutionMode(
+        extension_settings[MODULE_NAME].executionMode || (hadLegacySingleMode ? ORCH_EXECUTION_MODE_SINGLE : ORCH_EXECUTION_MODE_SPEC),
+    );
+    extension_settings[MODULE_NAME].singleAgentModeEnabled = extension_settings[MODULE_NAME].executionMode === ORCH_EXECUTION_MODE_SINGLE;
     extension_settings[MODULE_NAME].singleAgentSystemPrompt = String(extension_settings[MODULE_NAME].singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT);
     extension_settings[MODULE_NAME].singleAgentUserPromptTemplate = String(extension_settings[MODULE_NAME].singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE);
+    extension_settings[MODULE_NAME].agendaPlannerPrompt = String(extension_settings[MODULE_NAME].agendaPlannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
+    extension_settings[MODULE_NAME].agendaAgents = sanitizePresetMap(extension_settings[MODULE_NAME].agendaAgents);
+    if (Object.keys(extension_settings[MODULE_NAME].agendaAgents).length === 0) {
+        extension_settings[MODULE_NAME].agendaAgents = sanitizePresetMap(defaultAgendaAgents);
+    }
+    extension_settings[MODULE_NAME].agendaFinalAgentId = sanitizeIdentifierToken(
+        extension_settings[MODULE_NAME].agendaFinalAgentId,
+        Object.keys(extension_settings[MODULE_NAME].agendaAgents)[0] || 'finalizer',
+    );
+    if (!extension_settings[MODULE_NAME].agendaAgents[extension_settings[MODULE_NAME].agendaFinalAgentId]) {
+        extension_settings[MODULE_NAME].agendaFinalAgentId = Object.keys(extension_settings[MODULE_NAME].agendaAgents)[0] || 'finalizer';
+    }
+    extension_settings[MODULE_NAME].agendaPlannerMaxRounds = Math.max(
+        1,
+        Math.min(20, Math.floor(Number(extension_settings[MODULE_NAME].agendaPlannerMaxRounds ?? 6) || 6)),
+    );
+    extension_settings[MODULE_NAME].agendaMaxConcurrentAgents = Math.max(
+        1,
+        Math.min(12, Math.floor(Number(extension_settings[MODULE_NAME].agendaMaxConcurrentAgents ?? 3) || 3)),
+    );
+    extension_settings[MODULE_NAME].agendaMaxTotalRuns = Math.max(
+        1,
+        Math.min(200, Math.floor(Number(extension_settings[MODULE_NAME].agendaMaxTotalRuns ?? 24) || 24)),
+    );
     delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
 
     extension_settings[MODULE_NAME].orchestrationSpec = sanitizeSpec(extension_settings[MODULE_NAME].orchestrationSpec);
@@ -2333,10 +2466,35 @@ async function invalidateStoredOrchestrationAnchors(context, thresholdPlayableFl
 
 function getEffectiveProfile(context) {
     const settings = extension_settings[MODULE_NAME];
-    if (settings.singleAgentModeEnabled) {
+    const executionMode = getExecutionMode(settings);
+    if (executionMode === ORCH_EXECUTION_MODE_AGENDA) {
+        const agents = sanitizePresetMap(settings.agendaAgents);
+        if (Object.keys(agents).length === 0) {
+            agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+        }
+        const finalAgentId = sanitizeIdentifierToken(
+            settings.agendaFinalAgentId,
+            agents.finalizer ? 'finalizer' : (Object.keys(agents)[0] || 'finalizer'),
+        );
+        return {
+            source: 'agenda',
+            key: 'agenda',
+            mode: ORCH_EXECUTION_MODE_AGENDA,
+            plannerPrompt: String(settings.agendaPlannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+            agents,
+            finalAgentId,
+            limits: {
+                plannerMaxRounds: Math.max(1, Math.floor(Number(settings.agendaPlannerMaxRounds) || 6)),
+                maxConcurrentAgents: Math.max(1, Math.floor(Number(settings.agendaMaxConcurrentAgents) || 3)),
+                maxTotalRuns: Math.max(1, Math.floor(Number(settings.agendaMaxTotalRuns) || 24)),
+            },
+        };
+    }
+    if (executionMode === ORCH_EXECUTION_MODE_SINGLE || settings.singleAgentModeEnabled) {
         return {
             source: 'single',
             key: 'single_agent',
+            mode: ORCH_EXECUTION_MODE_SINGLE,
             spec: sanitizeSpec({
                 stages: [{
                     id: 'single',
@@ -2365,6 +2523,7 @@ function getEffectiveProfile(context) {
         return {
             source: 'chat',
             key: chatKey,
+            mode: ORCH_EXECUTION_MODE_SPEC,
             spec: sanitizeSpec(editableSpec),
             presets: sanitizePresetMap(editablePresets),
         };
@@ -2379,6 +2538,7 @@ function getEffectiveProfile(context) {
         return {
             source: 'character',
             key: avatar,
+            mode: ORCH_EXECUTION_MODE_SPEC,
             spec: sanitizeSpec(editableSpec),
             presets: sanitizePresetMap(editablePresets),
         };
@@ -2387,6 +2547,7 @@ function getEffectiveProfile(context) {
     return {
         source: 'global',
         key: 'global',
+        mode: ORCH_EXECUTION_MODE_SPEC,
         spec: sanitizeSpec(settings.orchestrationSpec),
         presets: sanitizePresetMap(settings.presets),
     };
@@ -4133,7 +4294,641 @@ async function executeStage(context, payload, messages, profile, runtime, stageI
     }
 }
 
+const AGENDA_TODO_STATUSES = Object.freeze(['todo', 'doing', 'done', 'blocked', 'dropped']);
+
+function normalizeAgendaTodoStatus(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return AGENDA_TODO_STATUSES.includes(normalized) ? normalized : 'todo';
+}
+
+function createAgendaRunId() {
+    return `agenda_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getAgendaPlannerMaxRounds(source = extension_settings[MODULE_NAME]) {
+    return Math.max(1, Math.min(20, Math.floor(Number(source?.agendaPlannerMaxRounds) || 6)));
+}
+
+function getAgendaMaxConcurrentAgents(source = extension_settings[MODULE_NAME]) {
+    return Math.max(1, Math.min(12, Math.floor(Number(source?.agendaMaxConcurrentAgents) || 3)));
+}
+
+function getAgendaMaxTotalRuns(source = extension_settings[MODULE_NAME]) {
+    return Math.max(1, Math.min(200, Math.floor(Number(source?.agendaMaxTotalRuns) || 24)));
+}
+
+function createAgendaTodo({ id = '', goal = '', status = 'todo' } = {}) {
+    const todoId = sanitizeIdentifierToken(id, '');
+    const goalText = String(goal || '').trim();
+    if (!todoId || !goalText) {
+        return null;
+    }
+    return {
+        id: todoId,
+        goal: goalText,
+        status: normalizeAgendaTodoStatus(status),
+    };
+}
+
+function buildAgendaRecentChatText(messages, settings = extension_settings[MODULE_NAME]) {
+    return getRecentMessages(messages, settings?.maxRecentMessages)
+        .map(message => `${message?.is_user ? 'User' : (message?.name || 'Assistant')}: ${String(message?.mes || '')}`)
+        .join('\n');
+}
+
+function buildAgendaLastUserText(messages) {
+    const { message: lastUser } = extractLastUserMessage(messages);
+    return String(lastUser?.mes || '');
+}
+
+function selectAgendaRuns(runs = [], selectedRunIds = null) {
+    const selected = selectedRunIds instanceof Set ? selectedRunIds : null;
+    return (Array.isArray(runs) ? runs : []).filter((run) => {
+        if (!selected) {
+            return true;
+        }
+        return selected.has(String(run?.runId || ''));
+    });
+}
+
+function buildAgendaSelectedRunOutputsText(runs = [], selectedRunIds = null) {
+    const source = selectAgendaRuns(runs, selectedRunIds);
+    if (source.length === 0) {
+        return '(none)';
+    }
+    return source.map((run) => [
+        `[${String(run?.runId || '')}] ${String(run?.agent || '')} / ${String(run?.todoId || '')}`,
+        String(run?.outputText || ''),
+    ].join('\n')).join('\n\n');
+}
+
+function buildAgendaDistillerOutputText(runs = [], selectedRunIds = null) {
+    const selectedSource = selectAgendaRuns(runs, selectedRunIds);
+    const selectedDistiller = selectedSource.filter(run => String(run?.agent || '') === 'distiller' && String(run?.outputText || '').trim());
+    if (selectedDistiller.length > 0) {
+        return String(selectedDistiller[selectedDistiller.length - 1]?.outputText || '');
+    }
+    const allDistiller = (Array.isArray(runs) ? runs : []).filter(run => String(run?.agent || '') === 'distiller' && String(run?.outputText || '').trim());
+    return allDistiller.length > 0 ? String(allDistiller[allDistiller.length - 1]?.outputText || '') : '(none)';
+}
+
+function buildAgendaAvailableAgentsText(profile = {}) {
+    const agents = profile?.agents && typeof profile.agents === 'object' ? profile.agents : {};
+    const catalog = Object.entries(agents)
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([agentId, preset]) => ({
+            agent: String(agentId || ''),
+            system_prompt: String(preset?.systemPrompt || ''),
+            user_prompt_template: String(preset?.userPromptTemplate || ''),
+        }));
+    return [
+        '## available_agents',
+        '```yaml',
+        toReadableYamlText({
+            final_agent_id: String(profile?.finalAgentId || ''),
+            agents: catalog,
+        }, '{}'),
+        '```',
+    ].join('\n');
+}
+
+function upsertAgendaTodo(state, nextTodo) {
+    if (!state || !Array.isArray(state.todos) || !nextTodo) {
+        return;
+    }
+    const index = state.todos.findIndex(todo => String(todo?.id || '') === String(nextTodo.id || ''));
+    if (index >= 0) {
+        state.todos[index] = {
+            ...state.todos[index],
+            ...nextTodo,
+            status: normalizeAgendaTodoStatus(nextTodo.status || state.todos[index]?.status),
+        };
+        return;
+    }
+    state.todos.push({
+        id: String(nextTodo.id || ''),
+        goal: String(nextTodo.goal || ''),
+        status: normalizeAgendaTodoStatus(nextTodo.status),
+    });
+}
+
+function buildAgendaSharedContextText(context, payload, messages) {
+    const settings = extension_settings[MODULE_NAME];
+    const recent = buildAgendaRecentChatText(messages, settings);
+    const lastUserText = buildAgendaLastUserText(messages);
+    return [
+        '## shared_context',
+        '### recent_chat',
+        '```text',
+        recent || '(empty)',
+        '```',
+        '### current_user_message',
+        '```text',
+        lastUserText,
+        '```',
+        '### runtime_limits',
+        '```yaml',
+        toReadableYamlText({
+            planner_max_rounds: getAgendaPlannerMaxRounds(settings),
+            max_concurrent_agents: getAgendaMaxConcurrentAgents(settings),
+            max_total_runs: getAgendaMaxTotalRuns(settings),
+            node_iteration_max_rounds: getNodeIterationMaxRounds(settings),
+            review_rerun_max_rounds: getReviewRerunMaxRounds(settings),
+            agent_timeout_seconds: Math.max(0, Math.floor(Number(settings?.agentTimeoutSeconds) || 0)),
+        }, '{}'),
+        '```',
+    ].join('\n');
+}
+
+function buildAgendaTodosText(todos = []) {
+    return [
+        '## todo_board',
+        '```yaml',
+        toReadableYamlText(
+            (Array.isArray(todos) ? todos : []).map(todo => ({
+                id: String(todo?.id || ''),
+                goal: String(todo?.goal || ''),
+                status: normalizeAgendaTodoStatus(todo?.status),
+            })),
+            '[]',
+        ),
+        '```',
+    ].join('\n');
+}
+
+function buildAgendaRunsText(runs = [], selectedRunIds = null) {
+    const source = selectAgendaRuns(runs, selectedRunIds);
+    if (source.length === 0) {
+        return [
+            '## prior_runs',
+            '```text',
+            '(none)',
+            '```',
+        ].join('\n');
+    }
+    return [
+        '## prior_runs',
+        ...source.map((run) => [
+            `### ${String(run?.runId || '')}`,
+            '```yaml',
+            toReadableYamlText({
+                todo_id: String(run?.todoId || ''),
+                agent: String(run?.agent || ''),
+                task_brief: String(run?.taskBrief || ''),
+                input_run_ids: Array.isArray(run?.inputRunIds) ? run.inputRunIds.map(item => String(item || '')) : [],
+            }, '{}'),
+            '```',
+            '```text',
+            String(run?.outputText || ''),
+            '```',
+        ].join('\n')),
+    ].join('\n\n');
+}
+
+function syncAgendaTrace(trace, state) {
+    if (!trace || typeof trace !== 'object' || !state || typeof state !== 'object') {
+        return;
+    }
+    trace.mode = ORCH_EXECUTION_MODE_AGENDA;
+    trace.agenda = {
+        plannerRounds: Math.max(0, Math.floor(Number(state.plannerRounds) || 0)),
+        todos: Array.isArray(state.todos) ? structuredClone(state.todos) : [],
+        runs: Array.isArray(state.runs) ? structuredClone(state.runs) : [],
+        finalGuidance: String(state.finalGuidance || ''),
+    };
+}
+
+function applyAgendaPlannerOps(state, plannerStep = {}) {
+    if (!state || typeof state !== 'object') {
+        return;
+    }
+    for (const rawOp of Array.isArray(plannerStep?.todo_ops) ? plannerStep.todo_ops : []) {
+        const op = String(rawOp?.op || '').trim().toLowerCase();
+        const todoId = sanitizeIdentifierToken(rawOp?.todo_id, '');
+        if (!todoId) {
+            continue;
+        }
+        if (op === 'add') {
+            const nextTodo = createAgendaTodo({
+                id: todoId,
+                goal: String(rawOp?.goal || ''),
+                status: rawOp?.status || 'todo',
+            });
+            if (nextTodo) {
+                upsertAgendaTodo(state, nextTodo);
+            }
+            continue;
+        }
+        const index = state.todos.findIndex(todo => String(todo?.id || '') === todoId);
+        if (index < 0) {
+            continue;
+        }
+        if (op === 'set_status') {
+            state.todos[index].status = normalizeAgendaTodoStatus(rawOp?.status);
+        } else if (op === 'drop') {
+            state.todos[index].status = 'dropped';
+        }
+    }
+}
+
+function normalizeAgendaDispatches(state, plannerStep = {}, profile = {}, settings = extension_settings[MODULE_NAME]) {
+    const dispatches = [];
+    const agents = profile?.agents && typeof profile.agents === 'object' ? profile.agents : {};
+    const knownRunIds = new Set((Array.isArray(state?.runs) ? state.runs : []).map(run => String(run?.runId || '')).filter(Boolean));
+    for (const rawDispatch of Array.isArray(plannerStep?.dispatches) ? plannerStep.dispatches : []) {
+        const todoId = sanitizeIdentifierToken(rawDispatch?.todo_id, '');
+        const agent = sanitizeIdentifierToken(rawDispatch?.agent, '');
+        const taskBrief = String(rawDispatch?.task_brief || '').trim();
+        if (!todoId || !agent || !taskBrief || !agents[agent]) {
+            continue;
+        }
+        const inputRunIds = [...new Set(
+            (Array.isArray(rawDispatch?.input_run_ids) ? rawDispatch.input_run_ids : [])
+                .map(item => String(item || '').trim())
+                .filter(runId => runId && knownRunIds.has(runId)),
+        )];
+        if (!state.todos.some(todo => String(todo?.id || '') === todoId)) {
+            upsertAgendaTodo(state, createAgendaTodo({ id: todoId, goal: taskBrief, status: 'todo' }));
+        }
+        dispatches.push({
+            todoId,
+            agent,
+            taskBrief,
+            inputRunIds,
+        });
+    }
+    const maxConcurrent = getAgendaMaxConcurrentAgents(settings);
+    const remainingRunBudget = Math.max(0, getAgendaMaxTotalRuns(settings) - Number(state?.runs?.length || 0));
+    return dispatches.slice(0, Math.min(maxConcurrent, remainingRunBudget));
+}
+
+async function runAgendaPlannerStep(context, payload, messages, profile, state, abortSignal = null) {
+    const settings = extension_settings[MODULE_NAME];
+    const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
+    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
+    const llmProfileResolution = resolveChatCompletionRequestProfile({
+        profileName: llmApiPresetName,
+        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
+        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    });
+    const promptText = [
+        '## planner_prompt',
+        String(profile?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+        '',
+        buildAutoInjectedNodePromptPrelude({
+            previousOrchestration,
+            approvedReviewFeedbackEntries: [],
+        }),
+        buildAgendaSharedContextText(context, payload, messages),
+        buildAgendaAvailableAgentsText(profile),
+        buildAgendaTodosText(state?.todos),
+        buildAgendaRunsText(state?.runs),
+        [
+            '## planner_contract',
+            '- Maintain the todo board explicitly through todo_ops.',
+            '- Dispatch only agent ids listed in available_agents.',
+            '- Dispatch only the next useful agent calls. Parallelize only truly independent work.',
+            '- Read complete prior run outputs before adding new work.',
+            '- If final guidance is ready, set finalize.ready=true and do not dispatch more agents.',
+            '- If work remains, set finalize.ready=false.',
+        ].join('\n'),
+    ].filter(Boolean).join('\n\n');
+    const promptMessages = await buildPresetAwareMessages(
+        context,
+        settings,
+        DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT,
+        promptText,
+        {
+            api: llmProfileResolution.requestApi,
+            promptPresetName: llmPresetName,
+            worldInfoMessages: messages,
+            worldInfoType: String(payload?.type || 'quiet'),
+            runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+            forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+            abortSignal,
+        },
+    );
+    return requestToolCallWithRetry(settings, promptMessages, {
+        functionName: AGENDA_PLANNER_TOOL,
+        functionDescription: 'Update agenda todos, dispatch the next agent calls, or finalize when ready.',
+        parameters: {
+            type: 'object',
+            properties: {
+                todo_ops: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            op: { type: 'string', enum: ['add', 'set_status', 'drop'] },
+                            todo_id: { type: 'string' },
+                            goal: { type: 'string' },
+                            status: { type: 'string', enum: AGENDA_TODO_STATUSES },
+                        },
+                        required: ['op', 'todo_id'],
+                        additionalProperties: false,
+                    },
+                },
+                dispatches: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            todo_id: { type: 'string' },
+                            agent: { type: 'string' },
+                            task_brief: { type: 'string' },
+                            input_run_ids: {
+                                type: 'array',
+                                items: { type: 'string' },
+                            },
+                        },
+                        required: ['todo_id', 'agent', 'task_brief', 'input_run_ids'],
+                        additionalProperties: false,
+                    },
+                },
+                finalize: {
+                    type: 'object',
+                    properties: {
+                        ready: { type: 'boolean' },
+                        reason: { type: 'string' },
+                    },
+                    required: ['ready', 'reason'],
+                    additionalProperties: false,
+                },
+            },
+            required: ['todo_ops', 'dispatches', 'finalize'],
+            additionalProperties: false,
+        },
+        llmPresetName,
+        apiSettingsOverride: llmProfileResolution.apiSettingsOverride,
+        abortSignal,
+        applyAgentTimeout: true,
+    });
+}
+
+async function runAgendaTextAgent(context, payload, messages, profile, state, dispatch, {
+    kind = 'agent',
+    finalReason = '',
+}, abortSignal = null) {
+    const settings = extension_settings[MODULE_NAME];
+    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
+    const llmProfileResolution = resolveChatCompletionRequestProfile({
+        profileName: llmApiPresetName,
+        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
+        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    });
+    const preset = profile?.agents?.[dispatch.agent] || {};
+    const systemPrompt = [
+        String(preset.systemPrompt || 'You are an orchestration agent. Complete the assigned task carefully and return the full useful result through the required tool.').trim(),
+        '',
+        'Agenda runtime override:',
+        '- Ignore any legacy spec-mode output schema wording if present.',
+        `- The only valid output is ${AGENDA_RESULT_TOOL} with one complete text result.`,
+    ].filter(Boolean).join('\n');
+    const selectedRunIds = new Set((Array.isArray(dispatch?.inputRunIds) ? dispatch.inputRunIds : []).map(item => String(item || '').trim()).filter(Boolean));
+    const currentTodo = (Array.isArray(state?.todos) ? state.todos : []).find(todo => String(todo?.id || '') === String(dispatch?.todoId || '')) || null;
+    const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
+    const renderedAgentPrompt = renderTemplate(
+        normalizeTemplateForRuntime(String(preset?.userPromptTemplate || '')),
+        {
+            recent_chat: buildAgendaRecentChatText(messages, settings),
+            last_user: buildAgendaLastUserText(messages),
+            previous_outputs: buildAgendaSelectedRunOutputsText(state?.runs, selectedRunIds),
+            distiller: buildAgendaDistillerOutputText(state?.runs, selectedRunIds),
+        },
+    ).trim();
+    const promptText = [
+        '## planner_prompt',
+        String(profile?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+        '',
+        buildAutoInjectedNodePromptPrelude({
+            previousOrchestration,
+            approvedReviewFeedbackEntries: [],
+        }),
+        '## current_todo',
+        '```yaml',
+        toReadableYamlText(currentTodo || {
+            id: String(dispatch?.todoId || ''),
+            goal: String(dispatch?.taskBrief || ''),
+            status: 'doing',
+        }, '{}'),
+        '```',
+        '## task_brief',
+        '```text',
+        String(dispatch?.taskBrief || ''),
+        '```',
+        finalReason ? ['## finalize_reason', '```text', String(finalReason || ''), '```'].join('\n') : '',
+        buildAgendaSharedContextText(context, payload, messages),
+        buildAgendaRunsText(state?.runs, selectedRunIds),
+        [
+            '## agenda_mode_output_override',
+            '- If copied prompt text mentions legacy spec-mode fields or schemas, ignore that wording.',
+            `- The only valid output is ${AGENDA_RESULT_TOOL} with one complete text result.`,
+        ].join('\n'),
+        renderedAgentPrompt
+            ? ['## agent_extra_prompt', '```text', renderedAgentPrompt, '```'].join('\n')
+            : '',
+        [
+            '## result_contract',
+            `- Return the full result through ${AGENDA_RESULT_TOOL}.`,
+            '- The text should contain complete useful content, not a summary placeholder.',
+        ].join('\n'),
+    ].filter(Boolean).join('\n\n');
+    const promptMessages = await buildPresetAwareMessages(
+        context,
+        settings,
+        systemPrompt,
+        promptText,
+        {
+            api: llmProfileResolution.requestApi,
+            promptPresetName: llmPresetName,
+            worldInfoMessages: messages,
+            worldInfoType: String(payload?.type || 'quiet'),
+            runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+            forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+            abortSignal,
+        },
+    );
+    const result = await requestToolCallWithRetry(settings, promptMessages, {
+        functionName: AGENDA_RESULT_TOOL,
+        functionDescription: 'Submit the full textual result for the assigned orchestration task.',
+        parameters: {
+            type: 'object',
+            properties: {
+                text: { type: 'string' },
+            },
+            required: ['text'],
+            additionalProperties: false,
+        },
+        llmPresetName,
+        apiSettingsOverride: llmProfileResolution.apiSettingsOverride,
+        abortSignal,
+        applyAgentTimeout: true,
+    });
+    return {
+        runId: createAgendaRunId(),
+        todoId: String(dispatch?.todoId || ''),
+        agent: String(dispatch?.agent || ''),
+        taskBrief: String(dispatch?.taskBrief || ''),
+        inputRunIds: Array.isArray(dispatch?.inputRunIds) ? dispatch.inputRunIds.slice() : [],
+        outputText: String(result?.text || '').trim(),
+        kind: String(kind || 'agent'),
+    };
+}
+
+async function runAgendaOrchestration(context, payload, messages, profile) {
+    const settings = extension_settings[MODULE_NAME];
+    const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
+    const trace = createOrchestrationRuntimeTrace(context, payload, [], {
+        note: 'Agenda mode runtime',
+    });
+    const state = {
+        plannerRounds: 0,
+        todos: [{
+            id: 'main',
+            goal: 'Produce the best next-turn orchestration guidance for the current request.',
+            status: 'todo',
+        }],
+        runs: [],
+        finalGuidance: '',
+    };
+    syncAgendaTrace(trace, state);
+    const plannerMaxRounds = Math.min(getAgendaPlannerMaxRounds(settings), Math.max(1, Math.floor(Number(profile?.limits?.plannerMaxRounds) || getAgendaPlannerMaxRounds(settings))));
+    let finalizeReason = '';
+
+    for (let round = 1; round <= plannerMaxRounds; round++) {
+        throwIfAborted(abortSignal, 'Orchestration aborted.');
+        state.plannerRounds = round;
+        syncAgendaTrace(trace, state);
+        const plannerAttempt = beginOrchestrationRuntimeNodeAttempt(trace, {
+            stageIndex: round - 1,
+            stageId: `agenda_planner_round_${round}`,
+            nodeIndex: 0,
+            nodeId: 'agenda_planner',
+            preset: 'agenda_planner',
+            nodeType: ORCH_NODE_TYPE_WORKER,
+            runKind: 'planner',
+            slotKey: buildOrchestrationRuntimeSlotKey(round - 1, 0, `agenda_planner_${round}`),
+        });
+        const plannerStep = await runAgendaPlannerStep(context, payload, messages, profile, state, abortSignal);
+        finishOrchestrationRuntimeNodeAttempt(trace, plannerAttempt, {
+            status: 'completed',
+            output: plannerStep,
+        });
+        applyAgendaPlannerOps(state, plannerStep);
+        const dispatches = normalizeAgendaDispatches(state, plannerStep, profile, settings);
+        if (Array.isArray(plannerStep?.dispatches) && plannerStep.dispatches.length > 0 && dispatches.length === 0 && !Boolean(plannerStep?.finalize?.ready)) {
+            throw new Error('Agenda planner dispatched no valid agents. Check available agent ids and selected prior run ids.');
+        }
+        for (const dispatch of dispatches) {
+            const todo = state.todos.find(item => String(item?.id || '') === String(dispatch.todoId || ''));
+            if (todo) {
+                todo.status = todo.status === 'done' ? 'done' : 'doing';
+            }
+        }
+        syncAgendaTrace(trace, state);
+        if (Boolean(plannerStep?.finalize?.ready) && dispatches.length === 0) {
+            finalizeReason = String(plannerStep?.finalize?.reason || '').trim();
+            break;
+        }
+        if (dispatches.length === 0) {
+            finalizeReason = String(plannerStep?.finalize?.reason || '').trim() || 'Planner produced no further dispatches.';
+            break;
+        }
+        const newRuns = await Promise.all(dispatches.map(async (dispatch, dispatchIndex) => {
+            const attempt = beginOrchestrationRuntimeNodeAttempt(trace, {
+                stageIndex: round - 1,
+                stageId: `agenda_agents_round_${round}`,
+                nodeIndex: dispatchIndex,
+                nodeId: `${dispatch.agent}:${dispatch.todoId}`,
+                preset: dispatch.agent,
+                nodeType: ORCH_NODE_TYPE_WORKER,
+                runKind: 'worker',
+                slotKey: buildOrchestrationRuntimeSlotKey(round - 1, dispatchIndex + 1, `${dispatch.agent}_${dispatch.todoId}_${round}`),
+            });
+            try {
+                const result = await runAgendaTextAgent(context, payload, messages, profile, state, dispatch, { kind: 'agent' }, abortSignal);
+                finishOrchestrationRuntimeNodeAttempt(trace, attempt, {
+                    status: 'completed',
+                    output: result.outputText,
+                });
+                return result;
+            } catch (error) {
+                finishOrchestrationRuntimeNodeAttempt(trace, attempt, {
+                    status: 'failed',
+                    error: String(error?.message || error),
+                });
+                throw error;
+            }
+        }));
+        state.runs.push(...newRuns);
+        syncAgendaTrace(trace, state);
+        if (state.runs.length >= getAgendaMaxTotalRuns(settings)) {
+            finalizeReason = 'Reached maxTotalRuns limit. Finalizing with collected work.';
+            break;
+        }
+    }
+
+    const finalAgentId = sanitizeIdentifierToken(profile?.finalAgentId, Object.keys(profile?.agents || {})[0] || 'finalizer');
+    if (!profile?.agents?.[finalAgentId]) {
+        throw new Error(`Agenda final agent '${finalAgentId}' is not configured.`);
+    }
+    const finalDispatch = {
+        todoId: 'finalize',
+        agent: finalAgentId,
+        taskBrief: 'Read the resolved todo state and all completed runs, then produce the final orchestration guidance text.',
+        inputRunIds: state.runs.map(run => String(run?.runId || '')).filter(Boolean),
+    };
+    const finalAttempt = beginOrchestrationRuntimeNodeAttempt(trace, {
+        stageIndex: plannerMaxRounds,
+        stageId: 'agenda_finalize',
+        nodeIndex: 0,
+        nodeId: finalAgentId,
+        preset: finalAgentId,
+        nodeType: ORCH_NODE_TYPE_WORKER,
+        runKind: 'final',
+        slotKey: buildOrchestrationRuntimeSlotKey(plannerMaxRounds, 0, `agenda_final_${finalAgentId}`),
+    });
+    const finalRun = await runAgendaTextAgent(context, payload, messages, profile, state, finalDispatch, {
+        kind: 'final',
+        finalReason: finalizeReason,
+    }, abortSignal);
+    if (!String(finalRun?.outputText || '').trim()) {
+        finishOrchestrationRuntimeNodeAttempt(trace, finalAttempt, {
+            status: 'failed',
+            error: 'Agenda final agent returned empty guidance text.',
+        });
+        throw new Error('Agenda final agent returned empty guidance text.');
+    }
+    finishOrchestrationRuntimeNodeAttempt(trace, finalAttempt, {
+        status: 'completed',
+        output: finalRun.outputText,
+    });
+    state.finalGuidance = String(finalRun.outputText || '').trim();
+    state.runs.push(finalRun);
+    syncAgendaTrace(trace, state);
+
+    return {
+        stageOutputs: [{
+            id: 'finalize',
+            mode: 'serial',
+            nodes: [{
+                node: finalAgentId,
+                output: state.finalGuidance,
+            }],
+        }],
+        previousNodeOutputs: new Map([[finalAgentId, state.finalGuidance]]),
+        runtimeTrace: trace,
+        reviewRerunCount: 0,
+        agendaState: structuredClone(state),
+    };
+}
+
 async function runOrchestration(context, payload, messages, profile) {
+    if (String(profile?.mode || '') === ORCH_EXECUTION_MODE_AGENDA || String(profile?.source || '') === 'agenda') {
+        return runAgendaOrchestration(context, payload, messages, profile);
+    }
     const spec = sanitizeSpec(profile.spec);
     const stages = Array.isArray(spec?.stages) ? spec.stages : [];
     const runtime = {
@@ -4309,7 +5104,10 @@ async function onWorldInfoFinalized(payload) {
         if (canReuseLatestOrchestrationSnapshot(chatKey, anchor)) {
             const capsuleText = String(latestOrchestrationSnapshot.capsuleText || '').trim();
             if (capsuleText) {
-                const reuseTrace = createOrchestrationRuntimeTrace(context, payload, sanitizeSpec(profile.spec)?.stages || [], {
+                const reuseTraceStages = String(profile?.mode || '') === ORCH_EXECUTION_MODE_AGENDA
+                    ? []
+                    : (sanitizeSpec(profile.spec)?.stages || []);
+                const reuseTrace = createOrchestrationRuntimeTrace(context, payload, reuseTraceStages, {
                     status: 'reused',
                     note: i18n('Reused previous orchestration snapshot. No nodes executed.'),
                     capsuleText,
@@ -4943,6 +5741,71 @@ function renderPresetBoard(scope, editor) {
 </div>`).join('');
 }
 
+function renderAgendaAgentSelectOptions(settings, selectedAgentId = '') {
+    const selected = sanitizeIdentifierToken(selectedAgentId, '');
+    const agents = sanitizePresetMap(settings?.agendaAgents);
+    const ids = Object.keys(agents).sort((left, right) => left.localeCompare(right));
+    const options = [];
+    for (const agentId of ids) {
+        options.push(`<option value="${escapeHtml(agentId)}"${agentId === selected ? ' selected' : ''}>${escapeHtml(agentId)}</option>`);
+    }
+    if (selected && !agents[selected]) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function renderAgendaAgentBoard(settings) {
+    const agents = sanitizePresetMap(settings?.agendaAgents);
+    const entries = Object.entries(agents).sort((left, right) => left[0].localeCompare(right[0]));
+    if (entries.length === 0) {
+        return `<div class="luker_orch_empty_hint">${escapeHtml(i18n('No presets yet.'))}</div>`;
+    }
+    return entries.map(([agentId, preset]) => `
+<div class="luker_orch_preset_card">
+    <div class="luker_orch_preset_header">
+        <b>${escapeHtml(agentId)}</b>
+        <div class="menu_button menu_button_small" data-luker-action="agenda-agent-delete" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(i18n('Delete'))}</div>
+    </div>
+    <label>${escapeHtml(i18n('System Prompt'))}</label>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-agenda-agent-field="systemPrompt" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.systemPrompt)}</textarea>
+    <label>${escapeHtml(i18n('User Prompt Template'))}</label>
+    <textarea class="text_pole textarea_compact" rows="5" data-luker-agenda-agent-field="userPromptTemplate" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.userPromptTemplate)}</textarea>
+</div>`).join('');
+}
+
+function renderAgendaWorkspace(settings) {
+    return `
+<div class="luker_orch_workspace" data-luker-scope-root="agenda">
+    <h5 class="margin0">${escapeHtml(i18n('Agenda Orchestration'))}</h5>
+    <div class="luker_orch_workspace_grid">
+        <div class="luker_orch_workspace_col">
+            <div class="luker_orch_col_title">${escapeHtml(i18n('Planner Prompt'))}</div>
+            <textarea id="luker_orch_agenda_planner_prompt" class="text_pole textarea_compact" rows="16">${escapeHtml(String(settings?.agendaPlannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT))}</textarea>
+            <label for="luker_orch_agenda_final_agent">${escapeHtml(i18n('Final Agent'))}</label>
+            <select id="luker_orch_agenda_final_agent" class="text_pole">${renderAgendaAgentSelectOptions(settings, settings?.agendaFinalAgentId)}</select>
+            <label for="luker_orch_agenda_planner_rounds">${escapeHtml(i18n('Planner max rounds'))}</label>
+            <input id="luker_orch_agenda_planner_rounds" class="text_pole" type="number" min="1" max="20" step="1" value="${escapeHtml(String(settings?.agendaPlannerMaxRounds || 6))}" />
+            <label for="luker_orch_agenda_max_concurrent">${escapeHtml(i18n('Max concurrent agents'))}</label>
+            <input id="luker_orch_agenda_max_concurrent" class="text_pole" type="number" min="1" max="12" step="1" value="${escapeHtml(String(settings?.agendaMaxConcurrentAgents || 3))}" />
+            <label for="luker_orch_agenda_max_total_runs">${escapeHtml(i18n('Max total agent runs'))}</label>
+            <input id="luker_orch_agenda_max_total_runs" class="text_pole" type="number" min="1" max="200" step="1" value="${escapeHtml(String(settings?.agendaMaxTotalRuns || 24))}" />
+            <div class="flex-container">
+                <div class="menu_button menu_button_small" data-luker-action="agenda-copy-from-spec">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+            </div>
+        </div>
+        <div class="luker_orch_workspace_col">
+            <div class="luker_orch_col_title">${escapeHtml(i18n('Agenda Agents'))}</div>
+            <div class="luker_orch_presets">${renderAgendaAgentBoard(settings)}</div>
+            <div class="luker_orch_preset_add_row">
+                <input id="luker_orch_agenda_new_agent" class="text_pole" placeholder="${escapeHtml(i18n('new_preset_id'))}" />
+                <div class="menu_button menu_button_small" data-luker-action="agenda-agent-add">${escapeHtml(i18n('Add Preset'))}</div>
+            </div>
+        </div>
+    </div>
+</div>`;
+}
+
 function renderEditorWorkspace(scope, editor, title) {
     return `
 <div class="luker_orch_workspace" data-luker-scope-root="${scope}">
@@ -4979,7 +5842,9 @@ function buildLatestOrchestrationStateSummary(context) {
 
 function renderDynamicPanels(root, context) {
     const settings = getSettings();
-    const singleModeEnabled = Boolean(settings.singleAgentModeEnabled);
+    const executionMode = getExecutionMode(settings);
+    const singleModeEnabled = executionMode === ORCH_EXECUTION_MODE_SINGLE;
+    const agendaModeEnabled = executionMode === ORCH_EXECUTION_MODE_AGENDA;
     syncCharacterEditorWithActiveAvatar(context);
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
     const override = activeAvatar ? getCharacterOverrideByAvatar(context, activeAvatar) : null;
@@ -5005,10 +5870,14 @@ function renderDynamicPanels(root, context) {
     root.find('[data-luker-action="view-last-run"]').toggleClass('luker_orch_button_disabled', !hasLastRun);
     root.find('#luker_orch_last_run_state').text(buildLatestOrchestrationStateSummary(context));
     root.find('[data-luker-ai-goal-input]').val(String(uiState.aiGoal || ''));
-    root.find('.luker_orch_board').toggle(!singleModeEnabled);
+    root.find('#luker_orch_spec_board').toggle(!singleModeEnabled && !agendaModeEnabled);
+    root.find('#luker_orch_agenda_board').toggle(agendaModeEnabled);
     root.find('#luker_orch_single_mode_runtime_tools').toggle(singleModeEnabled);
     root.find('#luker_orch_single_mode_hint').toggle(singleModeEnabled);
     root.find('#luker_orch_single_agent_fields').toggle(singleModeEnabled);
+    root.find('#luker_orch_agenda_fields').toggle(agendaModeEnabled);
+    root.find('#luker_orch_execution_mode').val(executionMode);
+    root.find('#luker_orch_agenda_workspace').html(agendaModeEnabled ? renderAgendaWorkspace(settings) : '');
     refreshOrchestrationEditorPopup(context, settings);
 }
 
@@ -7921,7 +8790,7 @@ function bindUi() {
 
     initializeUiState(context);
     root.find('#luker_orch_enabled').prop('checked', Boolean(settings.enabled));
-    root.find('#luker_orch_single_agent_mode').prop('checked', Boolean(settings.singleAgentModeEnabled));
+    root.find('#luker_orch_execution_mode').val(getExecutionMode(settings));
     root.find('#luker_orch_single_agent_system_prompt').val(String(settings.singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT));
     root.find('#luker_orch_single_agent_user_prompt').val(String(settings.singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE));
     root.find('#luker_orch_llm_api_preset').val(String(settings.llmNodeApiPresetName || ''));
@@ -7949,8 +8818,9 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.on('input.lukerOrch', '#luker_orch_single_agent_mode', function () {
-        settings.singleAgentModeEnabled = Boolean(jQuery(this).prop('checked'));
+    root.on('change.lukerOrch', '#luker_orch_execution_mode', function () {
+        settings.executionMode = normalizeExecutionMode(jQuery(this).val());
+        settings.singleAgentModeEnabled = settings.executionMode === ORCH_EXECUTION_MODE_SINGLE;
         saveSettingsDebounced();
         renderDynamicPanels(root, context);
     });
@@ -7962,6 +8832,32 @@ function bindUi() {
 
     root.on('input.lukerOrch', '#luker_orch_single_agent_user_prompt', function () {
         settings.singleAgentUserPromptTemplate = String(jQuery(this).val() || '');
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_agenda_planner_prompt', function () {
+        settings.agendaPlannerPrompt = String(jQuery(this).val() || '');
+        saveSettingsDebounced();
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_agenda_final_agent', function () {
+        settings.agendaFinalAgentId = sanitizeIdentifierToken(jQuery(this).val(), settings.agendaFinalAgentId || 'finalizer');
+        saveSettingsDebounced();
+        renderDynamicPanels(root, context);
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_agenda_planner_rounds', function () {
+        settings.agendaPlannerMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(jQuery(this).val()) || 1)));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_agenda_max_concurrent', function () {
+        settings.agendaMaxConcurrentAgents = Math.max(1, Math.min(12, Math.floor(Number(jQuery(this).val()) || 1)));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_agenda_max_total_runs', function () {
+        settings.agendaMaxTotalRuns = Math.max(1, Math.min(200, Math.floor(Number(jQuery(this).val()) || 1)));
         saveSettingsDebounced();
     });
 
@@ -8099,6 +8995,20 @@ function bindUi() {
         }
     });
 
+    root.on('input.lukerOrch', '[data-luker-agenda-agent-field]', function () {
+        const agentId = sanitizeIdentifierToken(jQuery(this).data('agent-id'), '');
+        const field = String(jQuery(this).data('luker-agenda-agent-field') || '');
+        if (!agentId || !settings.agendaAgents?.[agentId]) {
+            return;
+        }
+        if (field === 'systemPrompt') {
+            settings.agendaAgents[agentId].systemPrompt = String(jQuery(this).val() || '');
+        } else if (field === 'userPromptTemplate') {
+            settings.agendaAgents[agentId].userPromptTemplate = String(jQuery(this).val() || '');
+        }
+        saveSettingsDebounced();
+    });
+
     jQuery(document).on('click.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-action], .luker_orch_editor_popup [data-luker-action]`, async function () {
         const action = String(jQuery(this).data('luker-action') || '');
         const scope = String(jQuery(this).data('scope') || 'global');
@@ -8107,6 +9017,59 @@ function bindUi() {
         const presetId = String(jQuery(this).data('preset-id') || '');
         const editor = getEditorByScope(scope);
         ensureEditorIntegrity(editor);
+
+        if (action === 'agenda-copy-from-spec') {
+            settings.agendaAgents = sanitizePresetMap(settings.presets);
+            if (settings.agendaAgents.synthesizer) {
+                settings.agendaAgents.finalizer = structuredClone(settings.agendaAgents.synthesizer);
+                delete settings.agendaAgents.synthesizer;
+            }
+            if (Object.keys(settings.agendaAgents).length === 0) {
+                settings.agendaAgents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+            }
+            settings.agendaFinalAgentId = settings.agendaAgents.finalizer
+                ? 'finalizer'
+                : (Object.keys(settings.agendaAgents)[0] || 'finalizer');
+            saveSettingsDebounced();
+            notifySuccess(i18n('Copied spec agents into agenda as a starting point.'));
+            renderDynamicPanels(root, context);
+            return;
+        }
+
+        if (action === 'agenda-agent-add') {
+            const input = root.find('#luker_orch_agenda_new_agent');
+            const candidate = sanitizeIdentifierToken(input.val(), '');
+            if (!candidate) {
+                notifyError(i18n('Preset ID cannot be empty.'));
+                return;
+            }
+            if (settings.agendaAgents?.[candidate]) {
+                notifyError(i18nFormat("Preset '${0}' already exists.", candidate));
+                return;
+            }
+            settings.agendaAgents[candidate] = createPresetDraft();
+            input.val('');
+            saveSettingsDebounced();
+            renderDynamicPanels(root, context);
+            return;
+        }
+
+        if (action === 'agenda-agent-delete') {
+            const agentId = sanitizeIdentifierToken(jQuery(this).data('agent-id'), '');
+            if (!agentId || !settings.agendaAgents?.[agentId]) {
+                return;
+            }
+            delete settings.agendaAgents[agentId];
+            if (Object.keys(settings.agendaAgents).length === 0) {
+                settings.agendaAgents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+            }
+            if (!settings.agendaAgents[settings.agendaFinalAgentId]) {
+                settings.agendaFinalAgentId = Object.keys(settings.agendaAgents)[0] || '';
+            }
+            saveSettingsDebounced();
+            renderDynamicPanels(root, context);
+            return;
+        }
 
         if (action === 'stage-add') {
             editor.spec.stages.push(createNewStage(editor));
@@ -9348,13 +10311,19 @@ function ensureUi() {
         </div>
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_orch_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
-            <label class="checkbox_label"><input id="luker_orch_single_agent_mode" type="checkbox" /> ${escapeHtml(i18n('Single-agent mode'))}</label>
+            <label for="luker_orch_execution_mode">${escapeHtml(i18n('Execution mode'))}</label>
+            <select id="luker_orch_execution_mode" class="text_pole">
+                <option value="${ORCH_EXECUTION_MODE_SPEC}">${escapeHtml(i18n('Spec workflow'))}</option>
+                <option value="${ORCH_EXECUTION_MODE_SINGLE}">${escapeHtml(i18n('Single agent'))}</option>
+                <option value="${ORCH_EXECUTION_MODE_AGENDA}">${escapeHtml(i18n('Agenda planner'))}</option>
+            </select>
             <div id="luker_orch_single_agent_fields">
                 <label for="luker_orch_single_agent_system_prompt">${escapeHtml(i18n('Single-agent system prompt'))}</label>
                 <textarea id="luker_orch_single_agent_system_prompt" class="text_pole textarea_compact" rows="4"></textarea>
                 <label for="luker_orch_single_agent_user_prompt">${escapeHtml(i18n('Single-agent user prompt template'))}</label>
                 <textarea id="luker_orch_single_agent_user_prompt" class="text_pole textarea_compact" rows="6"></textarea>
             </div>
+            <div id="luker_orch_agenda_fields"></div>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
             <label for="luker_orch_llm_preset">${escapeHtml(i18n('LLM node preset (params + prompt, empty = current)'))}</label>
@@ -9407,7 +10376,7 @@ function ensureUi() {
             </div>
 
             <hr>
-            <div class="luker_orch_board">
+            <div id="luker_orch_spec_board" class="luker_orch_board">
                 <div>
                     <small>${escapeHtml(i18n('Current card:'))} <span id="luker_orch_profile_target">${escapeHtml(i18n('(No character card)'))}</span></small><br />
                     <small>${escapeHtml(i18n('Editing:'))} <span id="luker_orch_profile_mode">${escapeHtml(i18n('Global profile'))}</span></small>
@@ -9419,6 +10388,14 @@ function ensureUi() {
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
+            </div>
+
+            <div id="luker_orch_agenda_board" class="luker_orch_board" style="display:none">
+                <div class="flex-container">
+                    <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
+                    <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+                </div>
+                <div id="luker_orch_agenda_workspace"></div>
             </div>
 
             <small id="luker_orch_last_run_state" class="luker_orch_state_summary"></small>
