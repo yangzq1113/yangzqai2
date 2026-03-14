@@ -43,28 +43,16 @@ const EXPORTED_TOOL_NAMES = Object.freeze({
     VISIT: TOOL_NAMES.VISIT,
 });
 
-const LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = [
-    'You are a pre-request web research agent for roleplay generation.',
-    'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
-    'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
-    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
-    'Search and visit are optional. You may use existing managed search entries as your own database.',
-    'If information is uncertain, highly time-sensitive, or search snippets are insufficient, prefer search plus visit before writing.',
-    'Only delete entries that are explicitly listed as deletable.',
-    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
-    'Do not move or redesign lorebook layout. Runtime controls managed entry position/depth/role/order from current settings.',
-    'Use function calls only. Do not output plain prose outside tool calls.',
-    `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
-].join('\n');
-
 const DEFAULT_AGENT_SYSTEM_PROMPT = [
     'You are a pre-request web research agent for roleplay generation.',
     'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
     'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
     'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
+    'Every managed lorebook entry must read like an objective reference note, not like story direction, roleplay guidance, or character writing advice.',
     'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
     'Do not rewrite source-backed facts to fit the current plot, scene mood, or roleplay direction.',
     'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
+    'Do not write instructions, recommendations, likely reactions, behavioral coaching, tone guidance, scene framing, or any text that tells the main model how to portray a character or continue the story.',
     'If a source is ambiguous, keep wording neutral or do not write it.',
     'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
     'Search and visit are optional. You may use existing managed search entries as your own database.',
@@ -72,30 +60,11 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = [
     `Call ${TOOL_NAMES.AGENT_FINALIZE} only when you are ready to end the run.`,
     `If you call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT}, do not call ${TOOL_NAMES.AGENT_FINALIZE} in that same response. Wait for tool results first.`,
     'Only delete entries that are explicitly listed as deletable.',
-    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'For lorebook writes, provide only the needed persistent factual content, activation keywords, and whether it should always inject.',
+    'Prefer concise declarative fact statements over narrative prose.',
     'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
     'Do not move or redesign lorebook layout. Runtime controls managed entry position/depth/role/order from current settings.',
     'Use function calls only. Do not output plain prose outside tool calls.',
-].join('\n');
-
-const PREVIOUS_DEFAULT_AGENT_SYSTEM_PROMPT = [
-    'You are a pre-request web research agent for roleplay generation.',
-    'Your job is to decide whether any search-backed lorebook update is necessary before the main generation request continues.',
-    'You may finish immediately without searching if active world info, character information, and managed search entries already cover the need.',
-    'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
-    'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
-    'Do not rewrite source-backed facts to fit the current plot, scene mood, or roleplay direction.',
-    'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
-    'If a source is ambiguous, keep wording neutral or do not write it.',
-    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
-    'Search and visit are optional. You may use existing managed search entries as your own database.',
-    'If information is uncertain, highly time-sensitive, or search snippets are insufficient, prefer search plus visit before writing.',
-    'Only delete entries that are explicitly listed as deletable.',
-    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
-    'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
-    'Do not move or redesign lorebook layout. Runtime controls managed entry position/depth/role/order from current settings.',
-    'Use function calls only. Do not output plain prose outside tool calls.',
-    `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
 ].join('\n');
 
 const DEFAULT_AGENT_FINAL_STAGE_PROMPT = [
@@ -104,33 +73,17 @@ const DEFAULT_AGENT_FINAL_STAGE_PROMPT = [
     `Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.`,
     'Use only managed search entries, previous search results, and visited page text already available in the conversation.',
     'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
+    'Every managed lorebook entry must read like an objective reference note, not like story direction, roleplay guidance, or character writing advice.',
     'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
     'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
+    'Do not write instructions, recommendations, likely reactions, behavioral coaching, tone guidance, scene framing, or any text that tells the main model how to portray a character or continue the story.',
     'If a source is ambiguous, keep wording neutral or do not write it.',
     'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
     'Only delete entries that are explicitly listed as deletable.',
     'Delete any managed search entries that are no longer needed, outdated for the current chat branch, duplicated, or unsupported by the gathered evidence.',
     'Do not preserve stale managed search entries just because they already exist.',
-    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
-    'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
-    'Use function calls only. Do not output plain prose outside tool calls.',
-    `If any lorebook change is still needed, do it now and also call ${TOOL_NAMES.AGENT_FINALIZE} in the same response.`,
-    `If no lorebook change is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.`,
-    `Always finish by calling ${TOOL_NAMES.AGENT_FINALIZE}.`,
-].join('\n');
-
-const PREVIOUS_DEFAULT_AGENT_FINAL_STAGE_PROMPT = [
-    'You are the final-stage web research agent for roleplay generation.',
-    'This stage exists to finish the pre-request search pass using only evidence already gathered earlier in this run.',
-    `Do not call ${TOOL_NAMES.AGENT_SEARCH} or ${TOOL_NAMES.AGENT_VISIT} in this stage.`,
-    'Use only managed search entries, previous search results, and visited page text already available in the conversation.',
-    'Search-backed lorebook content must stay strictly faithful to the source text from managed search entries, search results, and visited pages.',
-    'Treat search output as source material only. Any story-driven adaptation, reinterpretation, dramatization, or extrapolation is out of scope.',
-    'Do not infer or invent character emotions, cognition, motives, intentions, hidden thoughts, relationship shifts, future actions, or plot consequences unless the source explicitly states them.',
-    'If a source is ambiguous, keep wording neutral or do not write it.',
-    'Avoid duplicates. If information would repeat existing active world info, character card facts, or existing managed search entries, do not add it.',
-    'Only delete entries that are explicitly listed as deletable.',
-    'For lorebook writes, provide only the needed persistent content, activation keywords, and whether it should always inject.',
+    'For lorebook writes, provide only the needed persistent factual content, activation keywords, and whether it should always inject.',
+    'Prefer concise declarative fact statements over narrative prose.',
     'When writing lorebook content, preserve source scope and uncertainty instead of upgrading it into stronger claims.',
     'Use function calls only. Do not output plain prose outside tool calls.',
     `If any lorebook change is still needed, do it now and also call ${TOOL_NAMES.AGENT_FINALIZE} in the same response.`,
@@ -342,14 +295,9 @@ function ensureSettings() {
     settings.agentApiPresetName = String(settings.agentApiPresetName ?? DEFAULT_SETTINGS.agentApiPresetName).trim();
     settings.agentPresetName = String(settings.agentPresetName ?? DEFAULT_SETTINGS.agentPresetName).trim();
     const normalizedAgentSystemPrompt = String(settings.agentSystemPrompt ?? DEFAULT_SETTINGS.agentSystemPrompt).trim();
-    settings.agentSystemPrompt = normalizedAgentSystemPrompt === LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT
-        || normalizedAgentSystemPrompt === PREVIOUS_DEFAULT_AGENT_SYSTEM_PROMPT
-        ? DEFAULT_SETTINGS.agentSystemPrompt
-        : (normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt);
+    settings.agentSystemPrompt = normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt;
     const normalizedAgentFinalStagePrompt = String(settings.agentFinalStagePrompt ?? DEFAULT_SETTINGS.agentFinalStagePrompt).trim();
-    settings.agentFinalStagePrompt = normalizedAgentFinalStagePrompt === PREVIOUS_DEFAULT_AGENT_FINAL_STAGE_PROMPT
-        ? DEFAULT_SETTINGS.agentFinalStagePrompt
-        : (normalizedAgentFinalStagePrompt || DEFAULT_SETTINGS.agentFinalStagePrompt);
+    settings.agentFinalStagePrompt = normalizedAgentFinalStagePrompt || DEFAULT_SETTINGS.agentFinalStagePrompt;
     settings.agentMaxRounds = clampInteger(
         settings.agentMaxRounds ?? DEFAULT_SETTINGS.agentMaxRounds,
         1,
@@ -2210,6 +2158,8 @@ function buildSearchAgentUserPrompt(payload, {
             : 'Search and visit are optional. Visit is recommended when snippets are weak or the topic is time-sensitive.',
         'Only delete entry_ids from the managed entry list below.',
         'Delete any managed search entries that are no longer needed, duplicated, outdated for this chat branch, or unsupported by the gathered evidence.',
+        'Worldbook entries must be neutral fact records, not plot suggestions or character portrayal guidance.',
+        'Do not tell the main model what anyone should feel, think, say, do, or become next.',
         'For non-always_inject entries, provide activation keywords.',
         '',
         '## Source fidelity rules',
@@ -2217,6 +2167,7 @@ function buildSearchAgentUserPrompt(payload, {
         '- Ignore story pressure when deciding what the source means.',
         '- Do not infer or rewrite emotions, cognition, motives, intentions, hidden facts, relationship changes, or plot consequences unless the source explicitly states them.',
         '- If the source conflicts with your interpretation of the story, preserve the source-backed wording instead of adapting it.',
+        '- Write concise declarative fact statements, not narrative prose or instructions.',
         '',
         '## Latest user message',
         userText || '(No user message found)',
@@ -2281,7 +2232,7 @@ function buildAgentTools() {
             type: 'function',
             function: {
                 name: TOOL_NAMES.AGENT_UPSERT,
-                description: 'Create or update one managed search lorebook entry using only facts explicitly supported by managed search entries, search snippets, or visited page text. Do not infer emotions, cognition, motives, intentions, hidden facts, or plot consequences unless the source explicitly states them. Explicit entry_id matches first; otherwise exact normalized keyword match updates an existing managed entry.',
+                description: 'Create or update one managed search lorebook entry using only facts explicitly supported by managed search entries, search snippets, or visited page text. Entries must read like neutral reference notes, not plot guidance, characterization advice, or instructions for how the roleplay should continue. Do not infer emotions, cognition, motives, intentions, hidden facts, or plot consequences unless the source explicitly states them. Explicit entry_id matches first; otherwise exact normalized keyword match updates an existing managed entry.',
                 parameters: {
                     type: 'object',
                     properties: {
