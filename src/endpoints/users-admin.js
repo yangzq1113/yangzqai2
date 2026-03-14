@@ -177,11 +177,17 @@ router.post('/logs/get', requireAdminMiddleware, async (request, response) => {
     try {
         const parsedLimit = Number(request.body?.limit);
         const parsedSinceId = Number(request.body?.sinceId);
+        const rawStartTime = request.body?.startTime;
+        const rawEndTime = request.body?.endTime;
+        const parsedStartTime = rawStartTime === null || rawStartTime === undefined || rawStartTime === '' ? NaN : Number(rawStartTime);
+        const parsedEndTime = rawEndTime === null || rawEndTime === undefined || rawEndTime === '' ? NaN : Number(rawEndTime);
         const limit = Number.isFinite(parsedLimit) ? Math.min(5000, Math.max(1, Math.floor(parsedLimit))) : 800;
         const sinceId = Number.isFinite(parsedSinceId) ? Math.max(0, Math.floor(parsedSinceId)) : 0;
+        const startTime = Number.isFinite(parsedStartTime) ? Math.max(0, Math.floor(parsedStartTime)) : undefined;
+        const endTime = Number.isFinite(parsedEndTime) ? Math.max(0, Math.floor(parsedEndTime)) : undefined;
         const levels = Array.isArray(request.body?.levels) ? request.body.levels : undefined;
 
-        const result = getCapturedLogs({ sinceId, limit, levels });
+        const result = getCapturedLogs({ sinceId, limit, levels, startTime, endTime });
         return response.json(result);
     } catch (error) {
         console.error('Admin logs get failed:', error);

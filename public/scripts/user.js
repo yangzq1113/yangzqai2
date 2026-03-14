@@ -41,6 +41,8 @@ const BACKUP_FULL_SELECTION = Object.freeze({
     globalExtensions: false,
 });
 const FRONTEND_LOG_LIMIT = 3000;
+const DEFAULT_LOG_VIEW_LIMIT = 300;
+const MAX_LOG_VIEW_LIMIT = 5000;
 const frontendLogBuffer = [];
 let frontendLogNextId = 1;
 let frontendLogCaptureInstalled = false;
@@ -139,12 +141,49 @@ function installFrontendLogCapture() {
     pushFrontendLog('info', ['Frontend log capture enabled.'], 'system');
 }
 
-function getFrontendLogsSnapshot(limit = 1000, sinceId = 0) {
-    const normalizedLimit = Math.max(1, Number(limit) || 1000);
-    const normalizedSinceId = Math.max(0, Number(sinceId) || 0);
+function normalizeOptionalTimestamp(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? Math.max(0, Math.floor(numericValue)) : null;
+}
+
+function normalizeLogQueryOptions(options = {}) {
+    return {
+        limit: Math.min(MAX_LOG_VIEW_LIMIT, Math.max(1, Math.floor(Number(options.limit) || DEFAULT_LOG_VIEW_LIMIT))),
+        sinceId: Math.max(0, Math.floor(Number(options.sinceId) || 0)),
+        startTime: normalizeOptionalTimestamp(options.startTime),
+        endTime: normalizeOptionalTimestamp(options.endTime),
+    };
+}
+
+function parseLogTimeInputValue(value, { roundUpMinute = false } = {}) {
+    const normalizedValue = String(value || '').trim();
+    if (!normalizedValue) {
+        return null;
+    }
+
+    const timestamp = new Date(normalizedValue).getTime();
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+
+    if (roundUpMinute && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalizedValue)) {
+        return timestamp + 59_999;
+    }
+
+    return timestamp;
+}
+
+function getFrontendLogsSnapshot(options = {}) {
+    const { limit, sinceId, startTime, endTime } = normalizeLogQueryOptions(options);
     const entries = frontendLogBuffer
-        .filter((entry) => Number(entry.id) > normalizedSinceId)
-        .slice(-normalizedLimit);
+        .filter((entry) => Number(entry.id) > sinceId)
+        .filter((entry) => startTime === null || Number(entry.timestamp) >= startTime)
+        .filter((entry) => endTime === null || Number(entry.timestamp) <= endTime)
+        .slice(-limit);
     const latestId = frontendLogBuffer.length ? Number(frontendLogBuffer[frontendLogBuffer.length - 1].id) : 0;
     return { entries, latestId };
 }
@@ -1253,11 +1292,12 @@ async function openBackupManager(handle, callback) {
     });
 }
 
-async function fetchServerLogs(limit = 1000, sinceId = 0) {
+async function fetchServerLogs(options = {}) {
+    const { limit, sinceId, startTime, endTime } = normalizeLogQueryOptions(options);
     const response = await fetch('/api/users/logs/get', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ limit, sinceId }),
+        body: JSON.stringify({ limit, sinceId, startTime, endTime }),
     });
 
     if (!response.ok) {
@@ -1309,6 +1349,20 @@ async function openLogsViewer() {
                         <option value="frontend">${t`Frontend`}</option>
                     </select>
                 </label>
+                <label class="checkbox_label backupRestoreModeLabel logFilterLabel">
+                    <span>${t`Start time`}</span>
+                    <input type="datetime-local" class="serverLogsStartTime text_pole" step="60">
+                </label>
+                <label class="checkbox_label backupRestoreModeLabel logFilterLabel">
+                    <span>${t`End time`}</span>
+                    <input type="datetime-local" class="serverLogsEndTime text_pole" step="60">
+                </label>
+                <label class="checkbox_label backupRestoreModeLabel logFilterLabel">
+                    <span>${t`Max entries`}</span>
+                    <input type="number" class="serverLogsLimit text_pole" min="1" max="${MAX_LOG_VIEW_LIMIT}" step="50" value="${DEFAULT_LOG_VIEW_LIMIT}">
+                </label>
+            </div>
+            <div class="backupActionRow flex-container flexGap10 marginBot10">
                 <div class="serverLogsRefreshButton menu_button menu_button_icon">
                     <i class="fa-fw fa-solid fa-rotate"></i>
                     <span>${t`Refresh`}</span>
@@ -1334,9 +1388,14 @@ async function openLogsViewer() {
     const output = template.find('.serverLogsOutput');
     const autoRefresh = template.find('.serverLogsAutoRefresh');
     const sourceSelect = template.find('.serverLogsSource');
+    const startTimeInput = template.find('.serverLogsStartTime');
+    const endTimeInput = template.find('.serverLogsEndTime');
+    const limitInput = template.find('.serverLogsLimit');
     const noteElement = template.find('.serverLogsNote');
     let latestServerId = 0;
     let latestFrontendId = 0;
+    let renderedServerEntries = [];
+    let renderedFrontendEntries = [];
     let closed = false;
     let inFlight = false;
     let currentSource = canViewServerLogs ? 'server' : 'frontend';
@@ -1348,34 +1407,45 @@ async function openLogsViewer() {
             : t`This viewer shows frontend console logs captured in this app session.`);
     };
 
-    const renderServerLogs = (payload, appendOnly = false) => {
-        const lines = Array.isArray(payload?.entries) ? payload.entries.map(formatServerLogEntry) : [];
-
-        if (appendOnly) {
-            const previous = String(output.val() || '');
-            const next = lines.length ? `${previous}${previous ? '\n' : ''}${lines.join('\n')}` : previous;
-            output.val(next);
-        } else {
-            output.val(lines.join('\n'));
-        }
-
-        latestServerId = Number(payload?.latestId) || latestServerId;
+    const renderOutput = (entries, formatter) => {
+        output.val(entries.map(formatter).join('\n'));
         output.scrollTop(output[0]?.scrollHeight || 0);
     };
 
-    const renderFrontendLogs = (payload, appendOnly = false) => {
-        const lines = Array.isArray(payload?.entries) ? payload.entries.map(formatFrontendLogEntry) : [];
-
-        if (appendOnly) {
-            const previous = String(output.val() || '');
-            const next = lines.length ? `${previous}${previous ? '\n' : ''}${lines.join('\n')}` : previous;
-            output.val(next);
-        } else {
-            output.val(lines.join('\n'));
+    const readLogQuery = ({ sinceId = 0, silent = false } = {}) => {
+        const startTime = parseLogTimeInputValue(startTimeInput.val());
+        const endTime = parseLogTimeInputValue(endTimeInput.val(), { roundUpMinute: true });
+        if (startTime !== null && endTime !== null && startTime > endTime) {
+            if (!silent) {
+                toastr.warning(t`Start time must be earlier than end time.`, t`Invalid log filter`);
+            }
+            return null;
         }
 
+        return normalizeLogQueryOptions({
+            limit: limitInput.val(),
+            sinceId,
+            startTime,
+            endTime,
+        });
+    };
+
+    const renderServerLogs = (payload, appendOnly = false, maxEntries = DEFAULT_LOG_VIEW_LIMIT) => {
+        const incomingEntries = Array.isArray(payload?.entries) ? payload.entries : [];
+        renderedServerEntries = appendOnly
+            ? [...renderedServerEntries, ...incomingEntries].slice(-maxEntries)
+            : incomingEntries.slice(-maxEntries);
+        latestServerId = Number(payload?.latestId) || latestServerId;
+        renderOutput(renderedServerEntries, formatServerLogEntry);
+    };
+
+    const renderFrontendLogs = (payload, appendOnly = false, maxEntries = DEFAULT_LOG_VIEW_LIMIT) => {
+        const incomingEntries = Array.isArray(payload?.entries) ? payload.entries : [];
+        renderedFrontendEntries = appendOnly
+            ? [...renderedFrontendEntries, ...incomingEntries].slice(-maxEntries)
+            : incomingEntries.slice(-maxEntries);
         latestFrontendId = Number(payload?.latestId) || latestFrontendId;
-        output.scrollTop(output[0]?.scrollHeight || 0);
+        renderOutput(renderedFrontendEntries, formatFrontendLogEntry);
     };
 
     const reloadAll = async () => {
@@ -1383,14 +1453,19 @@ async function openLogsViewer() {
             return;
         }
 
+        const query = readLogQuery();
+        if (!query) {
+            return;
+        }
+
         inFlight = true;
         try {
             if (currentSource === 'server') {
-                const payload = await fetchServerLogs(2000, 0);
-                renderServerLogs(payload, false);
+                const payload = await fetchServerLogs(query);
+                renderServerLogs(payload, false, query.limit);
             } else {
-                const payload = getFrontendLogsSnapshot(2000, 0);
-                renderFrontendLogs(payload, false);
+                const payload = getFrontendLogsSnapshot(query);
+                renderFrontendLogs(payload, false, query.limit);
             }
         } catch (error) {
             const title = currentSource === 'server' ? t`Failed to fetch server logs` : t`Failed to fetch frontend logs`;
@@ -1406,14 +1481,24 @@ async function openLogsViewer() {
             return;
         }
 
+        const latestId = currentSource === 'server' ? latestServerId : latestFrontendId;
+        const query = readLogQuery({ sinceId: latestId, silent: true });
+        if (!query) {
+            return;
+        }
+
+        if (query.endTime !== null && query.endTime < Date.now()) {
+            return;
+        }
+
         inFlight = true;
         try {
             if (currentSource === 'server') {
-                const payload = await fetchServerLogs(500, latestServerId);
-                renderServerLogs(payload, true);
+                const payload = await fetchServerLogs(query);
+                renderServerLogs(payload, true, query.limit);
             } else {
-                const payload = getFrontendLogsSnapshot(500, latestFrontendId);
-                renderFrontendLogs(payload, true);
+                const payload = getFrontendLogsSnapshot(query);
+                renderFrontendLogs(payload, true, query.limit);
             }
         } catch {
             // Keep silent during background refresh to avoid toast spam.
@@ -1437,6 +1522,12 @@ async function openLogsViewer() {
     });
 
     template.find('.serverLogsRefreshButton').on('click', reloadAll);
+    startTimeInput.on('change', reloadAll);
+    endTimeInput.on('change', reloadAll);
+    limitInput.on('change', function () {
+        $(this).val(readLogQuery({ silent: true })?.limit || DEFAULT_LOG_VIEW_LIMIT);
+        reloadAll();
+    });
     template.find('.serverLogsCopyButton').on('click', async () => {
         try {
             await navigator.clipboard.writeText(String(output.val() || ''));
@@ -1467,10 +1558,12 @@ async function openLogsViewer() {
             if (currentSource === 'server') {
                 await clearServerLogsRemote();
                 latestServerId = 0;
+                renderedServerEntries = [];
                 toastr.success(t`Server logs cleared.`, t`Server Logs`);
             } else {
                 clearFrontendLogs();
                 latestFrontendId = 0;
+                renderedFrontendEntries = [];
                 toastr.success(t`Frontend logs cleared.`, t`Frontend Logs`);
             }
             output.val('');

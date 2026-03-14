@@ -86,14 +86,25 @@ export function clearCapturedLogs() {
     entries.length = 0;
 }
 
+function normalizeOptionalTimestamp(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? Math.max(0, Math.floor(numericValue)) : null;
+}
+
 /**
  * Gets captured logs.
- * @param {{ sinceId?: number; limit?: number; levels?: string[] }} [options]
+ * @param {{ sinceId?: number; limit?: number; levels?: string[]; startTime?: number; endTime?: number }} [options]
  * @returns {{ entries: { id: number; timestamp: number; level: string; message: string }[]; latestId: number }}
  */
 export function getCapturedLogs(options = {}) {
     const sinceId = Number.isFinite(Number(options.sinceId)) ? Math.max(0, Math.floor(Number(options.sinceId))) : 0;
     const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.floor(Number(options.limit))) : 500;
+    const startTime = normalizeOptionalTimestamp(options.startTime);
+    const endTime = normalizeOptionalTimestamp(options.endTime);
     const normalizedLevels = Array.isArray(options.levels)
         ? new Set(options.levels.map(level => String(level || '').toLowerCase()).filter(level => LOG_LEVELS.includes(level)))
         : null;
@@ -105,6 +116,14 @@ export function getCapturedLogs(options = {}) {
 
     if (normalizedLevels && normalizedLevels.size > 0) {
         filtered = filtered.filter(entry => normalizedLevels.has(entry.level));
+    }
+
+    if (startTime !== null) {
+        filtered = filtered.filter(entry => entry.timestamp >= startTime);
+    }
+
+    if (endTime !== null) {
+        filtered = filtered.filter(entry => entry.timestamp <= endTime);
     }
 
     if (filtered.length > limit) {
