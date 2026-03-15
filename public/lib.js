@@ -1,29 +1,53 @@
 /**
- * Add all the libraries that you want to expose to the client here.
- * They are bundled and exposed by Webpack in the /lib.js file.
+ * Library facade for Luker frontend modules.
+ *
+ * Core libraries are bundled into /lib.core.bundle.js and loaded synchronously.
+ * Heavier or less common libraries live in /lib.optional.bundle.js and are
+ * loaded on demand via async helpers.
  */
-import lodash from 'lodash';
-import Fuse from 'fuse.js';
-import DOMPurify from 'dompurify';
-import hljs from 'highlight.js';
-import localforage from 'localforage';
-import Handlebars from 'handlebars';
-import css from '@adobe/css-tools';
-import Bowser from 'bowser';
-import DiffMatchPatch from 'diff-match-patch';
-import { html as diff2htmlHtml } from 'diff2html';
-import { isProbablyReaderable, Readability } from '@mozilla/readability';
-import SVGInject from '@iconfu/svg-inject';
-import showdown from 'showdown';
-import moment from 'moment';
-import seedrandom from 'seedrandom';
-import * as Popper from '@popperjs/core';
-import droll from 'droll';
-import morphdom from 'morphdom';
-import { toggle as slideToggle } from 'slidetoggle';
-import chalk from 'chalk';
-import yaml from 'yaml';
-import * as chevrotain from 'chevrotain';
+import coreBundle, {
+    lodash,
+    Fuse,
+    DOMPurify,
+    hljs,
+    localforage,
+    Handlebars,
+    css,
+    Bowser,
+    DiffMatchPatch,
+    SVGInject,
+    showdown,
+    moment,
+    seedrandom,
+    Popper,
+    droll,
+    morphdom,
+    slideToggle,
+    chalk,
+    yaml,
+    chevrotain,
+} from './lib.core.bundle.js';
+
+let optionalBundlePromise = null;
+
+async function loadOptionalBundle() {
+    if (optionalBundlePromise) {
+        return optionalBundlePromise;
+    }
+
+    optionalBundlePromise = import('./lib.optional.bundle.js');
+    return optionalBundlePromise;
+}
+
+export async function getReadability() {
+    const { Readability, isProbablyReaderable } = await loadOptionalBundle();
+    return { Readability, isProbablyReaderable };
+}
+
+export async function getDiff2Html() {
+    const { diff2htmlHtml } = await loadOptionalBundle();
+    return diff2htmlHtml;
+}
 
 /**
  * Expose the libraries to the 'window' object.
@@ -81,29 +105,9 @@ export function initLibraryShims() {
 }
 
 export default {
-    lodash,
-    Fuse,
-    DOMPurify,
-    hljs,
-    localforage,
-    Handlebars,
-    css,
-    Bowser,
-    DiffMatchPatch,
-    diff2htmlHtml,
-    Readability,
-    isProbablyReaderable,
-    SVGInject,
-    showdown,
-    moment,
-    seedrandom,
-    Popper,
-    droll,
-    morphdom,
-    slideToggle,
-    chalk,
-    yaml,
-    chevrotain,
+    ...coreBundle,
+    getReadability,
+    getDiff2Html,
 };
 
 export {
@@ -116,9 +120,6 @@ export {
     css,
     Bowser,
     DiffMatchPatch,
-    diff2htmlHtml,
-    Readability,
-    isProbablyReaderable,
     SVGInject,
     showdown,
     moment,

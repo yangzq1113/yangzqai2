@@ -5,7 +5,7 @@ import webpack from 'webpack';
 import { serverDirectory } from './src/server-directory.js';
 
 /**
- * Get the Webpack configuration for the public/lib.js file.
+ * Get the Webpack configuration for the bundled frontend library chunks.
  * 1. Docker has got cache and the output file pre-baked.
  * 2. Non-Docker environments use the global DATA_ROOT variable to determine the cache and output directories.
  * @param {boolean} forceDist Whether to force the use the /dist folder.
@@ -42,7 +42,10 @@ export default function getPublicLibConfig(forceDist = false) {
 
     return {
         mode: 'production',
-        entry: path.join(serverDirectory, 'public/lib.js'),
+        entry: {
+            'lib.core.bundle': path.join(serverDirectory, 'public/lib-bundle-core.js'),
+            'lib.optional.bundle': path.join(serverDirectory, 'public/lib-bundle-optional.js'),
+        },
         cache: {
             type: 'filesystem',
             cacheDirectory: cacheDirectory,
@@ -67,7 +70,8 @@ export default function getPublicLibConfig(forceDist = false) {
         },
         output: {
             path: outputDirectory,
-            filename: 'lib.js',
+            filename: '[name].js',
+            clean: true,
             libraryTarget: 'module',
         },
     };
