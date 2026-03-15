@@ -1586,49 +1586,60 @@ async function firstLoadInit() {
     initKoboldSettings();
     initNovelAISettings();
     initSystemPrompts();
-    initExtensions();
-    initExtensionSlashCommands();
-    ToolManager.initToolSlashCommands();
     await initPresetManager();
     await initSystemMessages();
     await getSettings({ bootstrap: true });
     initKeyboard();
     initDynamicStyles();
-    initTags();
-    initBookmarks();
-    initBackgrounds();
-    initAuthorsNote();
 
     if (isLoaderVisible()) {
         await hideLoader();
     }
     await fixViewport();
+    await yieldToBrowser();
 
-    await getUserAvatars(true, user_avatar);
-    await getCharacters();
-    await initTokenizers();
-    await initPersonas();
-    await initSlashCommandAutoComplete();
-    initMacroAutoComplete();
-    initWorldInfo();
-    initHorde();
-    initRossMods();
-    initStats();
-    initCfg();
-    initLogprobs();
-    initInputMarkdown();
-    initServerHistory();
-    initSettingsSearch();
-    initBulkEdit();
-    initReasoning();
-    initWelcomeScreen();
-    await initScrapers();
-    initCustomSelectedSamplers();
-    initDataMaid();
-    initItemizedPrompts();
-    initAccessibility();
-    addDebugFunctions();
-    doDailyExtensionUpdatesCheck();
+    await runStartupTasks([
+        () => initTags(),
+        () => initBookmarks(),
+        () => initBackgrounds(),
+        () => initAuthorsNote(),
+        () => getUserAvatars(true, user_avatar),
+        () => getCharacters(),
+    ]);
+    await yieldToBrowser();
+
+    await runStartupTasks([
+        () => initExtensions(),
+        () => initExtensionSlashCommands(),
+        () => ToolManager.initToolSlashCommands(),
+        () => initTokenizers(),
+        () => initPersonas(),
+        () => initSlashCommandAutoComplete(),
+        () => initMacroAutoComplete(),
+    ]);
+    await yieldToBrowser();
+
+    await runStartupTasks([
+        () => initWorldInfo(),
+        () => initHorde(),
+        () => initRossMods(),
+        () => initStats(),
+        () => initCfg(),
+        () => initLogprobs(),
+        () => initInputMarkdown(),
+        () => initServerHistory(),
+        () => initSettingsSearch(),
+        () => initBulkEdit(),
+        () => initReasoning(),
+        () => initWelcomeScreen(),
+        () => initScrapers(),
+        () => initCustomSelectedSamplers(),
+        () => initDataMaid(),
+        () => initItemizedPrompts(),
+        () => initAccessibility(),
+        () => addDebugFunctions(),
+        () => doDailyExtensionUpdatesCheck(),
+    ]);
     await eventSource.emit(event_types.APP_READY);
 }
 
@@ -1636,6 +1647,18 @@ async function fixViewport() {
     document.body.style.position = 'absolute';
     await delay(1);
     document.body.style.position = '';
+}
+
+function runStartupTasks(tasks) {
+    return tasks.reduce(
+        (chain, task) => chain.then(() => task()),
+        Promise.resolve(),
+    );
+}
+
+async function yieldToBrowser() {
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    await delay(0);
 }
 
 function initStandaloneMode() {
