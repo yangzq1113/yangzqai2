@@ -194,7 +194,17 @@ export async function openWelcomeScreen({ force = false, expand = false } = {}) 
     }
 
     await sendWelcomePanel(recentChats, expand);
+    void hydrateWelcomeScreenMessages(currentChatId);
+}
+
+async function hydrateWelcomeScreenMessages(expectedChatId) {
     await unshallowPermanentAssistant();
+
+    const welcomePanelVisible = Boolean(document.querySelector('#chat .welcomePanel'));
+    if (getCurrentChatId() !== expectedChatId || !welcomePanelVisible) {
+        return;
+    }
+
     sendAssistantMessage();
     sendWelcomePrompt();
 }
@@ -299,6 +309,16 @@ function sendAssistantMessage() {
 
 function sendWelcomePrompt() {
     const message = getSystemMessageByType(system_message_types.WELCOME_PROMPT);
+    if (!message) {
+        eventSource.once(event_types.APP_READY, () => {
+            if (getCurrentChatId() !== undefined || !document.querySelector('#chat .welcomePanel')) {
+                return;
+            }
+            sendWelcomePrompt();
+        });
+        return;
+    }
+
     chat.push(message);
     addOneMessage(message, { scroll: false });
 }

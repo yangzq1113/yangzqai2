@@ -1598,6 +1598,7 @@ async function firstLoadInit() {
     initSystemPrompts();
     await getSettings({ bootstrap: true, payload: bootstrapSnapshot?.settings });
     primeRecentChatsSnapshotPromise(fetchRecentChatsSnapshot());
+    initWelcomeScreen();
     initKeyboard();
     initDynamicStyles();
 
@@ -1623,6 +1624,12 @@ async function firstLoadInit() {
         () => getCharacters(),
     ]);
     await yieldToBrowser();
+
+    const shouldAutoloadCurrentChat = Boolean(power_user.auto_load_chat && (active_character || active_group));
+    if (!shouldAutoloadCurrentChat) {
+        await openWelcomeScreen({ force: true });
+        await yieldToBrowser();
+    }
 
     await runStartupTasks([
         () => initTextGenModelSelects(),
@@ -1650,7 +1657,6 @@ async function firstLoadInit() {
         () => initSettingsSearch(),
         () => initBulkEdit(),
         () => initReasoning(),
-        () => initWelcomeScreen(),
         () => initScrapers(),
         () => initCustomSelectedSamplers(),
         () => initDataMaid(),
