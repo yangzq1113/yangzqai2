@@ -87,6 +87,12 @@ function normalizeWorldInfoSaveOptions(options = null) {
     };
 }
 
+function mergeWorldInfoSaveOptions(baseOptions = null, overrideOptions = null) {
+    return {
+        asyncDiff: overrideOptions?.asyncDiff ?? baseOptions?.asyncDiff ?? true,
+    };
+}
+
 const saveWorldDebounced = debounce(async (name, data, options = null) => await _save(name, data, options), debounce_timeout.relaxed);
 const saveSettingsDebounced = debounce(() => {
     Object.assign(world_info, { globalSelect: selected_world_info });
@@ -94,6 +100,8 @@ const saveSettingsDebounced = debounce(() => {
 }, debounce_timeout.relaxed);
 const sortFn = (a, b) => b.order - a.order;
 let updateEditor = (navigation, flashOnNav = true) => { console.debug('Triggered WI navigation', navigation, flashOnNav); };
+let worldInfoSaveInFlight = null;
+let worldInfoSaveQueuedRequest = null;
 
 // Do not optimize. updateEditor is a function that is updated by the displayWorldEntries with new data.
 export const worldInfoFilter = new FilterHelper(() => updateEditor());
@@ -4855,19 +4863,17 @@ export function createWorldInfoEntry(_name, data) {
     return newEntry;
 }
 
-async function _save(name, data, options = {}) {
-    // Prevent double saving if both immediate and debounced save are called
-    cancelDebounce(saveWorldDebounced);
-
+async function saveWorldInfoInternal(name, data, options = {}) {
     let saved = false;
+    const payload = cloneJsonValue(data);
     const previousSnapshot = getWorldInfoSnapshot(name);
-    const canPatch = isPlainObject(previousSnapshot) && isPlainObject(data);
+    const canPatch = isPlainObject(previousSnapshot) && isPlainObject(payload);
     const normalizedOptions = normalizeWorldInfoSaveOptions(options);
 
     if (canPatch) {
         const operations = normalizedOptions.asyncDiff
-            ? await buildObjectPatchOperationsAsync(previousSnapshot, data, { maxOperations: 16000 })
-            : buildObjectPatchOperations(previousSnapshot, data, { maxOperations: 16000 });
+            ? await buildObjectPatchOperationsAsync(previousSnapshot, payload, { maxOperations: 16000 })
+            : buildObjectPatchOperations(previousSnapshot, payload, { maxOperations: 16000 });
         if (operations.length === 0) {
             saved = true;
         } else {
@@ -4884,15 +4890,46 @@ async function _save(name, data, options = {}) {
         const fullSaveResult = await fetch('/api/worldinfo/edit', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ name: name, data: data }),
+            body: JSON.stringify({ name: name, data: payload }),
         });
         if (!fullSaveResult.ok) {
             throw new Error(`Failed to save world info: ${fullSaveResult.status}`);
         }
     }
 
-    rememberWorldInfoSnapshot(name, data);
-    await eventSource.emit(event_types.WORLDINFO_UPDATED, name, data);
+    rememberWorldInfoSnapshot(name, payload);
+    await eventSource.emit(event_types.WORLDINFO_UPDATED, name, payload);
+}
+
+async function _save(name, data, options = {}) {
+    // Prevent double saving if both immediate and debounced save are called
+    cancelDebounce(saveWorldDebounced);
+
+    const normalizedOptions = normalizeWorldInfoSaveOptions(options);
+
+    if (worldInfoSaveInFlight) {
+        worldInfoSaveQueuedRequest = {
+            name,
+            data,
+            options: mergeWorldInfoSaveOptions(worldInfoSaveQueuedRequest?.options, normalizedOptions),
+        };
+        return worldInfoSaveInFlight;
+    }
+
+    worldInfoSaveInFlight = (async () => {
+        try {
+            await saveWorldInfoInternal(name, data, normalizedOptions);
+        } finally {
+            worldInfoSaveInFlight = null;
+            if (worldInfoSaveQueuedRequest) {
+                const queuedRequest = worldInfoSaveQueuedRequest;
+                worldInfoSaveQueuedRequest = null;
+                await _save(queuedRequest.name, queuedRequest.data, queuedRequest.options);
+            }
+        }
+    })();
+
+    return worldInfoSaveInFlight;
 }
 
 
