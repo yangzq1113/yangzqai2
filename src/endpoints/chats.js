@@ -33,6 +33,20 @@ export const CHAT_BACKUPS_PREFIX = 'chat_';
 const CHAT_STATE_FILE_PREFIX = '.luker-state.';
 const CHAT_STATE_FILE_SUFFIX = '.json';
 const CHAT_SYNC_NAMESPACE = 'chat_sync';
+const monthNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+];
 
 /**
  * Saves a chat to the backups directory.
@@ -96,6 +110,70 @@ function getPreviewMessage(lastMessage) {
     return lastMessage.length > strlen
         ? '...' + lastMessage.substring(lastMessage.length - strlen)
         : lastMessage;
+}
+
+function normalizeRecentChatSortTime(timestamp, fallback = 0) {
+    if (!timestamp) {
+        return fallback;
+    }
+
+    if (timestamp instanceof Date) {
+        return Number.isFinite(timestamp.getTime()) ? timestamp.getTime() : fallback;
+    }
+
+    if (typeof timestamp === 'number' || /^\d+$/.test(String(timestamp))) {
+        const unixTime = Number(timestamp);
+        return Number.isFinite(unixTime) && !Number.isNaN(unixTime) && unixTime >= 0 ? unixTime : fallback;
+    }
+
+    const normalizedTimestamp = String(timestamp).trim();
+    const isoPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+    if (isoPattern.test(normalizedTimestamp)) {
+        const parsedIsoTime = new Date(normalizedTimestamp).getTime();
+        return Number.isFinite(parsedIsoTime) ? parsedIsoTime : fallback;
+    }
+
+    const meridiemMatch = normalizedTimestamp.match(/(\w+)\s(\d{1,2}),\s(\d{4})\s(\d{1,2}):(\d{1,2})(am|pm)/i);
+    if (meridiemMatch) {
+        const [, month, day, year, hour, minute, meridiem] = meridiemMatch;
+        const monthNum = monthNames.indexOf(month) + 1;
+        if (monthNum > 0) {
+            const hour24 = meridiem.toLowerCase() === 'pm' ? (parseInt(hour, 10) % 12) + 12 : parseInt(hour, 10) % 12;
+            const isoTimestamp = `${year}-${monthNum.toString().padStart(2, '0')}-${day.padStart(2, '0')}T${hour24.toString().padStart(2, '0')}:${minute.padStart(2, '0')}:00`;
+            const parsedMeridiemTime = new Date(isoTimestamp).getTime();
+            if (Number.isFinite(parsedMeridiemTime)) {
+                return parsedMeridiemTime;
+            }
+        }
+    }
+
+    const humanizedFormats = [
+        /(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s(\d{1,3})ms/,
+        /(\d{4})-(\d{1,2})-(\d{1,2})@(\d{1,2})h(\d{1,2})m(\d{1,2})s/,
+        /(\d{4})-(\d{1,2})-(\d{1,2}) @(\d{1,2})h (\d{1,2})m (\d{1,2})s (\d{1,3})ms/,
+    ];
+
+    for (const format of humanizedFormats) {
+        const match = normalizedTimestamp.match(format);
+        if (!match) {
+            continue;
+        }
+
+        const [, year, month, day, hour, minute, second, millisecond = ''] = match;
+        const fractional = millisecond ? `.${millisecond.padStart(3, '0')}` : '';
+        const isoTimestamp = `${year.padStart(4, '0')}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${hour.padStart(2, '0')}:${minute.padStart(2, '0')}:${second.padStart(2, '0')}${fractional}Z`;
+        const parsedHumanizedTime = new Date(isoTimestamp).getTime();
+        if (Number.isFinite(parsedHumanizedTime)) {
+            return parsedHumanizedTime;
+        }
+    }
+
+    const parsedTime = new Date(normalizedTimestamp).getTime();
+    return Number.isFinite(parsedTime) ? parsedTime : fallback;
+}
+
+function getRecentChatSortTime(chatInfo) {
+    return normalizeRecentChatSortTime(chatInfo?.sort_time ?? chatInfo?.last_mes, 0);
 }
 
 /**
@@ -716,6 +794,7 @@ function createIntegrityMismatchError(filePath, expectedIntegrity) {
  * @property {number} [chat_items] - The number of chat items in the file
  * @property {string} [mes] - The last message in the chat
  * @property {number|string} [last_mes] - The timestamp of the last message
+ * @property {number} [sort_time] - Normalized numeric timestamp used for sorting
  * @property {object} [chat_metadata] - Additional chat metadata
  * @property {boolean} [match] - Whether the chat matches the search criteria
  */
@@ -744,6 +823,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
             chat_items: 0,
             mes: '[The chat is empty]',
             last_mes: stats.mtimeMs,
+            sort_time: stats.mtimeMs,
             ...additionalData,
         };
 
@@ -792,6 +872,7 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
                     chatData.chat_items = (itemCounter - 1);
                     chatData.mes = jsonData.mes || '[The message is empty]';
                     chatData.last_mes = jsonData.send_date || new Date(Math.round(stats.mtimeMs)).toISOString();
+                    chatData.sort_time = normalizeRecentChatSortTime(chatData.last_mes, stats.mtimeMs);
                     chatData.match = hasMatcher ? hasAnyMatch : true;
 
                     res(chatData);
@@ -2585,7 +2666,7 @@ router.post('/recent', async function (request, response) {
             if (isAPinned && !isBPinned) return -1;
             if (!isAPinned && isBPinned) return 1;
 
-            return new Date(b.last_mes || 0).getTime() - new Date(a.last_mes || 0).getTime();
+            return getRecentChatSortTime(b) - getRecentChatSortTime(a);
         }).slice(0, max);
         const validFiles = sortedChats.filter(chatFile => chatFile.file_name);
 
