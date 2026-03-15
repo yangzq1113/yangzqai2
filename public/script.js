@@ -10059,15 +10059,28 @@ export function buildChatMessagePatchOperations(previousMessages, nextMessages) 
     return attachChatMessagePatchTests(previous, operations);
 }
 
-function buildChatMetadataPatchOperations(previousMetadata, nextMetadata) {
+function normalizeChatMetadataForPatch(metadata) {
     // `integrity` is a concurrency token, not business metadata.
     // Excluding it avoids stale-snapshot JSON-Patch test failures on /integrity.
-    const normalize = (metadata) => {
-        const source = isPlainObject(metadata) ? cloneJsonValue(metadata) : {};
-        delete source.integrity;
-        return source;
-    };
-    return buildObjectPatchOperations(normalize(previousMetadata), normalize(nextMetadata), { maxOperations: 2000 });
+    const source = isPlainObject(metadata) ? cloneJsonValue(metadata) : {};
+    delete source.integrity;
+    return source;
+}
+
+export function buildChatMetadataPatchOperations(previousMetadata, nextMetadata) {
+    return buildObjectPatchOperations(
+        normalizeChatMetadataForPatch(previousMetadata),
+        normalizeChatMetadataForPatch(nextMetadata),
+        { maxOperations: 2000 },
+    );
+}
+
+export async function buildChatMetadataPatchOperationsAsync(previousMetadata, nextMetadata) {
+    return await buildObjectPatchOperationsAsync(
+        normalizeChatMetadataForPatch(previousMetadata),
+        normalizeChatMetadataForPatch(nextMetadata),
+        { maxOperations: 2000 },
+    );
 }
 
 function rememberChatMetadataSnapshot(target = resolveChatStateTarget(), metadata = chat_metadata) {
@@ -10481,7 +10494,9 @@ export async function updateChatState(namespace, updater, options = {}) {
             }
 
             const nextState = normalizeJsonObject(nextStateRaw);
-            const operations = buildObjectPatchOperations(currentState, nextState, { maxOperations });
+            const operations = options?.asyncDiff === false
+                ? buildObjectPatchOperations(currentState, nextState, { maxOperations })
+                : await buildObjectPatchOperationsAsync(currentState, nextState, { maxOperations });
             if (operations.length === 0) {
                 return {
                     ok: true,
@@ -10838,7 +10853,7 @@ export async function saveChatMetadata(withMetadata = undefined, retryCount = 0)
 
         const snapshotKey = getChatMetadataSnapshotKey(target);
         const previousMetadata = snapshotKey ? chatMetadataSnapshotCache.get(snapshotKey) : null;
-        const operations = buildChatMetadataPatchOperations(previousMetadata, metadata);
+        const operations = await buildChatMetadataPatchOperationsAsync(previousMetadata, metadata);
 
         // Nothing changed.
         if (operations.length === 0) {
@@ -11819,13 +11834,13 @@ function getSettingsSnapshot() {
 
 function mergeSettingsSaveOptions(baseOptions = null, overrideOptions = null) {
     return {
-        asyncDiff: Boolean(baseOptions?.asyncDiff || overrideOptions?.asyncDiff),
+        asyncDiff: overrideOptions?.asyncDiff ?? baseOptions?.asyncDiff ?? true,
     };
 }
 
 function normalizeSettingsSaveOptions(options = null) {
     const normalized = {
-        asyncDiff: Boolean(options?.asyncDiff || options?.diffMode === 'async'),
+        asyncDiff: options?.asyncDiff !== false && options?.diffMode !== 'sync',
     };
 
     if (forceAsyncDiffForNextSettingsSave) {

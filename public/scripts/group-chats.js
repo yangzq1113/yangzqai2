@@ -84,7 +84,7 @@ import {
     seedChatMessageSnapshot,
     getChatMetadataSnapshot,
     getChatMessageSnapshot,
-    buildObjectPatchOperations,
+    buildChatMetadataPatchOperationsAsync,
     buildChatMessagePatchOperations,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect } from './tags.js';
@@ -670,7 +670,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttem
             });
         } else {
             const previousMetadata = getChatMetadataSnapshot(target);
-            const metadataOperations = buildObjectPatchOperations(previousMetadata, chat_metadata, { maxOperations: 2000 });
+            const metadataOperations = await buildChatMetadataPatchOperationsAsync(previousMetadata, chat_metadata);
             if (metadataOperations.length === 0) {
                 response = { ok: true };
             } else {

@@ -81,7 +81,13 @@ export let world_info_use_group_scoring = false;
 export let world_info_character_strategy = world_info_insertion_strategy.character_first;
 export let world_info_budget_cap = 0;
 export let world_info_max_recursion_steps = 0;
-const saveWorldDebounced = debounce(async (name, data) => await _save(name, data), debounce_timeout.relaxed);
+function normalizeWorldInfoSaveOptions(options = null) {
+    return {
+        asyncDiff: options?.asyncDiff !== false,
+    };
+}
+
+const saveWorldDebounced = debounce(async (name, data, options = null) => await _save(name, data, options), debounce_timeout.relaxed);
 const saveSettingsDebounced = debounce(() => {
     Object.assign(world_info, { globalSelect: selected_world_info });
     saveSettings();
@@ -4721,9 +4727,10 @@ async function _save(name, data, options = {}) {
     let saved = false;
     const previousSnapshot = getWorldInfoSnapshot(name);
     const canPatch = isPlainObject(previousSnapshot) && isPlainObject(data);
+    const normalizedOptions = normalizeWorldInfoSaveOptions(options);
 
     if (canPatch) {
-        const operations = options.asyncDiff
+        const operations = normalizedOptions.asyncDiff
             ? await buildObjectPatchOperationsAsync(previousSnapshot, data, { maxOperations: 16000 })
             : buildObjectPatchOperations(previousSnapshot, data, { maxOperations: 16000 });
         if (operations.length === 0) {
@@ -4774,12 +4781,13 @@ export async function saveWorldInfo(name, data, immediately = false, options = {
 
     // Update cache immediately, so any future call can pull from this
     worldInfoCache.set(name, data);
+    const normalizedOptions = normalizeWorldInfoSaveOptions(options);
 
     if (immediately) {
-        return await _save(name, data, options);
+        return await _save(name, data, normalizedOptions);
     }
 
-    saveWorldDebounced(name, data);
+    saveWorldDebounced(name, data, normalizedOptions);
 }
 
 async function renameWorldInfo(name, data) {
