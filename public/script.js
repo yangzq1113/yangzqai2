@@ -1594,8 +1594,6 @@ async function firstLoadInit() {
     initKoboldSettings();
     initNovelAISettings();
     initSystemPrompts();
-    await initPresetManager();
-    await initSystemMessages();
     await getSettings({ bootstrap: true, payload: bootstrapSnapshot?.settings });
     initKeyboard();
     initDynamicStyles();
@@ -1623,6 +1621,8 @@ async function firstLoadInit() {
     await yieldToBrowser();
 
     await runStartupTasks([
+        () => initPresetManager(),
+        () => initSystemMessages(),
         () => initExtensions(),
         () => initExtensionSlashCommands(),
         () => ToolManager.initToolSlashCommands(),
