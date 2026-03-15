@@ -2831,12 +2831,16 @@ function updateWorldEntryKeyOptionsCache(keyOptions, { remove = false, reset = f
     worldEntryKeyOptionsCache.sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
 }
 
-function clearEntryList($list) {
-    console.time('clearEntryList');
+function cleanupEntryList($list, { measure = true } = {}) {
+    if (measure) {
+        console.time('clearEntryList');
+    }
 
     // List already empty, skipping cleanup
     if (!$list.children().length) {
-        console.timeEnd('clearEntryList');
+        if (measure) {
+            console.timeEnd('clearEntryList');
+        }
         return;
     }
 
@@ -2885,12 +2889,156 @@ function clearEntryList($list) {
 
     // Final cleanup
     if (totalElementsOfAnyKindLeftInList) {
-        console.time('empty');
+        if (measure) {
+            console.time('empty');
+        }
         $list.empty();
-        console.timeEnd('empty');
+        if (measure) {
+            console.timeEnd('empty');
+        }
     }
 
-    console.timeEnd('clearEntryList');
+    if (measure) {
+        console.timeEnd('clearEntryList');
+    }
+}
+
+function clearEntryList($list) {
+    cleanupEntryList($list, { measure: true });
+}
+
+function destroyWorldEntryBlock($block) {
+    if (!$block?.length) {
+        return;
+    }
+
+    const scratch = $('<div>');
+    scratch.append($block);
+    cleanupEntryList(scratch, { measure: false });
+}
+
+function getWorldEntryRenderSignature(entry) {
+    try {
+        return JSON.stringify(entry);
+    } catch {
+        return String(entry?.uid ?? '');
+    }
+}
+
+function isWorldEntryBlockInteractive($block) {
+    if (!$block?.length) {
+        return false;
+    }
+
+    const root = $block[0];
+    const activeElement = document.activeElement;
+    if (root instanceof Element && activeElement instanceof Element && root.contains(activeElement)) {
+        return true;
+    }
+
+    return $block.find('.inline-drawer-content:visible, .select2-container--open').length > 0;
+}
+
+function getWorldEntryRenderContextKey({ isCustomOrder }) {
+    return JSON.stringify({
+        isCustomOrder: Boolean(isCustomOrder),
+        isMobile: Boolean(isMobile()),
+        keyInputPlaintext: Boolean(power_user.wi_key_input_plaintext),
+    });
+}
+
+function stampWorldEntryBlock($block, entry, { name, data, isCustomOrder }) {
+    if (!$block?.length) {
+        return;
+    }
+
+    $block.data('worldEntryRenderName', name);
+    $block.data('worldEntryRenderData', data);
+    $block.data('worldEntryRenderSignature', getWorldEntryRenderSignature(entry));
+    $block.data('worldEntryRenderContextKey', getWorldEntryRenderContextKey({ isCustomOrder }));
+}
+
+function canReuseWorldEntryBlock($block, entry, { name, data, isCustomOrder }) {
+    if (!$block?.length) {
+        return false;
+    }
+
+    if ($block.data('worldEntryRenderName') !== name || $block.data('worldEntryRenderData') !== data) {
+        return false;
+    }
+
+    if ($block.data('worldEntryRenderContextKey') !== getWorldEntryRenderContextKey({ isCustomOrder })) {
+        return false;
+    }
+
+    const signature = getWorldEntryRenderSignature(entry);
+    if (isWorldEntryBlockInteractive($block)) {
+        $block.data('worldEntryRenderSignature', signature);
+        return true;
+    }
+
+    return $block.data('worldEntryRenderSignature') === signature;
+}
+
+async function renderWorldEntriesPage(worldEntriesList, name, data, page, renderPass, keywordHeaders) {
+    if (Number(worldEntriesList.data('worldEntryRenderPass')) !== Number(renderPass)) {
+        return;
+    }
+
+    const isCustomOrder = $('#world_info_sort_order').find(':selected').data('rule') === 'custom';
+    const existingBlocks = new Map(
+        worldEntriesList.children('.world_entry').toArray().map((element) => {
+            const block = $(element);
+            return [String(block.data('uid')), block];
+        }),
+    );
+    const nextBlocks = [];
+
+    for (const entry of page) {
+        if (Number(worldEntriesList.data('worldEntryRenderPass')) !== Number(renderPass)) {
+            return;
+        }
+
+        try {
+            const uid = String(entry?.uid ?? '');
+            let block = existingBlocks.get(uid) ?? null;
+            if (block) {
+                existingBlocks.delete(uid);
+                if (!canReuseWorldEntryBlock(block, entry, { name, data, isCustomOrder })) {
+                    destroyWorldEntryBlock(block);
+                    block = null;
+                }
+            }
+
+            if (!block) {
+                block = await getWorldEntry(name, data, entry);
+                if (!block) {
+                    continue;
+                }
+            }
+
+            if (!isCustomOrder) {
+                block.find('.drag-handle').remove();
+            }
+
+            stampWorldEntryBlock(block, entry, { name, data, isCustomOrder });
+            nextBlocks.push(block[0]);
+        } catch (error) {
+            console.error(`Error while processing entry ${entry?.uid}:`, error);
+        }
+    }
+
+    if (Number(worldEntriesList.data('worldEntryRenderPass')) !== Number(renderPass)) {
+        return;
+    }
+
+    for (const [, block] of existingBlocks) {
+        destroyWorldEntryBlock(block);
+    }
+
+    worldEntriesList.children().not('.world_entry').remove();
+    worldEntriesList.append(keywordHeaders);
+    worldEntriesList.append(nextBlocks);
 }
 
 //MARK: displayWorldEntries
@@ -2898,10 +3046,20 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     updateEditor = async (navigation, flashOnNav = true) => await displayWorldEntries(name, data, navigation, flashOnNav);
 
     const worldEntriesList = $('#world_popup_entries_list');
-    clearEntryList(worldEntriesList);
+    const shouldResetRenderedPage = worldEntriesList.data('worldEntryRenderName') !== name
+        || worldEntriesList.data('worldEntryRenderData') !== data;
+    if (shouldResetRenderedPage) {
+        clearEntryList(worldEntriesList);
+    }
+    const renderPass = Number(worldEntriesList.data('worldEntryRenderPass') || 0) + 1;
+    worldEntriesList.data('worldEntryRenderPass', renderPass);
+    worldEntriesList.data('worldEntryRenderName', name);
+    worldEntriesList.data('worldEntryRenderData', data);
     worldEntriesList.show();
 
     if (!data || !('entries' in data)) {
+        clearEntryList(worldEntriesList);
+        worldEntriesList.removeData('worldEntryRenderName worldEntryRenderData');
         $('#world_popup_new').off('click').on('click', nullWorldInfo);
         $('#world_popup_name_button').off('click').on('click', nullWorldInfo);
         $('#world_popup_export').off('click').on('click', nullWorldInfo);
@@ -2953,6 +3111,9 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
     const storageKey = 'WI_PerPage';
     const perPageDefault = 25;
+    const entriesArray = getDataArray();
+    const perPage = Number(accountStorage.getItem(storageKey)) || perPageDefault;
+    const keywordHeaders = await renderTemplateAsync('worldInfoKeywordHeaders');
     let startPage = 1;
 
     if (navigation === navigation_option.previous) {
@@ -2960,15 +3121,13 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     }
 
     if (typeof navigation === 'number' && Number(navigation) >= 0) {
-        const data = getDataArray();
-        const uidIndex = data.findIndex(x => x.uid === navigation);
-        const perPage = Number(accountStorage.getItem(storageKey)) || perPageDefault;
+        const uidIndex = entriesArray.findIndex(x => x.uid === navigation);
         startPage = Math.floor(uidIndex / perPage) + 1;
     }
 
     $('#world_info_pagination').pagination({
-        dataSource: getDataArray,
-        pageSize: Number(accountStorage.getItem(storageKey)) || perPageDefault,
+        dataSource: entriesArray,
+        pageSize: perPage,
         sizeChangerOptions: [10, 25, 50, 100, 500, 1000],
         showSizeChanger: true,
         pageRange: 1,
@@ -2981,31 +3140,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         showNavigator: true,
         callback: async function (/** @type {object[]} */ page) {
             try {
-                clearEntryList(worldEntriesList);
-
-                const keywordHeaders = await renderTemplateAsync('worldInfoKeywordHeaders');
-                const blocks = [];
-
-                for (const entry of page) {
-                    try {
-                        const block = await getWorldEntry(name, data, entry);
-                        if (block) {
-                            blocks.push(block);
-                        }
-                    } catch (error) {
-                        console.error(`Error while processing entry ${entry.uid}:`, error);
-                    }
-                }
-
-                const isCustomOrder = $('#world_info_sort_order').find(':selected').data('rule') === 'custom';
-                if (!isCustomOrder) {
-                    blocks.forEach(block => {
-                        block.find('.drag-handle').remove();
-                    });
-                }
-
-                worldEntriesList.append(keywordHeaders);
-                worldEntriesList.append(blocks);
+                await renderWorldEntriesPage(worldEntriesList, name, data, page, renderPass, keywordHeaders);
             } catch (error) {
                 console.error('Error while rendering WI entries:', error);
             }
@@ -7395,13 +7530,21 @@ export function initWorldInfo() {
         }, { buttonStyle: true, closeDrawer: true });
     }
 
+    let worldInfoAutocompleteCloseFrame = 0;
     $('#WorldInfo').on('scroll', () => {
-        $('.world_entry input[name="group"], .world_entry input[name="automationId"]').each((_, el) => {
-            const instance = $(el).autocomplete('instance');
+        if (worldInfoAutocompleteCloseFrame) {
+            return;
+        }
 
-            if (instance !== undefined) {
-                $(el).autocomplete('close');
-            }
+        worldInfoAutocompleteCloseFrame = requestAnimationFrame(() => {
+            worldInfoAutocompleteCloseFrame = 0;
+            $('.world_entry input[name="group"], .world_entry input[name="automationId"]').each((_, el) => {
+                const instance = $(el).autocomplete('instance');
+
+                if (instance !== undefined) {
+                    $(el).autocomplete('close');
+                }
+            });
         });
     });
 }
