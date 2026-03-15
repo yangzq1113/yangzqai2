@@ -5957,18 +5957,9 @@ function renderDynamicPanels(root, context) {
     const override = activeAvatar ? getCharacterOverrideByAvatar(context, activeAvatar) : null;
     const agendaOverride = activeAvatar ? getCharacterAgendaOverrideByAvatar(context, activeAvatar) : null;
     const scope = getDisplayedScope(context, settings);
-    const editor = getEditorByScope(scope);
-    const agendaEditor = getAgendaEditorByScope(scope);
     const isCharacterScope = scope === 'character';
     const isOverrideEnabled = Boolean(override?.enabled);
     const isAgendaOverrideEnabled = Boolean(agendaOverride?.enabled);
-    const profileTitle = isCharacterScope
-        ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
-        : i18n('Global Orchestration Profile');
-    const agendaProfileTitle = isCharacterScope
-        ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
-        : i18n('Global Orchestration Profile');
-
     root.find('#luker_orch_profile_target').text(
         activeAvatar
             ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
@@ -5998,10 +5989,7 @@ function renderDynamicPanels(root, context) {
     root.find('#luker_orch_single_mode_runtime_tools').toggle(singleModeEnabled);
     root.find('#luker_orch_single_mode_hint').toggle(singleModeEnabled);
     root.find('#luker_orch_single_agent_fields').toggle(singleModeEnabled);
-    root.find('#luker_orch_agenda_fields').toggle(agendaModeEnabled);
     root.find('#luker_orch_execution_mode').val(executionMode);
-    root.find('#luker_orch_agenda_clear_character').toggle(agendaModeEnabled && isCharacterScope);
-    root.find('#luker_orch_agenda_workspace').html(agendaModeEnabled ? renderAgendaWorkspace(scope, agendaEditor, agendaProfileTitle) : '');
     refreshOrchestrationEditorPopup(context, settings);
 }
 
@@ -11360,7 +11348,6 @@ function ensureUi() {
                 <label for="luker_orch_single_agent_user_prompt">${escapeHtml(i18n('Single-agent user prompt template'))}</label>
                 <textarea id="luker_orch_single_agent_user_prompt" class="text_pole textarea_compact" rows="6"></textarea>
             </div>
-            <div id="luker_orch_agenda_fields"></div>
             <label for="luker_orch_llm_api_preset">${escapeHtml(i18n('LLM node API preset (Connection profile, empty = current)'))}</label>
             <select id="luker_orch_llm_api_preset" class="text_pole"></select>
             <label for="luker_orch_llm_preset">${escapeHtml(i18n('LLM node preset (params + prompt, empty = current)'))}</label>
@@ -11436,12 +11423,8 @@ function ensureUi() {
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
                     <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
-                    <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
-                    <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
-                    <div id="luker_orch_agenda_clear_character" class="menu_button" data-luker-action="clear-character" style="display:none">${escapeHtml(i18n('Clear Character Override'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
-                <div id="luker_orch_agenda_workspace"></div>
             </div>
 
             <small id="luker_orch_last_run_state" class="luker_orch_state_summary"></small>
