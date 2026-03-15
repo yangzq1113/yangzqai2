@@ -43,6 +43,8 @@ const defaultAssistantAvatar = 'default_Assistant.png';
 
 const DEFAULT_DISPLAYED = 3;
 const MAX_DISPLAYED = 15;
+let primedRecentChats = null;
+let primedRecentChatsPromise = null;
 
 /**
  * @typedef {Pick<RecentChat, 'group' | 'avatar' | 'file_name'>} PinnedChat
@@ -195,6 +197,51 @@ export async function openWelcomeScreen({ force = false, expand = false } = {}) 
     await unshallowPermanentAssistant();
     sendAssistantMessage();
     sendWelcomePrompt();
+}
+
+export function primeRecentChatsSnapshot(snapshot) {
+    primedRecentChats = Array.isArray(snapshot)
+        ? structuredClone(snapshot)
+        : [];
+    primedRecentChatsPromise = null;
+}
+
+export function primeRecentChatsSnapshotPromise(snapshotPromise) {
+    if (!snapshotPromise) {
+        return;
+    }
+
+    primedRecentChatsPromise = Promise.resolve(snapshotPromise)
+        .then((snapshot) => {
+            const normalizedSnapshot = Array.isArray(snapshot)
+                ? structuredClone(snapshot)
+                : [];
+            primedRecentChats = normalizedSnapshot;
+            return structuredClone(normalizedSnapshot);
+        })
+        .catch((error) => {
+            primedRecentChats = null;
+            console.warn('Failed to preload recent chats snapshot.', error);
+            return null;
+        });
+}
+
+async function consumePrimedRecentChatsSnapshot() {
+    if (Array.isArray(primedRecentChats)) {
+        const snapshot = structuredClone(primedRecentChats);
+        primedRecentChats = null;
+        primedRecentChatsPromise = null;
+        return snapshot;
+    }
+
+    if (!primedRecentChatsPromise) {
+        return null;
+    }
+
+    const snapshot = await primedRecentChatsPromise;
+    primedRecentChats = null;
+    primedRecentChatsPromise = null;
+    return Array.isArray(snapshot) ? structuredClone(snapshot) : null;
 }
 
 /**
@@ -653,20 +700,10 @@ async function refreshWelcomeScreen({ flashChat = null } = {}) {
  * @property {boolean} pinned Indicates if the chat is pinned
  */
 async function getRecentChats() {
-    const response = await fetch('/api/chats/recent', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ max: MAX_DISPLAYED, pinned: PinnedChatsManager.getAll() }),
-        cache: 'no-cache',
-    });
-
-    if (!response.ok) {
-        console.warn('Failed to fetch recent character chats');
-        return [];
-    }
-
-    /** @type {RecentChat[]} */
-    const data = await response.json();
+    const primedSnapshot = await consumePrimedRecentChatsSnapshot();
+    const data = Array.isArray(primedSnapshot)
+        ? primedSnapshot
+        : await fetchRecentChatsSnapshot();
 
     if (!Array.isArray(data) || data.length === 0) {
         return [];
@@ -705,6 +742,23 @@ async function getRecentChats() {
     });
 
     return dataWithEntities.map(t => t.chat);
+}
+
+export async function fetchRecentChatsSnapshot() {
+    const response = await fetch('/api/chats/recent', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ max: MAX_DISPLAYED, pinned: PinnedChatsManager.getAll() }),
+        cache: 'no-cache',
+    });
+
+    if (!response.ok) {
+        console.warn('Failed to fetch recent character chats');
+        return null;
+    }
+
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
 }
 
 export async function openPermanentAssistantChat({ tryCreate = true, created = false } = {}) {
