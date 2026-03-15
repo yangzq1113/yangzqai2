@@ -10133,6 +10133,21 @@ export function getChatMessageSnapshot(target = null) {
     return Array.isArray(snapshot) ? cloneJsonValue(snapshot) : null;
 }
 
+let chatWriteQueue = Promise.resolve();
+
+export function runSerializedChatWrite(task) {
+    if (typeof task !== 'function') {
+        return Promise.resolve(undefined);
+    }
+
+    const run = chatWriteQueue
+        .catch(() => undefined)
+        .then(() => task());
+
+    chatWriteQueue = run.catch(() => undefined);
+    return run;
+}
+
 function syncCurrentChatIntegrityFromMetadata(metadata = null) {
     if (!chat_metadata || typeof chat_metadata !== 'object') {
         return;
@@ -10628,7 +10643,7 @@ async function shouldRetryChatWriteOnConflict(response, retryCount = 0) {
  * @param {ChatMessage[]} messages Messages to append.
  * @returns {Promise<boolean>} True on successful append.
  */
-export async function appendChatMessages(messages, retryCount = 0) {
+async function appendChatMessagesInternal(messages, retryCount = 0) {
     if (!Array.isArray(messages) || messages.length === 0) {
         return true;
     }
@@ -10670,7 +10685,7 @@ export async function appendChatMessages(messages, retryCount = 0) {
                 if (conflictResolution === 'integrity') {
                     await refreshChatWriteSnapshotsFromServer(target);
                 }
-                return await appendChatMessages(messages, retryCount + 1);
+                return await appendChatMessagesInternal(messages, retryCount + 1);
             }
             return false;
         }
@@ -10712,7 +10727,7 @@ export async function appendChatMessages(messages, retryCount = 0) {
             if (conflictResolution === 'integrity') {
                 await refreshChatWriteSnapshotsFromServer(target);
             }
-            return await appendChatMessages(messages, retryCount + 1);
+            return await appendChatMessagesInternal(messages, retryCount + 1);
         }
         return false;
     } catch (error) {
@@ -10721,13 +10736,18 @@ export async function appendChatMessages(messages, retryCount = 0) {
     }
 }
 
+export async function appendChatMessages(messages, retryCount = 0) {
+    const queuedMessages = cloneJsonValue(messages) ?? messages;
+    return await runSerializedChatWrite(() => appendChatMessagesInternal(queuedMessages, retryCount));
+}
+
 /**
  * Applies incremental patch operations to chat messages on server-side chat storage.
  * Falls back to legacy full-save callers when this returns false.
  * @param {object[]|object} operations Patch operations (single op or op array).
  * @returns {Promise<boolean>} True on successful patch.
  */
-export async function patchChatMessages(operations, retryCount = 0) {
+async function patchChatMessagesInternal(operations, retryCount = 0) {
     const normalizedOperations = Array.isArray(operations)
         ? operations
         : (operations && typeof operations === 'object' ? [operations] : []);
@@ -10776,7 +10796,7 @@ export async function patchChatMessages(operations, retryCount = 0) {
                     rememberChatMessageSnapshot(target, chat);
                     return true;
                 }
-                return await patchChatMessages(rebuilt.operations, retryCount + 1);
+                return await patchChatMessagesInternal(rebuilt.operations, retryCount + 1);
             }
             if (conflictResolution === 'snapshot') {
                 return false;
@@ -10822,7 +10842,7 @@ export async function patchChatMessages(operations, retryCount = 0) {
                 rememberChatMessageSnapshot(target, chat);
                 return true;
             }
-            return await patchChatMessages(rebuilt.operations, retryCount + 1);
+            return await patchChatMessagesInternal(rebuilt.operations, retryCount + 1);
         }
         if (conflictResolution === 'snapshot') {
             return false;
@@ -10834,13 +10854,18 @@ export async function patchChatMessages(operations, retryCount = 0) {
     }
 }
 
+export async function patchChatMessages(operations, retryCount = 0) {
+    const queuedOperations = cloneJsonValue(operations) ?? operations;
+    return await runSerializedChatWrite(() => patchChatMessagesInternal(queuedOperations, retryCount));
+}
+
 /**
  * Updates only chat metadata on server-side chat storage.
  * Falls back to legacy full-save callers when this returns false.
  * @param {object} [withMetadata] Optional metadata patch to merge before save.
  * @returns {Promise<boolean>} True on successful metadata save.
  */
-export async function saveChatMetadata(withMetadata = undefined, retryCount = 0) {
+async function saveChatMetadataInternal(withMetadata = undefined, retryCount = 0) {
     try {
         const metadata = {
             ...chat_metadata,
@@ -10881,7 +10906,7 @@ export async function saveChatMetadata(withMetadata = undefined, retryCount = 0)
                 return true;
             }
             if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return await saveChatMetadata(withMetadata, retryCount + 1);
+                return await saveChatMetadataInternal(withMetadata, retryCount + 1);
             }
         } else {
             const charName = characters[this_chid]?.name;
@@ -10909,7 +10934,7 @@ export async function saveChatMetadata(withMetadata = undefined, retryCount = 0)
                 return true;
             }
             if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return await saveChatMetadata(withMetadata, retryCount + 1);
+                return await saveChatMetadataInternal(withMetadata, retryCount + 1);
             }
         }
 
@@ -10918,6 +10943,11 @@ export async function saveChatMetadata(withMetadata = undefined, retryCount = 0)
         console.warn('Incremental chat metadata save failed', error);
         return false;
     }
+}
+
+export async function saveChatMetadata(withMetadata = undefined, retryCount = 0) {
+    const metadataPatch = cloneJsonValue(withMetadata) ?? withMetadata;
+    return await runSerializedChatWrite(() => saveChatMetadataInternal(metadataPatch, retryCount));
 }
 
 /**
@@ -10930,7 +10960,7 @@ export async function saveChatMetadata(withMetadata = undefined, retryCount = 0)
  *
  * @returns {Promise<void>}
  */
-export async function saveChat({ chatName, withMetadata, mesId, force = false, _retryAttempt = 0 } = {}) {
+async function saveChatInternal({ chatName, withMetadata, mesId, force = false, _retryAttempt = 0 } = {}) {
     if (selected_group) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
@@ -11012,12 +11042,12 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, _
                         if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
                             await refreshChatWriteSnapshotsFromServer(target);
                         }
-                        await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
+                        await saveChatInternal({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
                         return;
                     }
                 }
             } else {
-                const metadataSaved = await saveChatMetadata(withMetadata);
+                const metadataSaved = await saveChatMetadataInternal(withMetadata);
                 if (metadataSaved) {
                     rememberChatMessageSnapshot(target, trimmedChat);
                     return;
@@ -11053,7 +11083,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, _
                 if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
                     await refreshChatWriteSnapshotsFromServer(target);
                 }
-                await saveChat({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
+                await saveChatInternal({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
                 return;
             }
         }
@@ -11063,6 +11093,11 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, _
         console.error(error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
     }
+}
+
+export async function saveChat() {
+    const args = cloneJsonValue(Array.from(arguments)) ?? Array.from(arguments);
+    return await runSerializedChatWrite(() => saveChatInternal(...args));
 }
 
 /**

@@ -86,6 +86,7 @@ import {
     getChatMessageSnapshot,
     buildChatMetadataPatchOperationsAsync,
     buildChatMessagePatchOperations,
+    runSerializedChatWrite,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect } from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
@@ -632,7 +633,7 @@ function resetSelectedGroup() {
  * @param {boolean} force Force the saving on integrity error
  * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
  */
-async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttempt = 0) {
+async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, retryAttempt = 0) {
     const group = groups.find(x => x.id == groupId);
     if (!group) {
         console.warn('Group not found', groupId);
@@ -710,7 +711,7 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttem
         const isConflict = !force && response.status === 409;
         if (isConflict && retryAttempt === 0) {
             await getGroupChat(groupId, false);
-            await saveGroupChat(groupId, shouldSaveGroup, force, retryAttempt + 1);
+            await saveGroupChatInternal(groupId, shouldSaveGroup, force, retryAttempt + 1);
             return;
         }
 
@@ -729,6 +730,10 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttem
     if (shouldSaveGroup) {
         await editGroup(groupId, false, false);
     }
+}
+
+async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttempt = 0) {
+    return await runSerializedChatWrite(() => saveGroupChatInternal(groupId, shouldSaveGroup, force, retryAttempt));
 }
 
 /**
