@@ -95,12 +95,16 @@ export {
     executeSlashCommands, executeSlashCommandsWithOptions, getSlashCommandsHelp, registerSlashCommand,
 };
 
-export const parser = new SlashCommandParser();
+export let parser;
+
+function getSharedSlashCommandParser() {
+    return parser ??= new SlashCommandParser();
+}
 /**
  * @deprecated Use SlashCommandParser.addCommandObject() instead
  */
 const registerSlashCommand = SlashCommandParser.addCommand.bind(SlashCommandParser);
-const getSlashCommandsHelp = parser.getHelpString.bind(parser);
+const getSlashCommandsHelp = () => getSharedSlashCommandParser().getHelpString();
 
 /**
  * Converts a SlashCommandClosure to a filter function that returns a boolean.

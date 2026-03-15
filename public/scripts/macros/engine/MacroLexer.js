@@ -293,27 +293,42 @@ const Def = {
     defaultMode: modes.plaintext,
 };
 
-/**
- * The singleton instance of the MacroLexer.
- *
- * @type {MacroLexer}
- */
 let instance;
-export { instance as MacroLexer };
 
-class MacroLexer extends Lexer {
-    /** @type {MacroLexer} */ static #instance;
-    /** @type {MacroLexer} */ static get instance() { return MacroLexer.#instance ?? (MacroLexer.#instance = new MacroLexer()); }
+function getMacroLexerInstance() {
+    return instance ??= MacroLexerImpl.instance;
+}
+
+export const MacroLexer = new Proxy({}, {
+    get(_target, prop) {
+        if (prop === 'instance') {
+            return getMacroLexerInstance();
+        }
+
+        const lexer = getMacroLexerInstance();
+        const value = Reflect.get(lexer, prop);
+        return typeof value === 'function' ? value.bind(lexer) : value;
+    },
+    set(_target, prop, value) {
+        const lexer = getMacroLexerInstance();
+        lexer[prop] = value;
+        return true;
+    },
+});
+
+class MacroLexerImpl extends Lexer {
+    /** @type {MacroLexerImpl} */ static #instance;
+    /** @type {MacroLexerImpl} */ static get instance() { return MacroLexerImpl.#instance ?? (MacroLexerImpl.#instance = new MacroLexerImpl()); }
 
     // Define the tokens
     /** @readonly */ static tokens = Tokens;
     /** @readonly */ static def = Def;
     /** @readonly */ tokens = Tokens;
-    /** @readonly */ def = MacroLexer.def;
+    /** @readonly */ def = Def;
 
     /** @private */
     constructor() {
-        super(MacroLexer.def, {
+        super(MacroLexerImpl.def, {
             traceInitPerf: false,
         });
     }
@@ -327,8 +342,6 @@ class MacroLexer extends Lexer {
         };
     }
 }
-
-instance = MacroLexer.instance;
 
 /**
  * [Utility]

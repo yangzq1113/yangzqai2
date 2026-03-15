@@ -8,17 +8,32 @@ const { CstParser } = chevrotain;
 /** @typedef {import('chevrotain').ILexingError} ILexingError */
 /** @typedef {import('chevrotain').IRecognitionException} IRecognitionException */
 
-/**
- * The singleton instance of the MacroParser.
- *
- * @type {MacroParser}
- */
 let instance;
-export { instance as MacroParser };
 
-class MacroParser extends CstParser {
-    /** @type {MacroParser} */ static #instance;
-    /** @type {MacroParser} */ static get instance() { return MacroParser.#instance ?? (MacroParser.#instance = new MacroParser()); }
+function getMacroParserInstance() {
+    return instance ??= MacroParserImpl.instance;
+}
+
+export const MacroParser = new Proxy({}, {
+    get(_target, prop) {
+        if (prop === 'instance') {
+            return getMacroParserInstance();
+        }
+
+        const parser = getMacroParserInstance();
+        const value = Reflect.get(parser, prop);
+        return typeof value === 'function' ? value.bind(parser) : value;
+    },
+    set(_target, prop, value) {
+        const parser = getMacroParserInstance();
+        parser[prop] = value;
+        return true;
+    },
+});
+
+class MacroParserImpl extends CstParser {
+    /** @type {MacroParserImpl} */ static #instance;
+    /** @type {MacroParserImpl} */ static get instance() { return MacroParserImpl.#instance ?? (MacroParserImpl.#instance = new MacroParserImpl()); }
 
     /** @private */
     constructor() {
@@ -223,5 +238,3 @@ class MacroParser extends CstParser {
         return { cst, errors: errors };
     }
 }
-
-instance = MacroParser.instance;

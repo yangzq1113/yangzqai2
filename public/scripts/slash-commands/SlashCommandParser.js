@@ -15,10 +15,6 @@ import { SlashCommandAbortController } from './SlashCommandAbortController.js';
 import { SlashCommandAutoCompleteNameResult } from './SlashCommandAutoCompleteNameResult.js';
 import { SlashCommandUnnamedArgumentAssignment } from './SlashCommandUnnamedArgumentAssignment.js';
 import { SlashCommandEnumValue } from './SlashCommandEnumValue.js';
-import {
-    findUnclosedScopes,
-    buildMacroAutoCompleteResult,
-} from '../autocomplete/MacroAutoCompleteHelper.js';
 import { SlashCommandBreakPoint } from './SlashCommandBreakPoint.js';
 import { SlashCommandDebugController } from './SlashCommandDebugController.js';
 import { commonEnumProviders } from './SlashCommandCommonEnumsProvider.js';
@@ -39,6 +35,12 @@ export const PARSER_FLAG = {
     'STRICT_ESCAPING': 1,
     'REPLACE_GETVAR': 2,
 };
+
+let macroAutoCompleteHelpersPromise;
+
+async function loadMacroAutoCompleteHelpers() {
+    return macroAutoCompleteHelpersPromise ??= import('../autocomplete/MacroAutoCompleteHelper.js');
+}
 
 export class SlashCommandParser {
     /** @type {Object.<string, SlashCommand>} */ static commands = {};
@@ -491,6 +493,7 @@ export class SlashCommandParser {
                 ?? null
             ;
             if (childClosure !== null) return null;
+            const { buildMacroAutoCompleteResult, findUnclosedScopes } = await loadMacroAutoCompleteHelpers();
             // Check if cursor is inside a macro
             const macroEntry = this.macroIndex.findLast(it=>it.start <= index && it.end >= index);
             if (macroEntry) {
