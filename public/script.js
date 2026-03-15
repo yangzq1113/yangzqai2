@@ -1558,6 +1558,8 @@ export async function pingServer() {
 
 //MARK: firstLoadInit
 async function firstLoadInit() {
+    installSettingsGetRequestInterceptor();
+
     try {
         const tokenResponse = await fetch('/csrf-token');
         const tokenData = await tokenResponse.json();
@@ -11723,6 +11725,93 @@ function reloadLoop() {
 
 //MARK: getSettings()
 ///////////////////////////////////////////
+const SETTINGS_GET_ENDPOINT = '/api/settings/get';
+let settingsGetRequestInterceptorInstalled = false;
+let settingsGetResponseCache = null;
+let settingsGetRequestPromise = null;
+
+function buildSettingsGetCachedResponse() {
+    if (!settingsGetResponseCache) {
+        return null;
+    }
+
+    return new Response(settingsGetResponseCache.body, {
+        headers: new Headers(settingsGetResponseCache.headers),
+        status: settingsGetResponseCache.status,
+        statusText: settingsGetResponseCache.statusText,
+    });
+}
+
+async function cacheSettingsGetResponse(response) {
+    const clone = response.clone();
+    return {
+        body: await clone.text(),
+        headers: Array.from(response.headers.entries()),
+        status: response.status,
+        statusText: response.statusText,
+    };
+}
+
+function isSettingsGetRequest(input, init = {}) {
+    const request = input instanceof Request ? input : null;
+    const method = String(init.method ?? request?.method ?? 'GET').toUpperCase();
+    if (method !== 'POST') {
+        return false;
+    }
+
+    try {
+        const requestUrl = request?.url ?? String(input);
+        const url = new URL(requestUrl, window.location.origin);
+        return url.origin === window.location.origin && url.pathname === SETTINGS_GET_ENDPOINT;
+    } catch {
+        return false;
+    }
+}
+
+function invalidateSettingsGetResponseCache() {
+    settingsGetRequestPromise = null;
+    settingsGetResponseCache = null;
+}
+
+function installSettingsGetRequestInterceptor() {
+    if (settingsGetRequestInterceptorInstalled) {
+        return;
+    }
+
+    const baseFetch = window.fetch.bind(window);
+    window.fetch = async function settingsGetRequestInterceptor(input, init) {
+        if (!isSettingsGetRequest(input, init)) {
+            return await baseFetch(input, init);
+        }
+
+        const cachedResponse = buildSettingsGetCachedResponse();
+        if (cachedResponse) {
+            return cachedResponse;
+        }
+
+        if (!settingsGetRequestPromise) {
+            settingsGetRequestPromise = (async () => {
+                const response = await baseFetch(input, init);
+                const cached = await cacheSettingsGetResponse(response);
+                if (response.ok) {
+                    settingsGetResponseCache = cached;
+                }
+                return cached;
+            })().finally(() => {
+                settingsGetRequestPromise = null;
+            });
+        }
+
+        const requestCache = await settingsGetRequestPromise;
+        return new Response(requestCache.body, {
+            headers: new Headers(requestCache.headers),
+            status: requestCache.status,
+            statusText: requestCache.statusText,
+        });
+    };
+    settingsGetRequestInterceptorInstalled = true;
+}
+
 async function fetchSettingsPayload(endpoint, { silent = false } = {}) {
     const response = await fetch(endpoint, {
         method: 'POST',
@@ -12077,6 +12166,7 @@ async function saveSettingsInternal(loopCounter = 0, options = {}) {
             }
         }
 
+        invalidateSettingsGetResponseCache();
         settings = payload;
         rememberSettingsSnapshot(payload);
         await eventSource.emit(event_types.SETTINGS_UPDATED);
