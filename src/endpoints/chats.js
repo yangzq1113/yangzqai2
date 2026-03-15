@@ -98,6 +98,283 @@ function getPreviewMessage(lastMessage) {
         : lastMessage;
 }
 
+/**
+ * @typedef {{ filePath: string, avatar?: string, group?: string }} RecentChatDescriptor
+ */
+
+/**
+ * @typedef {{ entries: Map<string, object>|null, buildPromise: Promise<Map<string, object>>|null }} RecentChatIndexState
+ */
+
+/** @type {Map<string, RecentChatIndexState>} */
+const recentChatIndexCache = new Map();
+
+function getRecentChatIndexKey(request) {
+    const handle = String(request?.user?.profile?.handle || '').trim();
+    const chatsDirectory = String(request?.user?.directories?.chats || '');
+    const groupChatsDirectory = String(request?.user?.directories?.groupChats || '');
+    return `${handle}::${chatsDirectory}::${groupChatsDirectory}`;
+}
+
+function getOrCreateRecentChatIndexState(request) {
+    const key = getRecentChatIndexKey(request);
+    let state = recentChatIndexCache.get(key);
+    if (!state) {
+        state = { entries: null, buildPromise: null };
+        recentChatIndexCache.set(key, state);
+    }
+    return state;
+}
+
+async function getReadyRecentChatIndexState(request) {
+    const key = getRecentChatIndexKey(request);
+    const state = recentChatIndexCache.get(key);
+    if (!state) {
+        return null;
+    }
+
+    if (state.buildPromise) {
+        await state.buildPromise;
+    }
+
+    return state.entries ? state : null;
+}
+
+/**
+ * Builds the list of chat files eligible for the recent-chat index.
+ * @param {import('../users.js').UserDirectoryList} directories
+ * @returns {Promise<RecentChatDescriptor[]>}
+ */
+async function listRecentChatDescriptors(directories) {
+    /** @type {RecentChatDescriptor[]} */
+    const allChatFiles = [];
+
+    const getCharacterChatFiles = async () => {
+        const pngDirents = await fs.promises.readdir(directories.characters, { withFileTypes: true });
+        const pngFiles = pngDirents.filter(entry => entry.isFile() && path.extname(entry.name) === '.png').map(entry => entry.name);
+
+        for (const pngFile of pngFiles) {
+            const chatsDirectory = pngFile.replace('.png', '');
+            const pathToChats = path.join(directories.chats, chatsDirectory);
+            if (!fs.existsSync(pathToChats)) {
+                continue;
+            }
+
+            const pathStats = await fs.promises.stat(pathToChats);
+            if (!pathStats.isDirectory()) {
+                continue;
+            }
+
+            const chatFiles = await fs.promises.readdir(pathToChats);
+            const jsonlFiles = chatFiles.filter(file => path.extname(file) === '.jsonl');
+
+            for (const file of jsonlFiles) {
+                allChatFiles.push({
+                    avatar: pngFile,
+                    filePath: path.join(pathToChats, file),
+                });
+            }
+        }
+    };
+
+    const getGroupChatFiles = async () => {
+        const groupDirents = await fs.promises.readdir(directories.groups, { withFileTypes: true });
+        const groups = groupDirents.filter(entry => entry.isFile() && path.extname(entry.name) === '.json').map(entry => entry.name);
+
+        for (const groupFileName of groups) {
+            try {
+                const groupPath = path.join(directories.groups, groupFileName);
+                const groupContents = await fs.promises.readFile(groupPath, 'utf8');
+                const groupData = JSON.parse(groupContents);
+
+                if (!Array.isArray(groupData.chats)) {
+                    continue;
+                }
+
+                for (const chatId of groupData.chats) {
+                    const filePath = path.join(directories.groupChats, `${chatId}.jsonl`);
+                    if (!fs.existsSync(filePath)) {
+                        continue;
+                    }
+
+                    allChatFiles.push({
+                        group: String(groupData.id || ''),
+                        filePath,
+                    });
+                }
+            } catch {
+                continue;
+            }
+        }
+    };
+
+    const getRootChatFiles = async () => {
+        const dirents = await fs.promises.readdir(directories.chats, { withFileTypes: true });
+        const chatFiles = dirents.filter(entry => entry.isFile() && path.extname(entry.name) === '.jsonl').map(entry => entry.name);
+
+        for (const file of chatFiles) {
+            allChatFiles.push({
+                filePath: path.join(directories.chats, file),
+            });
+        }
+    };
+
+    await Promise.allSettled([getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
+    return allChatFiles;
+}
+
+async function buildRecentChatIndexEntries(request) {
+    const descriptors = await listRecentChatDescriptors(request.user.directories);
+    const entries = new Map();
+    const infoResults = await Promise.allSettled(descriptors.map((descriptor) => getChatInfo(descriptor.filePath, {
+        ...(descriptor.avatar ? { avatar: descriptor.avatar } : {}),
+        ...(descriptor.group ? { group: descriptor.group } : {}),
+    })));
+
+    infoResults.forEach((result, index) => {
+        if (result.status !== 'fulfilled' || !result.value?.file_name) {
+            return;
+        }
+
+        const descriptor = descriptors[index];
+        entries.set(path.resolve(descriptor.filePath), result.value);
+    });
+
+    return entries;
+}
+
+async function ensureRecentChatIndex(request) {
+    const state = getOrCreateRecentChatIndexState(request);
+    if (state.entries) {
+        return state.entries;
+    }
+
+    if (!state.buildPromise) {
+        state.buildPromise = buildRecentChatIndexEntries(request)
+            .then((entries) => {
+                state.entries = entries;
+                return entries;
+            })
+            .finally(() => {
+                state.buildPromise = null;
+            });
+    }
+
+    return await state.buildPromise;
+}
+
+async function resolveGroupIdForChatId(directories, chatId) {
+    const normalizedChatId = String(chatId || '').trim();
+    if (!normalizedChatId) {
+        return '';
+    }
+
+    const groupDirents = await fs.promises.readdir(directories.groups, { withFileTypes: true });
+    const groupFiles = groupDirents.filter(entry => entry.isFile() && path.extname(entry.name) === '.json').map(entry => entry.name);
+
+    for (const groupFileName of groupFiles) {
+        try {
+            const groupPath = path.join(directories.groups, groupFileName);
+            const groupContents = await fs.promises.readFile(groupPath, 'utf8');
+            const groupData = JSON.parse(groupContents);
+            const chats = Array.isArray(groupData?.chats) ? groupData.chats.map(chat => String(chat || '')) : [];
+            if (chats.includes(normalizedChatId) || String(groupData?.chat_id || '') === normalizedChatId) {
+                return String(groupData?.id || '');
+            }
+        } catch {
+            continue;
+        }
+    }
+
+    return '';
+}
+
+function inferRecentChatDescriptor(directories, filePath, overrides = {}) {
+    const resolvedFilePath = path.resolve(String(filePath || ''));
+    if (!resolvedFilePath) {
+        return null;
+    }
+
+    if (overrides.avatar) {
+        return { filePath: resolvedFilePath, avatar: String(overrides.avatar) };
+    }
+
+    if (overrides.group) {
+        return { filePath: resolvedFilePath, group: String(overrides.group) };
+    }
+
+    const chatsDirectory = path.resolve(String(directories.chats || ''));
+    const relativeChatPath = path.relative(chatsDirectory, resolvedFilePath);
+    if (relativeChatPath && !relativeChatPath.startsWith('..') && !path.isAbsolute(relativeChatPath)) {
+        const segments = relativeChatPath.split(path.sep).filter(Boolean);
+        if (segments.length >= 2) {
+            return { filePath: resolvedFilePath, avatar: `${segments[0]}.png` };
+        }
+        return { filePath: resolvedFilePath };
+    }
+
+    return { filePath: resolvedFilePath };
+}
+
+async function buildRecentChatDescriptor(request, filePath, overrides = {}) {
+    const resolvedFilePath = path.resolve(String(filePath || ''));
+    const descriptor = inferRecentChatDescriptor(request.user.directories, resolvedFilePath, overrides);
+    if (!descriptor) {
+        return null;
+    }
+
+    const groupChatsDirectory = path.resolve(String(request.user.directories.groupChats || ''));
+    const relativeGroupPath = path.relative(groupChatsDirectory, resolvedFilePath);
+    const isGroupChatFile = relativeGroupPath && !relativeGroupPath.startsWith('..') && !path.isAbsolute(relativeGroupPath);
+
+    if (!isGroupChatFile || descriptor.group) {
+        return descriptor;
+    }
+
+    const state = await getReadyRecentChatIndexState(request);
+    const cachedEntry = state?.entries?.get(resolvedFilePath);
+    if (cachedEntry?.group) {
+        return { ...descriptor, group: String(cachedEntry.group) };
+    }
+
+    const chatId = path.parse(path.basename(resolvedFilePath)).name;
+    const groupId = await resolveGroupIdForChatId(request.user.directories, chatId);
+    return groupId ? { ...descriptor, group: groupId } : descriptor;
+}
+
+async function refreshRecentChatIndexEntry(request, filePath, overrides = {}) {
+    const state = await getReadyRecentChatIndexState(request);
+    if (!state?.entries) {
+        return;
+    }
+
+    const descriptor = await buildRecentChatDescriptor(request, filePath, overrides);
+    if (!descriptor?.filePath || !fs.existsSync(descriptor.filePath)) {
+        state.entries.delete(path.resolve(String(filePath || '')));
+        return;
+    }
+
+    const entry = await getChatInfo(descriptor.filePath, {
+        ...(descriptor.avatar ? { avatar: descriptor.avatar } : {}),
+        ...(descriptor.group ? { group: descriptor.group } : {}),
+    });
+
+    if (entry?.file_name) {
+        state.entries.set(path.resolve(descriptor.filePath), entry);
+    } else {
+        state.entries.delete(path.resolve(descriptor.filePath));
+    }
+}
+
+async function deleteRecentChatIndexEntry(request, filePath) {
+    const state = await getReadyRecentChatIndexState(request);
+    if (!state?.entries) {
+        return;
+    }
+
+    state.entries.delete(path.resolve(String(filePath || '')));
+}
+
 process.on('exit', () => {
     for (const func of backupFunctions.values()) {
         func.flush();
@@ -1277,6 +1554,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
 
         if (Array.isArray(chatData)) {
             const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
+            await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
             acknowledgeGenerationIdsFromValue(request, chatData);
             return response.send({ ok: true, integrity });
         } else {
@@ -1315,6 +1593,7 @@ router.post('/append', validateAvatarUrlMiddleware, async function (request, res
             force,
         });
 
+        await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
         acknowledgeGenerationIdsFromValue(request, messages);
         return response.send({ ok: true, ...result });
     } catch (error) {
@@ -1363,6 +1642,7 @@ router.post('/patch', validateAvatarUrlMiddleware, async function (request, resp
             throw error;
         }
 
+        await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
         acknowledgeGenerationIdsFromValue(request, operations);
         return response.send({ ok: true, ...result });
     } catch (error) {
@@ -1397,6 +1677,7 @@ router.post('/meta', validateAvatarUrlMiddleware, async function (request, respo
             force,
         });
 
+        await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -1445,6 +1726,7 @@ router.post('/meta/patch', validateAvatarUrlMiddleware, async function (request,
             throw error;
         }
 
+        await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -1678,9 +1960,16 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
             return response.status(400).send({ error: true });
         }
 
+        const existingIndexState = await getReadyRecentChatIndexState(request);
+        const previousRecentEntry = existingIndexState?.entries?.get(path.resolve(pathToOriginalFile)) || null;
         fs.copyFileSync(pathToOriginalFile, pathToRenamedFile);
         fs.unlinkSync(pathToOriginalFile);
         renameAllChatStateSidecars(pathToOriginalFile, pathToRenamedFile);
+        await deleteRecentChatIndexEntry(request, pathToOriginalFile);
+        await refreshRecentChatIndexEntry(request, pathToRenamedFile, {
+            avatar: request.body.is_group ? '' : String(request.body.avatar_url || ''),
+            group: request.body.is_group ? String(previousRecentEntry?.group || '') : '',
+        });
 
         console.info('Successfully renamed chat file.');
         return response.send({ ok: true, sanitizedFileName });
@@ -1690,7 +1979,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     }
 });
 
-router.post('/delete', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/delete', validateAvatarUrlMiddleware, async function (request, response) {
     try {
         if (!path.extname(request.body.chatfile)) {
             request.body.chatfile += '.jsonl';
@@ -1702,6 +1991,7 @@ router.post('/delete', validateAvatarUrlMiddleware, function (request, response)
         //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
             deleteAllChatStateSidecars(chatFilePath);
+            await deleteRecentChatIndexEntry(request, chatFilePath);
             return response.send({ ok: true });
         } else {
             console.error('The chat file was not deleted.');
@@ -1805,7 +2095,7 @@ router.post('/group/import', function (request, response) {
     }
 });
 
-router.post('/import', validateAvatarUrlMiddleware, function (request, response) {
+router.post('/import', validateAvatarUrlMiddleware, async function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
     const format = request.body.file_type;
@@ -1859,6 +2149,12 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
                 handleChat(chat);
             }
 
+            await Promise.all(fileNames.map((fileName) => refreshRecentChatIndexEntry(
+                request,
+                path.join(request.user.directories.chats, avatarUrl, fileName),
+                { avatar: `${avatarUrl}.png` },
+            )));
+
             return response.send({ res: true, fileNames });
         }
 
@@ -1893,6 +2189,7 @@ router.post('/import', validateAvatarUrlMiddleware, function (request, response)
                 fs.copyFileSync(pathToUpload, filePath);
             }
             fs.unlinkSync(pathToUpload);
+            await refreshRecentChatIndexEntry(request, filePath, { avatar: `${avatarUrl}.png` });
             response.send({ res: true, fileNames });
         }
     } catch (error) {
@@ -1941,7 +2238,7 @@ router.post('/group/info', async (request, response) => {
     }
 });
 
-router.post('/group/delete', (request, response) => {
+router.post('/group/delete', async (request, response) => {
     try {
         if (!request.body || !request.body.id) {
             return response.sendStatus(400);
@@ -1953,6 +2250,7 @@ router.post('/group/delete', (request, response) => {
         //Return success if the file was deleted.
         if (tryDeleteFile(chatFilePath)) {
             deleteAllChatStateSidecars(chatFilePath);
+            await deleteRecentChatIndexEntry(request, chatFilePath);
             return response.send({ ok: true });
         } else {
             console.error('The group chat file was not deleted.');
@@ -1977,6 +2275,7 @@ router.post('/group/save', async function (request, response) {
 
         if (Array.isArray(chatData)) {
             const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
+            await refreshRecentChatIndexEntry(request, chatFilePath);
             acknowledgeGenerationIdsFromValue(request, chatData);
             return response.send({ ok: true, integrity });
         }
@@ -2019,6 +2318,7 @@ router.post('/group/append', async function (request, response) {
             force,
         });
 
+        await refreshRecentChatIndexEntry(request, chatFilePath);
         acknowledgeGenerationIdsFromValue(request, messages);
         return response.send({ ok: true, ...result });
     } catch (error) {
@@ -2070,6 +2370,7 @@ router.post('/group/patch', async function (request, response) {
             throw error;
         }
 
+        await refreshRecentChatIndexEntry(request, chatFilePath);
         acknowledgeGenerationIdsFromValue(request, operations);
         return response.send({ ok: true, ...result });
     } catch (error) {
@@ -2103,6 +2404,7 @@ router.post('/group/meta', async function (request, response) {
             force,
         });
 
+        await refreshRecentChatIndexEntry(request, chatFilePath);
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -2150,6 +2452,7 @@ router.post('/group/meta/patch', async function (request, response) {
             throw error;
         }
 
+        await refreshRecentChatIndexEntry(request, chatFilePath);
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -2267,98 +2570,24 @@ router.post('/search', validateAvatarUrlMiddleware, async function (request, res
 
 router.post('/recent', async function (request, response) {
     try {
-        /** @typedef {{pngFile?: string, groupId?: string, filePath: string, mtime: number}} ChatFile */
-        /** @type {ChatFile[]} */
-        const allChatFiles = [];
         /** @type {import('../../public/scripts/welcome-screen.js').PinnedChat[]} */
         const pinnedChats = Array.isArray(request.body.pinned) ? request.body.pinned : [];
-
-        const getCharacterChatFiles = async () => {
-            const pngDirents = await fs.promises.readdir(request.user.directories.characters, { withFileTypes: true });
-            const pngFiles = pngDirents.filter(e => e.isFile() && path.extname(e.name) === '.png').map(e => e.name);
-
-            for (const pngFile of pngFiles) {
-                const chatsDirectory = pngFile.replace('.png', '');
-                const pathToChats = path.join(request.user.directories.chats, chatsDirectory);
-                if (!fs.existsSync(pathToChats)) {
-                    continue;
-                }
-                const pathStats = await fs.promises.stat(pathToChats);
-                if (pathStats.isDirectory()) {
-                    const chatFiles = await fs.promises.readdir(pathToChats);
-                    const jsonlFiles = chatFiles.filter(file => path.extname(file) === '.jsonl');
-
-                    for (const file of jsonlFiles) {
-                        const filePath = path.join(pathToChats, file);
-                        const stats = await fs.promises.stat(filePath);
-                        allChatFiles.push({ pngFile, filePath, mtime: stats.mtimeMs });
-                    }
-                }
-            }
-        };
-
-        const getGroupChatFiles = async () => {
-            const groupDirents = await fs.promises.readdir(request.user.directories.groups, { withFileTypes: true });
-            const groups = groupDirents.filter(e => e.isFile() && path.extname(e.name) === '.json').map(e => e.name);
-
-            for (const group of groups) {
-                try {
-                    const groupPath = path.join(request.user.directories.groups, group);
-                    const groupContents = await fs.promises.readFile(groupPath, 'utf8');
-                    const groupData = JSON.parse(groupContents);
-
-                    if (Array.isArray(groupData.chats)) {
-                        for (const chat of groupData.chats) {
-                            const filePath = path.join(request.user.directories.groupChats, `${chat}.jsonl`);
-                            if (!fs.existsSync(filePath)) {
-                                continue;
-                            }
-                            const stats = await fs.promises.stat(filePath);
-                            allChatFiles.push({ groupId: groupData.id, filePath, mtime: stats.mtimeMs });
-                        }
-                    }
-                } catch (error) {
-                    // Skip group files that can't be read or parsed
-                    continue;
-                }
-            }
-        };
-
-        const getRootChatFiles = async () => {
-            const dirents = await fs.promises.readdir(request.user.directories.chats, { withFileTypes: true });
-            const chatFiles = dirents.filter(e => e.isFile() && path.extname(e.name) === '.jsonl').map(e => e.name);
-
-            for (const file of chatFiles) {
-                const filePath = path.join(request.user.directories.chats, file);
-                const stats = await fs.promises.stat(filePath);
-                allChatFiles.push({ filePath, mtime: stats.mtimeMs });
-            }
-        };
-
-        await Promise.allSettled([getCharacterChatFiles(), getGroupChatFiles(), getRootChatFiles()]);
-
         const requestedMax = Number.parseInt(String(request.body.max ?? ''), 10);
         const requested = Number.isFinite(requestedMax) && requestedMax > 0 ? requestedMax : Number.MAX_SAFE_INTEGER;
         const max = requested + pinnedChats.length;
-        const isPinned = (/** @type {ChatFile} */ chatFile) => pinnedChats.some(p => p.file_name === path.basename(chatFile.filePath) && (p.avatar === chatFile.pngFile || p.group === chatFile.groupId));
-        const recentChats = allChatFiles.sort((a, b) => {
+        const entries = await ensureRecentChatIndex(request);
+        const recentChats = Array.from(entries.values());
+        const isPinned = (chatFile) => pinnedChats.some(p => p.file_name === chatFile.file_name && (p.avatar === chatFile.avatar || p.group === chatFile.group));
+        const sortedChats = recentChats.sort((a, b) => {
             const isAPinned = isPinned(a);
             const isBPinned = isPinned(b);
 
             if (isAPinned && !isBPinned) return -1;
             if (!isAPinned && isBPinned) return 1;
 
-            return b.mtime - a.mtime;
+            return new Date(b.last_mes || 0).getTime() - new Date(a.last_mes || 0).getTime();
         }).slice(0, max);
-        const jsonFilesPromise = recentChats.map((file) => {
-            const withMetadata = !!request.body.metadata;
-            return file.groupId
-                ? getChatInfo(file.filePath, { group: file.groupId }, withMetadata)
-                : getChatInfo(file.filePath, { avatar: file.pngFile }, withMetadata);
-        });
-
-        const chatData = (await Promise.allSettled(jsonFilesPromise)).filter(x => x.status === 'fulfilled').map(x => x.value);
-        const validFiles = chatData.filter(i => i.file_name);
+        const validFiles = sortedChats.filter(chatFile => chatFile.file_name);
 
         return response.send(validFiles);
     } catch (error) {
