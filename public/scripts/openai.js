@@ -4683,7 +4683,7 @@ export function hydrateOpenAIPresetData(data = {}) {
                 return null;
             }
             const parsed = JSON.parse(item);
-            return stripOpenAIConnectionFieldsFromPreset(structuredClone(parsed));
+            return structuredClone(parsed);
         })
         : [];
 }
@@ -5230,12 +5230,13 @@ async function getStatusOpen() {
 /**
  * Get OpenAI preset body from settings
  * @param {ChatCompletionSettings} settings The settings object
+ * @param {{ includeConnectionFields?: boolean }} [options] Serialization options
  * @returns {Object} The preset body object
  */
-export function getChatCompletionPreset(settings = oai_settings) {
+export function getChatCompletionPreset(settings = oai_settings, { includeConnectionFields = true } = {}) {
     const presetBody = {};
     for (const [presetKey, [, settingsKey]] of Object.entries(settingsToUpdate)) {
-        if (isOpenAIConnectionPresetField(presetKey)) {
+        if (!includeConnectionFields && isOpenAIConnectionPresetField(presetKey)) {
             continue;
         }
         if (isConnectionProfileOnlyPresetField(presetKey)) {
@@ -5244,6 +5245,23 @@ export function getChatCompletionPreset(settings = oai_settings) {
         presetBody[presetKey] = settings[settingsKey];
     }
     return structuredClone(presetBody);
+}
+
+function mergeStoredOpenAIPreset(targetPreset, presetBody) {
+    const target = targetPreset && typeof targetPreset === 'object' ? targetPreset : {};
+    const normalizedPresetBody = presetBody && typeof presetBody === 'object' ? presetBody : {};
+
+    for (const key of Object.keys(settingsToUpdate)) {
+        if (isConnectionProfileOnlyPresetField(key)) {
+            continue;
+        }
+        if (!(key in normalizedPresetBody)) {
+            delete target[key];
+        }
+    }
+
+    Object.assign(target, normalizedPresetBody);
+    return target;
 }
 
 /**
@@ -5272,12 +5290,7 @@ async function saveOpenAIPreset(name, settings, triggerUi = true) {
         const existingName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), data.name);
         if (existingName) {
             const value = openai_setting_names[existingName];
-            for (const key of Object.keys(settingsToUpdate)) {
-                if (isOpenAIConnectionPresetField(key)) {
-                    delete openai_settings[value]?.[key];
-                }
-            }
-            Object.assign(openai_settings[value], presetBody);
+            mergeStoredOpenAIPreset(openai_settings[value], presetBody);
             if (triggerUi) {
                 oai_settings.preset_settings_openai = existingName;
                 $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
@@ -5455,8 +5468,6 @@ async function onPresetImportFileChange(e) {
         return;
     }
 
-    presetBody = stripOpenAIConnectionFieldsFromPreset(presetBody);
-
     if (name in openai_setting_names) {
         const confirm = await callGenericPopup('Preset name already exists. Overwrite?', POPUP_TYPE.CONFIRM);
 
@@ -5488,12 +5499,7 @@ async function onPresetImportFileChange(e) {
     if (existingName) {
         oai_settings.preset_settings_openai = existingName;
         const value = openai_setting_names[existingName];
-        for (const key of Object.keys(settingsToUpdate)) {
-            if (isOpenAIConnectionPresetField(key)) {
-                delete openai_settings[value]?.[key];
-            }
-        }
-        Object.assign(openai_settings[value], presetBody);
+        mergeStoredOpenAIPreset(openai_settings[value], presetBody);
         $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
         $('#settings_preset_openai').trigger('change');
     } else {
@@ -5513,7 +5519,7 @@ async function onExportPresetClick() {
         return;
     }
 
-    const preset = stripOpenAIConnectionFieldsFromPreset(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
 
     await eventSource.emit(event_types.OAI_PRESET_EXPORT_READY, preset);
     const presetJsonString = JSON.stringify(preset, null, 4);
