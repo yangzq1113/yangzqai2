@@ -258,7 +258,7 @@ import {
     isPersonaPanelOpen,
 } from './scripts/personas.js';
 import { initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
-import { hideLoader, showLoader } from './scripts/loader.js';
+import { hideLoader, isLoaderVisible, showLoader } from './scripts/loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, hideChatMessageRange, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
@@ -1596,11 +1596,17 @@ async function firstLoadInit() {
     initDynamicStyles();
     initTags();
     initBookmarks();
+    initBackgrounds();
+    initAuthorsNote();
+
+    if (isLoaderVisible()) {
+        await hideLoader();
+    }
+    await fixViewport();
+
     await getUserAvatars(true, user_avatar);
     await getCharacters();
     await initTokenizers();
-    initBackgrounds();
-    initAuthorsNote();
     await initPersonas();
     await initSlashCommandAutoComplete();
     initMacroAutoComplete();
@@ -1623,8 +1629,6 @@ async function firstLoadInit() {
     initAccessibility();
     addDebugFunctions();
     doDailyExtensionUpdatesCheck();
-    await hideLoader();
-    await fixViewport();
     await eventSource.emit(event_types.APP_READY);
 }
 
