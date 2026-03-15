@@ -5882,6 +5882,33 @@ function renderDynamicPanels(root, context) {
 }
 
 function buildOrchestrationEditorPopupPanelHtml(context, settings) {
+    if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+        return `
+<div class="luker_orch_editor_popup">
+    <div class="luker_orch_board">
+        <div class="luker_orch_character_row">
+            <div>
+                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(i18n('Global profile'))}</span></small><br />
+                <small>${escapeHtml(i18n('Execution mode'))} <span>${escapeHtml(i18n('Agenda planner'))}</span></small>
+            </div>
+            <div>
+                <label>${escapeHtml(i18n('AI build goal (optional)'))}</label>
+                <textarea class="text_pole textarea_compact" rows="2" data-luker-ai-goal-input placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}">${escapeHtml(String(uiState.aiGoal || ''))}</textarea>
+                <div class="flex-container">
+                    <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
+                </div>
+            </div>
+        </div>
+        <div class="flex-container">
+            <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
+            <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
+            <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
+            <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+        </div>
+        ${renderAgendaWorkspace(settings)}
+    </div>
+</div>`;
+    }
     syncCharacterEditorWithActiveAvatar(context);
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
     const scope = getDisplayedScope(context, settings);
@@ -6797,7 +6824,84 @@ function createIterationEditorFromWorkingProfile(workingProfile) {
     };
 }
 
+function sanitizeAgendaWorkingProfile(workingProfile = null) {
+    const source = workingProfile && typeof workingProfile === 'object' ? workingProfile : {};
+    const limitsSource = source?.limits && typeof source.limits === 'object' ? source.limits : source;
+    const agents = sanitizePresetMap(source?.agents);
+    if (Object.keys(agents).length === 0) {
+        agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+    }
+    const finalAgentId = sanitizeIdentifierToken(
+        source?.finalAgentId,
+        agents.finalizer ? 'finalizer' : (Object.keys(agents)[0] || 'finalizer'),
+    );
+    return {
+        plannerPrompt: String(source?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT).trim() || DEFAULT_AGENDA_PLANNER_PROMPT,
+        agents,
+        finalAgentId: agents[finalAgentId]
+            ? finalAgentId
+            : (agents.finalizer ? 'finalizer' : (Object.keys(agents)[0] || 'finalizer')),
+        limits: {
+            plannerMaxRounds: Math.max(1, Math.min(20, Math.floor(Number(limitsSource?.plannerMaxRounds) || 6))),
+            maxConcurrentAgents: Math.max(1, Math.min(12, Math.floor(Number(limitsSource?.maxConcurrentAgents) || 3))),
+            maxTotalRuns: Math.max(1, Math.min(200, Math.floor(Number(limitsSource?.maxTotalRuns) || 24))),
+        },
+    };
+}
+
+function cloneAgendaWorkingProfileFromSettings(settings) {
+    return sanitizeAgendaWorkingProfile({
+        plannerPrompt: String(settings?.agendaPlannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+        agents: sanitizePresetMap(settings?.agendaAgents),
+        finalAgentId: sanitizeIdentifierToken(settings?.agendaFinalAgentId, 'finalizer'),
+        limits: {
+            plannerMaxRounds: Number(settings?.agendaPlannerMaxRounds || 6),
+            maxConcurrentAgents: Number(settings?.agendaMaxConcurrentAgents || 3),
+            maxTotalRuns: Number(settings?.agendaMaxTotalRuns || 24),
+        },
+    });
+}
+
+function buildAgendaProfileForRuntime(workingProfile = null) {
+    const profile = sanitizeAgendaWorkingProfile(workingProfile);
+    return {
+        source: 'agenda',
+        key: 'agenda_iteration',
+        mode: ORCH_EXECUTION_MODE_AGENDA,
+        plannerPrompt: profile.plannerPrompt,
+        agents: profile.agents,
+        finalAgentId: profile.finalAgentId,
+        limits: {
+            plannerMaxRounds: profile.limits.plannerMaxRounds,
+            maxConcurrentAgents: profile.limits.maxConcurrentAgents,
+            maxTotalRuns: profile.limits.maxTotalRuns,
+        },
+    };
+}
+
+function isAgendaIterationSession(session) {
+    return String(session?.mode || '') === ORCH_EXECUTION_MODE_AGENDA;
+}
+
 function createAiIterationSession(context, settings) {
+    if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+        return {
+            id: `session_${Date.now()}`,
+            mode: ORCH_EXECUTION_MODE_AGENDA,
+            chatKey: getChatKey(context),
+            sourceScope: 'global',
+            sourceAvatar: '',
+            sourceName: i18n('Agenda Orchestration'),
+            revision: 1,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            workingProfile: cloneAgendaWorkingProfileFromSettings(settings),
+            messages: [],
+            toolHistory: [],
+            lastSimulation: null,
+            pendingApproval: null,
+        };
+    }
     syncCharacterEditorWithActiveAvatar(context);
     const scope = getDisplayedScope(context, settings);
     const editor = getEditorByScope(scope);
@@ -6811,6 +6915,7 @@ function createAiIterationSession(context, settings) {
         sourceScope: scope,
         sourceAvatar: avatar,
         sourceName,
+        mode: ORCH_EXECUTION_MODE_SPEC,
         revision: 1,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -6824,6 +6929,10 @@ function createAiIterationSession(context, settings) {
 
 function ensureAiIterationSession(context, settings, { forceNew = false } = {}) {
     if (!uiState.aiIterationSession || forceNew) {
+        uiState.aiIterationSession = createAiIterationSession(context, settings);
+        return uiState.aiIterationSession;
+    }
+    if (String(uiState.aiIterationSession.mode || ORCH_EXECUTION_MODE_SPEC) !== getExecutionMode(settings)) {
         uiState.aiIterationSession = createAiIterationSession(context, settings);
         return uiState.aiIterationSession;
     }
@@ -6923,6 +7032,11 @@ const AI_ITERATION_EDITABLE_TOOL_NAMES = new Set([
     'luker_orch_remove_node',
     'luker_orch_set_preset',
     'luker_orch_remove_preset',
+    'luker_orch_set_agenda_planner_prompt',
+    'luker_orch_set_agenda_agent',
+    'luker_orch_remove_agenda_agent',
+    'luker_orch_set_agenda_final_agent',
+    'luker_orch_set_agenda_limits',
 ]);
 
 function isAiIterationEditableToolCallName(name) {
@@ -6953,6 +7067,11 @@ function summarizeIterationToolCalls(toolCalls) {
         node_remove: 0,
         preset_set: 0,
         preset_remove: 0,
+        agenda_planner_prompt: 0,
+        agenda_agent_set: 0,
+        agenda_agent_remove: 0,
+        agenda_final_agent: 0,
+        agenda_limits: 0,
         other: 0,
     };
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
@@ -6963,6 +7082,11 @@ function summarizeIterationToolCalls(toolCalls) {
         else if (name === 'luker_orch_remove_node') counts.node_remove += 1;
         else if (name === 'luker_orch_set_preset') counts.preset_set += 1;
         else if (name === 'luker_orch_remove_preset') counts.preset_remove += 1;
+        else if (name === 'luker_orch_set_agenda_planner_prompt') counts.agenda_planner_prompt += 1;
+        else if (name === 'luker_orch_set_agenda_agent') counts.agenda_agent_set += 1;
+        else if (name === 'luker_orch_remove_agenda_agent') counts.agenda_agent_remove += 1;
+        else if (name === 'luker_orch_set_agenda_final_agent') counts.agenda_final_agent += 1;
+        else if (name === 'luker_orch_set_agenda_limits') counts.agenda_limits += 1;
         else counts.other += 1;
     }
     const lines = [];
@@ -6972,6 +7096,11 @@ function summarizeIterationToolCalls(toolCalls) {
     if (counts.node_remove > 0) lines.push(`删除节点 ${counts.node_remove}`);
     if (counts.preset_set > 0) lines.push(`更新预设 ${counts.preset_set}`);
     if (counts.preset_remove > 0) lines.push(`删除预设 ${counts.preset_remove}`);
+    if (counts.agenda_planner_prompt > 0) lines.push(`更新 agenda plannerPrompt ${counts.agenda_planner_prompt}`);
+    if (counts.agenda_agent_set > 0) lines.push(`更新 agenda agents ${counts.agenda_agent_set}`);
+    if (counts.agenda_agent_remove > 0) lines.push(`删除 agenda agents ${counts.agenda_agent_remove}`);
+    if (counts.agenda_final_agent > 0) lines.push(`更新 agenda final agent ${counts.agenda_final_agent}`);
+    if (counts.agenda_limits > 0) lines.push(`更新 agenda 限制 ${counts.agenda_limits}`);
     if (counts.other > 0) lines.push(`其他操作 ${counts.other}`);
     return lines;
 }
@@ -7391,7 +7520,178 @@ function beginOrchLineDiffResize(splitterElement, pointerEvent) {
     }
 }
 
+function buildAgendaIterationPendingDiffState(session, pending) {
+    const entries = [];
+    const workingProfile = sanitizeAgendaWorkingProfile(session?.workingProfile);
+
+    for (const call of Array.isArray(pending?.toolCalls) ? pending.toolCalls : []) {
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        const item = {
+            name,
+            summary: '',
+            fields: [],
+            rawArgs: args,
+        };
+
+        if (name === 'luker_orch_set_agenda_planner_prompt') {
+            const nextPrompt = String(args.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
+            item.summary = 'Agenda planner prompt updated';
+            item.fields.push({
+                label: 'plannerPrompt',
+                before: formatDiffValue(workingProfile.plannerPrompt),
+                after: formatDiffValue(nextPrompt),
+            });
+            workingProfile.plannerPrompt = nextPrompt;
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_set_agenda_agent') {
+            const agentId = sanitizeIdentifierToken(args.agent_id, '');
+            const beforeAgent = agentId ? structuredClone(workingProfile.agents[agentId] || null) : null;
+            const afterAgent = {
+                systemPrompt: String(args.systemPrompt || '').trim(),
+                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+            };
+            if (agentId) {
+                workingProfile.agents[agentId] = afterAgent;
+            }
+            item.summary = agentId
+                ? `Agenda agent "${agentId}" ${beforeAgent ? 'updated' : 'created'}`
+                : 'Agenda agent update skipped (missing agent_id)';
+            item.fields.push({
+                label: 'systemPrompt',
+                before: formatDiffValue(beforeAgent?.systemPrompt || ''),
+                after: formatDiffValue(afterAgent.systemPrompt),
+            });
+            item.fields.push({
+                label: 'userPromptTemplate',
+                before: formatDiffValue(beforeAgent?.userPromptTemplate || ''),
+                after: formatDiffValue(afterAgent.userPromptTemplate),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_remove_agenda_agent') {
+            const agentId = sanitizeIdentifierToken(args.agent_id, '');
+            const existed = agentId ? structuredClone(workingProfile.agents[agentId] || null) : null;
+            if (agentId && workingProfile.agents[agentId]) {
+                delete workingProfile.agents[agentId];
+            }
+            const normalized = sanitizeAgendaWorkingProfile(workingProfile);
+            workingProfile.plannerPrompt = normalized.plannerPrompt;
+            workingProfile.agents = normalized.agents;
+            workingProfile.finalAgentId = normalized.finalAgentId;
+            workingProfile.limits = normalized.limits;
+            item.summary = agentId
+                ? `Agenda agent "${agentId}" ${existed ? 'removed' : 'remove skipped'}`
+                : 'Agenda agent removal skipped (missing agent_id)';
+            item.fields.push({
+                label: 'result',
+                before: existed ? 'exists' : '',
+                after: existed ? '' : 'unchanged',
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_set_agenda_final_agent') {
+            const nextAgentId = sanitizeIdentifierToken(args.agent_id, '');
+            item.summary = nextAgentId
+                ? 'Agenda final agent updated'
+                : 'Agenda final agent update skipped (missing agent_id)';
+            item.fields.push({
+                label: 'finalAgentId',
+                before: formatDiffValue(workingProfile.finalAgentId),
+                after: formatDiffValue(nextAgentId),
+            });
+            if (nextAgentId) {
+                workingProfile.finalAgentId = nextAgentId;
+            }
+            const normalized = sanitizeAgendaWorkingProfile(workingProfile);
+            workingProfile.finalAgentId = normalized.finalAgentId;
+            workingProfile.agents = normalized.agents;
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_set_agenda_limits') {
+            const nextLimits = {
+                plannerMaxRounds: args.planner_max_rounds ?? workingProfile.limits.plannerMaxRounds,
+                maxConcurrentAgents: args.max_concurrent_agents ?? workingProfile.limits.maxConcurrentAgents,
+                maxTotalRuns: args.max_total_runs ?? workingProfile.limits.maxTotalRuns,
+            };
+            const normalized = sanitizeAgendaWorkingProfile({
+                ...workingProfile,
+                limits: nextLimits,
+            });
+            item.summary = 'Agenda runtime limits updated';
+            item.fields.push({
+                label: 'plannerMaxRounds',
+                before: formatDiffValue(String(workingProfile.limits.plannerMaxRounds)),
+                after: formatDiffValue(String(normalized.limits.plannerMaxRounds)),
+            });
+            item.fields.push({
+                label: 'maxConcurrentAgents',
+                before: formatDiffValue(String(workingProfile.limits.maxConcurrentAgents)),
+                after: formatDiffValue(String(normalized.limits.maxConcurrentAgents)),
+            });
+            item.fields.push({
+                label: 'maxTotalRuns',
+                before: formatDiffValue(String(workingProfile.limits.maxTotalRuns)),
+                after: formatDiffValue(String(normalized.limits.maxTotalRuns)),
+            });
+            workingProfile.limits = normalized.limits;
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_simulate') {
+            item.summary = 'Run simulation';
+            item.fields.push({
+                label: 'simulation_text',
+                before: '',
+                after: formatDiffValue(args.simulation_text || ''),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_finalize_iteration') {
+            item.summary = 'Finalize iteration';
+            item.fields.push({
+                label: 'summary',
+                before: '',
+                after: formatDiffValue(args.summary || ''),
+            });
+            entries.push(item);
+            continue;
+        }
+
+        if (name === 'luker_orch_continue_iteration') {
+            item.summary = 'Continue iteration';
+            item.fields.push({
+                label: 'note',
+                before: '',
+                after: formatDiffValue(args.note || ''),
+            });
+            entries.push(item);
+            continue;
+        }
+    }
+
+    return {
+        entries,
+        projectedProfile: sanitizeAgendaWorkingProfile(workingProfile),
+    };
+}
+
 function buildAiIterationPendingDiffState(session, pending) {
+    if (isAgendaIterationSession(session)) {
+        return buildAgendaIterationPendingDiffState(session, pending);
+    }
     const entries = [];
     const workingProfile = structuredClone(session?.workingProfile || { spec: { stages: [] }, presets: {} });
     const stages = Array.isArray(workingProfile?.spec?.stages) ? workingProfile.spec.stages : [];
@@ -7735,7 +8035,43 @@ function renderAiIterationPendingApproval(session, popupId, pendingEntries = [])
 </div>`;
 }
 
+function renderAgendaIterationWorkingProfile(session, { profileOverride = null, previewPending = false } = {}) {
+    const profile = sanitizeAgendaWorkingProfile(
+        profileOverride && typeof profileOverride === 'object'
+            ? profileOverride
+            : session?.workingProfile,
+    );
+    const agentCards = Object.entries(profile?.agents || {})
+        .sort((left, right) => left[0].localeCompare(right[0]))
+        .map(([agentId, preset]) => `
+<div class="luker_orch_iter_stage">
+    <div class="luker_orch_iter_stage_title">${escapeHtml(agentId)}</div>
+    <div class="luker_orch_iter_stage_mode">${escapeHtml(agentId === profile.finalAgentId ? i18n('Final Agent') : i18n('Worker'))}</div>
+    <div class="luker_orch_iter_stage_nodes">${escapeHtml(truncateOrchestrationRuntimePreview(preset?.systemPrompt || '', 180) || '(empty)')}</div>
+</div>`).join('');
+    const simulationSummary = session?.lastSimulation
+        ? `${i18n('Simulation')}: ${String(session.lastSimulation.summary || '')}`
+        : '';
+    return `
+<div class="luker_orch_iter_profile_meta">
+    <div><b>${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</b></div>
+    <div>${escapeHtml(`Revision #${Number(session?.revision || 1)}`)}</div>
+    ${previewPending ? `<div>${escapeHtml(i18n('AI suggested changes are waiting for approval.'))}</div>` : ''}
+    ${simulationSummary ? `<div>${escapeHtml(simulationSummary)}</div>` : ''}
+</div>
+<div class="luker_orch_iter_preset_line"><b>Final agent:</b> ${escapeHtml(profile.finalAgentId || '(none)')}</div>
+<div class="luker_orch_iter_preset_line"><b>Limits:</b> ${escapeHtml(`rounds=${profile.limits.plannerMaxRounds}, concurrent=${profile.limits.maxConcurrentAgents}, totalRuns=${profile.limits.maxTotalRuns}`)}</div>
+<details class="luker_orch_iter_diff_raw" open>
+    <summary>${escapeHtml(i18n('Planner Prompt'))}</summary>
+    <pre>${escapeHtml(profile.plannerPrompt || '')}</pre>
+</details>
+<div class="luker_orch_iter_stage_list">${agentCards || `<div class="luker_orch_iter_empty">(no agents)</div>`}</div>`;
+}
+
 function renderAiIterationWorkingProfile(session, { profileOverride = null, previewPending = false } = {}) {
+    if (isAgendaIterationSession(session)) {
+        return renderAgendaIterationWorkingProfile(session, { profileOverride, previewPending });
+    }
     const profile = profileOverride && typeof profileOverride === 'object'
         ? profileOverride
         : (session?.workingProfile || {});
@@ -7765,8 +8101,27 @@ function renderAiIterationWorkingProfile(session, { profileOverride = null, prev
 <div class="luker_orch_iter_preset_line"><b>Presets:</b> ${escapeHtml(presetSummary)}</div>`;
 }
 
-function buildAiIterationSystemPrompt(settings) {
+function buildAiIterationSystemPrompt(settings, session = null) {
     const base = normalizeTemplateForAiPrompt(String(settings.aiSuggestSystemPrompt || '').trim()) || getDefaultAiSuggestSystemPrompt();
+    if (isAgendaIterationSession(session)) {
+        return [
+            base,
+            '',
+            'Iteration mode contract:',
+            '- You are editing an existing agenda orchestration profile incrementally.',
+            '- The working profile contains plannerPrompt, agenda agents, finalAgentId, and runtime limits.',
+            '- Prefer targeted edits. Do not rewrite the full plannerPrompt unless necessary.',
+            '- Keep plannerPrompt as the main orchestration contract and keep agent prompts concrete and task-oriented.',
+            '- Use luker_orch_set_agenda_agent to create or update one agenda agent at a time.',
+            '- Use luker_orch_set_agenda_final_agent to point final output to an existing agent id.',
+            '- Use luker_orch_set_agenda_limits only for real budget changes, not for stylistic edits.',
+            '- If user asks to test, call luker_orch_simulate with suitable input.',
+            '- If you need one more autonomous step right after current execution, call luker_orch_continue_iteration.',
+            '- If you need user decision or clarification, do not call continue or finalize. Stop and wait for user.',
+            '- When iteration is complete, call luker_orch_finalize_iteration.',
+            '- Keep output practical and concise for real RP usage.',
+        ].join('\n');
+    }
     return [
         base,
         '',
@@ -7791,7 +8146,10 @@ function buildAiIterationSystemPrompt(settings) {
     ].join('\n');
 }
 
-function getGlobalIterationBaselineProfile(settings) {
+function getGlobalIterationBaselineProfile(settings, session = null) {
+    if (isAgendaIterationSession(session)) {
+        return cloneAgendaWorkingProfileFromSettings(settings);
+    }
     return {
         spec: sanitizeSpec(settings?.orchestrationSpec),
         presets: sanitizePresetMap(settings?.presets),
@@ -7803,6 +8161,54 @@ function buildAiIterationUserPrompt(session, userInputText, {
     sourceScope = '',
     sourceName = '',
 } = {}) {
+    if (isAgendaIterationSession(session)) {
+        const recentConversation = (Array.isArray(session?.messages) ? session.messages : [])
+            .map(item => `${String(item?.role || 'assistant').toUpperCase()}: ${String(item?.content || '')}`)
+            .join('\n\n');
+        const workingProfileValue = sanitizeAgendaWorkingProfile(session?.workingProfile);
+        const globalProfileValue = sanitizeAgendaWorkingProfile(globalProfile);
+        const latestSimulationText = stringifyIterationSimulationForPrompt(session?.lastSimulation);
+        const latestSnapshotText = toReadableYamlText(normalizeOrchestrationSnapshot(latestOrchestrationSnapshot) || {}, '{}');
+        return [
+            '# iteration_input',
+            'You are in a multi-turn agenda orchestration iteration session.',
+            'Apply focused edits through tools only. Keep edits minimal and high-impact.',
+            '',
+            '## source_scope',
+            String(sourceScope || session?.sourceScope || 'global'),
+            '',
+            '## source_name',
+            String(sourceName || session?.sourceName || ''),
+            '',
+            '## global_profile_baseline',
+            '```yaml',
+            toReadableYamlText(globalProfileValue, '{}'),
+            '```',
+            '',
+            '## working_profile',
+            '```yaml',
+            toReadableYamlText(workingProfileValue, '{}'),
+            '```',
+            '',
+            '## conversation_history',
+            '```text',
+            recentConversation || '(empty)',
+            '```',
+            '',
+            '## latest_simulation',
+            '```text',
+            latestSimulationText,
+            '```',
+            '',
+            '## latest_orchestration_snapshot',
+            '```yaml',
+            latestSnapshotText,
+            '```',
+            '',
+            '## user_request',
+            String(userInputText || '').trim(),
+        ].join('\n');
+    }
     const recentConversation = (Array.isArray(session?.messages) ? session.messages : [])
         .map(item => `${String(item?.role || 'assistant').toUpperCase()}: ${String(item?.content || '')}`)
         .join('\n\n');
@@ -7874,7 +8280,133 @@ function buildAiIterationUserPrompt(session, userInputText, {
     ].join('\n');
 }
 
-function buildAiIterationToolSet() {
+function buildAiIterationToolSet(session = null) {
+    if (isAgendaIterationSession(session)) {
+        return [
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_set_agenda_planner_prompt',
+                    description: 'Create or replace the agenda planner prompt.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            plannerPrompt: { type: 'string' },
+                        },
+                        required: ['plannerPrompt'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_set_agenda_agent',
+                    description: 'Create or update one agenda agent preset.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string' },
+                            systemPrompt: { type: 'string' },
+                            userPromptTemplate: { type: 'string' },
+                        },
+                        required: ['agent_id', 'systemPrompt', 'userPromptTemplate'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_remove_agenda_agent',
+                    description: 'Remove one agenda agent by id.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string' },
+                        },
+                        required: ['agent_id'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_set_agenda_final_agent',
+                    description: 'Set which existing agenda agent should be used for final synthesis.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            agent_id: { type: 'string' },
+                        },
+                        required: ['agent_id'],
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_set_agenda_limits',
+                    description: 'Update agenda runtime limits.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            planner_max_rounds: { type: 'integer' },
+                            max_concurrent_agents: { type: 'integer' },
+                            max_total_runs: { type: 'integer' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_simulate',
+                    description: 'Run orchestration simulation against recent chat messages or a custom user message.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            recent_messages_n: { type: 'integer' },
+                            simulation_text: { type: 'string' },
+                            trigger: { type: 'string', enum: ['normal', 'regenerate', 'continue'] },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_continue_iteration',
+                    description: 'Request one automatic follow-up round after current tool execution.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            note: { type: 'string' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
+            {
+                type: 'function',
+                function: {
+                    name: 'luker_orch_finalize_iteration',
+                    description: 'Finalize this iteration turn with a concise summary.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            summary: { type: 'string' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
+        ];
+    }
     return [
         {
             type: 'function',
@@ -8050,10 +8582,12 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
             detail: {},
         };
     }
-    const profile = {
-        spec: sanitizeSpec(session?.workingProfile?.spec),
-        presets: sanitizePresetMap(session?.workingProfile?.presets),
-    };
+    const profile = isAgendaIterationSession(session)
+        ? buildAgendaProfileForRuntime(session?.workingProfile)
+        : {
+            spec: sanitizeSpec(session?.workingProfile?.spec),
+            presets: sanitizePresetMap(session?.workingProfile?.presets),
+        };
     const payload = {
         type: String(args?.trigger || 'normal').trim().toLowerCase() || 'normal',
         coreChat: simulationMessages,
@@ -8065,6 +8599,24 @@ async function runAiIterationSimulation(context, session, args = {}, abortSignal
         run = await runOrchestration(context, payload, structuredClone(simulationMessages), profile);
     } finally {
         latestOrchestrationSnapshot = snapshotBefore ? structuredClone(snapshotBefore) : null;
+    }
+    if (isAgendaIterationSession(session)) {
+        const agendaState = run?.agendaState && typeof run.agendaState === 'object' ? run.agendaState : {};
+        return {
+            ok: true,
+            summary: `Simulated agenda: ${Number(agendaState?.plannerRounds || 0)} planner rounds, ${Array.isArray(agendaState?.runs) ? agendaState.runs.length : 0} runs.`,
+            detail: {
+                planner_rounds: Number(agendaState?.plannerRounds || 0),
+                todo_count: Array.isArray(agendaState?.todos) ? agendaState.todos.length : 0,
+                run_count: Array.isArray(agendaState?.runs) ? agendaState.runs.length : 0,
+                final_guidance: String(agendaState?.finalGuidance || ''),
+                agenda_state: agendaState,
+                input: {
+                    recent_messages_n: Math.max(1, Math.min(60, Math.floor(Number(args?.recent_messages_n) || 12))),
+                    simulation_text_used: Boolean(customText),
+                },
+            },
+        };
     }
     const allStageOutputs = compactStageOutputs(run?.stageOutputs || []);
     const finalStage = getFinalStageSnapshot(run?.stageOutputs || []);
@@ -8132,7 +8684,129 @@ function buildFriendlyIterationExecutionSummary(result) {
     return lines.join('\n').trim() || '已执行。';
 }
 
+async function executeAgendaIterationToolCalls(context, session, toolCalls, abortSignal = null) {
+    const actions = [];
+    const simulations = [];
+    let finalized = false;
+    let finalizeSummary = '';
+    let continueRequested = false;
+    let changed = false;
+    session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
+
+    for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        if (!name) {
+            continue;
+        }
+        if (name === 'luker_orch_set_agenda_planner_prompt') {
+            session.workingProfile.plannerPrompt = String(args.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
+            actions.push('Agenda planner prompt updated.');
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_set_agenda_agent') {
+            const agentId = sanitizeIdentifierToken(args.agent_id, '');
+            if (!agentId) {
+                actions.push('Skipped agenda agent update: missing agent_id.');
+                continue;
+            }
+            session.workingProfile.agents[agentId] = {
+                systemPrompt: String(args.systemPrompt || '').trim(),
+                userPromptTemplate: String(args.userPromptTemplate || '').trim(),
+            };
+            actions.push(`Agenda agent "${agentId}" updated.`);
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_remove_agenda_agent') {
+            const agentId = sanitizeIdentifierToken(args.agent_id, '');
+            if (!agentId) {
+                actions.push('Skipped agenda agent removal: missing agent_id.');
+                continue;
+            }
+            if (!session.workingProfile.agents[agentId]) {
+                actions.push(`Skipped agenda agent removal: "${agentId}" not found.`);
+                continue;
+            }
+            delete session.workingProfile.agents[agentId];
+            session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
+            actions.push(`Agenda agent "${agentId}" removed.`);
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_set_agenda_final_agent') {
+            const agentId = sanitizeIdentifierToken(args.agent_id, '');
+            if (!agentId) {
+                actions.push('Skipped agenda final agent update: missing agent_id.');
+                continue;
+            }
+            session.workingProfile.finalAgentId = agentId;
+            session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
+            if (String(session.workingProfile.finalAgentId || '') !== agentId) {
+                actions.push(`Skipped agenda final agent update: "${agentId}" is not available.`);
+                continue;
+            }
+            actions.push(`Agenda final agent set to "${agentId}".`);
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_set_agenda_limits') {
+            session.workingProfile = sanitizeAgendaWorkingProfile({
+                ...session.workingProfile,
+                limits: {
+                    plannerMaxRounds: args.planner_max_rounds ?? session.workingProfile.limits.plannerMaxRounds,
+                    maxConcurrentAgents: args.max_concurrent_agents ?? session.workingProfile.limits.maxConcurrentAgents,
+                    maxTotalRuns: args.max_total_runs ?? session.workingProfile.limits.maxTotalRuns,
+                },
+            });
+            actions.push('Agenda runtime limits updated.');
+            changed = true;
+            continue;
+        }
+        if (name === 'luker_orch_simulate') {
+            const simulation = await runAiIterationSimulation(context, session, args, abortSignal);
+            simulations.push(simulation);
+            session.lastSimulation = simulation;
+            actions.push(simulation.ok
+                ? `Simulation finished: ${simulation.summary}`
+                : `Simulation failed: ${simulation.summary}`);
+            continue;
+        }
+        if (name === 'luker_orch_continue_iteration') {
+            continueRequested = true;
+            const note = String(args.note || '').trim();
+            actions.push(`Continue requested.${note ? ` ${note}` : ''}`);
+            continue;
+        }
+        if (name === 'luker_orch_finalize_iteration') {
+            finalized = true;
+            finalizeSummary = String(args.summary || '').trim();
+            actions.push(`Iteration finalized.${finalizeSummary ? ` ${finalizeSummary}` : ''}`);
+            continue;
+        }
+        actions.push(`Ignored unknown action: ${name}`);
+    }
+
+    session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
+    session.revision = Number(session.revision || 0) + (changed ? 1 : 0);
+    session.updatedAt = Date.now();
+    trimAiIterationMessages(session);
+
+    return {
+        actions,
+        simulations,
+        finalized,
+        finalizeSummary,
+        continueRequested,
+        changed,
+    };
+}
+
 async function executeAiIterationToolCalls(context, session, toolCalls, abortSignal = null) {
+    if (isAgendaIterationSession(session)) {
+        return executeAgendaIterationToolCalls(context, session, toolCalls, abortSignal);
+    }
     const actions = [];
     const simulations = [];
     let finalized = false;
@@ -8348,14 +9022,14 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
     });
     const api = aiSuggestProfileResolution.requestApi;
     const apiSettingsOverride = aiSuggestProfileResolution.apiSettingsOverride;
-    const tools = buildAiIterationToolSet();
+    const tools = buildAiIterationToolSet(session);
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
-    const globalBaseline = getGlobalIterationBaselineProfile(settings);
+    const globalBaseline = getGlobalIterationBaselineProfile(settings, session);
 
     const promptMessages = await buildPresetAwareMessages(
         context,
         settings,
-        buildAiIterationSystemPrompt(settings),
+        buildAiIterationSystemPrompt(settings, session),
         buildAiIterationUserPrompt(session, text, {
             globalProfile: globalBaseline,
             sourceScope: String(session?.sourceScope || ''),
@@ -8434,6 +9108,22 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
 }
 
 async function applyAiIterationSessionToGlobal(context, settings, session, root) {
+    if (isAgendaIterationSession(session)) {
+        const profile = sanitizeAgendaWorkingProfile(session?.workingProfile);
+        settings.executionMode = ORCH_EXECUTION_MODE_AGENDA;
+        settings.singleAgentModeEnabled = false;
+        settings.agendaPlannerPrompt = profile.plannerPrompt;
+        settings.agendaAgents = sanitizePresetMap(profile.agents);
+        settings.agendaFinalAgentId = sanitizeIdentifierToken(profile.finalAgentId, 'finalizer');
+        settings.agendaPlannerMaxRounds = profile.limits.plannerMaxRounds;
+        settings.agendaMaxConcurrentAgents = profile.limits.maxConcurrentAgents;
+        settings.agendaMaxTotalRuns = profile.limits.maxTotalRuns;
+        await saveSettings();
+        renderDynamicPanels(root, context);
+        notifySuccess(i18n('Iteration session applied to global profile.'));
+        updateUiStatus(i18n('Iteration session applied to global profile.'));
+        return;
+    }
     settings.orchestrationSpec = sanitizeSpec(session?.workingProfile?.spec);
     settings.presets = sanitizePresetMap(session?.workingProfile?.presets);
     await saveSettings();
@@ -8445,6 +9135,10 @@ async function applyAiIterationSessionToGlobal(context, settings, session, root)
 }
 
 async function applyAiIterationSessionToCharacter(context, settings, session, root) {
+    if (isAgendaIterationSession(session)) {
+        notifyError(i18n('Agenda iteration currently applies only to global profile.'));
+        return;
+    }
     const avatar = String(getCurrentAvatar(context) || '').trim();
     if (!avatar) {
         notifyError(i18n('No character selected. Cannot apply to character override.'));
@@ -8472,6 +9166,7 @@ async function applyAiIterationSessionToCharacter(context, settings, session, ro
 }
 
 function buildAiIterationPopupHtml(popupId, session) {
+    const allowCharacterApply = !isAgendaIterationSession(session);
     return `
 <div id="${popupId}" class="luker_orch_iter_popup">
     <div class="luker_orch_iter_head">
@@ -8495,7 +9190,7 @@ function buildAiIterationPopupHtml(popupId, session) {
             <div id="${popupId}_profile" class="luker_orch_iter_profile"></div>
             <div class="luker_orch_iter_actions">
                 <div id="${popupId}_apply_global" class="menu_button">${escapeHtml(i18n('Apply to Global'))}</div>
-                <div id="${popupId}_apply_character" class="menu_button">${escapeHtml(i18n('Apply to Character'))}</div>
+                ${allowCharacterApply ? `<div id="${popupId}_apply_character" class="menu_button">${escapeHtml(i18n('Apply to Character'))}</div>` : ''}
             </div>
         </div>
     </div>
@@ -8835,28 +9530,28 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
-    root.on('input.lukerOrch', '#luker_orch_agenda_planner_prompt', function () {
+    jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_prompt, .luker_orch_editor_popup #luker_orch_agenda_planner_prompt`, function () {
         settings.agendaPlannerPrompt = String(jQuery(this).val() || '');
         saveSettingsDebounced();
     });
 
-    root.on('change.lukerOrch', '#luker_orch_agenda_final_agent', function () {
+    jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_final_agent, .luker_orch_editor_popup #luker_orch_agenda_final_agent`, function () {
         settings.agendaFinalAgentId = sanitizeIdentifierToken(jQuery(this).val(), settings.agendaFinalAgentId || 'finalizer');
         saveSettingsDebounced();
         renderDynamicPanels(root, context);
     });
 
-    root.on('change.lukerOrch', '#luker_orch_agenda_planner_rounds', function () {
+    jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_rounds, .luker_orch_editor_popup #luker_orch_agenda_planner_rounds`, function () {
         settings.agendaPlannerMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(jQuery(this).val()) || 1)));
         saveSettingsDebounced();
     });
 
-    root.on('change.lukerOrch', '#luker_orch_agenda_max_concurrent', function () {
+    jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_max_concurrent, .luker_orch_editor_popup #luker_orch_agenda_max_concurrent`, function () {
         settings.agendaMaxConcurrentAgents = Math.max(1, Math.min(12, Math.floor(Number(jQuery(this).val()) || 1)));
         saveSettingsDebounced();
     });
 
-    root.on('change.lukerOrch', '#luker_orch_agenda_max_total_runs', function () {
+    jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_max_total_runs, .luker_orch_editor_popup #luker_orch_agenda_max_total_runs`, function () {
         settings.agendaMaxTotalRuns = Math.max(1, Math.min(200, Math.floor(Number(jQuery(this).val()) || 1)));
         saveSettingsDebounced();
     });
@@ -8995,7 +9690,7 @@ function bindUi() {
         }
     });
 
-    root.on('input.lukerOrch', '[data-luker-agenda-agent-field]', function () {
+    jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-agenda-agent-field], .luker_orch_editor_popup [data-luker-agenda-agent-field]`, function () {
         const agentId = sanitizeIdentifierToken(jQuery(this).data('agent-id'), '');
         const field = String(jQuery(this).data('luker-agenda-agent-field') || '');
         if (!agentId || !settings.agendaAgents?.[agentId]) {
@@ -9183,6 +9878,12 @@ function bindUi() {
         }
 
         if (action === 'reload-current') {
+            if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+                ensureSettings();
+                renderDynamicPanels(root, context);
+                updateUiStatus(i18n('Reloaded global profile from settings.'));
+                return;
+            }
             syncCharacterEditorWithActiveAvatar(context);
             const activeAvatar = String(getCurrentAvatar(context) || '').trim();
             if (hasCharacterOverride(context, activeAvatar)) {
@@ -9199,6 +9900,24 @@ function bindUi() {
         }
 
         if (action === 'reset-global') {
+            if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+                if (!window.confirm(i18n('Reset global orchestration profile to defaults? This will overwrite current global workflow and presets.'))) {
+                    return;
+                }
+                settings.executionMode = ORCH_EXECUTION_MODE_AGENDA;
+                settings.singleAgentModeEnabled = false;
+                settings.agendaPlannerPrompt = DEFAULT_AGENDA_PLANNER_PROMPT;
+                settings.agendaAgents = sanitizePresetMap(defaultAgendaAgents);
+                settings.agendaFinalAgentId = 'finalizer';
+                settings.agendaPlannerMaxRounds = 6;
+                settings.agendaMaxConcurrentAgents = 3;
+                settings.agendaMaxTotalRuns = 24;
+                await saveSettings();
+                renderDynamicPanels(root, context);
+                notifySuccess(i18n('Global orchestration profile reset to defaults.'));
+                updateUiStatus(i18n('Reset global profile to defaults.'));
+                return;
+            }
             if (!window.confirm(i18n('Reset global orchestration profile to defaults? This will overwrite current global workflow and presets.'))) {
                 return;
             }
@@ -10392,8 +11111,10 @@ function ensureUi() {
 
             <div id="luker_orch_agenda_board" class="luker_orch_board" style="display:none">
                 <div class="flex-container">
+                    <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
                     <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+                    <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
                 <div id="luker_orch_agenda_workspace"></div>
             </div>
