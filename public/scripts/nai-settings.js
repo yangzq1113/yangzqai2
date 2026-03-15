@@ -312,7 +312,11 @@ function loadNovelSettingsUi(ui_settings) {
     $('#math1_quad_counter_novel').val(Number(ui_settings.math1_quad).toFixed(2));
     $('#math1_quad_entropy_scale_novel').val(ui_settings.math1_quad_entropy_scale);
     $('#math1_quad_entropy_scale_counter_novel').val(Number(ui_settings.math1_quad_entropy_scale).toFixed(2));
-    $(`#settings_preset_novel option[value=${novelai_setting_names[nai_settings.preset_settings_novel]}]`).prop('selected', true);
+    const selectedNovelPresetValue = novelai_setting_names[nai_settings.preset_settings_novel];
+    if (selectedNovelPresetValue !== undefined) {
+        $('#settings_preset_novel').val(String(selectedNovelPresetValue));
+        $(`#settings_preset_novel option[value=${selectedNovelPresetValue}]`).prop('selected', true);
+    }
 
     $('#streaming_novel').prop('checked', ui_settings.streaming_novel);
     sortItemsByOrder(ui_settings.order);

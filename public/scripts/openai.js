@@ -4713,8 +4713,12 @@ function loadOpenAISettings(data, settings) {
     }
     oai_settings.custom_models_by_source = normalizeCustomModelsBySource(oai_settings.custom_models_by_source);
 
-    $(`#settings_preset_openai option[value="${openai_setting_names[oai_settings.preset_settings_openai]}"]`).prop('selected', true);
-    lastOpenAIPresetSelectValue = String($('#settings_preset_openai').val() ?? '');
+    const selectedOpenAIPresetValue = openai_setting_names[oai_settings.preset_settings_openai];
+    if (selectedOpenAIPresetValue !== undefined) {
+        $('#settings_preset_openai').val(String(selectedOpenAIPresetValue));
+        $(`#settings_preset_openai option[value="${selectedOpenAIPresetValue}"]`).prop('selected', true);
+    }
+    lastOpenAIPresetSelectValue = String($('#settings_preset_openai').val() ?? selectedOpenAIPresetValue ?? '');
     updateCharacterBoundPresetBadge(false);
     $('#openai_external_category').toggle(oai_settings.show_external_models);
     $('.reverse_proxy_warning').toggle(oai_settings.reverse_proxy !== '');

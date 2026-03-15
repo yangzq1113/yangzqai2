@@ -121,6 +121,7 @@ export function loadKoboldSettings(data, preset, settings) {
         selectKoboldGuiPreset();
     } else {
         if (typeof koboldai_setting_names[kai_settings.preset_settings] !== 'undefined') {
+            $('#settings_preset').val(String(koboldai_setting_names[kai_settings.preset_settings]));
             $(`#settings_preset option[value=${koboldai_setting_names[kai_settings.preset_settings]}]`)
                 .attr('selected', 'true');
         } else {
