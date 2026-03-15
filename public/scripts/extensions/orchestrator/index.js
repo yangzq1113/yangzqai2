@@ -51,6 +51,8 @@ const ORCH_EXECUTION_MODES = Object.freeze([
     ORCH_EXECUTION_MODE_SINGLE,
     ORCH_EXECUTION_MODE_AGENDA,
 ]);
+const PORTABLE_PROFILE_FORMAT_V1 = 'luker_orchestrator_profile_v1';
+const PORTABLE_PROFILE_FORMAT_V2 = 'luker_orchestrator_profile_v2';
 const AGENDA_PLANNER_TOOL = 'luker_orch_planner_step';
 const AGENDA_RESULT_TOOL = 'luker_orch_submit_result';
 const DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT = 'You are an orchestration planner. Maintain a todo list, dispatch the minimum useful set of agents, read every returned result carefully, and stop when the final orchestration guidance is ready. Before the function call, provide one concise <thought>...</thought> that reflects current planning.';
@@ -714,6 +716,7 @@ function registerLocaleData() {
         'Exported character override: ${0}.': '已导出角色卡覆写：${0}。',
         'Imported to global profile.': '已导入到全局配置。',
         'Imported to character override: ${0}.': '已导入到角色卡覆写：${0}。',
+        'Imported profile does not match current execution mode.': '导入的编排文件与当前执行模式不匹配。',
         'Invalid profile file format.': '编排文件格式无效。',
         'Import failed: ${0}': '导入失败：${0}',
         'Reset global profile to defaults.': '已将全局配置重置为默认。',
@@ -969,6 +972,7 @@ function registerLocaleData() {
         'Exported character override: ${0}.': '已匯出角色卡覆寫：${0}。',
         'Imported to global profile.': '已匯入到全域設定。',
         'Imported to character override: ${0}.': '已匯入到角色卡覆寫：${0}。',
+        'Imported profile does not match current execution mode.': '匯入的編排檔案與目前執行模式不匹配。',
         'Invalid profile file format.': '編排檔案格式無效。',
         'Import failed: ${0}': '匯入失敗：${0}',
         'Reset global profile to defaults.': '已將全域設定重置為預設。',
@@ -6026,6 +6030,8 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
         </div>
         <div class="flex-container">
             <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
+            <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
+            <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
             <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
             <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
             <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
@@ -6365,6 +6371,11 @@ function createPortableProfileFromEditor(editor) {
     };
 }
 
+function createPortableAgendaProfileFromEditor(editor) {
+    ensureAgendaEditorIntegrity(editor);
+    return sanitizeAgendaWorkingProfile(editor);
+}
+
 function parseImportedProfilePayload(rawText) {
     let parsed = null;
     try {
@@ -6375,12 +6386,28 @@ function parseImportedProfilePayload(rawText) {
     const profile = parsed && typeof parsed === 'object' && parsed.profile && typeof parsed.profile === 'object'
         ? parsed.profile
         : parsed;
+    const mode = normalizeExecutionMode(parsed?.mode || profile?.mode);
     const spec = sanitizeSpec(profile?.spec);
     const presets = sanitizePresetMap(profile?.presets);
-    if (!Array.isArray(spec?.stages) || spec.stages.length === 0 || !presets || Object.keys(presets).length === 0) {
-        throw new Error(i18n('Invalid profile file format.'));
+    if (Array.isArray(spec?.stages) && spec.stages.length > 0 && presets && Object.keys(presets).length > 0) {
+        return { mode: ORCH_EXECUTION_MODE_SPEC, spec, presets };
     }
-    return { spec, presets };
+
+    const agendaProfile = profile?.agenda && typeof profile.agenda === 'object'
+        ? profile.agenda
+        : profile;
+    const agents = sanitizePresetMap(agendaProfile?.agents);
+    const isAgendaPayload = mode === ORCH_EXECUTION_MODE_AGENDA
+        || String(parsed?.format || '') === PORTABLE_PROFILE_FORMAT_V2
+        || String(parsed?.format || '') === 'luker_orchestrator_agenda_profile_v1';
+    if (isAgendaPayload && Object.keys(agents).length > 0) {
+        return {
+            mode: ORCH_EXECUTION_MODE_AGENDA,
+            agenda: sanitizeAgendaWorkingProfile(agendaProfile),
+        };
+    }
+
+    throw new Error(i18n('Invalid profile file format.'));
 }
 
 function downloadJsonFile(fileName, payload) {
@@ -10214,25 +10241,40 @@ function bindUi() {
 
         if (action === 'export-profile') {
             syncCharacterEditorWithActiveAvatar(context);
+            const targetMode = getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA
+                ? ORCH_EXECUTION_MODE_AGENDA
+                : ORCH_EXECUTION_MODE_SPEC;
             const scope = chooseProfileScopeByConfirm(context, 'Select export source: OK = global profile, Cancel = character override.');
             if (!scope) {
                 return;
             }
             const avatar = String(getCurrentAvatar(context) || '').trim();
-            const editor = scope === 'global'
-                ? uiState.globalEditor
-                : uiState.characterEditor;
-            const profile = createPortableProfileFromEditor(editor);
-            const payload = {
-                format: 'luker_orchestrator_profile_v1',
-                scope,
-                exportedAt: new Date().toISOString(),
-                profile,
-            };
             const safeName = sanitizeIdentifierToken(getCharacterDisplayNameByAvatar(context, avatar) || 'character', 'character');
-            const fileName = scope === 'global'
-                ? `luker-orchestrator-global.json`
-                : `luker-orchestrator-character-${safeName}.json`;
+            const payload = targetMode === ORCH_EXECUTION_MODE_AGENDA
+                ? {
+                    format: PORTABLE_PROFILE_FORMAT_V2,
+                    mode: ORCH_EXECUTION_MODE_AGENDA,
+                    scope,
+                    exportedAt: new Date().toISOString(),
+                    profile: createPortableAgendaProfileFromEditor(scope === 'global'
+                        ? uiState.globalAgendaEditor
+                        : uiState.characterAgendaEditor),
+                }
+                : {
+                    format: PORTABLE_PROFILE_FORMAT_V1,
+                    scope,
+                    exportedAt: new Date().toISOString(),
+                    profile: createPortableProfileFromEditor(scope === 'global'
+                        ? uiState.globalEditor
+                        : uiState.characterEditor),
+                };
+            const fileName = targetMode === ORCH_EXECUTION_MODE_AGENDA
+                ? (scope === 'global'
+                    ? 'luker-orchestrator-agenda-global.json'
+                    : `luker-orchestrator-agenda-character-${safeName}.json`)
+                : (scope === 'global'
+                    ? 'luker-orchestrator-global.json'
+                    : `luker-orchestrator-character-${safeName}.json`);
             downloadJsonFile(fileName, payload);
             if (scope === 'global') {
                 notifySuccess(i18n('Exported global profile.'));
@@ -10252,11 +10294,63 @@ function bindUi() {
                     return;
                 }
                 const imported = parseImportedProfilePayload(fileText);
+                const targetMode = getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA
+                    ? ORCH_EXECUTION_MODE_AGENDA
+                    : ORCH_EXECUTION_MODE_SPEC;
+                if (imported.mode !== targetMode) {
+                    throw new Error(i18n('Imported profile does not match current execution mode.'));
+                }
                 const scope = chooseProfileScopeByConfirm(context, 'Select import target: OK = global profile, Cancel = character override.');
                 if (!scope) {
                     return;
                 }
-                if (scope === 'global') {
+                if (targetMode === ORCH_EXECUTION_MODE_AGENDA) {
+                    if (scope === 'global') {
+                        const profile = sanitizeAgendaWorkingProfile(imported.agenda);
+                        settings.agendaPlannerPrompt = profile.plannerPrompt;
+                        settings.agendaAgents = sanitizePresetMap(profile.agents);
+                        settings.agendaFinalAgentId = sanitizeIdentifierToken(profile.finalAgentId, 'finalizer');
+                        settings.agendaPlannerMaxRounds = profile.limits.plannerMaxRounds;
+                        settings.agendaMaxConcurrentAgents = profile.limits.maxConcurrentAgents;
+                        settings.agendaMaxTotalRuns = profile.limits.maxTotalRuns;
+                        ensureSettings();
+                        await saveSettings();
+                        uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+                        ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+                        notifySuccess(i18n('Imported to global profile.'));
+                        updateUiStatus(i18n('Imported to global profile.'));
+                    } else {
+                        const avatar = String(getCurrentAvatar(context) || '').trim();
+                        if (!avatar) {
+                            notifyError(i18n('No character selected.'));
+                            return;
+                        }
+                        const importedEditor = {
+                            plannerPrompt: imported.agenda.plannerPrompt,
+                            agents: sanitizePresetMap(imported.agenda.agents),
+                            finalAgentId: sanitizeIdentifierToken(imported.agenda.finalAgentId, 'finalizer'),
+                            limits: {
+                                plannerMaxRounds: imported.agenda.limits.plannerMaxRounds,
+                                maxConcurrentAgents: imported.agenda.limits.maxConcurrentAgents,
+                                maxTotalRuns: imported.agenda.limits.maxTotalRuns,
+                            },
+                            enabled: true,
+                            notes: '',
+                        };
+                        const ok = await persistCharacterAgendaEditor(context, settings, avatar, {
+                            editor: importedEditor,
+                            forceEnabled: true,
+                        });
+                        if (!ok) {
+                            notifyError(i18n('Failed to persist character override.'));
+                            return;
+                        }
+                        uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
+                        ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+                        notifySuccess(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+                        updateUiStatus(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+                    }
+                } else if (scope === 'global') {
                     settings.orchestrationSpec = sanitizeSpec(imported.spec);
                     settings.presets = sanitizePresetMap(imported.presets);
                     await saveSettings();
