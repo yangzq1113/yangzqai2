@@ -1008,6 +1008,8 @@ const uiState = {
     aiGoal: '',
     globalEditor: null,
     characterEditor: null,
+    globalAgendaEditor: null,
+    characterAgendaEditor: null,
     aiIterationSession: null,
     orchEditorPopupContentId: '',
 };
@@ -2468,27 +2470,45 @@ function getEffectiveProfile(context) {
     const settings = extension_settings[MODULE_NAME];
     const executionMode = getExecutionMode(settings);
     if (executionMode === ORCH_EXECUTION_MODE_AGENDA) {
-        const agents = sanitizePresetMap(settings.agendaAgents);
-        if (Object.keys(agents).length === 0) {
-            agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
-        }
-        const finalAgentId = sanitizeIdentifierToken(
-            settings.agendaFinalAgentId,
-            agents.finalizer ? 'finalizer' : (Object.keys(agents)[0] || 'finalizer'),
-        );
-        return {
-            source: 'agenda',
-            key: 'agenda',
-            mode: ORCH_EXECUTION_MODE_AGENDA,
-            plannerPrompt: String(settings.agendaPlannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
-            agents,
-            finalAgentId,
-            limits: {
-                plannerMaxRounds: Math.max(1, Math.floor(Number(settings.agendaPlannerMaxRounds) || 6)),
-                maxConcurrentAgents: Math.max(1, Math.floor(Number(settings.agendaMaxConcurrentAgents) || 3)),
-                maxTotalRuns: Math.max(1, Math.floor(Number(settings.agendaMaxTotalRuns) || 24)),
-            },
+        const buildAgendaProfile = (source, key, draft) => {
+            const profile = sanitizeAgendaWorkingProfile(draft);
+            return {
+                source: String(source || 'agenda'),
+                key: String(key || 'agenda'),
+                mode: ORCH_EXECUTION_MODE_AGENDA,
+                plannerPrompt: profile.plannerPrompt,
+                agents: profile.agents,
+                finalAgentId: profile.finalAgentId,
+                limits: {
+                    plannerMaxRounds: profile.limits.plannerMaxRounds,
+                    maxConcurrentAgents: profile.limits.maxConcurrentAgents,
+                    maxTotalRuns: profile.limits.maxTotalRuns,
+                },
+            };
         };
+
+        const chatKey = getChatKey(context);
+        const chatOverride = settings.chatOverrides?.[chatKey];
+        if (chatOverride?.agenda?.enabled) {
+            return buildAgendaProfile('chat', chatKey, chatOverride.agenda);
+        }
+
+        const avatar = getCurrentAvatar(context);
+        const characterAgendaOverride = getCharacterAgendaOverrideByAvatar(context, avatar);
+        if (characterAgendaOverride?.enabled) {
+            return buildAgendaProfile('character', avatar, characterAgendaOverride);
+        }
+
+        return buildAgendaProfile('global', 'agenda', {
+            plannerPrompt: settings.agendaPlannerPrompt,
+            agents: settings.agendaAgents,
+            finalAgentId: settings.agendaFinalAgentId,
+            limits: {
+                plannerMaxRounds: settings.agendaPlannerMaxRounds,
+                maxConcurrentAgents: settings.agendaMaxConcurrentAgents,
+                maxTotalRuns: settings.agendaMaxTotalRuns,
+            },
+        });
     }
     if (executionMode === ORCH_EXECUTION_MODE_SINGLE || settings.singleAgentModeEnabled) {
         return {
@@ -5512,6 +5532,25 @@ function getCharacterOverrideByAvatar(context, avatar) {
     return override && typeof override === 'object' ? override : null;
 }
 
+function getCharacterAgendaOverrideByAvatar(context, avatar) {
+    const override = getCharacterOverrideByAvatar(context, avatar);
+    const agenda = override?.agenda;
+    return agenda && typeof agenda === 'object' ? agenda : null;
+}
+
+function hasCharacterSpecOverride(context, avatar) {
+    const override = getCharacterOverrideByAvatar(context, avatar);
+    return Boolean(override && (
+        (override.spec && typeof override.spec === 'object')
+        || (override.presets && typeof override.presets === 'object')
+        || (override.presetPatch && typeof override.presetPatch === 'object')
+    ));
+}
+
+function hasCharacterAgendaOverride(context, avatar) {
+    return Boolean(getCharacterAgendaOverrideByAvatar(context, avatar));
+}
+
 function resolveOverridePresetMap(override, basePresets = {}) {
     if (override?.presets && typeof override.presets === 'object') {
         return sanitizePresetMap(override.presets);
@@ -5563,6 +5602,26 @@ function ensureEditorIntegrity(editor) {
     editor.presets = toEditablePresetMap(editor.presets);
 }
 
+function ensureAgendaEditorIntegrity(editor) {
+    if (!editor || typeof editor !== 'object') {
+        return;
+    }
+    const normalized = sanitizeAgendaWorkingProfile(editor);
+    editor.plannerPrompt = normalized.plannerPrompt;
+    editor.agents = normalized.agents;
+    editor.finalAgentId = normalized.finalAgentId;
+    editor.limits = normalized.limits;
+    if ('avatar' in editor) {
+        editor.avatar = String(editor.avatar || '');
+    }
+    if ('enabled' in editor) {
+        editor.enabled = Boolean(editor.enabled);
+    }
+    if ('notes' in editor) {
+        editor.notes = String(editor.notes || '');
+    }
+}
+
 function pickDefaultPreset(editor) {
     const keys = Object.keys(editor?.presets || {});
     if (keys.length === 0) {
@@ -5601,16 +5660,39 @@ function loadCharacterEditorState(context, avatar) {
     const settings = getSettings();
     const safeAvatar = String(avatar || '');
     const override = getCharacterOverrideByAvatar(context, safeAvatar);
-    const presets = override
+    const useOverride = hasCharacterSpecOverride(context, safeAvatar);
+    const presets = useOverride
         ? toEditablePresetMap(resolveOverridePresetMap(override, settings.presets))
         : toEditablePresetMap(settings.presets);
-    const spec = toEditableSpec(override?.spec || settings.orchestrationSpec, presets);
+    const spec = toEditableSpec(useOverride ? override?.spec : settings.orchestrationSpec, presets);
     return {
         avatar: safeAvatar,
-        enabled: Boolean(override?.enabled),
-        notes: String(override?.notes || ''),
+        enabled: useOverride ? Boolean(override?.enabled) : false,
+        notes: useOverride ? String(override?.notes || '') : '',
         spec,
         presets,
+    };
+}
+
+function loadGlobalAgendaEditorState() {
+    return cloneAgendaWorkingProfileFromSettings(getSettings());
+}
+
+function loadCharacterAgendaEditorState(context, avatar) {
+    const settings = getSettings();
+    const safeAvatar = String(avatar || '');
+    const agendaOverride = getCharacterAgendaOverrideByAvatar(context, safeAvatar);
+    const profile = agendaOverride
+        ? sanitizeAgendaWorkingProfile(agendaOverride)
+        : cloneAgendaWorkingProfileFromSettings(settings);
+    return {
+        avatar: safeAvatar,
+        enabled: Boolean(agendaOverride?.enabled),
+        notes: String(agendaOverride?.notes || ''),
+        plannerPrompt: profile.plannerPrompt,
+        agents: profile.agents,
+        finalAgentId: profile.finalAgentId,
+        limits: profile.limits,
     };
 }
 
@@ -5618,8 +5700,12 @@ function initializeUiState(context) {
     uiState.selectedAvatar = String(getCurrentAvatar(context) || '').trim();
     uiState.globalEditor = loadGlobalEditorState();
     uiState.characterEditor = loadCharacterEditorState(context, uiState.selectedAvatar);
+    uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+    uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, uiState.selectedAvatar);
     ensureEditorIntegrity(uiState.globalEditor);
     ensureEditorIntegrity(uiState.characterEditor);
+    ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+    ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
 }
 
 function syncCharacterEditorWithActiveAvatar(context) {
@@ -5629,21 +5715,39 @@ function syncCharacterEditorWithActiveAvatar(context) {
     }
     uiState.selectedAvatar = activeAvatar;
     uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
+    uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
     ensureEditorIntegrity(uiState.characterEditor);
+    ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
 }
 
 function hasCharacterOverride(context, avatar) {
-    return Boolean(getCharacterOverrideByAvatar(context, avatar));
+    return hasCharacterSpecOverride(context, avatar);
 }
 
 function getDisplayedScope(context, settings) {
-    void settings;
+    const mode = getExecutionMode(settings);
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
-    return hasCharacterOverride(context, activeAvatar) ? 'character' : 'global';
+    if (mode === ORCH_EXECUTION_MODE_AGENDA) {
+        return hasCharacterAgendaOverride(context, activeAvatar) ? 'character' : 'global';
+    }
+    return hasCharacterSpecOverride(context, activeAvatar) ? 'character' : 'global';
 }
 
 function getEditorByScope(scope) {
     return scope === 'character' ? uiState.characterEditor : uiState.globalEditor;
+}
+
+function getAgendaEditorByScope(scope) {
+    return scope === 'character' ? uiState.characterAgendaEditor : uiState.globalAgendaEditor;
+}
+
+function getAgendaScopeFromElement(element, context, settings) {
+    const scope = String(
+        jQuery(element).data('scope')
+        || jQuery(element).closest('[data-luker-scope-root]').data('luker-scope-root')
+        || getDisplayedScope(context, settings),
+    );
+    return scope === 'character' ? 'character' : 'global';
 }
 
 function renderPresetOptions(presets, selectedPreset) {
@@ -5741,9 +5845,9 @@ function renderPresetBoard(scope, editor) {
 </div>`).join('');
 }
 
-function renderAgendaAgentSelectOptions(settings, selectedAgentId = '') {
+function renderAgendaAgentSelectOptions(editor, selectedAgentId = '') {
     const selected = sanitizeIdentifierToken(selectedAgentId, '');
-    const agents = sanitizePresetMap(settings?.agendaAgents);
+    const agents = sanitizePresetMap(editor?.agents);
     const ids = Object.keys(agents).sort((left, right) => left.localeCompare(right));
     const options = [];
     for (const agentId of ids) {
@@ -5755,8 +5859,9 @@ function renderAgendaAgentSelectOptions(settings, selectedAgentId = '') {
     return options.join('');
 }
 
-function renderAgendaAgentBoard(settings) {
-    const agents = sanitizePresetMap(settings?.agendaAgents);
+function renderAgendaAgentBoard(scope, editor) {
+    const safeScope = scope === 'character' ? 'character' : 'global';
+    const agents = sanitizePresetMap(editor?.agents);
     const entries = Object.entries(agents).sort((left, right) => left[0].localeCompare(right[0]));
     if (entries.length === 0) {
         return `<div class="luker_orch_empty_hint">${escapeHtml(i18n('No presets yet.'))}</div>`;
@@ -5765,41 +5870,43 @@ function renderAgendaAgentBoard(settings) {
 <div class="luker_orch_preset_card">
     <div class="luker_orch_preset_header">
         <b>${escapeHtml(agentId)}</b>
-        <div class="menu_button menu_button_small" data-luker-action="agenda-agent-delete" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(i18n('Delete'))}</div>
+        <div class="menu_button menu_button_small" data-luker-action="agenda-agent-delete" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(i18n('Delete'))}</div>
     </div>
     <label>${escapeHtml(i18n('System Prompt'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-agenda-agent-field="systemPrompt" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.systemPrompt)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="4" data-luker-agenda-agent-field="systemPrompt" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.systemPrompt)}</textarea>
     <label>${escapeHtml(i18n('User Prompt Template'))}</label>
-    <textarea class="text_pole textarea_compact" rows="5" data-luker-agenda-agent-field="userPromptTemplate" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.userPromptTemplate)}</textarea>
+    <textarea class="text_pole textarea_compact" rows="5" data-luker-agenda-agent-field="userPromptTemplate" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.userPromptTemplate)}</textarea>
 </div>`).join('');
 }
 
-function renderAgendaWorkspace(settings) {
+function renderAgendaWorkspace(scope, editor, title = '') {
+    const safeScope = scope === 'character' ? 'character' : 'global';
+    ensureAgendaEditorIntegrity(editor);
     return `
-<div class="luker_orch_workspace" data-luker-scope-root="agenda">
-    <h5 class="margin0">${escapeHtml(i18n('Agenda Orchestration'))}</h5>
+<div class="luker_orch_workspace" data-luker-scope-root="${safeScope}">
+    <h5 class="margin0">${escapeHtml(title || i18n('Agenda Orchestration'))}</h5>
     <div class="luker_orch_workspace_grid">
         <div class="luker_orch_workspace_col">
             <div class="luker_orch_col_title">${escapeHtml(i18n('Planner Prompt'))}</div>
-            <textarea id="luker_orch_agenda_planner_prompt" class="text_pole textarea_compact" rows="16">${escapeHtml(String(settings?.agendaPlannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT))}</textarea>
+            <textarea id="luker_orch_agenda_planner_prompt" data-scope="${safeScope}" class="text_pole textarea_compact" rows="16">${escapeHtml(String(editor?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT))}</textarea>
             <label for="luker_orch_agenda_final_agent">${escapeHtml(i18n('Final Agent'))}</label>
-            <select id="luker_orch_agenda_final_agent" class="text_pole">${renderAgendaAgentSelectOptions(settings, settings?.agendaFinalAgentId)}</select>
+            <select id="luker_orch_agenda_final_agent" data-scope="${safeScope}" class="text_pole">${renderAgendaAgentSelectOptions(editor, editor?.finalAgentId)}</select>
             <label for="luker_orch_agenda_planner_rounds">${escapeHtml(i18n('Planner max rounds'))}</label>
-            <input id="luker_orch_agenda_planner_rounds" class="text_pole" type="number" min="1" max="20" step="1" value="${escapeHtml(String(settings?.agendaPlannerMaxRounds || 6))}" />
+            <input id="luker_orch_agenda_planner_rounds" data-scope="${safeScope}" class="text_pole" type="number" min="1" max="20" step="1" value="${escapeHtml(String(editor?.limits?.plannerMaxRounds || 6))}" />
             <label for="luker_orch_agenda_max_concurrent">${escapeHtml(i18n('Max concurrent agents'))}</label>
-            <input id="luker_orch_agenda_max_concurrent" class="text_pole" type="number" min="1" max="12" step="1" value="${escapeHtml(String(settings?.agendaMaxConcurrentAgents || 3))}" />
+            <input id="luker_orch_agenda_max_concurrent" data-scope="${safeScope}" class="text_pole" type="number" min="1" max="12" step="1" value="${escapeHtml(String(editor?.limits?.maxConcurrentAgents || 3))}" />
             <label for="luker_orch_agenda_max_total_runs">${escapeHtml(i18n('Max total agent runs'))}</label>
-            <input id="luker_orch_agenda_max_total_runs" class="text_pole" type="number" min="1" max="200" step="1" value="${escapeHtml(String(settings?.agendaMaxTotalRuns || 24))}" />
+            <input id="luker_orch_agenda_max_total_runs" data-scope="${safeScope}" class="text_pole" type="number" min="1" max="200" step="1" value="${escapeHtml(String(editor?.limits?.maxTotalRuns || 24))}" />
             <div class="flex-container">
-                <div class="menu_button menu_button_small" data-luker-action="agenda-copy-from-spec">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+                <div class="menu_button menu_button_small" data-luker-action="agenda-copy-from-spec" data-scope="${safeScope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
             </div>
         </div>
         <div class="luker_orch_workspace_col">
             <div class="luker_orch_col_title">${escapeHtml(i18n('Agenda Agents'))}</div>
-            <div class="luker_orch_presets">${renderAgendaAgentBoard(settings)}</div>
+            <div class="luker_orch_presets">${renderAgendaAgentBoard(safeScope, editor)}</div>
             <div class="luker_orch_preset_add_row">
-                <input id="luker_orch_agenda_new_agent" class="text_pole" placeholder="${escapeHtml(i18n('new_preset_id'))}" />
-                <div class="menu_button menu_button_small" data-luker-action="agenda-agent-add">${escapeHtml(i18n('Add Preset'))}</div>
+                <input class="text_pole" data-luker-agenda-new-agent="${safeScope}" placeholder="${escapeHtml(i18n('new_preset_id'))}" />
+                <div class="menu_button menu_button_small" data-luker-action="agenda-agent-add" data-scope="${safeScope}">${escapeHtml(i18n('Add Preset'))}</div>
             </div>
         </div>
     </div>
@@ -5848,11 +5955,17 @@ function renderDynamicPanels(root, context) {
     syncCharacterEditorWithActiveAvatar(context);
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
     const override = activeAvatar ? getCharacterOverrideByAvatar(context, activeAvatar) : null;
+    const agendaOverride = activeAvatar ? getCharacterAgendaOverrideByAvatar(context, activeAvatar) : null;
     const scope = getDisplayedScope(context, settings);
     const editor = getEditorByScope(scope);
+    const agendaEditor = getAgendaEditorByScope(scope);
     const isCharacterScope = scope === 'character';
     const isOverrideEnabled = Boolean(override?.enabled);
+    const isAgendaOverrideEnabled = Boolean(agendaOverride?.enabled);
     const profileTitle = isCharacterScope
+        ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
+        : i18n('Global Orchestration Profile');
+    const agendaProfileTitle = isCharacterScope
         ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
         : i18n('Global Orchestration Profile');
 
@@ -5866,6 +5979,16 @@ function renderDynamicPanels(root, context) {
             ? (isOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
             : i18n('Global profile (no character override for current card)'),
     );
+    root.find('#luker_orch_agenda_profile_target').text(
+        activeAvatar
+            ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
+            : i18n('(No character card)'),
+    );
+    root.find('#luker_orch_agenda_profile_mode').text(
+        isCharacterScope
+            ? (isAgendaOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
+            : i18n('Global profile (no character override for current card)'),
+    );
     const hasLastRun = Boolean(getLatestOrchestrationEntry(context));
     root.find('[data-luker-action="view-last-run"]').toggleClass('luker_orch_button_disabled', !hasLastRun);
     root.find('#luker_orch_last_run_state').text(buildLatestOrchestrationStateSummary(context));
@@ -5877,18 +6000,32 @@ function renderDynamicPanels(root, context) {
     root.find('#luker_orch_single_agent_fields').toggle(singleModeEnabled);
     root.find('#luker_orch_agenda_fields').toggle(agendaModeEnabled);
     root.find('#luker_orch_execution_mode').val(executionMode);
-    root.find('#luker_orch_agenda_workspace').html(agendaModeEnabled ? renderAgendaWorkspace(settings) : '');
+    root.find('#luker_orch_agenda_clear_character').toggle(agendaModeEnabled && isCharacterScope);
+    root.find('#luker_orch_agenda_workspace').html(agendaModeEnabled ? renderAgendaWorkspace(scope, agendaEditor, agendaProfileTitle) : '');
     refreshOrchestrationEditorPopup(context, settings);
 }
 
 function buildOrchestrationEditorPopupPanelHtml(context, settings) {
     if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+        syncCharacterEditorWithActiveAvatar(context);
+        const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+        const scope = getDisplayedScope(context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        const agendaOverride = activeAvatar ? getCharacterAgendaOverrideByAvatar(context, activeAvatar) : null;
+        const isCharacterScope = scope === 'character';
+        const editingLabel = isCharacterScope
+            ? (agendaOverride?.enabled ? i18n('Current character override') : i18n('Character override (configured, currently disabled)'))
+            : i18n('Global profile');
+        const profileTitle = isCharacterScope
+            ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
+            : i18n('Global Orchestration Profile');
         return `
 <div class="luker_orch_editor_popup">
     <div class="luker_orch_board">
         <div class="luker_orch_character_row">
             <div>
-                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(i18n('Global profile'))}</span></small><br />
+                <small>${escapeHtml(i18n('Current card:'))} <span>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</span></small><br />
+                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(editingLabel)}</span></small><br />
                 <small>${escapeHtml(i18n('Execution mode'))} <span>${escapeHtml(i18n('Agenda planner'))}</span></small>
             </div>
             <div>
@@ -5902,10 +6039,13 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
         <div class="flex-container">
             <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
             <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
+            <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
+            <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
+            ${isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
             <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
             <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
         </div>
-        ${renderAgendaWorkspace(settings)}
+        ${renderAgendaWorkspace(scope, editor, profileTitle)}
     </div>
 </div>`;
     }
@@ -6083,6 +6223,18 @@ async function persistGlobalEditorFrom(settings, editor) {
     await saveSettings();
 }
 
+async function persistGlobalAgendaEditorFrom(settings, editor) {
+    ensureAgendaEditorIntegrity(editor);
+    settings.agendaPlannerPrompt = String(editor.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
+    settings.agendaAgents = sanitizePresetMap(editor.agents);
+    settings.agendaFinalAgentId = sanitizeIdentifierToken(editor.finalAgentId, 'finalizer');
+    settings.agendaPlannerMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(editor?.limits?.plannerMaxRounds) || 6)));
+    settings.agendaMaxConcurrentAgents = Math.max(1, Math.min(12, Math.floor(Number(editor?.limits?.maxConcurrentAgents) || 3)));
+    settings.agendaMaxTotalRuns = Math.max(1, Math.min(200, Math.floor(Number(editor?.limits?.maxTotalRuns) || 24)));
+    ensureSettings();
+    await saveSettings();
+}
+
 async function persistCharacterEditor(context, settings, avatar, {
     editor = uiState.characterEditor,
     forceEnabled = null,
@@ -6102,7 +6254,12 @@ async function persistCharacterEditor(context, settings, avatar, {
     const characterPresets = serializeEditorPresetMap(editor.presets);
     const sourceEnabled = typeof editor?.enabled === 'boolean' ? editor.enabled : true;
     const sourceNotes = notes === null ? String(editor?.notes || '') : String(notes || '');
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    const previousOverride = previous?.override && typeof previous.override === 'object'
+        ? structuredClone(previous.override)
+        : {};
     const overridePayload = {
+        ...previousOverride,
         enabled: forceEnabled === null ? Boolean(sourceEnabled) : Boolean(forceEnabled),
         spec: serializeEditorSpec(editor.spec),
         presets: characterPresets,
@@ -6110,8 +6267,55 @@ async function persistCharacterEditor(context, settings, avatar, {
         name: getCharacterDisplayNameByAvatar(context, target),
         notes: sourceNotes,
     };
+    delete overridePayload.presetPatch;
 
+    const nextPayload = {
+        ...previous,
+        override: overridePayload,
+    };
+    return await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
+}
+
+async function persistCharacterAgendaEditor(context, settings, avatar, {
+    editor = uiState.characterAgendaEditor,
+    forceEnabled = null,
+    notes = null,
+} = {}) {
+    void settings;
+    const target = String(avatar || '');
+    if (!target) {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+
+    ensureAgendaEditorIntegrity(editor);
+    const sourceEnabled = typeof editor?.enabled === 'boolean' ? editor.enabled : true;
+    const sourceNotes = notes === null ? String(editor?.notes || '') : String(notes || '');
     const previous = getCharacterExtensionDataByAvatar(context, target);
+    const previousOverride = previous?.override && typeof previous.override === 'object'
+        ? structuredClone(previous.override)
+        : {};
+    const overridePayload = {
+        ...previousOverride,
+        agenda: {
+            enabled: forceEnabled === null ? Boolean(sourceEnabled) : Boolean(forceEnabled),
+            plannerPrompt: String(editor.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT,
+            agents: sanitizePresetMap(editor.agents),
+            finalAgentId: sanitizeIdentifierToken(editor.finalAgentId, 'finalizer'),
+            limits: {
+                plannerMaxRounds: Math.max(1, Math.min(20, Math.floor(Number(editor?.limits?.plannerMaxRounds) || 6))),
+                maxConcurrentAgents: Math.max(1, Math.min(12, Math.floor(Number(editor?.limits?.maxConcurrentAgents) || 3))),
+                maxTotalRuns: Math.max(1, Math.min(200, Math.floor(Number(editor?.limits?.maxTotalRuns) || 24))),
+            },
+            updatedAt: Date.now(),
+            name: getCharacterDisplayNameByAvatar(context, target),
+            notes: sourceNotes,
+        },
+    };
+
     const nextPayload = {
         ...previous,
         override: overridePayload,
@@ -6862,6 +7066,11 @@ function cloneAgendaWorkingProfileFromSettings(settings) {
     });
 }
 
+function cloneAgendaWorkingProfileFromEditor(editor) {
+    ensureAgendaEditorIntegrity(editor);
+    return sanitizeAgendaWorkingProfile(editor);
+}
+
 function buildAgendaProfileForRuntime(workingProfile = null) {
     const profile = sanitizeAgendaWorkingProfile(workingProfile);
     return {
@@ -6885,17 +7094,24 @@ function isAgendaIterationSession(session) {
 
 function createAiIterationSession(context, settings) {
     if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+        syncCharacterEditorWithActiveAvatar(context);
+        const scope = getDisplayedScope(context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        const avatar = String(getCurrentAvatar(context) || '').trim();
+        const sourceName = scope === 'character'
+            ? (getCharacterDisplayNameByAvatar(context, avatar) || avatar || i18n('(No character card)'))
+            : i18n('Global profile');
         return {
             id: `session_${Date.now()}`,
             mode: ORCH_EXECUTION_MODE_AGENDA,
             chatKey: getChatKey(context),
-            sourceScope: 'global',
-            sourceAvatar: '',
-            sourceName: i18n('Agenda Orchestration'),
+            sourceScope: scope,
+            sourceAvatar: avatar,
+            sourceName,
             revision: 1,
             createdAt: Date.now(),
             updatedAt: Date.now(),
-            workingProfile: cloneAgendaWorkingProfileFromSettings(settings),
+            workingProfile: cloneAgendaWorkingProfileFromEditor(editor),
             messages: [],
             toolHistory: [],
             lastSimulation: null,
@@ -9119,6 +9335,8 @@ async function applyAiIterationSessionToGlobal(context, settings, session, root)
         settings.agendaMaxConcurrentAgents = profile.limits.maxConcurrentAgents;
         settings.agendaMaxTotalRuns = profile.limits.maxTotalRuns;
         await saveSettings();
+        uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+        ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
         renderDynamicPanels(root, context);
         notifySuccess(i18n('Iteration session applied to global profile.'));
         updateUiStatus(i18n('Iteration session applied to global profile.'));
@@ -9136,7 +9354,30 @@ async function applyAiIterationSessionToGlobal(context, settings, session, root)
 
 async function applyAiIterationSessionToCharacter(context, settings, session, root) {
     if (isAgendaIterationSession(session)) {
-        notifyError(i18n('Agenda iteration currently applies only to global profile.'));
+        const avatar = String(getCurrentAvatar(context) || '').trim();
+        if (!avatar) {
+            notifyError(i18n('No character selected. Cannot apply to character override.'));
+            return;
+        }
+        const importedEditor = {
+            ...cloneAgendaWorkingProfileFromEditor(session?.workingProfile || {}),
+            enabled: true,
+            notes: '',
+        };
+        const ok = await persistCharacterAgendaEditor(context, settings, avatar, {
+            editor: importedEditor,
+            forceEnabled: true,
+        });
+        if (!ok) {
+            notifyError(i18n('Failed to persist character override.'));
+            return;
+        }
+        uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
+        ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+        renderDynamicPanels(root, context);
+        const name = getCharacterDisplayNameByAvatar(context, avatar) || avatar;
+        notifySuccess(i18nFormat('Iteration session applied to character override: ${0}.', name));
+        updateUiStatus(i18nFormat('Iteration session applied to character override: ${0}.', name));
         return;
     }
     const avatar = String(getCurrentAvatar(context) || '').trim();
@@ -9166,7 +9407,7 @@ async function applyAiIterationSessionToCharacter(context, settings, session, ro
 }
 
 function buildAiIterationPopupHtml(popupId, session) {
-    const allowCharacterApply = !isAgendaIterationSession(session);
+    const allowCharacterApply = true;
     return `
 <div id="${popupId}" class="luker_orch_iter_popup">
     <div class="luker_orch_iter_head">
@@ -9531,29 +9772,39 @@ function bindUi() {
     });
 
     jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_prompt, .luker_orch_editor_popup #luker_orch_agenda_planner_prompt`, function () {
-        settings.agendaPlannerPrompt = String(jQuery(this).val() || '');
-        saveSettingsDebounced();
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.plannerPrompt = String(jQuery(this).val() || '');
     });
 
     jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_final_agent, .luker_orch_editor_popup #luker_orch_agenda_final_agent`, function () {
-        settings.agendaFinalAgentId = sanitizeIdentifierToken(jQuery(this).val(), settings.agendaFinalAgentId || 'finalizer');
-        saveSettingsDebounced();
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.finalAgentId = sanitizeIdentifierToken(jQuery(this).val(), editor.finalAgentId || 'finalizer');
         renderDynamicPanels(root, context);
     });
 
     jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_rounds, .luker_orch_editor_popup #luker_orch_agenda_planner_rounds`, function () {
-        settings.agendaPlannerMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(jQuery(this).val()) || 1)));
-        saveSettingsDebounced();
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.limits.plannerMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(jQuery(this).val()) || 1)));
     });
 
     jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_max_concurrent, .luker_orch_editor_popup #luker_orch_agenda_max_concurrent`, function () {
-        settings.agendaMaxConcurrentAgents = Math.max(1, Math.min(12, Math.floor(Number(jQuery(this).val()) || 1)));
-        saveSettingsDebounced();
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.limits.maxConcurrentAgents = Math.max(1, Math.min(12, Math.floor(Number(jQuery(this).val()) || 1)));
     });
 
     jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_max_total_runs, .luker_orch_editor_popup #luker_orch_agenda_max_total_runs`, function () {
-        settings.agendaMaxTotalRuns = Math.max(1, Math.min(200, Math.floor(Number(jQuery(this).val()) || 1)));
-        saveSettingsDebounced();
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.limits.maxTotalRuns = Math.max(1, Math.min(200, Math.floor(Number(jQuery(this).val()) || 1)));
     });
 
     root.on('change.lukerOrch', '#luker_orch_llm_api_preset', function () {
@@ -9691,17 +9942,19 @@ function bindUi() {
     });
 
     jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-agenda-agent-field], .luker_orch_editor_popup [data-luker-agenda-agent-field]`, function () {
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
         const agentId = sanitizeIdentifierToken(jQuery(this).data('agent-id'), '');
         const field = String(jQuery(this).data('luker-agenda-agent-field') || '');
-        if (!agentId || !settings.agendaAgents?.[agentId]) {
+        if (!agentId || !editor.agents?.[agentId]) {
             return;
         }
         if (field === 'systemPrompt') {
-            settings.agendaAgents[agentId].systemPrompt = String(jQuery(this).val() || '');
+            editor.agents[agentId].systemPrompt = String(jQuery(this).val() || '');
         } else if (field === 'userPromptTemplate') {
-            settings.agendaAgents[agentId].userPromptTemplate = String(jQuery(this).val() || '');
+            editor.agents[agentId].userPromptTemplate = String(jQuery(this).val() || '');
         }
-        saveSettingsDebounced();
     });
 
     jQuery(document).on('click.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-action], .luker_orch_editor_popup [data-luker-action]`, async function () {
@@ -9714,54 +9967,62 @@ function bindUi() {
         ensureEditorIntegrity(editor);
 
         if (action === 'agenda-copy-from-spec') {
-            settings.agendaAgents = sanitizePresetMap(settings.presets);
-            if (settings.agendaAgents.synthesizer) {
-                settings.agendaAgents.finalizer = structuredClone(settings.agendaAgents.synthesizer);
-                delete settings.agendaAgents.synthesizer;
+            const agendaScope = scope === 'character' ? 'character' : getAgendaScopeFromElement(this, context, settings);
+            const agendaEditor = getAgendaEditorByScope(agendaScope);
+            const sourceEditor = getEditorByScope(agendaScope);
+            ensureAgendaEditorIntegrity(agendaEditor);
+            ensureEditorIntegrity(sourceEditor);
+            agendaEditor.agents = sanitizePresetMap(sourceEditor.presets);
+            if (agendaEditor.agents.synthesizer) {
+                agendaEditor.agents.finalizer = structuredClone(agendaEditor.agents.synthesizer);
+                delete agendaEditor.agents.synthesizer;
             }
-            if (Object.keys(settings.agendaAgents).length === 0) {
-                settings.agendaAgents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+            if (Object.keys(agendaEditor.agents).length === 0) {
+                agendaEditor.agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
             }
-            settings.agendaFinalAgentId = settings.agendaAgents.finalizer
+            agendaEditor.finalAgentId = agendaEditor.agents.finalizer
                 ? 'finalizer'
-                : (Object.keys(settings.agendaAgents)[0] || 'finalizer');
-            saveSettingsDebounced();
+                : (Object.keys(agendaEditor.agents)[0] || 'finalizer');
             notifySuccess(i18n('Copied spec agents into agenda as a starting point.'));
             renderDynamicPanels(root, context);
             return;
         }
 
         if (action === 'agenda-agent-add') {
-            const input = root.find('#luker_orch_agenda_new_agent');
+            const agendaScope = getAgendaScopeFromElement(this, context, settings);
+            const agendaEditor = getAgendaEditorByScope(agendaScope);
+            ensureAgendaEditorIntegrity(agendaEditor);
+            const input = jQuery(this).closest('.luker_orch_preset_add_row').find('[data-luker-agenda-new-agent]');
             const candidate = sanitizeIdentifierToken(input.val(), '');
             if (!candidate) {
                 notifyError(i18n('Preset ID cannot be empty.'));
                 return;
             }
-            if (settings.agendaAgents?.[candidate]) {
+            if (agendaEditor.agents?.[candidate]) {
                 notifyError(i18nFormat("Preset '${0}' already exists.", candidate));
                 return;
             }
-            settings.agendaAgents[candidate] = createPresetDraft();
+            agendaEditor.agents[candidate] = createPresetDraft();
             input.val('');
-            saveSettingsDebounced();
             renderDynamicPanels(root, context);
             return;
         }
 
         if (action === 'agenda-agent-delete') {
+            const agendaScope = getAgendaScopeFromElement(this, context, settings);
+            const agendaEditor = getAgendaEditorByScope(agendaScope);
+            ensureAgendaEditorIntegrity(agendaEditor);
             const agentId = sanitizeIdentifierToken(jQuery(this).data('agent-id'), '');
-            if (!agentId || !settings.agendaAgents?.[agentId]) {
+            if (!agentId || !agendaEditor.agents?.[agentId]) {
                 return;
             }
-            delete settings.agendaAgents[agentId];
-            if (Object.keys(settings.agendaAgents).length === 0) {
-                settings.agendaAgents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+            delete agendaEditor.agents[agentId];
+            if (Object.keys(agendaEditor.agents).length === 0) {
+                agendaEditor.agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
             }
-            if (!settings.agendaAgents[settings.agendaFinalAgentId]) {
-                settings.agendaFinalAgentId = Object.keys(settings.agendaAgents)[0] || '';
+            if (!agendaEditor.agents[agendaEditor.finalAgentId]) {
+                agendaEditor.finalAgentId = Object.keys(agendaEditor.agents)[0] || '';
             }
-            saveSettingsDebounced();
             renderDynamicPanels(root, context);
             return;
         }
@@ -9879,9 +10140,18 @@ function bindUi() {
 
         if (action === 'reload-current') {
             if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
-                ensureSettings();
+                syncCharacterEditorWithActiveAvatar(context);
+                const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+                if (hasCharacterAgendaOverride(context, activeAvatar)) {
+                    uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
+                    ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+                    updateUiStatus(i18nFormat('Reloaded character override for ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar) || 'N/A'));
+                } else {
+                    uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+                    ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+                    updateUiStatus(i18n('Reloaded global profile from settings.'));
+                }
                 renderDynamicPanels(root, context);
-                updateUiStatus(i18n('Reloaded global profile from settings.'));
                 return;
             }
             syncCharacterEditorWithActiveAvatar(context);
@@ -9913,6 +10183,8 @@ function bindUi() {
                 settings.agendaMaxConcurrentAgents = 3;
                 settings.agendaMaxTotalRuns = 24;
                 await saveSettings();
+                uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+                ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
                 renderDynamicPanels(root, context);
                 notifySuccess(i18n('Global orchestration profile reset to defaults.'));
                 updateUiStatus(i18n('Reset global profile to defaults.'));
@@ -9935,10 +10207,17 @@ function bindUi() {
         if (action === 'save-global') {
             syncCharacterEditorWithActiveAvatar(context);
             const sourceScope = getDisplayedScope(context, settings);
-            const sourceEditor = getEditorByScope(sourceScope);
-            await persistGlobalEditorFrom(settings, sourceEditor);
-            uiState.globalEditor = loadGlobalEditorState();
-            ensureEditorIntegrity(uiState.globalEditor);
+            if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+                const sourceEditor = getAgendaEditorByScope(sourceScope);
+                await persistGlobalAgendaEditorFrom(settings, sourceEditor);
+                uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+                ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+            } else {
+                const sourceEditor = getEditorByScope(sourceScope);
+                await persistGlobalEditorFrom(settings, sourceEditor);
+                uiState.globalEditor = loadGlobalEditorState();
+                ensureEditorIntegrity(uiState.globalEditor);
+            }
             notifySuccess(i18n('Global orchestration profile saved.'));
             updateUiStatus(i18n('Saved to global profile.'));
             renderDynamicPanels(root, context);
@@ -10037,17 +10316,26 @@ function bindUi() {
                 return;
             }
             const sourceScope = getDisplayedScope(context, settings);
-            const sourceEditor = getEditorByScope(sourceScope);
-            const ok = await persistCharacterEditor(context, settings, activeAvatar, {
-                editor: sourceEditor,
-                forceEnabled: sourceScope === 'character' ? null : true,
-            });
+            const ok = getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA
+                ? await persistCharacterAgendaEditor(context, settings, activeAvatar, {
+                    editor: getAgendaEditorByScope(sourceScope),
+                    forceEnabled: sourceScope === 'character' ? null : true,
+                })
+                : await persistCharacterEditor(context, settings, activeAvatar, {
+                    editor: getEditorByScope(sourceScope),
+                    forceEnabled: sourceScope === 'character' ? null : true,
+                });
             if (!ok) {
                 notifyError(i18n('Failed to persist character override.'));
                 return;
             }
-            uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
-            ensureEditorIntegrity(uiState.characterEditor);
+            if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+                uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
+                ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+            } else {
+                uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
+                ensureEditorIntegrity(uiState.characterEditor);
+            }
             notifySuccess(i18n('Character orchestration override saved.'));
             updateUiStatus(i18nFormat('Saved to character override: ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar)));
             renderDynamicPanels(root, context);
@@ -10068,14 +10356,44 @@ function bindUi() {
             }
             const previous = getCharacterExtensionDataByAvatar(context, avatar);
             const nextPayload = { ...previous };
-            delete nextPayload.override;
+            const nextOverride = previous?.override && typeof previous.override === 'object'
+                ? structuredClone(previous.override)
+                : null;
+            if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+                if (nextOverride) {
+                    delete nextOverride.agenda;
+                }
+            } else if (nextOverride) {
+                delete nextOverride.spec;
+                delete nextOverride.presets;
+                delete nextOverride.presetPatch;
+                delete nextOverride.enabled;
+                delete nextOverride.updatedAt;
+                delete nextOverride.name;
+                delete nextOverride.notes;
+            }
+            if (nextOverride && (
+                (nextOverride.spec && typeof nextOverride.spec === 'object')
+                || (nextOverride.presets && typeof nextOverride.presets === 'object')
+                || (nextOverride.presetPatch && typeof nextOverride.presetPatch === 'object')
+                || (nextOverride.agenda && typeof nextOverride.agenda === 'object')
+            )) {
+                nextPayload.override = nextOverride;
+            } else {
+                delete nextPayload.override;
+            }
             const ok = await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
             if (!ok) {
                 notifyError(i18n('Failed to persist character override.'));
                 return;
             }
-            uiState.characterEditor = loadCharacterEditorState(context, avatar);
-            ensureEditorIntegrity(uiState.characterEditor);
+            if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
+                uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
+                ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+            } else {
+                uiState.characterEditor = loadCharacterEditorState(context, avatar);
+                ensureEditorIntegrity(uiState.characterEditor);
+            }
             renderDynamicPanels(root, context);
             notifyInfo(i18n('Character orchestration override removed.'));
             updateUiStatus(i18nFormat('Removed character override for ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
@@ -11110,10 +11428,17 @@ function ensureUi() {
             </div>
 
             <div id="luker_orch_agenda_board" class="luker_orch_board" style="display:none">
+                <div>
+                    <small>${escapeHtml(i18n('Current card:'))} <span id="luker_orch_agenda_profile_target">${escapeHtml(i18n('(No character card)'))}</span></small><br />
+                    <small>${escapeHtml(i18n('Editing:'))} <span id="luker_orch_agenda_profile_mode">${escapeHtml(i18n('Global profile'))}</span></small>
+                </div>
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
                     <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+                    <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
+                    <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
+                    <div id="luker_orch_agenda_clear_character" class="menu_button" data-luker-action="clear-character" style="display:none">${escapeHtml(i18n('Clear Character Override'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
                 </div>
                 <div id="luker_orch_agenda_workspace"></div>
