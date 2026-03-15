@@ -50,6 +50,8 @@ const getApiUrl = () => extension_settings.apiUrl;
 const sortManifestsByOrder = (a, b) => parseInt(a.loading_order) - parseInt(b.loading_order) || String(a.display_name).localeCompare(String(b.display_name));
 const sortManifestsByName = (a, b) => String(a.display_name).localeCompare(String(b.display_name)) || parseInt(a.loading_order) - parseInt(b.loading_order);
 let connectedToApi = false;
+let pendingExtensionBootstrap = null;
+let extensionBootstrapPromise = null;
 
 /**
  * Holds manifest data for each extension.
@@ -1340,7 +1342,7 @@ export async function installExtension(url, global, branch = '', replace = false
  * @param {boolean} versionChanged Is this a version change?
  * @param {boolean} enableAutoUpdate Enable auto-update
  */
-export async function loadExtensionSettings(settings, versionChanged, enableAutoUpdate) {
+export function primeExtensionSettings(settings, versionChanged, enableAutoUpdate) {
     if (settings.extension_settings) {
         Object.assign(extension_settings, settings.extension_settings);
     }
@@ -1350,21 +1352,54 @@ export async function loadExtensionSettings(settings, versionChanged, enableAuto
     $('#extensions_autoconnect').prop('checked', extension_settings.autoConnect);
     $('#extensions_notify_updates').prop('checked', extension_settings.notifyUpdates);
 
-    // Activate offline extensions
-    await eventSource.emit(event_types.EXTENSIONS_FIRST_LOAD);
-    const extensions = await discoverExtensions();
-    extensionNames = extensions.map(x => x.name);
-    extensionTypes = Object.fromEntries(extensions.map(x => [x.name, x.type]));
-    manifests = await getManifests(extensionNames);
+    pendingExtensionBootstrap = {
+        enableAutoUpdate,
+        versionChanged,
+    };
+}
 
-    if (versionChanged && enableAutoUpdate) {
-        await autoUpdateExtensions(false);
+export async function bootstrapExtensions(options = null) {
+    const bootstrapOptions = options ?? pendingExtensionBootstrap;
+    if (!bootstrapOptions) {
+        return;
     }
 
-    await activateExtensions();
-    if (extension_settings.autoConnect && extension_settings.apiUrl) {
-        connectToApi(extension_settings.apiUrl);
+    if (extensionBootstrapPromise) {
+        return await extensionBootstrapPromise;
     }
+
+    extensionBootstrapPromise = (async () => {
+        const { enableAutoUpdate, versionChanged } = bootstrapOptions;
+
+        // Activate offline extensions
+        await eventSource.emit(event_types.EXTENSIONS_FIRST_LOAD);
+        const extensions = await discoverExtensions();
+        extensionNames = extensions.map(x => x.name);
+        extensionTypes = Object.fromEntries(extensions.map(x => [x.name, x.type]));
+        manifests = await getManifests(extensionNames);
+
+        if (versionChanged && enableAutoUpdate) {
+            await autoUpdateExtensions(false);
+        }
+
+        await activateExtensions();
+        if (extension_settings.autoConnect && extension_settings.apiUrl) {
+            connectToApi(extension_settings.apiUrl);
+        }
+        await eventSource.emit(event_types.EXTENSION_SETTINGS_LOADED);
+    })();
+
+    try {
+        await extensionBootstrapPromise;
+        pendingExtensionBootstrap = null;
+    } finally {
+        extensionBootstrapPromise = null;
+    }
+}
+
+export async function loadExtensionSettings(settings, versionChanged, enableAutoUpdate) {
+    primeExtensionSettings(settings, versionChanged, enableAutoUpdate);
+    await bootstrapExtensions({ enableAutoUpdate, versionChanged });
 }
 
 export function doDailyExtensionUpdatesCheck() {
