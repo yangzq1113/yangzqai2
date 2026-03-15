@@ -5542,8 +5542,7 @@ function getCharacterAgendaOverrideByAvatar(context, avatar) {
     return agenda && typeof agenda === 'object' ? agenda : null;
 }
 
-function hasCharacterSpecOverride(context, avatar) {
-    const override = getCharacterOverrideByAvatar(context, avatar);
+function hasSpecOverrideData(override) {
     return Boolean(override && (
         (override.spec && typeof override.spec === 'object')
         || (override.presets && typeof override.presets === 'object')
@@ -5551,8 +5550,77 @@ function hasCharacterSpecOverride(context, avatar) {
     ));
 }
 
+function hasAgendaOverrideData(override) {
+    return Boolean(override?.agenda && typeof override.agenda === 'object');
+}
+
+function getCharacterOverrideExecutionMode(override) {
+    if (!override || typeof override !== 'object') {
+        return '';
+    }
+    const explicitMode = normalizeExecutionMode(override.mode);
+    const hasSpec = hasSpecOverrideData(override);
+    const hasAgenda = hasAgendaOverrideData(override);
+    if (explicitMode === ORCH_EXECUTION_MODE_SPEC && hasSpec) {
+        return explicitMode;
+    }
+    if (explicitMode === ORCH_EXECUTION_MODE_AGENDA && hasAgenda) {
+        return explicitMode;
+    }
+    if (hasSpec && !hasAgenda) {
+        return ORCH_EXECUTION_MODE_SPEC;
+    }
+    if (hasAgenda && !hasSpec) {
+        return ORCH_EXECUTION_MODE_AGENDA;
+    }
+    if (hasSpec && hasAgenda) {
+        const specUpdatedAt = Math.max(0, Number(override.updatedAt) || 0);
+        const agendaUpdatedAt = Math.max(0, Number(override.agenda?.updatedAt) || 0);
+        if (agendaUpdatedAt > specUpdatedAt) {
+            return ORCH_EXECUTION_MODE_AGENDA;
+        }
+        if (specUpdatedAt > agendaUpdatedAt) {
+            return ORCH_EXECUTION_MODE_SPEC;
+        }
+    }
+    return '';
+}
+
+function normalizeCharacterOverrideMode(override) {
+    if (!override || typeof override !== 'object') {
+        return override;
+    }
+    const mode = getCharacterOverrideExecutionMode(override);
+    if (mode) {
+        override.mode = mode;
+    } else {
+        delete override.mode;
+    }
+    return override;
+}
+
+function getCharacterSavedExecutionModeByAvatar(context, avatar) {
+    return getCharacterOverrideExecutionMode(getCharacterOverrideByAvatar(context, avatar));
+}
+
+function applyCharacterExecutionModeForAvatar(context, settings, avatar) {
+    const preferredMode = getCharacterSavedExecutionModeByAvatar(context, avatar);
+    if (!preferredMode || preferredMode === getExecutionMode(settings)) {
+        return false;
+    }
+    settings.executionMode = preferredMode;
+    settings.singleAgentModeEnabled = preferredMode === ORCH_EXECUTION_MODE_SINGLE;
+    saveSettingsDebounced();
+    return true;
+}
+
+function hasCharacterSpecOverride(context, avatar) {
+    const override = getCharacterOverrideByAvatar(context, avatar);
+    return hasSpecOverrideData(override);
+}
+
 function hasCharacterAgendaOverride(context, avatar) {
-    return Boolean(getCharacterAgendaOverrideByAvatar(context, avatar));
+    return hasAgendaOverrideData(getCharacterOverrideByAvatar(context, avatar));
 }
 
 function resolveOverridePresetMap(override, basePresets = {}) {
@@ -5701,7 +5769,11 @@ function loadCharacterAgendaEditorState(context, avatar) {
 }
 
 function initializeUiState(context) {
-    uiState.selectedAvatar = String(getCurrentAvatar(context) || '').trim();
+    const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+    if (activeAvatar !== uiState.selectedAvatar) {
+        applyCharacterExecutionModeForAvatar(context, getSettings(), activeAvatar);
+    }
+    uiState.selectedAvatar = activeAvatar;
     uiState.globalEditor = loadGlobalEditorState();
     uiState.characterEditor = loadCharacterEditorState(context, uiState.selectedAvatar);
     uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
@@ -5717,6 +5789,7 @@ function syncCharacterEditorWithActiveAvatar(context) {
     if (activeAvatar === uiState.selectedAvatar) {
         return;
     }
+    applyCharacterExecutionModeForAvatar(context, getSettings(), activeAvatar);
     uiState.selectedAvatar = activeAvatar;
     uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
     uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
@@ -6254,6 +6327,7 @@ async function persistCharacterEditor(context, settings, avatar, {
         : {};
     const overridePayload = {
         ...previousOverride,
+        mode: ORCH_EXECUTION_MODE_SPEC,
         enabled: forceEnabled === null ? Boolean(sourceEnabled) : Boolean(forceEnabled),
         spec: serializeEditorSpec(editor.spec),
         presets: characterPresets,
@@ -6265,7 +6339,7 @@ async function persistCharacterEditor(context, settings, avatar, {
 
     const nextPayload = {
         ...previous,
-        override: overridePayload,
+        override: normalizeCharacterOverrideMode(overridePayload),
     };
     return await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
 }
@@ -6294,6 +6368,7 @@ async function persistCharacterAgendaEditor(context, settings, avatar, {
         : {};
     const overridePayload = {
         ...previousOverride,
+        mode: ORCH_EXECUTION_MODE_AGENDA,
         agenda: {
             enabled: forceEnabled === null ? Boolean(sourceEnabled) : Boolean(forceEnabled),
             plannerPrompt: String(editor.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT,
@@ -6312,7 +6387,7 @@ async function persistCharacterAgendaEditor(context, settings, avatar, {
 
     const nextPayload = {
         ...previous,
-        override: overridePayload,
+        override: normalizeCharacterOverrideMode(overridePayload),
     };
     return await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
 }
@@ -10454,6 +10529,7 @@ function bindUi() {
                 delete nextOverride.name;
                 delete nextOverride.notes;
             }
+            normalizeCharacterOverrideMode(nextOverride);
             if (nextOverride && (
                 (nextOverride.spec && typeof nextOverride.spec === 'object')
                 || (nextOverride.presets && typeof nextOverride.presets === 'object')
@@ -10469,6 +10545,7 @@ function bindUi() {
                 notifyError(i18n('Failed to persist character override.'));
                 return;
             }
+            applyCharacterExecutionModeForAvatar(context, settings, avatar);
             if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
                 uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
                 ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
