@@ -118,6 +118,7 @@ export {
 let is_group_generating = false; // Group generation flag
 let is_group_automode_enabled = false;
 let hideMutedSprites = false;
+let primedGroups = null;
 /** @type {Group[]} */
 let groups = [];
 /** @type {string|null} */
@@ -830,14 +831,26 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
  * Fetches all groups from the server and processes them.
  */
 async function getGroups() {
-    const response = await fetch('/api/groups/all', {
-        method: 'POST',
-        headers: getRequestHeaders({ omitContentType: true }),
-    });
+    const primedGroupPayload = primedGroups;
+    primedGroups = null;
 
-    if (response.ok) {
-        /** @type {Group[]} */
-        const data = await response.json();
+    /** @type {Group[] | null} */
+    let data = Array.isArray(primedGroupPayload) ? primedGroupPayload : null;
+
+    if (!data) {
+        const response = await fetch('/api/groups/all', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+
+        if (!response.ok) {
+            return;
+        }
+
+        data = await response.json();
+    }
+
+    if (Array.isArray(data)) {
         groups = data.slice();
 
         // Convert groups to new format
@@ -864,6 +877,12 @@ async function getGroups() {
             }
         }
     }
+}
+
+export function primeGroupsSnapshot(snapshot) {
+    primedGroups = Array.isArray(snapshot)
+        ? structuredClone(snapshot)
+        : null;
 }
 
 /**

@@ -59,6 +59,7 @@ import {
     selected_group,
     saveGroupChat,
     getGroups,
+    primeGroupsSnapshot,
     generateGroupWrapper,
     is_group_generating,
     resetSelectedGroup,
@@ -226,7 +227,7 @@ import {
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
 } from './scripts/tags.js';
-import { initSecrets, readSecretState } from './scripts/secrets.js';
+import { initSecrets, primeSecretStateSnapshot, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
 import { markdownUnderscoreExt } from './scripts/showdown-underscore.js';
 import { NOTE_MODULE_NAME, initAuthorsNote, metadata_keys, setFloatingPrompt, shouldWIAddPrompt } from './scripts/authors-note.js';
@@ -250,6 +251,7 @@ import {
     getUserAvatars,
     getUserAvatar,
     setUserAvatar,
+    primeUserAvatarsSnapshot,
     initPersonas,
     setPersonaDescription,
     initUserAvatar,
@@ -667,6 +669,7 @@ export let displayVersion = 'Luker';
 let generation_started = new Date();
 /** @type {Character[]} */
 export let characters = [];
+let primedCharacters = null;
 /**
  * Stringified index of a currently chosen entity in the characters array.
  * @type {string|undefined} Yes, we hate it as much as you do.
@@ -1565,6 +1568,8 @@ async function firstLoadInit() {
     }
 
     showLoader();
+    const clientVersionPromise = getClientVersion();
+    const bootstrapPromise = fetchBootstrapSnapshot();
     registerPromptManagerMigration();
     initDomHandlers();
     initStandaloneMode();
@@ -1573,8 +1578,12 @@ async function firstLoadInit() {
     addDOMPurifyHooks();
     reloadMarkdownProcessor();
     applyBrowserFixes();
-    await getClientVersion();
+    await clientVersionPromise;
     await initSecrets();
+    const bootstrapSnapshot = await bootstrapPromise;
+    if (bootstrapSnapshot?.secret_state) {
+        primeSecretStateSnapshot(bootstrapSnapshot.secret_state);
+    }
     await readSecretState();
     await initLocales();
     initChatUtilities();
@@ -1587,7 +1596,7 @@ async function firstLoadInit() {
     initSystemPrompts();
     await initPresetManager();
     await initSystemMessages();
-    await getSettings({ bootstrap: true });
+    await getSettings({ bootstrap: true, payload: bootstrapSnapshot?.settings });
     initKeyboard();
     initDynamicStyles();
 
@@ -1596,6 +1605,12 @@ async function firstLoadInit() {
     }
     await fixViewport();
     await yieldToBrowser();
+
+    if (bootstrapSnapshot) {
+        primeUserAvatarsSnapshot(bootstrapSnapshot.avatars);
+        primeGroupsSnapshot(bootstrapSnapshot.groups);
+        primeCharactersSnapshot(bootstrapSnapshot.characters);
+    }
 
     await runStartupTasks([
         () => initTags(),
@@ -2163,15 +2178,34 @@ export function getCharacterSource(chId = this_chid) {
 }
 
 export async function getCharacters() {
-    const response = await fetch('/api/characters/all', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-    });
-    if (response.ok) {
+    const primedCharacterPayload = primedCharacters;
+    primedCharacters = null;
+
+    /** @type {Character[] | null} */
+    let getData = Array.isArray(primedCharacterPayload) ? primedCharacterPayload : null;
+
+    if (!getData) {
+        const response = await fetch('/api/characters/all', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+        });
+
+        if (!response.ok) {
+            console.error('Failed to fetch characters:', response.statusText);
+            const errorData = await response.json().catch(() => null);
+            if (errorData?.overflow) {
+                await Popup.show.text(t`Character data length limit reached`, t`To resolve this, set "performance.lazyLoadCharacters" to "true" in config.yaml and restart the server.`);
+            }
+            return;
+        }
+
+        getData = await response.json();
+    }
+
+    if (Array.isArray(getData)) {
         const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
         characters.splice(0, characters.length);
-        const getData = await response.json();
         for (let i = 0; i < getData.length; i++) {
             characters[i] = getData[i];
             characters[i]['name'] = DOMPurify.sanitize(characters[i]['name']);
@@ -2197,12 +2231,6 @@ export async function getCharacters() {
 
         await getGroups();
         await printCharacters(true);
-    } else {
-        console.error('Failed to fetch characters:', response.statusText);
-        const errorData = await response.json();
-        if (errorData?.overflow) {
-            await Popup.show.text(t`Character data length limit reached`, t`To resolve this, set "performance.lazyLoadCharacters" to "true" in config.yaml and restart the server.`);
-        }
     }
 }
 
@@ -11713,6 +11741,26 @@ async function fetchSettingsPayload(endpoint, { silent = false } = {}) {
     return response.json();
 }
 
+async function fetchBootstrapSnapshot() {
+    try {
+        const response = await fetch('/api/bootstrap', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+
+        if (!response.ok) {
+            throw new Error(`Error getting bootstrap snapshot: ${response.status}`);
+        }
+
+        return await response.json();
+    } catch (error) {
+        console.warn('Initial bootstrap snapshot unavailable', error);
+        return null;
+    }
+}
+
 function hydrateFullSettingsPresetData(data) {
     hydrateKoboldPresetData(data);
     hydrateNovelPresetData(data);
@@ -11758,7 +11806,7 @@ export async function ensureFullSettingsLoaded() {
 
 export async function getSettings(options = {}) {
     const useBootstrap = options?.bootstrap === true;
-    const data = await fetchSettingsPayload(useBootstrap ? '/api/settings/bootstrap' : '/api/settings/get');
+    const data = options?.payload ?? await fetchSettingsPayload(useBootstrap ? '/api/settings/bootstrap' : '/api/settings/get');
 
     if (!useBootstrap) {
         hydrateFullSettingsPresetData(data);
@@ -11879,6 +11927,12 @@ export async function getSettings(options = {}) {
     if (useBootstrap) {
         void warmPreloadFullSettings();
     }
+}
+
+function primeCharactersSnapshot(snapshot) {
+    primedCharacters = Array.isArray(snapshot)
+        ? structuredClone(snapshot)
+        : null;
 }
 
 function rememberSettingsSnapshot(nextSettings = null) {

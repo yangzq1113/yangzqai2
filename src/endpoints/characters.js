@@ -492,6 +492,13 @@ const processCharacter = async (item, directories, { shallow }) => {
     }
 };
 
+export async function getCharactersSnapshot(directories) {
+    const files = fs.readdirSync(directories.characters);
+    const pngFiles = files.filter(file => file.endsWith('.png'));
+    const processingPromises = pngFiles.map(file => processCharacter(file, directories, { shallow: useShallowCharacters }));
+    return (await Promise.all(processingPromises)).filter(character => character.name);
+}
+
 /**
  * Convert a character object to Spec V2 format.
  * @param {object} jsonObject Character object
@@ -1479,11 +1486,7 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
  */
 router.post('/all', async function (request, response) {
     try {
-        const files = fs.readdirSync(request.user.directories.characters);
-        const pngFiles = files.filter(file => file.endsWith('.png'));
-        const processingPromises = pngFiles.map(file => processCharacter(file, request.user.directories, { shallow: useShallowCharacters }));
-        const data = (await Promise.all(processingPromises)).filter(c => c.name);
-        return response.send(data);
+        return response.send(await getCharactersSnapshot(request.user.directories));
     } catch (err) {
         console.error(err);
         const isRangeError = err instanceof RangeError;

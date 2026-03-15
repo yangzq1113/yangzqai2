@@ -194,7 +194,7 @@ const getLabel = () => moment().format('L LT');
  * @returns {string|null} The secret key corresponding to the selected API, or null if no key is found.
  */
 export function resolveSecretKey() {
-    const { mainApi, chatCompletionSettings, textCompletionSettings } = Luker.getContext();
+    const { mainApi, chatCompletionSettings, textCompletionSettings } = globalThis.Luker.getContext();
     const chatCompletionSource = chatCompletionSettings.chat_completion_source;
     const textCompletionType = textCompletionSettings.type;
 
@@ -309,6 +309,19 @@ async function viewSecrets() {
  * @type {import('../../src/endpoints/secrets.js').SecretStateMap}
  */
 export let secret_state = {};
+let primedSecretState = null;
+
+export function primeSecretStateSnapshot(snapshot) {
+    primedSecretState = snapshot && typeof snapshot === 'object'
+        ? structuredClone(snapshot)
+        : null;
+}
+
+function applySecretState(nextState) {
+    secret_state = nextState;
+    updateSecretDisplay();
+    updateInputDataLists();
+}
 
 /**
  * Write a secret value to the server.
@@ -383,15 +396,22 @@ export async function deleteSecret(key, id) {
  */
 export async function readSecretState() {
     try {
+        const primedState = primedSecretState;
+        primedSecretState = null;
+
+        if (primedState) {
+            applySecretState(primedState);
+            await checkOpenRouterAuth();
+            return;
+        }
+
         const response = await fetch('/api/secrets/read', {
             method: 'POST',
             headers: getRequestHeaders({ omitContentType: true }),
         });
 
         if (response.ok) {
-            secret_state = await response.json();
-            updateSecretDisplay();
-            updateInputDataLists();
+            applySecretState(await response.json());
             await checkOpenRouterAuth();
         }
     } catch {

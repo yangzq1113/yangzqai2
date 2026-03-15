@@ -81,6 +81,7 @@ let runtimeCharacterPersonaFallback = {
     previousAvatar: '',
 };
 const runtimePersonaNameHints = new Map();
+let primedUserAvatars = null;
 
 /** @type {function(string): void} */
 let navigateToAvatar = () => { };
@@ -114,6 +115,32 @@ export function initUserAvatar(avatar) {
     }
     reloadUserAvatar();
     updatePersonaUIStates();
+}
+
+export function primeUserAvatarsSnapshot(snapshot) {
+    primedUserAvatars = Array.isArray(snapshot)
+        ? structuredClone(snapshot)
+        : null;
+}
+
+async function fetchUserAvatarsPayload() {
+    const primedAvatars = primedUserAvatars;
+    primedUserAvatars = null;
+
+    if (Array.isArray(primedAvatars)) {
+        return primedAvatars;
+    }
+
+    const response = await fetch('/api/avatars/get', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+    });
+
+    if (!response.ok) {
+        return null;
+    }
+
+    return response.json();
 }
 
 /**
@@ -918,17 +945,9 @@ function hasPersonaIdentityForAvatar(avatarId, preferredCharacterAvatar = '') {
  * @returns {Promise<string[]>} List of avatar file names
  */
 export async function getUserAvatars(doRender = true, openPageAt = '') {
-    const response = await fetch('/api/avatars/get', {
-        method: 'POST',
-        headers: getRequestHeaders({ omitContentType: true }),
-    });
-    if (response.ok) {
-        const allEntities = await response.json();
+    const allEntities = await fetchUserAvatarsPayload();
+    if (Array.isArray(allEntities)) {
         const currentConnection = getCurrentConnectionObj();
-
-        if (!Array.isArray(allEntities)) {
-            return [];
-        }
 
         if (doRender) {
             if (currentConnection?.type === 'character' && currentConnection?.id) {
@@ -1023,6 +1042,8 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
 
         return allEntities;
     }
+
+    return [];
 }
 
 /**

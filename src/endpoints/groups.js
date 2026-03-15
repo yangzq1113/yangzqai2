@@ -110,19 +110,19 @@ export async function migrateGroupChatsMetadataFormat(userDirectories) {
     }
 }
 
-router.post('/all', (request, response) => {
+export function getGroupsSnapshot(directories) {
     const groups = [];
 
-    if (!fs.existsSync(request.user.directories.groups)) {
-        fs.mkdirSync(request.user.directories.groups);
+    if (!fs.existsSync(directories.groups)) {
+        fs.mkdirSync(directories.groups);
     }
 
-    const files = fs.readdirSync(request.user.directories.groups).filter(x => path.extname(x) === '.json');
-    const chats = fs.readdirSync(request.user.directories.groupChats).filter(x => path.extname(x) === '.jsonl');
+    const files = fs.readdirSync(directories.groups).filter(x => path.extname(x) === '.json');
+    const chats = fs.readdirSync(directories.groupChats).filter(x => path.extname(x) === '.jsonl');
 
     files.forEach(function (file) {
         try {
-            const filePath = path.join(request.user.directories.groups, file);
+            const filePath = path.join(directories.groups, file);
             const fileContents = fs.readFileSync(filePath, 'utf8');
             const group = JSON.parse(fileContents);
             const groupStat = fs.statSync(filePath);
@@ -135,7 +135,7 @@ router.post('/all', (request, response) => {
             if (Array.isArray(group.chats) && Array.isArray(chats)) {
                 for (const chat of chats) {
                     if (group.chats.includes(path.parse(chat).name)) {
-                        const chatStat = fs.statSync(path.join(request.user.directories.groupChats, chat));
+                        const chatStat = fs.statSync(path.join(directories.groupChats, chat));
                         chat_size += chatStat.size;
                         date_last_chat = Math.max(date_last_chat, chatStat.mtimeMs);
                     }
@@ -151,7 +151,11 @@ router.post('/all', (request, response) => {
         }
     });
 
-    return response.send(groups);
+    return groups;
+}
+
+router.post('/all', (request, response) => {
+    return response.send(getGroupsSnapshot(request.user.directories));
 });
 
 router.post('/create', (request, response) => {

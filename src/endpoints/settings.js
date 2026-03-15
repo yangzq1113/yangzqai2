@@ -128,7 +128,7 @@ function retainSelectedPresetContents(fileContents, fileNames, selectedName) {
     return fileNames.map((name, index) => name === selectedName ? fileContents[index] : null);
 }
 
-function buildSettingsResponse(request, { includePresetContents = true, includeQuickReplyPresets = true } = {}) {
+export function buildSettingsResponse(request, { includePresetContents = true, includeQuickReplyPresets = true } = {}) {
     let settings;
     const pathToSettings = path.join(request.user.directories.root, SETTINGS_FILE);
     settings = fs.readFileSync(pathToSettings, 'utf8');
