@@ -7284,14 +7284,140 @@ function syncProxyPresetSelectionByConnection() {
     $('#openai_reverse_proxy_name').val('');
 }
 
-export function loadProxyPresets(settings) {
-    let proxyPresets = settings.proxies;
-    selected_proxy = settings.selected_proxy || selected_proxy;
-    if (!Array.isArray(proxyPresets) || proxyPresets.length === 0) {
-        proxyPresets = proxies;
-    } else {
-        proxies = proxyPresets;
+function ensureProxyPresetOption(name) {
+    const normalizedName = String(name || '').trim();
+    if (!normalizedName) {
+        return;
     }
+
+    const existingOption = $('#openai_proxy_preset option').filter(function () {
+        return String($(this).val()) === normalizedName;
+    });
+
+    if (existingOption.length > 0) {
+        return;
+    }
+
+    const option = document.createElement('option');
+    option.innerText = normalizedName;
+    option.value = normalizedName;
+    $('#openai_proxy_preset').append(option);
+}
+
+function persistCurrentProxyPresetSelection() {
+    const currentUrl = String(oai_settings.reverse_proxy || $('#openai_reverse_proxy').val() || '');
+    const currentPassword = String(oai_settings.proxy_password || $('#openai_proxy_password').val() || '');
+
+    if (!currentUrl && !currentPassword) {
+        syncProxyPresetSelectionByConnection();
+        return selected_proxy;
+    }
+
+    const matched = proxies.find((preset) => String(preset?.url || '') === currentUrl && String(preset?.password || '') === currentPassword);
+    const typedName = String($('#openai_reverse_proxy_name').val() || '').trim();
+    const selectedName = String($('#openai_proxy_preset').val() || '').trim();
+    const candidateName = [typedName, selectedName, matched?.name]
+        .map(name => String(name || '').trim())
+        .find(name => name && name !== 'None');
+
+    if (!candidateName) {
+        syncProxyPresetSelectionByConnection();
+        return selected_proxy;
+    }
+
+    const existingPreset = proxies.find((preset) => String(preset?.name || '') === candidateName);
+    if (existingPreset) {
+        existingPreset.url = currentUrl;
+        existingPreset.password = currentPassword;
+        selected_proxy = existingPreset;
+    } else {
+        const newPreset = { name: candidateName, url: currentUrl, password: currentPassword };
+        proxies.push(newPreset);
+        selected_proxy = newPreset;
+    }
+
+    ensureProxyPresetOption(candidateName);
+    $('#openai_proxy_preset').val(candidateName);
+    $('#openai_reverse_proxy_name').val(candidateName);
+    return selected_proxy;
+}
+
+export function getCurrentProxyProfileEntry({ persist = false } = {}) {
+    if (persist) {
+        persistCurrentProxyPresetSelection();
+    }
+
+    const currentUrl = String(oai_settings.reverse_proxy || $('#openai_reverse_proxy').val() || '');
+    const currentPassword = String(oai_settings.proxy_password || $('#openai_proxy_password').val() || '');
+    const matched = proxies.find((preset) => String(preset?.url || '') === currentUrl && String(preset?.password || '') === currentPassword);
+    const selectedName = String($('#openai_proxy_preset').val() || '').trim();
+    const typedName = String($('#openai_reverse_proxy_name').val() || '').trim();
+    const name = [matched?.name, selectedName, typedName]
+        .map(value => String(value || '').trim())
+        .find(value => value && value !== 'None') || '';
+
+    return {
+        name,
+        url: currentUrl,
+        password: currentPassword,
+    };
+}
+
+export function applyProxyProfileEntry({
+    name = '',
+    url = '',
+    password = '',
+} = {}) {
+    const normalizedName = String(name || '').trim();
+    const effectiveName = normalizedName === 'None' ? '' : normalizedName;
+    const normalizedUrl = String(url || '');
+    const normalizedPassword = String(password || '');
+
+    if (!normalizedUrl && !normalizedPassword) {
+        const nonePreset = proxies.find((preset) => String(preset?.name || '') === 'None');
+        if (nonePreset) {
+            setProxyPreset(nonePreset.name, nonePreset.url, nonePreset.password);
+            $('#openai_proxy_preset').val(nonePreset.name);
+            return nonePreset.name;
+        }
+
+        setProxyPreset('None', '', '');
+        $('#openai_proxy_preset').val('None');
+        return 'None';
+    }
+
+    if (effectiveName) {
+        ensureProxyPresetOption(effectiveName);
+        setProxyPreset(effectiveName, normalizedUrl, normalizedPassword);
+        $('#openai_proxy_preset').val(effectiveName);
+        return effectiveName;
+    }
+
+    oai_settings.reverse_proxy = normalizedUrl;
+    $('#openai_reverse_proxy').val(normalizedUrl);
+    oai_settings.proxy_password = normalizedPassword;
+    $('#openai_proxy_password').val(normalizedPassword);
+    syncProxyPresetSelectionByConnection();
+    reconnectOpenAi();
+    return selected_proxy?.name || '';
+}
+
+export function loadProxyPresets(settings) {
+    let proxyPresets = Array.isArray(settings.proxies) && settings.proxies.length > 0 ? settings.proxies : proxies;
+    proxyPresets = proxyPresets
+        .filter((preset) => preset && typeof preset === 'object')
+        .map((preset) => ({
+            name: String(preset.name || '').trim(),
+            url: String(preset.url || ''),
+            password: String(preset.password || ''),
+        }))
+        .filter((preset) => preset.name);
+
+    if (!proxyPresets.some((preset) => preset.name === 'None')) {
+        proxyPresets.unshift({ name: 'None', url: '', password: '' });
+    }
+
+    proxies = proxyPresets;
 
     $('#openai_proxy_preset').empty();
 
@@ -7302,8 +7428,8 @@ export function loadProxyPresets(settings) {
         option.selected = preset.name === 'None';
         $('#openai_proxy_preset').append(option);
     }
-    $('#openai_proxy_preset').val(selected_proxy.name);
-    setProxyPreset(selected_proxy.name, selected_proxy.url, selected_proxy.password);
+
+    syncProxyPresetSelectionByConnection();
 }
 
 function setProxyPreset(name, url, password) {
@@ -7385,9 +7511,31 @@ $('#delete_proxy').on('click', async function () {
     }
 });
 
-function runProxyCallback(_, value) {
+function runProxyCallback(args, value) {
     if (!value) {
-        return selected_proxy?.name || '';
+        const shouldPersist = String(args?.persist || '').trim().toLowerCase() === 'true';
+        if (shouldPersist) {
+            persistCurrentProxyPresetSelection();
+        }
+
+        const currentUrl = String(oai_settings.reverse_proxy || '');
+        const currentPassword = String(oai_settings.proxy_password || '');
+        const matched = proxies.find((preset) => String(preset?.url || '') === currentUrl && String(preset?.password || '') === currentPassword);
+
+        if (matched) {
+            selected_proxy = matched;
+            return matched.name;
+        }
+
+        if (!currentUrl && !currentPassword) {
+            const nonePreset = proxies.find((preset) => String(preset?.name || '') === 'None');
+            if (nonePreset) {
+                selected_proxy = nonePreset;
+                return nonePreset.name;
+            }
+        }
+
+        return '';
     }
 
     const proxyNames = proxies.map(preset => preset.name);

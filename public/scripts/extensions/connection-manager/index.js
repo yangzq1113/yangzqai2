@@ -14,7 +14,7 @@ import { SlashCommandScope } from '../../slash-commands/SlashCommandScope.js';
 import { collapseSpaces, getUniqueName, isFalseBoolean, uuidv4, waitUntilCondition } from '../../utils.js';
 import { t } from '../../i18n.js';
 import { getSecretLabelById } from '../../secrets.js';
-import { oai_settings } from '../../openai.js';
+import { applyProxyProfileEntry, getCurrentProxyProfileEntry, oai_settings } from '../../openai.js';
 
 const MODULE_NAME = 'connection-manager';
 const NONE = '<None>';
@@ -170,6 +170,8 @@ const profilesProvider = () => [
  * @property {string} [preset] Settings Preset
  * @property {string} [model] Model
  * @property {string} [proxy] Proxy Preset
+ * @property {string} ['proxy-url'] Reverse proxy URL snapshot
+ * @property {string} ['proxy-password'] Reverse proxy password snapshot
  * @property {string} [instruct] Instruct Template
  * @property {string} [context] Context Template
  * @property {string} [instruct-state] Instruct Mode
@@ -250,6 +252,20 @@ async function readProfileFromCommands(mode, profile, cleanUp = false) {
     for (const command of commands) {
         try {
             if (excludeList.includes(command)) {
+                continue;
+            }
+
+            if (command === 'proxy') {
+                const proxyEntry = getCurrentProxyProfileEntry({ persist: true });
+                if (proxyEntry.name || proxyEntry.url || proxyEntry.password) {
+                    profile.proxy = proxyEntry.name || '';
+                    profile['proxy-url'] = proxyEntry.url;
+                    profile['proxy-password'] = proxyEntry.password;
+                } else {
+                    profile.proxy = 'None';
+                    delete profile['proxy-url'];
+                    delete profile['proxy-password'];
+                }
                 continue;
             }
 
@@ -436,6 +452,15 @@ async function applyConnectionProfile(profile) {
     for (const command of commands) {
         if (spinner.isAborted()) {
             throw new Error('Profile application aborted');
+        }
+
+        if (command === 'proxy' && (Object.hasOwn(profile, 'proxy-url') || Object.hasOwn(profile, 'proxy-password'))) {
+            applyProxyProfileEntry({
+                name: String(profile.proxy || ''),
+                url: String(profile['proxy-url'] || ''),
+                password: String(profile['proxy-password'] || ''),
+            });
+            continue;
         }
 
         const argument = profile[command];

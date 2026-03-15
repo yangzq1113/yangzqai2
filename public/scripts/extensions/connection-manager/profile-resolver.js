@@ -199,6 +199,20 @@ function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
         if (proxyPreset) {
             overrides.reverse_proxy = String(proxyPreset.url || '');
             overrides.proxy_password = String(proxyPreset.password || '');
+        } else {
+            const proxyUrl = String(profile['proxy-url'] || '').trim();
+            const proxyPassword = String(profile['proxy-password'] || '');
+            if (proxyUrl || proxyPassword) {
+                overrides.reverse_proxy = proxyUrl;
+                overrides.proxy_password = proxyPassword;
+            }
+        }
+    } else {
+        const proxyUrl = String(profile['proxy-url'] || '').trim();
+        const proxyPassword = String(profile['proxy-password'] || '');
+        if (proxyUrl || proxyPassword) {
+            overrides.reverse_proxy = proxyUrl;
+            overrides.proxy_password = proxyPassword;
         }
     }
 
