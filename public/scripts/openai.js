@@ -89,14 +89,12 @@ import {
     PlainTextFunctionCallStreamDetector,
     TOOL_PROTOCOL_STYLE,
     buildPlainTextToolProtocolMessage,
-    buildStrictThoughtAndFunctionOnlyAddendum,
-    buildToolChoiceConstraintAddendum,
     extractAllFunctionCallsFromText,
     extractDisplayTextFromPlainTextFunctionResponse,
     findLastTriggerSignalOutsideThought,
     getResponseMessageContent,
     generateRandomTriggerSignal,
-    mergeUserAddendumIntoPromptMessages,
+    mergeSystemAddendumIntoPromptMessages,
     normalizeToolMessagesForPlainTextFunctionCalling,
     validateParsedToolCalls,
 } from './extensions/function-call-runtime.js';
@@ -3320,9 +3318,6 @@ async function sendOpenAIRequest(type, messages, signal, {
         const protocolStyle = modeOptions.protocolStyle === TOOL_PROTOCOL_STYLE.TABLE
             ? TOOL_PROTOCOL_STYLE.TABLE
             : TOOL_PROTOCOL_STYLE.JSON_SCHEMA;
-        const strictTwoPart = modeOptions.strictTwoPart !== false;
-        const allowReasoningText = Boolean(modeOptions.allowReasoningText);
-        const appendStrictContract = modeOptions.appendStrictContract !== false;
         const requiredFunctionName = String(
             modeOptions.requiredFunctionName
             || normalizedToolChoice?.function?.name
@@ -3330,32 +3325,15 @@ async function sendOpenAIRequest(type, messages, signal, {
             || '',
         ).trim();
 
-        requestMessages = mergeUserAddendumIntoPromptMessages(
+        requestMessages = mergeSystemAddendumIntoPromptMessages(
             requestMessages,
             buildPlainTextToolProtocolMessage(normalizedTools, {
                 requiredFunctionName,
                 style: protocolStyle,
-                strictTwoPart,
                 triggerSignal,
                 toolChoice: normalizedToolChoice,
-                allowReasoningText,
             }),
         );
-
-        const toolChoiceConstraint = buildToolChoiceConstraintAddendum(normalizedToolChoice, normalizedTools);
-        if (toolChoiceConstraint) {
-            requestMessages = mergeUserAddendumIntoPromptMessages(requestMessages, toolChoiceConstraint);
-        }
-
-        if (appendStrictContract) {
-            requestMessages = mergeUserAddendumIntoPromptMessages(
-                requestMessages,
-                buildStrictThoughtAndFunctionOnlyAddendum({
-                    plainTextMode: true,
-                    requiredFunctionName,
-                }),
-            );
-        }
 
         effectiveTools = [];
         effectiveToolChoice = 'auto';

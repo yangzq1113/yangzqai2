@@ -722,17 +722,15 @@ export function buildPlainTextToolProtocolMessage(
             parameters: row.schema,
         }));
         return [
-            'Plain-text function-call mode is enabled.',
+            'Tool-call output protocol:',
+            'You may optionally output text before the tool-call payload.',
+            'If the current prompt requires a specific preamble format such as <thought>, follow that prompt. Otherwise the preamble text is optional.',
             'Multiple tool calls are fully supported in a single response and are encouraged when the task needs them.',
-            allowReasoningText
-                ? 'You may output reasoning text (for example <thought>...</thought>) before the final JSON payload.'
-                : 'Output contract is strict.',
-            strictTwoPart
-                ? 'Return exactly two parts in order: (1) one <thought>...</thought>; (2) one and only one JSON object containing the tool_calls array (array may include one or more calls).'
-                : 'The final output must end with one JSON object containing the tool_calls array (array may include one or more calls).',
-            strictTwoPart
-                ? 'No narrative/body text, markdown, code fences, comments, XML blocks (except <thought>), or extra JSON before/after the JSON object.'
-                : '',
+            'Do not output markdown code fences, comments, or duplicate JSON payloads.',
+            trigger
+                ? 'When you start the tool-call payload, first output the trigger line exactly as provided below on its own line. Immediately after that, output exactly one JSON object containing the tool_calls array (array may include one or more calls).'
+                : 'When you start the tool-call payload, output exactly one JSON object containing the tool_calls array (array may include one or more calls).',
+            'Do not output any text after the JSON object.',
             'Example (single call): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
             'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}',
             triggerLine,
@@ -750,11 +748,15 @@ export function buildPlainTextToolProtocolMessage(
         return `| ${item.name} | ${required} | ${optional} | ${purpose} |`;
     });
     return [
-        'Plain-text function-call mode is enabled.',
+        'Tool-call output protocol:',
+        'You may optionally output text before the tool-call payload.',
+        'If the current prompt requires a specific preamble format such as <thought>, follow that prompt. Otherwise the preamble text is optional.',
         'Multiple tool calls are fully supported in a single response and are encouraged when the task needs them.',
-        'Do necessary reasoning following the current prompt policy, then output function-call payload only.',
-        'Do not output extra prose outside the required payload.',
-        'The final output must end with one JSON object containing the tool_calls array (array may include one or more calls).',
+        'Do not output markdown code fences, comments, or duplicate JSON payloads.',
+        trigger
+            ? 'When you start the tool-call payload, first output the trigger line exactly as provided below on its own line. Immediately after that, output exactly one JSON object containing the tool_calls array (array may include one or more calls).'
+            : 'When you start the tool-call payload, output exactly one JSON object containing the tool_calls array (array may include one or more calls).',
+        'Do not output any text after the JSON object.',
         'Example (single call): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
         'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}',
         triggerLine,
@@ -766,22 +768,36 @@ export function buildPlainTextToolProtocolMessage(
     ].filter(Boolean).join('\n');
 }
 
-export function buildStrictThoughtAndFunctionOnlyAddendum({ plainTextMode = false, requiredFunctionName = '' } = {}) {
+export function buildStrictFunctionCallOutputAddendum({
+    plainTextMode = false,
+    requiredFunctionName = '',
+    triggerSignal = '',
+} = {}) {
     const requiredName = normalizeToolName(requiredFunctionName);
+    const trigger = String(triggerSignal || '').trim();
     return [
         'HIGHEST PRIORITY OUTPUT CONTRACT:',
-        'You must return EXACTLY two parts in this order:',
-        '1) one <thought>...</thought> block.',
+        'You may optionally output text before the function-call payload.',
+        'If the current prompt requires a specific preamble format such as <thought>, follow that prompt. Otherwise the preamble text is optional.',
         plainTextMode
-            ? '2) exactly one JSON object for function calls: {"tool_calls":[...]} (array may include one or more calls).'
-            : '2) function calls only (tool-calls channel).',
+            ? (trigger
+                ? `When you start the function-call payload, first output this trigger line on its own line: ${trigger}`
+                : 'When you start the function-call payload, output the payload immediately.')
+            : 'Return function calls only (tool-calls channel).',
+        plainTextMode
+            ? 'The function-call payload must be exactly one JSON object: {"tool_calls":[...]} (array may include one or more calls).'
+            : '',
         plainTextMode ? 'Multiple tool calls in one response are valid and recommended when needed.' : '',
         plainTextMode ? 'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}' : '',
         requiredName ? `Required function name: ${requiredName}.` : '',
-        'Do NOT output any other text or blocks.',
-        'Forbidden: narrative/body text, <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, markdown, code fences, comments, duplicate JSON payloads.',
+        'Do NOT output any extra text after the function payload.',
+        'Forbidden after or around the payload: markdown code fences, comments, duplicate JSON payloads.',
         'After function calls, stop immediately.',
     ].filter(Boolean).join('\n');
+}
+
+export function buildStrictThoughtAndFunctionOnlyAddendum(options = {}) {
+    return buildStrictFunctionCallOutputAddendum(options);
 }
 
 export function buildFunctionCallRetryAddendum({
@@ -844,6 +860,32 @@ export function mergeUserAddendumIntoPromptMessages(promptMessages, addendumText
     }
 
     messages.push({ role: 'user', content: payload });
+    return messages;
+}
+
+export function mergeSystemAddendumIntoPromptMessages(promptMessages, addendumText, tagOptions = null) {
+    const messages = Array.isArray(promptMessages)
+        ? promptMessages.map(message => ({ ...message }))
+        : [];
+    const addendum = String(addendumText || '').trim();
+    if (!addendum) {
+        return messages;
+    }
+    const options = typeof tagOptions === 'string'
+        ? { tagName: tagOptions, wrapWithTag: true }
+        : (tagOptions && typeof tagOptions === 'object' ? tagOptions : {});
+    const wrapWithTag = Boolean(options?.wrapWithTag);
+    const tag = String(options?.tagName || '').trim() || 'function_call_protocol';
+    const payload = wrapWithTag
+        ? [`<${tag}>`, addendum, `</${tag}>`].join('\n')
+        : addendum;
+
+    let insertIndex = 0;
+    while (insertIndex < messages.length && String(messages[insertIndex]?.role || '').toLowerCase() === 'system') {
+        insertIndex += 1;
+    }
+
+    messages.splice(insertIndex, 0, { role: 'system', content: payload });
     return messages;
 }
 
