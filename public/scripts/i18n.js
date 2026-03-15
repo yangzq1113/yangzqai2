@@ -158,9 +158,10 @@ async function loadLocaleData(language) {
 async function getLocaleData(language, { withFallback = true } = {}) {
     const localeLoadOrder = withFallback ? getLocaleLoadOrder(language) : [language];
     const mergedData = {};
+    const localePayloads = await Promise.all(localeLoadOrder.map((localeId) => loadLocaleData(localeId)));
 
-    for (const localeId of localeLoadOrder) {
-        Object.assign(mergedData, await loadLocaleData(localeId));
+    for (const localePayload of localePayloads) {
+        Object.assign(mergedData, localePayload);
     }
 
     return mergedData;
