@@ -6074,6 +6074,7 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
     if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
         syncCharacterEditorWithActiveAvatar(context);
         const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+        const hasActiveCharacter = Boolean(activeAvatar);
         const scope = getDisplayedScope(context, settings);
         const editor = getAgendaEditorByScope(scope);
         const agendaOverride = activeAvatar ? getCharacterAgendaOverrideByAvatar(context, activeAvatar) : null;
@@ -6107,8 +6108,8 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
             <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
             <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
             <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
-            <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
-            ${isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
+            ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
+            ${hasActiveCharacter && isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
             <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
             <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
         </div>
@@ -6118,6 +6119,7 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
     }
     syncCharacterEditorWithActiveAvatar(context);
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+    const hasActiveCharacter = Boolean(activeAvatar);
     const scope = getDisplayedScope(context, settings);
     const editor = getEditorByScope(scope);
     const isCharacterScope = scope === 'character';
@@ -6147,8 +6149,8 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
             <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
             <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
             <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
-            <div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>
-            ${isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
+            ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
+            ${hasActiveCharacter && isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
         </div>
         <div id="luker_orch_effective_visual">${renderEditorWorkspace(scope, editor, profileTitle)}</div>
     </div>
@@ -9496,8 +9498,7 @@ async function applyAiIterationSessionToCharacter(context, settings, session, ro
     updateUiStatus(i18nFormat('Iteration session applied to character override: ${0}.', name));
 }
 
-function buildAiIterationPopupHtml(popupId, session) {
-    const allowCharacterApply = true;
+function buildAiIterationPopupHtml(popupId, session, { allowCharacterApply = false } = {}) {
     return `
 <div id="${popupId}" class="luker_orch_iter_popup">
     <div class="luker_orch_iter_head">
@@ -9534,7 +9535,9 @@ async function openAiIterationStudio(context, settings, root) {
     const popupId = `luker_orch_iter_popup_${Date.now()}`;
     const namespace = `.lukerOrchIter_${popupId}`;
     const selector = `#${popupId}`;
-    const popupHtml = buildAiIterationPopupHtml(popupId, session);
+    const popupHtml = buildAiIterationPopupHtml(popupId, session, {
+        allowCharacterApply: Boolean(String(getCurrentAvatar(context) || '').trim()),
+    });
     let isRunning = false;
 
     const rerender = () => {
