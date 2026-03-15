@@ -698,8 +698,6 @@ export function buildPlainTextToolProtocolMessage(
     {
         requiredFunctionName = '',
         style = TOOL_PROTOCOL_STYLE.TABLE,
-        allowReasoningText = false,
-        strictTwoPart = false,
         triggerSignal = '',
         toolChoice = 'auto',
     } = {},

@@ -3515,7 +3515,6 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                 requestScope: 'extension_internal',
                 functionCallOptions: {
                     requiredFunctionName: fnName,
-                    strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             });
@@ -3581,7 +3580,6 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                 apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
                 requestScope: 'extension_internal',
                 functionCallOptions: {
-                    strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             });

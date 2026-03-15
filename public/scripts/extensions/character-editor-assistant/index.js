@@ -2658,9 +2658,7 @@ async function requestLorebookToolCallsWithRetry(settings, promptMessages, {
                 apiPresetName: options.apiPresetName,
                 apiSettingsOverride: options.apiSettingsOverride,
                 functionCallOptions: {
-                    strictTwoPart: true,
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
-                    allowReasoningText: true,
                 },
             });
             const rawContent = getResponseMessageContent(responseData);
