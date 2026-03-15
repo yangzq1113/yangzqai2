@@ -1603,6 +1603,7 @@ async function firstLoadInit() {
     }
     await fixViewport();
     await yieldToBrowser();
+    await initPresetManager();
 
     if (bootstrapSnapshot) {
         primeUserAvatarsSnapshot(bootstrapSnapshot.avatars);
@@ -1621,7 +1622,6 @@ async function firstLoadInit() {
     await yieldToBrowser();
 
     await runStartupTasks([
-        () => initPresetManager(),
         () => initSystemMessages(),
         () => initExtensions(),
         () => initExtensionSlashCommands(),
