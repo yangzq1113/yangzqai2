@@ -261,7 +261,7 @@ import {
 import { initBackgrounds, loadBackgroundSettings, background_settings } from './scripts/backgrounds.js';
 import { hideLoader, isLoaderVisible, showLoader } from './scripts/loader.js';
 import { BulkEditOverlay } from './scripts/BulkEditOverlay.js';
-import { initTextGenModels } from './scripts/textgen-models.js';
+import { initTextGenModels, initTextGenModelSelects } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, hideChatMessageRange, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
@@ -1624,6 +1624,7 @@ async function firstLoadInit() {
     await yieldToBrowser();
 
     await runStartupTasks([
+        () => initTextGenModelSelects(),
         () => initSystemMessages(),
         () => initExtensions(),
         () => bootstrapExtensions(),
