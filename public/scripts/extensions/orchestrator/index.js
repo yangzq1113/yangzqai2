@@ -137,6 +137,7 @@ const ORCH_CRITIC_REQUIRED_GATES = Object.freeze([
     'world autonomy and avoiding user-centric collapse',
 ]);
 const ORCH_CRITIC_PROMPT_AUTHORING_RULE = 'The critic/review preset itself must hardcode the review checklist and decision gate. Do not assume node.type, stage position, or preset name alone will make the model audit outputs.';
+const ORCH_CRITIC_CONSTRAINT_RESTATEMENT_RULE = 'Because critics do not see upstream worker prompt text at runtime, every critic/review preset must explicitly restate the audited layer\'s concrete pass/fail requirements, including worker-specific hard constraints, banned patterns, required preserved facts, and output obligations.';
 const ORCH_REVIEW_LAYERING_RULE = 'Treat orchestration as explicit hierarchical layers. A critic/review node audits only the immediately preceding worker layer, not the full earlier pipeline.';
 const ORCH_REVIEW_VISIBILITY_RULE = 'Critic visibility is local: do not make a critic depend on or audit non-adjacent earlier-stage nodes. If an older layer also needs review, add another critic immediately after that layer.';
 const ORCH_REVIEW_RERUN_SCOPE_RULE = 'A critic may request rerun only for the minimal specific worker node ids in the directly adjacent previous layer it audits.';
@@ -147,6 +148,7 @@ const ORCH_CRITIC_DECISION_RULE = `Approve only when every required gate passes.
 function getCriticPromptReminderLines() {
     return [
         ORCH_CRITIC_PROMPT_AUTHORING_RULE,
+        ORCH_CRITIC_CONSTRAINT_RESTATEMENT_RULE,
         ORCH_REVIEW_LAYERING_RULE,
         ORCH_REVIEW_VISIBILITY_RULE,
         ORCH_REVIEW_RERUN_SCOPE_RULE,
@@ -160,6 +162,7 @@ function getCriticPromptReminderLines() {
 function getCriticReviewNodeContractShape() {
     return {
         prompt_authoring_rule: ORCH_CRITIC_PROMPT_AUTHORING_RULE,
+        constraint_restatement_rule: ORCH_CRITIC_CONSTRAINT_RESTATEMENT_RULE,
         layering_rule: ORCH_REVIEW_LAYERING_RULE,
         visibility_scope: ORCH_REVIEW_VISIBILITY_RULE,
         rerun_scope: ORCH_REVIEW_RERUN_SCOPE_RULE,
@@ -275,8 +278,8 @@ const defaultPresets = {
         userPromptTemplate: 'Distiller output:\n{{distiller}}\n\nRecent chat:\n{{recent_chat}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Propose next-step progression beats with clear causality.\n- Preserve character independence and world autonomy.\n- Avoid making the world revolve around the user by default.\n\nReturn function-call fields only. Keep summary/directives/risks/tags as plain text. Do not put JSON inside summary.',
     },
     critic: {
-        systemPrompt: `You are a hard-gate critic.\n- Actively audit prior worker outputs against explicit review gates before approving.\n- Do not assume node type, stage placement, or preset name alone is enough; you must run the checklist.\n- Never emit synthesis or replacement guidance; return only review decisions.\n- Every review decision tool call must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` for downstream runtime use.\n- Output one concise <thought>...</thought> before your function call.`,
-        userPromptTemplate: `Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- Treat approval as allowed only if all required gates pass: continuity/timeline coherence, causality/action-consequence coherence, character/role consistency, anti-OOC/persona drift, active lorebook/world-info hard constraints, anti-data/report-tone/weather-broadcast violations, over-interpretation, human realism/plausibility, and world autonomy.\n- If any material issue exists, request rerun for the minimal specific earlier worker node ids responsible; do not rerun everything by default.\n- If upstream outputs are missing a required constraint/check, treat that as a review failure instead of filling the gap yourself.\n- If prior outputs are acceptable, approve immediately.\n- In both approve and rerun calls, \`${ORCH_REVIEW_FEEDBACK_FIELD}\` is mandatory and should contain concise audit conclusions, preserved constraints, and concrete downstream improvement guidance.\n- \`${ORCH_REVIEW_FEEDBACK_FIELD}\` may refine later nodes, but do not rewrite the final synthesis yourself.\n- Do not produce any rewritten guidance, summaries, or synthesis outside review tool-call fields.\n\nReturn review tool calls only.`,
+        systemPrompt: `You are a hard-gate critic.\n- Actively audit prior worker outputs against explicit review gates before approving.\n- Do not assume node type, stage placement, or preset name alone is enough; you must run the checklist.\n- You do not see upstream worker prompt texts at runtime, so this critic prompt must contain the full audit checklist and audited-layer-specific hard constraints.\n- Never emit synthesis or replacement guidance; return only review decisions.\n- Every review decision tool call must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` for downstream runtime use.\n- Output one concise <thought>...</thought> before your function call.`,
+        userPromptTemplate: `Distiller output:\n{{distiller}}\n\nPrevious outputs:\n{{previous_outputs}}\n\nTask:\n- Use the auto-injected previous orchestration result above as continuity context.\n- This critic prompt must be authored as a complete local audit contract. If the audited worker layer has extra hard constraints, banned patterns, preserved facts, or output obligations, restate them here explicitly because you cannot inspect other agent prompt texts at runtime.\n- Treat approval as allowed only if all required gates pass: continuity/timeline coherence, causality/action-consequence coherence, character/role consistency, anti-OOC/persona drift, active lorebook/world-info hard constraints, anti-data/report-tone/weather-broadcast violations, over-interpretation, human realism/plausibility, and world autonomy.\n- If any material issue exists, request rerun for the minimal specific earlier worker node ids responsible; do not rerun everything by default.\n- If upstream outputs are missing a required constraint/check, treat that as a review failure instead of filling the gap yourself.\n- If prior outputs are acceptable, approve immediately.\n- In both approve and rerun calls, \`${ORCH_REVIEW_FEEDBACK_FIELD}\` is mandatory and should contain concise audit conclusions, preserved constraints, and concrete downstream improvement guidance.\n- \`${ORCH_REVIEW_FEEDBACK_FIELD}\` may refine later nodes, but do not rewrite the final synthesis yourself.\n- Do not produce any rewritten guidance, summaries, or synthesis outside review tool-call fields.\n\nReturn review tool calls only.`,
     },
     recall_relevance: {
         systemPrompt: 'You are a recall relevance analyst. Decide which recalled memory cues should influence this turn. Output one concise <thought>...</thought> before your function call.',
@@ -6821,7 +6824,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
                 planner: 'Produce causally coherent next-step plan.',
-                critic: `Audit only the directly adjacent previous worker layer against an explicit hardcoded checklist, then either approve or request rerun of specific node ids from that layer only. Always include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Do not emit synthesis.`,
+                critic: `Audit only the directly adjacent previous worker layer against an explicit hardcoded checklist. Restate all audited-layer hard constraints and pass/fail checks inside the critic prompt itself because the critic does not see upstream worker prompt text at runtime. Then either approve or request rerun of specific node ids from that layer only. Always include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Do not emit synthesis.`,
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
                 synthesizer: `Merge the approved worker outputs and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into one draft-ready final guidance.`,
             },
