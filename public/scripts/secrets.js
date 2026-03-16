@@ -324,6 +324,18 @@ function applySecretState(nextState) {
 }
 
 /**
+ * Bootstrap snapshots from older builds may only contain booleans indicating
+ * whether a secret exists. The key manager requires the full masked secret list.
+ * @param {unknown} state
+ * @returns {state is import('../../src/endpoints/secrets.js').SecretStateMap}
+ */
+function hasFullSecretStateShape(state) {
+    return !!state
+        && typeof state === 'object'
+        && Object.values(state).every(value => value === null || Array.isArray(value));
+}
+
+/**
  * Write a secret value to the server.
  * @param {string} key Secret key
  * @param {string} value Secret value to write
@@ -399,7 +411,7 @@ export async function readSecretState() {
         const primedState = primedSecretState;
         primedSecretState = null;
 
-        if (primedState) {
+        if (hasFullSecretStateShape(primedState)) {
             applySecretState(primedState);
             await checkOpenRouterAuth();
             return;
@@ -633,7 +645,7 @@ async function openKeyManagerDialog(key) {
     await callGenericPopup(template, POPUP_TYPE.TEXT, '', { wide: true, large: true, onOpen: scrollToActive });
 
     async function renderSecretsList() {
-        const secrets = secret_state[key] ?? [];
+        const secrets = Array.isArray(secret_state[key]) ? secret_state[key] : [];
         const list = template.find('.secretKeyManagerList');
         const previousScrollTop = list.scrollTop();
 

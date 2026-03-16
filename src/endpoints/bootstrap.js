@@ -3,7 +3,7 @@ import express from 'express';
 import { getImages } from '../util.js';
 import { getCharactersSnapshot } from './characters.js';
 import { getGroupsSnapshot } from './groups.js';
-import { readSecretState } from './secrets.js';
+import { SecretManager } from './secrets.js';
 import { buildSettingsResponse } from './settings.js';
 
 export const router = express.Router();
@@ -18,7 +18,9 @@ router.post('/bootstrap', async (request, response) => {
             includeQuickReplyPresets: false,
         });
         const avatars = getImages(directories.avatars);
-        const secret_state = readSecretState(directories);
+        // Bootstrap needs the full masked secret metadata so the client can
+        // render the key manager without an extra shape conversion step.
+        const secret_state = new SecretManager(directories).getSecretState();
         const characters = await charactersPromise;
 
         return response.send({
