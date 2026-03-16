@@ -13,12 +13,17 @@ Luker is a SillyTavern fork focused on cleaner API behavior, stronger extension 
 
 Use `getContext()` as the primary integration surface.
 
+- Authoring guide:
+  - `docs/luker-plugin-authoring-guide.md`
+
 - Persistence helpers:
   - `appendChatMessages(messages)`
   - `patchChatMessages(operations)`
   - `saveChatMetadata(withMetadata?)`
+  - `getChatStateBatch(namespaces, options?)`
   - `getChatState(namespace, options?)`
   - `patchChatState(namespace, operations, options?)`
+  - `updateChatState(namespace, updater, options?)`
   - `deleteChatState(namespace, options?)`
 - Prompt/world-info helpers:
   - `buildPresetAwarePromptMessages(options)`
@@ -33,7 +38,8 @@ Use `getContext()` as the primary integration surface.
   - `MESSAGE_EDITED` → `(messageId, meta?)`
   - `MESSAGE_DELETED` → `(chatLength, meta?)`
 
-Detailed migration and API notes:
+Detailed plugin docs:
+- [`docs/luker-plugin-authoring-guide.md`](docs/luker-plugin-authoring-guide.md)
 - [`docs/luker-api-migration.md`](docs/luker-api-migration.md)
 
 ## Android (Backend-in-App)

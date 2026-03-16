@@ -1,6 +1,10 @@
-# Luker Plugin/API Migration Guide
+# Luker Plugin Context Migration Guide
 
-This guide is for extension authors migrating from legacy SillyTavern-style save flows to Luker’s patch-first, hook-first model.
+This guide is primarily for extension authors building against Luker’s exposed context surface (`Luker.getContext()`).
+
+It is not intended to be a full standalone backend API reference. The low-level HTTP routes documented later are an advanced appendix for debugging, migration audits, or integrations that cannot use the context helpers directly.
+
+If you are starting a plugin from scratch and need folder structure, `manifest.json`, entry-module, and UI scaffolding guidance, read `docs/luker-plugin-authoring-guide.md` first.
 
 ## 1) Use Context Helpers First
 
@@ -19,8 +23,10 @@ Global object recommendation:
 
 ### Chat-bound plugin state
 
+- `getChatStateBatch(namespaces, options?)`
 - `getChatState(namespace, options?)`
 - `patchChatState(namespace, operations, options?)`
+- `updateChatState(namespace, updater, options?)`
 - `deleteChatState(namespace, options?)`
 
 ### Prompt/world-info assembly
@@ -34,6 +40,121 @@ Global object recommendation:
 - `buildWorldInfoGlobalScanData(type, overrides?)`
 
 #### Detailed parameter reference
+
+##### Chat/message persistence
+
+```ts
+appendChatMessages(messages: ChatMessage[]): Promise<boolean>
+```
+
+- Appends one or more chat-format messages to the active chat/group chat.
+- Writes are serialized internally so plugin writes do not race each other.
+- Returns `true` when the incremental write succeeded.
+- Returns `false` when no active target is available or the incremental write could not be reconciled.
+
+```ts
+patchChatMessages(operations: JsonPatchOperation[] | JsonPatchOperation): Promise<boolean>
+```
+
+- Applies RFC6902 operations against the chat message array root (`/0`, `/1`, ...).
+- Luker auto-attaches lightweight `test` guards from the latest known message snapshot before sending the request.
+- Returns `false` when the patch could not be reconciled and the caller should fall back, retry with a fresh snapshot, or stop.
+
+```ts
+saveChatMetadata(withMetadata?: object): Promise<boolean>
+```
+
+- Merges `withMetadata` into the current in-memory `chat_metadata` object and sends only the metadata diff.
+- On success, Luker updates local integrity state used by subsequent chat writes.
+- Prefer this over direct metadata endpoint calls from plugins.
+
+##### Chat-bound plugin state
+
+```ts
+type ChatStateTarget =
+  | { is_group: true, id: string }
+  | { is_group: false, avatar_url: string, file_name: string }
+```
+
+- When `options.target` is omitted, Luker targets the currently open chat/group chat.
+- Use explicit `target` values when working with branch creation flows, sidecar popups, or background processing on a different chat.
+
+```ts
+getChatStateBatch(
+  namespaces: string[],
+  options?: { target?: ChatStateTarget | null }
+): Promise<Map<string, object | null>>
+```
+
+- Fetches multiple namespaces in one batched request.
+- Namespace keys are normalized to lowercase.
+- Missing or unreadable sidecars resolve to `null`.
+
+```ts
+getChatState(
+  namespace: string,
+  options?: { target?: ChatStateTarget | null }
+): Promise<object | null>
+```
+
+- Convenience wrapper over `getChatStateBatch(...)`.
+- Returns `null` when the namespace has no stored payload or no valid target is available.
+
+```ts
+patchChatState(
+  namespace: string,
+  operations: object[],
+  options?: { target?: ChatStateTarget | null }
+): Promise<boolean>
+```
+
+- Applies RFC6902 object patch operations to the namespace payload.
+- Luker rebuilds optimistic `test` guards from the freshest server state and retries once on `409`.
+- Returns `false` when no valid target/namespace exists or the patch still fails after recovery.
+
+```ts
+updateChatState(
+  namespace: string,
+  updater: (
+    currentState: object,
+    meta?: {
+      attempt: number,
+      target: ChatStateTarget,
+      namespace: string,
+    }
+  ) => object | null | undefined | Promise<object | null | undefined>,
+  options?: {
+    target?: ChatStateTarget | null,
+    maxOperations?: number,
+    maxRetries?: number,
+    asyncDiff?: boolean,
+  }
+): Promise<{ ok: boolean, state: object | null, updated: boolean }>
+```
+
+- Recommended helper when next state depends on the latest server value.
+- `updater` receives a cloned plain-object snapshot of current state.
+- Return `null` / `undefined` to skip writing.
+- `updated=false` means no write was needed; `ok=false` means the state could not be persisted.
+
+```ts
+deleteChatState(
+  namespace: string,
+  options?: { target?: ChatStateTarget | null }
+): Promise<boolean>
+```
+
+- Deletes the namespace sidecar file for the target chat.
+- Useful for teardown or explicit reset flows.
+
+Practical rules:
+
+- Use `updateChatState(...)` for read-modify-write logic instead of manually chaining `getChatState(...)` + `patchChatState(...)`.
+- Keep namespace payloads JSON-serializable plain objects.
+- Prefer chat state sidecars over stuffing large plugin objects into `chat_metadata`.
+- Treat `false` / `ok=false` as “state not persisted” and keep your plugin UI resilient.
+
+##### Prompt/world-info assembly
 
 Function signatures:
 
@@ -177,6 +298,60 @@ const requestMessages = context.buildPresetAwarePromptMessages({
   },
 });
 ```
+
+#### Stateful plugin example (chat-bound sidecar)
+
+```js
+const context = Luker.getContext();
+const NAMESPACE = 'my-plugin';
+
+async function recordOpen(target = null) {
+  return await context.updateChatState(NAMESPACE, (current = {}) => ({
+    ...current,
+    stats: {
+      ...current.stats,
+      opens: Number(current.stats?.opens || 0) + 1,
+      lastOpenedAt: Date.now(),
+    },
+  }), { target });
+}
+
+context.eventSource.on(context.eventTypes.MESSAGE_EDITED, async (_messageId, meta) => {
+  if (!meta) return;
+
+  await context.updateChatState(NAMESPACE, (current = {}) => ({
+    ...current,
+    lastEditedAt: Date.now(),
+    lastEditedPlayableSeq: meta.playableSeq,
+    lastEditedAssistantSeq: meta.assistantSeq,
+  }));
+});
+
+context.eventSource.on(context.eventTypes.CHAT_BRANCH_CREATED, async (payload) => {
+  const sourceState = await context.getChatState(NAMESPACE, {
+    target: payload.sourceTarget,
+  });
+
+  if (!sourceState) return;
+
+  await context.updateChatState(NAMESPACE, () => ({
+    ...sourceState,
+    branch: {
+      sourceMesId: payload.mesId,
+      branchName: payload.branchName,
+      copiedAt: Date.now(),
+    },
+  }), {
+    target: payload.targetTarget,
+  });
+});
+```
+
+Why this pattern works:
+
+- `updateChatState(...)` keeps the read-modify-write sequence aligned with the latest persisted sidecar state.
+- `MESSAGE_EDITED` updates only lightweight invalidation metadata.
+- `CHAT_BRANCH_CREATED` copies state to the new chat target explicitly instead of assuming “current chat” has already switched.
 
 ### Regex runtime API (plugin-side)
 
@@ -514,6 +689,17 @@ Practical notes:
 - Plugin identity for ordering/debugging is inferred from the extension path, including third-party extensions (`third-party/<name>`).
 - `APP_READY` is auto-fired: listeners registered after app startup still receive the last emitted `APP_READY` arguments immediately.
 
+### Common hook placement guide
+
+| Hook | Use it for | Avoid |
+| --- | --- | --- |
+| `GENERATION_CONTEXT_READY` | Trimming/replacing `coreChat`, adjusting per-request context limits | Logic that depends on finalized world-info output |
+| `GENERATION_BEFORE_WORLD_INFO_SCAN` | Temporary mutations that should affect lorebook/world-info scanning | Last-mile request-body edits |
+| `GENERATION_WORLD_INFO_FINALIZED` | Reading finalized WI resolution, depth injections, or branch-aware sidecar state | Reconstructing assumptions about the pre-scan chat slice |
+| `GENERATION_BEFORE_API_REQUEST` | Final request inspection, tool/runtime wiring, provider-specific addenda | Changes that must influence world-info activation |
+| `MESSAGE_EDITED` / `MESSAGE_DELETED` | Invalidating per-chat caches and sidecar-derived indexes | Heavy rescans on every render |
+| `CHAT_BRANCH_CREATED` | Copying/truncating chat-bound plugin state to the branch target | Blindly copying “latest” state without considering `mesId` |
+
 Lifecycle hooks:
 
 - `GENERATION_STARTED`
@@ -663,9 +849,13 @@ Legacy full-save routes are still available for compatibility:
 
 Luker internals and built-ins are patch-first; full-save is legacy compatibility, not the preferred path.
 
-## 6) Endpoint Appendix (Only When You Need Direct Calls)
+## 6) Low-level Endpoint Appendix (Advanced / Debug Only)
 
-Most plugins should not call these directly, but they are listed for low-level integrations.
+Most plugins should stop at the context helpers above.
+
+The routes below are included for advanced debugging, migration audits, or integrations that cannot rely on `Luker.getContext()`. They are same-origin web-app routes, not the primary extension contract.
+
+This appendix is intentionally partial and focuses on patch-first flows that plugin authors are most likely to inspect while debugging.
 
 ### Character chat
 
@@ -684,6 +874,7 @@ Most plugins should not call these directly, but they are listed for low-level i
 ### Chat state sidecar
 
 - `POST /api/chats/state/get`
+- `POST /api/chats/state/get-batch`
 - `POST /api/chats/state/patch`
 - `POST /api/chats/state/delete`
 
