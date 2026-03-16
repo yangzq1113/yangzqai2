@@ -6,6 +6,7 @@ import { extension_prompt_roles, extension_prompt_types, saveSettings, saveSetti
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
+import { performFuzzySearch } from '../../power-user.js';
 import { download, getFileText, getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, world_info_position } from '../../world-info.js';
 import { registerManagedRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
@@ -29,6 +30,8 @@ const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenera
 const RECALL_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
 const CHARACTER_ADVANCED_OVERRIDE_KEY = 'advancedOverride';
+const MEMORY_GRAPH_SEARCH_ALL_TYPE = '__all__';
+const MEMORY_GRAPH_SEARCH_RESULT_PREVIEW_LIMIT = 10;
 const GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID = `${MODULE_NAME}_generation_visible_history`;
 const GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID = `${MODULE_NAME}_generation_visible_history_runtime_script`;
 const RECALL_INJECT_POSITION_SCHEMA_VERSION = 2;
@@ -485,6 +488,17 @@ function registerLocaleData() {
         'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0}': '最近召回步数：${0}',
         'Visual graph ready. Click a node or edge to select it for editing.': '可视化图已就绪。点击节点或边可选择并编辑。',
+        'Search Graph': '搜索图谱',
+        'Search graph nodes, summaries, IDs, or fields...': '搜索节点、摘要、ID 或字段……',
+        'All types': '全部类型',
+        'Clear Search': '清空搜索',
+        'Prev Result': '上一个结果',
+        'Next Result': '下一个结果',
+        'Start typing to search the graph.': '开始输入以搜索图谱。',
+        'No nodes match the current search.': '当前搜索没有匹配节点。',
+        'Try a different keyword or type filter.': '请尝试其他关键词或类型筛选。',
+        'Showing ${0} of ${1} matching nodes.': '显示 ${1} 个匹配节点中的 ${0} 个。',
+        'Select a result to focus it in graph.': '选择一个结果以在图中定位。',
         'Fit View': '适配视图',
         'Add Edge': '新增边',
         'Edit Selected Edge': '编辑所选边',
@@ -759,6 +773,17 @@ function registerLocaleData() {
         'semantic=${0}': 'semantic=${0}',
         'Last recall steps: ${0}': '最近召回步數：${0}',
         'Visual graph ready. Click a node or edge to select it for editing.': '視覺化圖已就緒。點擊節點或邊可選取並編輯。',
+        'Search Graph': '搜尋圖譜',
+        'Search graph nodes, summaries, IDs, or fields...': '搜尋節點、摘要、ID 或欄位……',
+        'All types': '全部類型',
+        'Clear Search': '清空搜尋',
+        'Prev Result': '上一個結果',
+        'Next Result': '下一個結果',
+        'Start typing to search the graph.': '開始輸入以搜尋圖譜。',
+        'No nodes match the current search.': '目前搜尋沒有符合的節點。',
+        'Try a different keyword or type filter.': '請嘗試其他關鍵字或類型篩選。',
+        'Showing ${0} of ${1} matching nodes.': '顯示 ${1} 個符合節點中的 ${0} 個。',
+        'Select a result to focus it in graph.': '選擇一個結果以在圖中定位。',
         'Fit View': '適配視圖',
         'Add Edge': '新增邊',
         'Edit Selected Edge': '編輯所選邊',
@@ -7954,25 +7979,154 @@ function getStoreStats(store) {
     };
 }
 
-function renderGraphInspectorHtml(store) {
-    const stats = getStoreStats(store);
-    const nodes = Object.values(store.nodes || {})
-        .sort(compareNodesByTimeline)
+function clipMemoryGraphText(value, maxLength = 180) {
+    const text = normalizeText(value);
+    if (!text) {
+        return '';
+    }
+    if (text.length <= maxLength) {
+        return text;
+    }
+    return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function getMemoryGraphNodeSearchText(node) {
+    if (!node || typeof node !== 'object') {
+        return '';
+    }
+    const fields = node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+        ? node.fields
+        : {};
+    const fieldText = Object.entries(fields)
+        .map(([key, value]) => `${key} ${toDisplayScalar(value)}`)
+        .filter(Boolean)
+        .join(' ');
+    return normalizeText([
+        node.id,
+        node.title,
+        node.type,
+        node.level,
+        getNodeSummary(node),
+        fieldText,
+    ].filter(Boolean).join(' '));
+}
+
+function getMemoryGraphSearchModel(store, searchState = {}) {
+    const allNodes = Object.values(store?.nodes || {}).sort(compareNodesByTimeline);
+    const typeCounts = new Map();
+    for (const node of allNodes) {
+        const type = String(node?.type || '').trim() || 'unknown';
+        typeCounts.set(type, Number(typeCounts.get(type) || 0) + 1);
+    }
+
+    const requestedType = String(searchState?.type || MEMORY_GRAPH_SEARCH_ALL_TYPE).trim() || MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    const typeFilter = requestedType === MEMORY_GRAPH_SEARCH_ALL_TYPE || typeCounts.has(requestedType)
+        ? requestedType
+        : MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    const query = normalizeText(searchState?.query || '');
+    const isSearchActive = Boolean(query) || typeFilter !== MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    const typeFilteredNodes = typeFilter === MEMORY_GRAPH_SEARCH_ALL_TYPE
+        ? allNodes
+        : allNodes.filter(node => String(node?.type || '').trim() === typeFilter);
+
+    let matchedNodes = [];
+    if (isSearchActive && query) {
+        const searchData = typeFilteredNodes.map(node => ({
+            node,
+            id: String(node?.id || ''),
+            title: normalizeText(node?.title || ''),
+            summary: getNodeSummary(node),
+            type: String(node?.type || ''),
+            body: getMemoryGraphNodeSearchText(node),
+        }));
+        const fuzzyResults = performFuzzySearch(
+            'memory-graph-inspector',
+            searchData,
+            [
+                { name: 'title', weight: 0.45 },
+                { name: 'summary', weight: 0.25 },
+                { name: 'body', weight: 0.18 },
+                { name: 'id', weight: 0.08 },
+                { name: 'type', weight: 0.04 },
+            ],
+            query,
+        );
+        matchedNodes = fuzzyResults.map(result => ({ node: result.item.node, score: Number(result.score ?? 0) }));
+        if (!matchedNodes.length) {
+            const loweredQuery = query.toLowerCase();
+            matchedNodes = typeFilteredNodes
+                .filter(node => getMemoryGraphNodeSearchText(node).toLowerCase().includes(loweredQuery))
+                .map(node => ({ node, score: 0 }));
+        }
+    } else if (isSearchActive) {
+        matchedNodes = typeFilteredNodes.map(node => ({ node, score: 0 }));
+    }
+
+    const matchNodeIds = matchedNodes.map(item => String(item.node?.id || '')).filter(Boolean);
+    const matchNodeIdSet = new Set(matchNodeIds);
+    const visibleNodes = (isSearchActive
+        ? allNodes.filter(node => matchNodeIdSet.has(String(node?.id || '')))
+        : allNodes)
         .slice(-220);
-    const edges = Array.isArray(store.edges)
+    const visibleEdges = Array.isArray(store?.edges)
         ? store.edges
             .map((edge, index) => ({ ...edge, _index: index }))
+            .filter(edge => {
+                if (!isSearchActive) {
+                    return true;
+                }
+                return matchNodeIdSet.has(String(edge?.from || '')) || matchNodeIdSet.has(String(edge?.to || ''));
+            })
             .sort((a, b) => Number(b._index || 0) - Number(a._index || 0))
             .slice(0, 160)
         : [];
+    const previewNodes = matchedNodes.slice(0, MEMORY_GRAPH_SEARCH_RESULT_PREVIEW_LIMIT);
+    const activeNodeId = matchNodeIdSet.has(String(searchState?.activeNodeId || ''))
+        ? String(searchState.activeNodeId)
+        : '';
+    const summaryText = isSearchActive
+        ? i18nFormat('Showing ${0} of ${1} matching nodes.', previewNodes.length, matchNodeIds.length)
+        : i18n('Start typing to search the graph.');
+
+    return {
+        active: isSearchActive,
+        query,
+        typeFilter,
+        activeNodeId,
+        matchNodeIds,
+        matchNodeIdSet,
+        typeOptions: [
+            {
+                value: MEMORY_GRAPH_SEARCH_ALL_TYPE,
+                label: i18n('All types'),
+                count: allNodes.length,
+            },
+            ...[...typeCounts.entries()]
+                .sort((a, b) => a[0].localeCompare(b[0]))
+                .map(([value, count]) => ({ value, label: value, count })),
+        ],
+        summaryText,
+        emptyText: isSearchActive ? i18n('No nodes match the current search.') : i18n('Start typing to search the graph.'),
+        emptyHint: isSearchActive ? i18n('Try a different keyword or type filter.') : i18n('Select a result to focus it in graph.'),
+        previewNodes,
+        visibleNodes,
+        visibleEdges,
+    };
+}
+
+function renderGraphInspectorHtml(store, options = {}) {
+    const stats = getStoreStats(store);
+    const searchModel = getMemoryGraphSearchModel(store, options.searchState);
+    const nodes = searchModel.visibleNodes;
+    const edges = searchModel.visibleEdges;
 
     const rows = nodes.map(node => `
 <tr>
-<td>${node.id}</td>
-<td>${node.level}</td>
-<td>${node.type}</td>
-<td>${String(node.title || '').replace(/</g, '&lt;')}</td>
-<td>${String(getNodeSummary(node) || '').replace(/</g, '&lt;')}</td>
+<td>${escapeHtml(String(node.id || ''))}</td>
+<td>${escapeHtml(String(node.level || ''))}</td>
+<td>${escapeHtml(String(node.type || ''))}</td>
+<td>${escapeHtml(String(node.title || ''))}</td>
+<td>${escapeHtml(String(getNodeSummary(node) || ''))}</td>
 <td>${Array.isArray(node.childrenIds) ? node.childrenIds.length : 0}</td>
 <td>${node.seqTo ?? ''}</td>
 <td>
@@ -7983,6 +8137,39 @@ function renderGraphInspectorHtml(store) {
     </div>
 </td>
 </tr>`).join('');
+    const searchFilterHtml = searchModel.typeOptions.map(option => `
+<button
+    type="button"
+    class="luker-rpg-memory-graph-search-filter${option.value === searchModel.typeFilter ? ' is-active' : ''}"
+    data-search-type="${escapeHtml(option.value)}"
+>
+    <span>${escapeHtml(option.label)}</span>
+    <span class="luker-rpg-memory-graph-search-filter-count">${option.count}</span>
+</button>`).join('');
+    const searchResultsHtml = searchModel.previewNodes.length > 0
+        ? searchModel.previewNodes.map(item => {
+            const node = item.node;
+            const nodeId = String(node?.id || '');
+            const summary = clipMemoryGraphText(getNodeSummary(node) || getMemoryGraphNodeSearchText(node), 160);
+            return `
+<button
+    type="button"
+    class="luker-rpg-memory-graph-search-result${nodeId === searchModel.activeNodeId ? ' is-active' : ''}"
+    data-node-id="${escapeHtml(nodeId)}"
+>
+    <span class="luker-rpg-memory-graph-search-result-topline">
+        <span class="luker-rpg-memory-graph-search-result-title">${escapeHtml(String(node?.title || nodeId || ''))}</span>
+        <span class="luker-rpg-memory-graph-search-result-type">${escapeHtml(String(node?.type || 'unknown'))}</span>
+    </span>
+    <span class="luker-rpg-memory-graph-search-result-meta">#${escapeHtml(nodeId)} · seq ${escapeHtml(String(node?.seqTo ?? ''))}</span>
+    <span class="luker-rpg-memory-graph-search-result-summary">${escapeHtml(summary || String(node?.type || ''))}</span>
+</button>`;
+        }).join('')
+        : `
+<div class="luker-rpg-memory-graph-search-empty">
+    <div>${escapeHtml(searchModel.emptyText)}</div>
+    <small>${escapeHtml(searchModel.emptyHint)}</small>
+</div>`;
 
     return `
 <div class="flex-container flexFlowColumn luker-rpg-memory-graph-popup-inner">
@@ -7990,6 +8177,30 @@ function renderGraphInspectorHtml(store) {
     <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
     <div>${escapeHtml(i18nFormat('semantic=${0}', stats.levelCount.semantic))}</div>
     <div>${escapeHtml(i18nFormat('Last recall steps: ${0}', stats.lastRecallSteps))}</div>
+    <div class="luker-rpg-memory-graph-search-shell">
+        <div class="luker-rpg-memory-graph-search-title">${escapeHtml(i18n('Search Graph'))}</div>
+        <div class="luker-rpg-memory-graph-search-head">
+            <label class="luker-rpg-memory-graph-search-input-wrap">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input
+                    type="search"
+                    class="text_pole luker-rpg-memory-graph-search-input"
+                    placeholder="${escapeHtml(i18n('Search graph nodes, summaries, IDs, or fields...'))}"
+                    value="${escapeHtml(searchModel.query)}"
+                />
+            </label>
+            <div class="luker-rpg-memory-graph-search-actions">
+                <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-prev"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'}>${escapeHtml(i18n('Prev Result'))}</button>
+                <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-next"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'}>${escapeHtml(i18n('Next Result'))}</button>
+                <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-clear"${searchModel.active ? '' : ' disabled'}>${escapeHtml(i18n('Clear Search'))}</button>
+            </div>
+        </div>
+        <div class="luker-rpg-memory-graph-search-meta">
+            <div class="luker-rpg-memory-graph-search-filters">${searchFilterHtml}</div>
+            <small class="luker-rpg-memory-graph-search-summary">${escapeHtml(searchModel.summaryText)}</small>
+        </div>
+        <div class="luker-rpg-memory-graph-search-results">${searchResultsHtml}</div>
+    </div>
     <div class="luker-rpg-memory-graph-workspace">
         <div class="luker-rpg-memory-graph-canvas-wrap">
             <div class="luker-rpg-memory-graph-cy"></div>
@@ -8496,12 +8707,17 @@ async function openGraphInspectorPopup(context) {
     const popupId = `luker_rpg_memory_graph_popup_${Date.now()}`;
     const selector = `#${popupId}`;
     const namespace = `.lukerGraphPopup_${popupId}`;
-    const popupHtml = `<div id="${popupId}" class="luker-rpg-memory-graph-popup">${renderGraphInspectorHtml(store)}</div>`;
     let cy = null;
     let selectedEdgeIndex = -1;
     let selectedNodeId = '';
+    let searchQuery = '';
+    let searchType = MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    let activeSearchNodeId = '';
     let runLayout = null;
     let mountRetryTimer = null;
+    const popupHtml = `<div id="${popupId}" class="luker-rpg-memory-graph-popup">${renderGraphInspectorHtml(store, {
+        searchState: { query: searchQuery, type: searchType, activeNodeId: activeSearchNodeId },
+    })}</div>`;
 
     const popupPromise = context.callGenericPopup(
         popupHtml,
@@ -8512,6 +8728,28 @@ async function openGraphInspectorPopup(context) {
 
     const getStore = () => memoryStoreCache.get(chatKey) || store;
     const getPopupRoot = () => jQuery(selector);
+    const getSearchState = () => ({
+        query: searchQuery,
+        type: searchType,
+        activeNodeId: activeSearchNodeId,
+    });
+    const getSearchModel = (currentStore = getStore()) => getMemoryGraphSearchModel(currentStore, getSearchState());
+    const syncSearchState = (currentStore = getStore()) => {
+        const initialModel = getSearchModel(currentStore);
+        if (!initialModel.active) {
+            activeSearchNodeId = '';
+            return initialModel;
+        }
+        if (selectedNodeId && initialModel.matchNodeIdSet.has(selectedNodeId)) {
+            activeSearchNodeId = selectedNodeId;
+            return getSearchModel(currentStore);
+        }
+        if (activeSearchNodeId && initialModel.matchNodeIdSet.has(activeSearchNodeId)) {
+            return initialModel;
+        }
+        activeSearchNodeId = initialModel.matchNodeIds[0] || '';
+        return getSearchModel(currentStore);
+    };
     const getDefaultSelectionText = () => i18n('Visual graph ready. Click a node or edge to select it for editing.');
     const updateSelectionText = (text = '') => {
         const popupRoot = getPopupRoot();
@@ -8519,6 +8757,16 @@ async function openGraphInspectorPopup(context) {
             return;
         }
         popupRoot.find('.luker-rpg-memory-graph-selection').text(String(text || getDefaultSelectionText()));
+    };
+    const syncSearchResultSelectionUi = () => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find('.luker-rpg-memory-graph-search-result').each(function () {
+            const button = jQuery(this);
+            button.toggleClass('is-active', String(button.data('node-id') || '') === activeSearchNodeId);
+        });
     };
     const updateInspectorPanel = () => {
         const popupRoot = getPopupRoot();
@@ -8566,6 +8814,124 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             return;
         }
         slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18n('Select a node or edge to edit.'))}</div>`);
+    };
+    const applySearchGraphState = () => {
+        if (!cy) {
+            return;
+        }
+        const latest = getStore();
+        const searchModel = syncSearchState(latest);
+        cy.startBatch();
+        cy.nodes().forEach(nodeElement => {
+            const nodeId = String(nodeElement.data('nodeId') || '');
+            const matched = !searchModel.active || searchModel.matchNodeIdSet.has(nodeId);
+            nodeElement.toggleClass('luker-search-match', searchModel.active && matched);
+            nodeElement.toggleClass('luker-search-dimmed', searchModel.active && !matched);
+        });
+        cy.edges().forEach(edgeElement => {
+            const sourceId = String(edgeElement.data('source') || '').replace(/^node:/, '');
+            const targetId = String(edgeElement.data('target') || '').replace(/^node:/, '');
+            const matched = !searchModel.active
+                || searchModel.matchNodeIdSet.has(sourceId)
+                || searchModel.matchNodeIdSet.has(targetId);
+            edgeElement.toggleClass('luker-search-dimmed', searchModel.active && !matched);
+        });
+        cy.endBatch();
+        syncSearchResultSelectionUi();
+    };
+    const focusNodeInGraph = (nodeId, padding = 110) => {
+        if (!cy || !nodeId) {
+            return;
+        }
+        const nodeElement = cy.$id(`node:${nodeId}`);
+        if (!nodeElement || !nodeElement.length) {
+            return;
+        }
+        cy.animate({
+            fit: {
+                eles: nodeElement,
+                padding,
+            },
+            duration: 180,
+        });
+    };
+    const selectNodeForInspection = (nodeId, { focusGraph = false } = {}) => {
+        const latest = getStore();
+        if (!latest?.nodes?.[nodeId]) {
+            return;
+        }
+        selectedNodeId = nodeId;
+        selectedEdgeIndex = -1;
+        const searchModel = syncSearchState(latest);
+        if (searchModel.matchNodeIdSet.has(nodeId)) {
+            activeSearchNodeId = nodeId;
+        }
+        updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            const nodeElement = cy.$id(`node:${nodeId}`);
+            if (nodeElement.length) {
+                nodeElement.select();
+            }
+            applySearchGraphState();
+            if (focusGraph) {
+                focusNodeInGraph(nodeId, searchModel.active ? 130 : 96);
+            }
+        } else {
+            syncSearchResultSelectionUi();
+        }
+    };
+    const selectEdgeForInspection = (edgeIndex, { focusGraph = false } = {}) => {
+        const latest = getStore();
+        const edge = latest?.edges?.[edgeIndex];
+        if (!edge) {
+            updateSelectionText(i18nFormat('Selected edge index ${0} (missing).', edgeIndex));
+            updateInspectorPanel();
+            return;
+        }
+        selectedEdgeIndex = edgeIndex;
+        selectedNodeId = '';
+        syncSearchState(latest);
+        updateSelectionText(i18nFormat(
+            'Selected edge #${0}: ${1} -> ${2} [${3}]',
+            edgeIndex,
+            edge.from,
+            edge.to,
+            edge.type,
+        ));
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            const edgeElement = cy.$id(`edge:${edgeIndex}`);
+            if (edgeElement.length) {
+                edgeElement.select();
+                if (focusGraph) {
+                    cy.animate({
+                        fit: {
+                            eles: edgeElement,
+                            padding: 120,
+                        },
+                        duration: 180,
+                    });
+                }
+            }
+            applySearchGraphState();
+        } else {
+            syncSearchResultSelectionUi();
+        }
+    };
+    const clearInspectorSelection = () => {
+        selectedNodeId = '';
+        selectedEdgeIndex = -1;
+        updateSelectionText('');
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            applySearchGraphState();
+        } else {
+            syncSearchResultSelectionUi();
+        }
     };
     const persistLatest = async (latest, successText, statusText, { beforeStore = null, replaceGraph = false, seq = null } = {}) => {
         memoryStoreCache.set(chatKey, latest);
@@ -8644,6 +9010,8 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                     },
                     { selector: 'node[level = "semantic"]', style: { 'background-color': '#3c9b7b' } },
                     { selector: 'node[archived = true]', style: { opacity: 0.45 } },
+                    { selector: 'node.luker-search-match', style: { 'border-width': 2, 'border-color': '#9ed8b3' } },
+                    { selector: 'node.luker-search-dimmed', style: { opacity: 0.16 } },
                     {
                         selector: 'edge',
                         style: {
@@ -8669,6 +9037,15 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                         style: {
                             'line-color': '#3fa66f',
                             'target-arrow-color': '#3fa66f',
+                        },
+                    },
+                    {
+                        selector: 'edge.luker-search-dimmed',
+                        style: {
+                            opacity: 0.08,
+                            'line-opacity': 0.08,
+                            'target-arrow-color': '#5e6772',
+                            'line-color': '#5e6772',
                         },
                     },
                     {
@@ -8739,44 +9116,24 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             setTimeout(() => {
                 applyViewportFit();
             }, 220);
+            applySearchGraphState();
 
             cy.on('tap', 'node', (event) => {
                 const nodeId = String(event.target.data('nodeId') || '');
-                selectedNodeId = nodeId;
-                selectedEdgeIndex = -1;
-                updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
-                updateInspectorPanel();
+                selectNodeForInspection(nodeId);
             });
             cy.on('tap', 'edge', (event) => {
                 const edgeIndex = Number(event.target.data('edgeIndex'));
                 if (!Number.isInteger(edgeIndex) || edgeIndex < 0) {
                     return;
                 }
-                selectedEdgeIndex = edgeIndex;
-                selectedNodeId = '';
-                const edge = getStore()?.edges?.[edgeIndex];
-                if (!edge) {
-                    updateSelectionText(i18nFormat('Selected edge index ${0} (missing).', edgeIndex));
-                    updateInspectorPanel();
-                    return;
-                }
-                updateSelectionText(i18nFormat(
-                    'Selected edge #${0}: ${1} -> ${2} [${3}]',
-                    edgeIndex,
-                    edge.from,
-                    edge.to,
-                    edge.type,
-                ));
-                updateInspectorPanel();
+                selectEdgeForInspection(edgeIndex);
             });
             cy.on('tap', (event) => {
                 if (event.target !== cy) {
                     return;
                 }
-                selectedNodeId = '';
-                selectedEdgeIndex = -1;
-                updateSelectionText('');
-                updateInspectorPanel();
+                clearInspectorSelection();
             });
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Cytoscape mount failed`, error);
@@ -8810,7 +9167,8 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             cy.destroy();
             cy = null;
         }
-        popupRoot.html(renderGraphInspectorHtml(latest));
+        syncSearchState(latest);
+        popupRoot.html(renderGraphInspectorHtml(latest, { searchState: getSearchState() }));
         if (!latest.edges?.[selectedEdgeIndex]) {
             selectedEdgeIndex = -1;
         }
@@ -8823,6 +9181,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         } else if (cy && selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
             cy.$id(`edge:${selectedEdgeIndex}`).select();
         }
+        applySearchGraphState();
         if (selectedNodeId && latest.nodes?.[selectedNodeId]) {
             updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', selectedNodeId));
         } else if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
@@ -9074,13 +9433,91 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         }
         await rerender();
     };
+    const applySearchControls = async ({ nextQuery = searchQuery, nextType = searchType, restoreCursor = null } = {}) => {
+        searchQuery = String(nextQuery ?? '');
+        searchType = String(nextType || MEMORY_GRAPH_SEARCH_ALL_TYPE).trim() || MEMORY_GRAPH_SEARCH_ALL_TYPE;
+        const searchModel = syncSearchState(getStore());
+        if (searchModel.active) {
+            if (searchModel.matchNodeIds.length > 0) {
+                selectedNodeId = activeSearchNodeId || searchModel.matchNodeIds[0];
+                selectedEdgeIndex = -1;
+            } else {
+                selectedNodeId = '';
+                selectedEdgeIndex = -1;
+                activeSearchNodeId = '';
+            }
+        }
+        await rerender();
+        if (selectedNodeId) {
+            focusNodeInGraph(selectedNodeId, 130);
+        }
+        if (restoreCursor !== null) {
+            const input = getPopupRoot().find('.luker-rpg-memory-graph-search-input').get(0);
+            if (input) {
+                input.focus();
+                const cursor = Math.max(0, Math.min(Number(restoreCursor) || 0, String(input.value || '').length));
+                if (typeof input.setSelectionRange === 'function') {
+                    input.setSelectionRange(cursor, cursor);
+                }
+            }
+        }
+    };
+    const stepSearchResult = (direction = 1) => {
+        const searchModel = syncSearchState(getStore());
+        if (!searchModel.active || searchModel.matchNodeIds.length < 1) {
+            return;
+        }
+        const currentNodeId = searchModel.matchNodeIdSet.has(selectedNodeId)
+            ? selectedNodeId
+            : (searchModel.matchNodeIdSet.has(activeSearchNodeId) ? activeSearchNodeId : searchModel.matchNodeIds[0]);
+        const currentIndex = Math.max(0, searchModel.matchNodeIds.indexOf(currentNodeId));
+        const nextIndex = (currentIndex + direction + searchModel.matchNodeIds.length) % searchModel.matchNodeIds.length;
+        activeSearchNodeId = searchModel.matchNodeIds[nextIndex];
+        selectNodeForInspection(activeSearchNodeId, { focusGraph: true });
+    };
 
     jQuery(document).off(namespace);
+    jQuery(document).on(`input${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, async function () {
+        const cursor = typeof this.selectionStart === 'number' ? this.selectionStart : null;
+        await applySearchControls({
+            nextQuery: jQuery(this).val(),
+            nextType: searchType,
+            restoreCursor: cursor,
+        });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-filter`, async function () {
+        await applySearchControls({
+            nextQuery: searchQuery,
+            nextType: String(jQuery(this).data('search-type') || MEMORY_GRAPH_SEARCH_ALL_TYPE),
+        });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-result`, function () {
+        const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        if (!nodeId) {
+            return;
+        }
+        activeSearchNodeId = nodeId;
+        selectNodeForInspection(nodeId, { focusGraph: true });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-prev`, function () {
+        stepSearchResult(-1);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-next`, function () {
+        stepSearchResult(1);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-clear`, async function () {
+        await applySearchControls({
+            nextQuery: '',
+            nextType: MEMORY_GRAPH_SEARCH_ALL_TYPE,
+        });
+        const input = getPopupRoot().find('.luker-rpg-memory-graph-search-input');
+        if (input.length) {
+            input.trigger('focus');
+        }
+    });
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-view`, async function () {
         const nodeId = String(jQuery(this).data('node-id') || '').trim();
-        selectedNodeId = nodeId;
-        selectedEdgeIndex = -1;
-        updateInspectorPanel();
+        selectNodeForInspection(nodeId);
         const latest = getStore();
         const node = latest?.nodes?.[nodeId];
         if (!node) {
@@ -9097,14 +9534,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-edit`, async function () {
         const nodeId = String(jQuery(this).data('node-id') || '').trim();
-        selectedNodeId = nodeId;
-        selectedEdgeIndex = -1;
-        updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
-        updateInspectorPanel();
-        if (cy && nodeId) {
-            cy.elements().unselect();
-            cy.$id(`node:${nodeId}`).select();
-        }
+        selectNodeForInspection(nodeId, { focusGraph: true });
         return;
     });
 
@@ -9179,24 +9609,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (!Number.isInteger(edgeIndex) || edgeIndex < 0) {
             return;
         }
-        selectedEdgeIndex = edgeIndex;
-        selectedNodeId = '';
-        const latest = getStore();
-        const edge = latest?.edges?.[edgeIndex];
-        if (edge) {
-            updateSelectionText(i18nFormat(
-                'Selected edge #${0}: ${1} -> ${2} [${3}]',
-                edgeIndex,
-                edge.from,
-                edge.to,
-                edge.type,
-            ));
-        }
-        updateInspectorPanel();
-        if (cy) {
-            cy.elements().unselect();
-            cy.$id(`edge:${edgeIndex}`).select();
-        }
+        selectEdgeForInspection(edgeIndex, { focusGraph: true });
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-edge-apply`, async function () {
@@ -9871,6 +10284,206 @@ function ensureStyles() {
     overflow-x: auto;
 }
 
+.luker-rpg-memory-graph-search-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 14px;
+    padding: 10px;
+    background:
+        radial-gradient(circle at top left, rgba(63, 166, 111, 0.18), transparent 42%),
+        linear-gradient(140deg, rgba(20, 24, 33, 0.9), rgba(11, 14, 20, 0.72));
+}
+
+.luker-rpg-memory-graph-search-title {
+    font-size: 0.78em;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(205, 239, 221, 0.92);
+}
+
+.luker-rpg-memory-graph-search-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.luker-rpg-memory-graph-search-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 8px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(123, 163, 196, 0.28);
+    background: rgba(7, 10, 16, 0.4);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.luker-rpg-memory-graph-search-input-wrap > i {
+    color: rgba(197, 229, 214, 0.92);
+}
+
+.luker-rpg-memory-graph-search-input-wrap .luker-rpg-memory-graph-search-input {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+.luker-rpg-memory-graph-search-input-wrap .luker-rpg-memory-graph-search-input:focus {
+    outline: none;
+}
+
+.luker-rpg-memory-graph-search-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.luker-rpg-memory-graph-search-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.luker-rpg-memory-graph-search-filters {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-memory-graph-search-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(123, 163, 196, 0.24);
+    background: rgba(255, 255, 255, 0.03);
+    color: inherit;
+    cursor: pointer;
+    transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.luker-rpg-memory-graph-search-filter:hover {
+    border-color: rgba(140, 205, 168, 0.48);
+    transform: translateY(-1px);
+}
+
+.luker-rpg-memory-graph-search-filter.is-active {
+    border-color: rgba(140, 205, 168, 0.8);
+    background: linear-gradient(135deg, rgba(40, 86, 68, 0.82), rgba(28, 48, 62, 0.76));
+    color: #f3fff8;
+}
+
+.luker-rpg-memory-graph-search-filter-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 0.82em;
+    opacity: 0.92;
+}
+
+.luker-rpg-memory-graph-search-summary {
+    opacity: 0.82;
+    font-size: 0.9em;
+}
+
+.luker-rpg-memory-graph-search-results {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+}
+
+.luker-rpg-memory-graph-search-result {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(123, 163, 196, 0.22);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.luker-rpg-memory-graph-search-result:hover {
+    transform: translateY(-1px);
+    border-color: rgba(140, 205, 168, 0.5);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+.luker-rpg-memory-graph-search-result.is-active {
+    border-color: rgba(255, 217, 108, 0.82);
+    background: linear-gradient(180deg, rgba(84, 62, 18, 0.34), rgba(38, 28, 10, 0.16));
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.luker-rpg-memory-graph-search-result-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.luker-rpg-memory-graph-search-result-title {
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.luker-rpg-memory-graph-search-result-type {
+    flex-shrink: 0;
+    font-size: 0.76em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(83, 133, 176, 0.18);
+    color: rgba(223, 239, 255, 0.96);
+}
+
+.luker-rpg-memory-graph-search-result-meta {
+    font-size: 0.8em;
+    opacity: 0.74;
+}
+
+.luker-rpg-memory-graph-search-result-summary {
+    font-size: 0.9em;
+    line-height: 1.4;
+    opacity: 0.92;
+}
+
+.luker-rpg-memory-graph-search-empty {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px dashed rgba(123, 163, 196, 0.24);
+    background: rgba(255, 255, 255, 0.02);
+    opacity: 0.86;
+}
+
 .luker-rpg-memory-graph-workspace {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -10091,6 +10704,9 @@ function ensureStyles() {
     .luker-rpg-schema-popup {
         width: 100%;
         max-width: 100%;
+    }
+    .luker-rpg-memory-graph-search-head {
+        grid-template-columns: minmax(0, 1fr);
     }
     .luker-rpg-schema-popup .luker-schema-topbar {
         flex-direction: column;
