@@ -5776,7 +5776,7 @@ async function executeSlashCommandsWithOptions(text, options = {}) {
 
     let closure;
     try {
-        closure = parser.parse(text, true, options.parserFlags, options.abortController ?? new SlashCommandAbortController());
+        closure = getSharedSlashCommandParser().parse(text, true, options.parserFlags, options.abortController ?? new SlashCommandAbortController());
         closure.scope.parent = options.scope;
         closure.onProgress = options.onProgress;
         closure.debugController = options.debugController;
