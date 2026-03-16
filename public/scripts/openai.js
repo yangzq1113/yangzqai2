@@ -804,11 +804,29 @@ function setOpenAIMessages(chat) {
             });
         }
 
+        // Tool invocation summaries are persisted as compact system display messages.
+        // When building prompt history, merge them back into the immediately preceding
+        // assistant turn so the request shape matches assistant -> tool results flow.
+        const previousMessage = messages[i + 1];
+        const shouldMergeInvocationSummary =
+            chat[j]?.extra?.isSmallSys === true
+            && Array.isArray(invocations)
+            && invocations.length > 0
+            && previousMessage?.role === 'assistant';
+
+        if (shouldMergeInvocationSummary) {
+            previousMessage.invocations = Array.isArray(previousMessage.invocations)
+                ? previousMessage.invocations.concat(invocations)
+                : invocations;
+            j++;
+            continue;
+        }
+
         messages[i] = { 'role': role, 'content': content, name: name, 'media': media, 'mediaDisplay': mediaDisplay, 'mediaIndex': mediaIndex, 'invocations': invocations, 'signature': signature };
         j++;
     }
 
-    return messages;
+    return messages.filter(Boolean);
 }
 
 /**
@@ -1153,14 +1171,16 @@ async function populateChatHistory(messages, prompts, chatCompletion, type = nul
         if (canUseTools && Array.isArray(chatPrompt.invocations)) {
             /** @type {import('./tool-calling.js').ToolInvocation[]} */
             const invocations = chatPrompt.invocations;
-            const toolCallMessage = await Message.createAsync(chatMessage.role, undefined, 'toolCall-' + chatMessage.identifier);
             const toolResultMessages = await Promise.all(invocations.slice().reverse().map((invocation) => Message.createAsync('tool', invocation.result || '[No content]', invocation.id)));
-            await toolCallMessage.setToolCalls(invocations, includeSignature);
-            if (chatCompletion.canAffordAll([toolCallMessage, ...toolResultMessages])) {
+            if (includeSignature && chatPrompt.signature) {
+                chatMessage.signature = chatPrompt.signature;
+            }
+            await chatMessage.setToolCalls(invocations, includeSignature);
+            if (chatCompletion.canAffordAll([chatMessage, ...toolResultMessages])) {
                 for (const resultMessage of toolResultMessages) {
                     chatCompletion.insertAtStart(resultMessage, 'chatHistory');
                 }
-                chatCompletion.insertAtStart(toolCallMessage, 'chatHistory');
+                chatCompletion.insertAtStart(chatMessage, 'chatHistory');
             } else {
                 break;
             }
@@ -3937,7 +3957,14 @@ class Message {
             },
             ...(includeSignature && i.signature ? { signature: i.signature } : {}),
         }));
-        this.tokens = await tokenHandler.countAsync({ role: this.role, tool_calls: JSON.stringify(this.tool_calls) });
+        const tokenPayload = {
+            role: this.role,
+            tool_calls: JSON.stringify(this.tool_calls),
+            ...(this.content !== undefined ? { content: this.content } : {}),
+            ...(this.name ? { name: this.name } : {}),
+            ...(this.signature ? { signature: this.signature } : {}),
+        };
+        this.tokens = await tokenHandler.countAsync(tokenPayload);
     }
 
     /**

@@ -328,6 +328,14 @@ function normalizeLayoutRole(role) {
     return 'system';
 }
 
+function normalizePromptMessageRole(role) {
+    const value = String(role || 'system').trim().toLowerCase();
+    if (['system', 'user', 'assistant', 'tool'].includes(value)) {
+        return value;
+    }
+    return 'system';
+}
+
 function normalizeLayoutPhase(phase) {
     const value = String(phase || 'any').trim().toLowerCase();
     if (['before', 'after', 'any', '*'].includes(value)) {
@@ -496,12 +504,47 @@ function normalizePromptMessages(messages) {
         if (!message || typeof message !== 'object') {
             continue;
         }
-        const role = normalizeLayoutRole(message.role);
-        const content = String(message.content || '').trim();
-        if (!content) {
+        const role = normalizePromptMessageRole(message.role);
+        const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+        const toolCallId = String(message.tool_call_id || '').trim();
+        const hasToolPayload = hasToolCalls || (role === 'tool' && toolCallId);
+        const hasRawContent = Object.hasOwn(message, 'content') && message.content !== undefined && message.content !== null;
+        const content = typeof message.content === 'string'
+            ? message.content.trim()
+            : message.content;
+
+        if (!hasToolPayload && !hasRawContent) {
             continue;
         }
-        result.push({ role, content });
+
+        if (!hasToolPayload && typeof content === 'string' && !content) {
+            continue;
+        }
+
+        const normalized = {
+            role,
+            content: hasRawContent ? content : '',
+        };
+
+        const name = String(message.name || '').trim();
+        if (name) {
+            normalized.name = name;
+        }
+
+        if (hasToolCalls) {
+            normalized.tool_calls = structuredClone(message.tool_calls);
+        }
+
+        if (role === 'tool' && toolCallId) {
+            normalized.tool_call_id = toolCallId;
+        }
+
+        const signature = String(message.signature || '').trim();
+        if (signature) {
+            normalized.signature = signature;
+        }
+
+        result.push(normalized);
     }
     return result;
 }

@@ -6589,6 +6589,38 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         };
     }));
 
+    if (canUseTools) {
+        const normalizedCoreChat = [];
+        for (const chatItem of coreChat) {
+            const invocations = chatItem?.extra?.tool_invocations;
+            const previousMessage = normalizedCoreChat[normalizedCoreChat.length - 1];
+            const shouldMergeToolInvocationSummary =
+                chatItem?.extra?.isSmallSys === true
+                && Array.isArray(invocations)
+                && invocations.length > 0
+                && previousMessage
+                && !previousMessage.is_user
+                && previousMessage?.extra?.type !== system_message_types.NARRATOR;
+
+            if (shouldMergeToolInvocationSummary) {
+                normalizedCoreChat[normalizedCoreChat.length - 1] = {
+                    ...previousMessage,
+                    extra: {
+                        ...(previousMessage.extra || {}),
+                        tool_invocations: Array.isArray(previousMessage?.extra?.tool_invocations)
+                            ? previousMessage.extra.tool_invocations.concat(invocations)
+                            : invocations.slice(),
+                    },
+                };
+                continue;
+            }
+
+            normalizedCoreChat.push(chatItem);
+        }
+
+        coreChat = normalizedCoreChat;
+    }
+
     const promptReasoning = new PromptReasoning();
     for (let i = coreChat.length - 1; i >= 0; i--) {
         const depth = coreChat.length - i - (isContinue ? 2 : 1);

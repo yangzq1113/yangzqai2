@@ -86,6 +86,9 @@ buildPresetAwarePromptMessages({
 ```
 
 - `messages` replaces only chat-history content in preset layout.
+- Standard tool-call history is preserved when included in `messages`:
+  - assistant messages may carry `tool_calls`
+  - tool messages may carry `tool_call_id`
 - `taskSystem` / `taskUser` are legacy compatibility fields and are only used when `messages` is empty.
 - `runtimeWorldInfo` supports:
   - `worldInfoBefore: string`
