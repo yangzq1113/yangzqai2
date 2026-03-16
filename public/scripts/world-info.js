@@ -1258,6 +1258,7 @@ export const wi_anchor_position = {
 export const worldInfoCache = new StructuredCloneMap({ cloneOnGet: true, cloneOnSet: false });
 const worldInfoSnapshotCache = new Map();
 const worldInfoRequestCache = new Map();
+const worldInfoRequestGeneration = new Map();
 
 function isPlainObject(value) {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -1318,6 +1319,21 @@ function getWorldInfoSnapshot(name) {
     }
     const snapshot = worldInfoSnapshotCache.get(key);
     return isPlainObject(snapshot) ? cloneJsonValue(snapshot) : null;
+}
+
+function getWorldInfoRequestGeneration(name) {
+    const key = String(name || '').trim();
+    return Math.max(0, Number(worldInfoRequestGeneration.get(key) || 0));
+}
+
+function invalidateWorldInfoRequestCache(names = []) {
+    const normalizedNames = [...new Set((Array.isArray(names) ? names : [names])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean))];
+    for (const name of normalizedNames) {
+        worldInfoRequestGeneration.set(name, getWorldInfoRequestGeneration(name) + 1);
+        worldInfoRequestCache.delete(name);
+    }
 }
 
 /**
@@ -2514,6 +2530,9 @@ export async function loadWorldInfoBatch(names) {
     }
 
     if (pendingNames.length) {
+        const requestGenerationByName = new Map(
+            pendingNames.map((name) => [name, getWorldInfoRequestGeneration(name)]),
+        );
         const batchPromise = (async () => {
             const response = await fetch('/api/worldinfo/get-batch', {
                 method: 'POST',
@@ -2530,7 +2549,7 @@ export async function loadWorldInfoBatch(names) {
             const batchResults = new Map();
             for (const name of pendingNames) {
                 const data = isPlainObject(payload?.data?.[name]) ? payload.data[name] : null;
-                if (data) {
+                if (data && requestGenerationByName.get(name) === getWorldInfoRequestGeneration(name)) {
                     cacheWorldInfoData(name, data);
                 }
                 batchResults.set(name, data);
@@ -4865,6 +4884,7 @@ export function createWorldInfoEntry(_name, data) {
 
 async function saveWorldInfoInternal(name, data, options = {}) {
     let saved = false;
+    invalidateWorldInfoRequestCache([name]);
     const payload = cloneJsonValue(data);
     const previousSnapshot = getWorldInfoSnapshot(name);
     const canPatch = isPlainObject(previousSnapshot) && isPlainObject(payload);
@@ -5013,6 +5033,7 @@ export async function deleteWorldInfo(worldInfoName) {
     if (!resolvedWorldInfoName) {
         return false;
     }
+    invalidateWorldInfoRequestCache([resolvedWorldInfoName]);
 
     const response = await fetch('/api/worldinfo/delete', {
         method: 'POST',

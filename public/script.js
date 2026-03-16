@@ -9781,6 +9781,7 @@ function resolveChatStateTarget(target = null) {
 }
 
 const chatStateRequestCache = new Map();
+let settingsGetCacheGeneration = 0;
 
 function getChatStateTargetKey(target) {
     if (!target || typeof target !== 'object') {
@@ -9796,6 +9797,20 @@ function getChatStateTargetKey(target) {
 
 function getChatStateRequestKey(target, namespace) {
     return `${getChatStateTargetKey(target)}::${String(namespace || '').trim().toLowerCase()}`;
+}
+
+function invalidateChatStateRequestCache(target, namespaces = []) {
+    const targetKey = getChatStateTargetKey(target);
+    if (!targetKey) {
+        return;
+    }
+
+    const normalizedNamespaces = [...new Set((Array.isArray(namespaces) ? namespaces : [namespaces])
+        .map((namespace) => String(namespace || '').trim().toLowerCase())
+        .filter(Boolean))];
+    for (const namespace of normalizedNamespaces) {
+        chatStateRequestCache.delete(getChatStateRequestKey(target, namespace));
+    }
 }
 
 function isPlainObject(value) {
@@ -10532,6 +10547,7 @@ export async function patchChatState(namespace, operations, options = {}) {
         if (!target) {
             return false;
         }
+        invalidateChatStateRequestCache(target, [stateNamespace]);
         const sourceOperations = operations.filter(op => op && typeof op === 'object');
         // Rebuild optimistic tests from the freshest state to avoid stale test collisions.
         const baseOperations = sourceOperations.filter(op => String(op.op || '').trim().toLowerCase() !== 'test');
@@ -10559,6 +10575,10 @@ export async function patchChatState(namespace, operations, options = {}) {
         if (response.status === 409) {
             currentState = await getChatState(stateNamespace, { target });
             response = await patchOnce(currentState);
+        }
+
+        if (response.ok) {
+            invalidateChatStateRequestCache(target, [stateNamespace]);
         }
 
         return response.ok;
@@ -10589,6 +10609,7 @@ export async function updateChatState(namespace, updater, options = {}) {
         if (!target) {
             return { ok: false, state: null, updated: false };
         }
+        invalidateChatStateRequestCache(target, [stateNamespace]);
 
         const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
             ? Number(options.maxOperations)
@@ -10628,6 +10649,7 @@ export async function updateChatState(namespace, updater, options = {}) {
 
             const ok = await patchChatState(stateNamespace, operations, { target });
             if (ok) {
+                invalidateChatStateRequestCache(target, [stateNamespace]);
                 return {
                     ok: true,
                     state: nextState,
@@ -10660,6 +10682,7 @@ export async function deleteChatState(namespace, options = {}) {
         if (!target) {
             return false;
         }
+        invalidateChatStateRequestCache(target, [stateNamespace]);
 
         const response = await fetch('/api/chats/state/delete', {
             method: 'POST',
@@ -10670,6 +10693,10 @@ export async function deleteChatState(namespace, options = {}) {
                 namespace: stateNamespace,
             }),
         });
+
+        if (response.ok) {
+            invalidateChatStateRequestCache(target, [stateNamespace]);
+        }
 
         return response.ok;
     } catch (error) {
@@ -11812,6 +11839,7 @@ function isSettingsGetRequest(input, init = {}) {
 }
 
 function invalidateSettingsGetResponseCache() {
+    settingsGetCacheGeneration += 1;
     settingsGetRequestPromise = null;
     settingsGetResponseCache = null;
 }
@@ -11833,10 +11861,11 @@ function installSettingsGetRequestInterceptor() {
         }
 
         if (!settingsGetRequestPromise) {
+            const requestGeneration = settingsGetCacheGeneration;
             settingsGetRequestPromise = (async () => {
                 const response = await baseFetch(input, init);
                 const cached = await cacheSettingsGetResponse(response);
-                if (response.ok) {
+                if (response.ok && requestGeneration === settingsGetCacheGeneration) {
                     settingsGetResponseCache = cached;
                 }
                 return cached;
