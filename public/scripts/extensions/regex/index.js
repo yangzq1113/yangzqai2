@@ -1862,8 +1862,9 @@ jQuery(async () => {
     const regexDrawer = document.querySelector('#regex_container .regex_settings .inline-drawer');
     regexDrawer?.addEventListener('inline-drawer-toggle', () => {
         const content = regexDrawer.querySelector(':scope > .inline-drawer-content');
-        const isOpen = content instanceof HTMLElement && content.style.display === 'block';
-        if (isOpen) {
+        // The toggle event fires before slideToggle updates the display state.
+        const willOpen = content instanceof HTMLElement && getComputedStyle(content).display === 'none';
+        if (willOpen) {
             void loadRegexScripts();
         }
     });
