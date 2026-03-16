@@ -4,6 +4,10 @@
 
 const RANDOM_SIGNAL_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const DEFAULT_REASONING_TAGS = Object.freeze(['thought', 'think']);
+const FUNCTION_CALLS_TAG = 'function_calls';
+const FUNCTION_CALL_TAG = 'function_call';
+const TOOL_TAG = 'tool';
+const ARGS_JSON_TAG = 'args_json';
 
 function normalizeReasoningTagNames(tagNameOrList) {
     if (Array.isArray(tagNameOrList)) {
@@ -80,6 +84,119 @@ function normalizeToolName(name) {
 function normalizeSchemaFromTool(tool) {
     const schema = tool?.function?.parameters;
     return schema && typeof schema === 'object' ? schema : { type: 'object', additionalProperties: true };
+}
+
+function escapeXmlText(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('\'', '&apos;');
+}
+
+function decodeXmlText(value) {
+    return String(value ?? '')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', '\'')
+        .replaceAll('&amp;', '&');
+}
+
+function wrapCdata(value) {
+    const safe = String(value ?? '').replaceAll(']]>', ']]]]><![CDATA[>');
+    return `<![CDATA[${safe}]]>`;
+}
+
+function unwrapCdata(value) {
+    const source = String(value ?? '');
+    if (!source.includes('<![CDATA[')) {
+        return source;
+    }
+
+    let output = '';
+    let index = 0;
+
+    while (index < source.length) {
+        const cdataStart = source.indexOf('<![CDATA[', index);
+        if (cdataStart === -1) {
+            output += source.slice(index);
+            break;
+        }
+
+        output += source.slice(index, cdataStart);
+        const cdataEnd = source.indexOf(']]>', cdataStart + 9);
+        if (cdataEnd === -1) {
+            output += source.slice(cdataStart + 9);
+            break;
+        }
+
+        output += source.slice(cdataStart + 9, cdataEnd);
+        index = cdataEnd + 3;
+    }
+
+    return output;
+}
+
+function extractXmlTagBlock(source, tagName, startIndex = 0) {
+    const safeSource = String(source ?? '');
+    const safeTag = String(tagName || '').trim();
+    if (!safeSource || !safeTag) {
+        return null;
+    }
+
+    const openTag = `<${safeTag}>`;
+    const closeTag = `</${safeTag}>`;
+    const start = safeSource.indexOf(openTag, Math.max(0, startIndex));
+    if (start === -1) {
+        return null;
+    }
+
+    const innerStart = start + openTag.length;
+    let index = innerStart;
+
+    while (index < safeSource.length) {
+        if (safeSource.startsWith('<![CDATA[', index)) {
+            const cdataEnd = safeSource.indexOf(']]>', index + 9);
+            if (cdataEnd === -1) {
+                return null;
+            }
+            index = cdataEnd + 3;
+            continue;
+        }
+
+        if (safeSource.startsWith(closeTag, index)) {
+            const end = index + closeTag.length;
+            return {
+                full: safeSource.slice(start, end),
+                inner: safeSource.slice(innerStart, index),
+                start,
+                end,
+            };
+        }
+
+        index += 1;
+    }
+
+    return null;
+}
+
+function extractAllXmlTagBlocks(source, tagName) {
+    const safeSource = String(source ?? '');
+    const blocks = [];
+    let cursor = 0;
+
+    while (cursor < safeSource.length) {
+        const block = extractXmlTagBlock(safeSource, tagName, cursor);
+        if (!block) {
+            break;
+        }
+        blocks.push(block);
+        cursor = Math.max(block.end, cursor + 1);
+    }
+
+    return blocks;
 }
 
 function isLikelySsePayload(text) {
@@ -382,111 +499,78 @@ export function getResponseMessageContent(responseData) {
     return '';
 }
 
-function normalizeTextToolCallsPayload(payload) {
-    if (Array.isArray(payload)) {
-        return payload;
+function parseArgsJsonPayload(payload, functionName) {
+    const normalizedName = normalizeToolName(functionName);
+    const rawPayload = decodeXmlText(unwrapCdata(payload)).trim();
+    if (!rawPayload) {
+        return {};
     }
-    if (payload && typeof payload === 'object') {
-        if (Array.isArray(payload.tool_calls)) {
-            return payload.tool_calls;
-        }
-        if (Array.isArray(payload.calls)) {
-            return payload.calls;
-        }
-        if (payload.name || payload.function?.name) {
-            return [payload];
-        }
+
+    let parsed;
+    try {
+        parsed = JSON.parse(rawPayload);
+    } catch {
+        throw new Error(`Tool call '${normalizedName}' <args_json> is not valid JSON.`);
     }
-    return [];
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`Tool call '${normalizedName}' <args_json> must decode to a JSON object.`);
+    }
+
+    return parsed;
 }
 
-function coerceToolCallArgumentsObject(rawArgs, functionName) {
-    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
-        return rawArgs;
-    }
-    if (typeof rawArgs === 'string' && rawArgs.trim()) {
-        try {
-            const parsed = JSON.parse(rawArgs);
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                return parsed;
-            }
-        } catch {
-            throw new Error(`Tool call '${functionName}' arguments are not valid JSON.`);
-        }
-    }
-    throw new Error(`Tool call '${functionName}' arguments are empty.`);
-}
-
-export function collectJsonPayloadCandidates(text) {
-    const source = String(text || '').trim();
-    if (!source) {
+function parseFunctionCallsFromXmlText(source, allowSet = null) {
+    const safeSource = String(source || '').trim();
+    if (!safeSource) {
         return [];
     }
-    const candidates = [source];
-    const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
-    let blockMatch;
-    while ((blockMatch = codeBlockRegex.exec(source)) !== null) {
-        const body = String(blockMatch?.[1] || '').trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    const arrayStart = source.indexOf('[');
-    const arrayEnd = source.lastIndexOf(']');
-    if (arrayStart >= 0 && arrayEnd > arrayStart) {
-        const body = source.slice(arrayStart, arrayEnd + 1).trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    const objectStart = source.indexOf('{');
-    const objectEnd = source.lastIndexOf('}');
-    if (objectStart >= 0 && objectEnd > objectStart) {
-        const body = source.slice(objectStart, objectEnd + 1).trim();
-        if (body) {
-            candidates.push(body);
-        }
-    }
-    return [...new Set(candidates)];
-}
 
-function parseFunctionCallsFromJsonText(source, allowSet = null) {
-    const candidates = collectJsonPayloadCandidates(source);
-    let lastError = null;
-    for (const candidate of candidates) {
-        try {
-            const parsed = JSON.parse(candidate);
-            const rawCalls = normalizeTextToolCallsPayload(parsed);
-            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
-                continue;
-            }
-            const calls = [];
-            for (const item of rawCalls) {
-                const name = normalizeToolName(item?.name || item?.function?.name);
-                if (!name) {
-                    continue;
-                }
-                if (allowSet && !allowSet.has(name)) {
-                    continue;
-                }
-                const rawArgs = item?.arguments ?? item?.args ?? item?.function?.arguments;
-                calls.push({
-                    id: String(item?.id || ''),
-                    name,
-                    args: coerceToolCallArgumentsObject(rawArgs, name),
-                });
-            }
-            if (calls.length > 0) {
-                return calls;
-            }
-        } catch (error) {
-            lastError = error;
+    const callsBlock = extractXmlTagBlock(safeSource, FUNCTION_CALLS_TAG);
+    if (!callsBlock) {
+        if (safeSource.includes(`<${FUNCTION_CALLS_TAG}>`) && !safeSource.includes(`</${FUNCTION_CALLS_TAG}>`)) {
+            throw new Error(`Missing closing </${FUNCTION_CALLS_TAG}> tag.`);
         }
+        return [];
     }
-    if (lastError) {
-        throw lastError;
+
+    const callBlocks = extractAllXmlTagBlocks(callsBlock.inner, FUNCTION_CALL_TAG);
+    if (callBlocks.length === 0) {
+        if (callsBlock.inner.includes(`<${FUNCTION_CALL_TAG}>`) && !callsBlock.inner.includes(`</${FUNCTION_CALL_TAG}>`)) {
+            throw new Error(`Missing closing </${FUNCTION_CALL_TAG}> tag.`);
+        }
+        throw new Error(`No <${FUNCTION_CALL_TAG}> blocks found inside <${FUNCTION_CALLS_TAG}>.`);
     }
-    return [];
+
+    const calls = [];
+    for (let index = 0; index < callBlocks.length; index += 1) {
+        const block = callBlocks[index];
+        const toolBlock = extractXmlTagBlock(block.inner, TOOL_TAG);
+        if (!toolBlock) {
+            throw new Error(`Tool call #${index + 1} is missing <${TOOL_TAG}>.`);
+        }
+
+        const name = normalizeToolName(decodeXmlText(toolBlock.inner));
+        if (!name) {
+            throw new Error(`Tool call #${index + 1} has empty <${TOOL_TAG}>.`);
+        }
+        if (allowSet && !allowSet.has(name)) {
+            continue;
+        }
+
+        const argsJsonBlock = extractXmlTagBlock(block.inner, ARGS_JSON_TAG);
+        if (!argsJsonBlock) {
+            throw new Error(`Tool call '${name}' is missing <${ARGS_JSON_TAG}>.`);
+        }
+
+        calls.push({
+            id: '',
+            name,
+            args: parseArgsJsonPayload(argsJsonBlock.inner, name),
+        });
+    }
+
+    return calls;
 }
 
 export function extractAllFunctionCalls(responseData, allowedNames = null) {
@@ -510,10 +594,14 @@ export function extractAllFunctionCalls(responseData, allowedNames = null) {
             throw new Error(`Tool call '${fnName}' arguments are empty.`);
         }
         try {
+            const parsedArgs = JSON.parse(argsText);
+            if (!parsedArgs || typeof parsedArgs !== 'object' || Array.isArray(parsedArgs)) {
+                throw new Error();
+            }
             parsedCalls.push({
                 id: String(call?.id || ''),
                 name: fnName,
-                args: JSON.parse(argsText),
+                args: parsedArgs,
             });
         } catch {
             throw new Error(`Tool call '${fnName}' arguments are not valid JSON.`);
@@ -582,9 +670,9 @@ export function extractAllFunctionCallsFromText(responseData, allowedNames = nul
 
     for (const scope of uniqueScopes) {
         try {
-            const jsonCalls = parseFunctionCallsFromJsonText(scope, allowSet);
-            if (jsonCalls.length > 0) {
-                return jsonCalls;
+            const xmlCalls = parseFunctionCallsFromXmlText(scope, allowSet);
+            if (xmlCalls.length > 0) {
+                return xmlCalls;
             }
         } catch (error) {
             lastError = error;
@@ -594,7 +682,7 @@ export function extractAllFunctionCallsFromText(responseData, allowedNames = nul
     if (lastError) {
         throw lastError;
     }
-    throw new Error('Model text output did not contain parseable function calls JSON.');
+    throw new Error('Model text output did not contain parseable function-call XML.');
 }
 
 export function extractToolCallsFromTextResponse(responseData, allowedNames = null, options = null) {
@@ -623,21 +711,14 @@ export function extractDisplayTextFromPlainTextFunctionResponse(rawText, options
         }
     }
 
-    const candidates = collectJsonPayloadCandidates(source);
-    for (const candidate of candidates) {
-        if (!source.endsWith(candidate)) {
+    const xmlBlocks = extractAllXmlTagBlocks(source, FUNCTION_CALLS_TAG);
+    for (let index = xmlBlocks.length - 1; index >= 0; index -= 1) {
+        const block = xmlBlocks[index];
+        const suffix = source.slice(block.start).trim();
+        if (!suffix.startsWith(`<${FUNCTION_CALLS_TAG}>`)) {
             continue;
         }
-        try {
-            const parsed = JSON.parse(candidate);
-            const rawCalls = normalizeTextToolCallsPayload(parsed);
-            if (!Array.isArray(rawCalls) || rawCalls.length === 0) {
-                continue;
-            }
-            return source.slice(0, source.length - candidate.length).trim();
-        } catch {
-            continue;
-        }
+        return source.slice(0, block.start).trim();
     }
     return source;
 }
@@ -666,6 +747,29 @@ function buildToolRows(tools) {
             schema,
         };
     }).filter(Boolean);
+}
+
+function buildToolProtocolGuide(rows, style) {
+    if (style === TOOL_PROTOCOL_STYLE.JSON_SCHEMA) {
+        return rows.map((row, index) => [
+            `${index + 1}. <tool name="${escapeXmlText(row.name)}">`,
+            `  <description>${escapeXmlText(row.description || '-')}</description>`,
+            `  <parameters_schema>${wrapCdata(JSON.stringify(row.schema))}</parameters_schema>`,
+            '</tool>',
+        ].join('\n')).join('\n\n');
+    }
+
+    return rows.map((row, index) => {
+        const required = row.required.length > 0 ? row.required.join(', ') : '-';
+        const optional = row.optional.length > 0 ? row.optional.join(', ') : '-';
+        return [
+            `${index + 1}. <tool name="${escapeXmlText(row.name)}">`,
+            `  <required_args>${escapeXmlText(required)}</required_args>`,
+            `  <optional_args>${escapeXmlText(optional)}</optional_args>`,
+            `  <purpose>${escapeXmlText(row.description || '-')}</purpose>`,
+            '</tool>',
+        ].join('\n');
+    }).join('\n\n');
 }
 
 export function buildToolChoiceConstraintAddendum(toolChoice = 'auto', tools = []) {
@@ -704,65 +808,60 @@ export function buildPlainTextToolProtocolMessage(
 ) {
     const requiredName = normalizeToolName(requiredFunctionName);
     const rows = buildToolRows(tools);
-    const requiredLine = requiredName
-        ? `Required function name for this response: ${requiredName}.`
-        : '';
+    const requiredLine = requiredName ? `Required function name for this response: ${requiredName}.` : '';
     const trigger = String(triggerSignal || '').trim();
-    const triggerLine = trigger
-        ? `When starting tool calls, output this line exactly on its own line first: ${trigger}`
-        : '';
     const toolChoiceLine = buildToolChoiceConstraintAddendum(toolChoice, tools);
-
-    if (style === TOOL_PROTOCOL_STYLE.JSON_SCHEMA) {
-        const schemaGuide = rows.map((row) => ({
-            name: row.name,
-            description: row.description,
-            parameters: row.schema,
-        }));
-        return [
-            'Tool-call output protocol:',
-            'You may optionally output text before the tool-call payload.',
-            'If the current prompt requires a specific preamble format such as <thought>, follow that prompt. Otherwise the preamble text is optional.',
-            'Multiple tool calls are fully supported in a single response and are encouraged when the task needs them.',
-            'Do not output markdown code fences, comments, or duplicate JSON payloads.',
-            trigger
-                ? 'When you start the tool-call payload, first output the trigger line exactly as provided below on its own line. Immediately after that, output exactly one JSON object containing the tool_calls array (array may include one or more calls).'
-                : 'When you start the tool-call payload, output exactly one JSON object containing the tool_calls array (array may include one or more calls).',
-            'Do not output any text after the JSON object.',
-            'Example (single call): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
-            'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}',
-            triggerLine,
-            requiredLine,
-            toolChoiceLine,
-            `Allowed functions and JSON argument schemas: ${JSON.stringify(schemaGuide)}`,
-        ].filter(Boolean).join('\n');
-    }
-
-    const tableHeader = '| Function | Required args | Optional args | Purpose |\n|---|---|---|---|';
-    const tableRows = rows.map(item => {
-        const required = item.required.length > 0 ? item.required.join(', ') : '-';
-        const optional = item.optional.length > 0 ? item.optional.join(', ') : '-';
-        const purpose = item.description || '-';
-        return `| ${item.name} | ${required} | ${optional} | ${purpose} |`;
-    });
+    const toolGuide = buildToolProtocolGuide(rows, style);
+    const exampleTrigger = trigger || '<Function_AB1c_Start/>';
     return [
-        'Tool-call output protocol:',
-        'You may optionally output text before the tool-call payload.',
-        'If the current prompt requires a specific preamble format such as <thought>, follow that prompt. Otherwise the preamble text is optional.',
-        'Multiple tool calls are fully supported in a single response and are encouraged when the task needs them.',
-        'Do not output markdown code fences, comments, or duplicate JSON payloads.',
+        'You have access to the following available tools to help solve problems:',
+        '',
+        toolGuide,
+        '',
+        'IMPORTANT CONTEXT NOTES:',
+        '- You can call MULTIPLE tools in a single response if needed.',
+        '- The conversation context may already contain tool execution results from previous function calls. Review the conversation history carefully to avoid unnecessary duplicate tool calls.',
+        '- When tool execution results are present in context, they may be wrapped in <tool_result>...</tool_result>.',
+        '- If the current prompt requires a specific preamble format such as <thought>, follow that prompt before you emit the trigger signal.',
+        requiredLine ? `- ${requiredLine}` : '',
+        toolChoiceLine ? `- ${toolChoiceLine}` : '',
+        '',
+        'When you need to use tools, you MUST strictly follow this format:',
         trigger
-            ? 'When you start the tool-call payload, first output the trigger line exactly as provided below on its own line. Immediately after that, output exactly one JSON object containing the tool_calls array (array may include one or more calls).'
-            : 'When you start the tool-call payload, output exactly one JSON object containing the tool_calls array (array may include one or more calls).',
-        'Do not output any text after the JSON object.',
-        'Example (single call): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
-        'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}',
-        triggerLine,
-        requiredLine,
-        toolChoiceLine,
-        'Allowed functions:',
-        tableHeader,
-        ...tableRows,
+            ? `1. When starting tool calls, begin on a new line with exactly:\n${trigger}`
+            : `1. When starting tool calls, begin on a new line with exactly one <${FUNCTION_CALLS_TAG}> XML block.`,
+        trigger ? 'No leading or trailing spaces. The trigger signal must be on its own line and appear only once.' : '',
+        `2. Starting from the next line, immediately output the complete <${FUNCTION_CALLS_TAG}> XML block.`,
+        `3. For multiple tool calls, include multiple <${FUNCTION_CALL_TAG}> blocks inside the same <${FUNCTION_CALLS_TAG}> wrapper. Do not emit separate wrappers.`,
+        `4. Do not add any text or explanation after the closing </${FUNCTION_CALLS_TAG}> tag.`,
+        '',
+        'STRICT ARGUMENT KEY RULES:',
+        '- You MUST use parameter keys EXACTLY as defined. Do not rename keys or change punctuation.',
+        `- The <${TOOL_TAG}> tag must contain the exact name of a tool from the list. Any other tool name is invalid.`,
+        `- The <${ARGS_JSON_TAG}> tag must contain one JSON object with all required arguments for that tool.`,
+        `- Wrap the JSON object inside <![CDATA[...]]> within <${ARGS_JSON_TAG}> to avoid XML escaping issues.`,
+        '',
+        'CORRECT Example (multiple tool calls):',
+        '...response content (optional)...',
+        exampleTrigger,
+        `<${FUNCTION_CALLS_TAG}>`,
+        `    <${FUNCTION_CALL_TAG}>`,
+        `        <${TOOL_TAG}>FUNCTION_A</${TOOL_TAG}>`,
+        `        <${ARGS_JSON_TAG}><![CDATA[{"arg1":"value"}]]></${ARGS_JSON_TAG}>`,
+        `    </${FUNCTION_CALL_TAG}>`,
+        `    <${FUNCTION_CALL_TAG}>`,
+        `        <${TOOL_TAG}>FUNCTION_B</${TOOL_TAG}>`,
+        `        <${ARGS_JSON_TAG}><![CDATA[{"arg2":123}]]></${ARGS_JSON_TAG}>`,
+        `    </${FUNCTION_CALL_TAG}>`,
+        `</${FUNCTION_CALLS_TAG}>`,
+        '',
+        'INCORRECT Example (do not do this):',
+        '...response content (optional)...',
+        '```json',
+        '{"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}}]}',
+        '```',
+        '',
+        'Now strictly follow the above specifications.',
     ].filter(Boolean).join('\n');
 }
 
@@ -780,16 +879,18 @@ export function buildStrictFunctionCallOutputAddendum({
         plainTextMode
             ? (trigger
                 ? `When you start the function-call payload, first output this trigger line on its own line: ${trigger}`
-                : 'When you start the function-call payload, output the payload immediately.')
+                : `When you start the function-call payload, output one <${FUNCTION_CALLS_TAG}> XML block immediately.`)
             : 'Return function calls only (tool-calls channel).',
         plainTextMode
-            ? 'The function-call payload must be exactly one JSON object: {"tool_calls":[...]} (array may include one or more calls).'
+            ? `Then immediately output exactly one <${FUNCTION_CALLS_TAG}> XML block containing one or more <${FUNCTION_CALL_TAG}> children.`
+            : '',
+        plainTextMode
+            ? `Each <${FUNCTION_CALL_TAG}> must contain <${TOOL_TAG}>TOOL_NAME</${TOOL_TAG}> and <${ARGS_JSON_TAG}><![CDATA[{...}]]></${ARGS_JSON_TAG}>.`
             : '',
         plainTextMode ? 'Multiple tool calls in one response are valid and recommended when needed.' : '',
-        plainTextMode ? 'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}' : '',
         requiredName ? `Required function name: ${requiredName}.` : '',
         'Do NOT output any extra text after the function payload.',
-        'Forbidden after or around the payload: markdown code fences, comments, duplicate JSON payloads.',
+        'Forbidden after or around the payload: markdown code fences, comments, duplicate payloads, or JSON tool_calls objects.',
         'After function calls, stop immediately.',
     ].filter(Boolean).join('\n');
 }
@@ -817,9 +918,11 @@ export function buildFunctionCallRetryAddendum({
         'Retry now with strictly valid output only.',
         trigger ? `First line must be exactly: ${trigger}` : '',
         plainTextMode
-            ? 'Then output exactly one JSON object containing the tool_calls array (array may include one or more calls).'
+            ? `Then immediately output exactly one <${FUNCTION_CALLS_TAG}> XML block containing one or more <${FUNCTION_CALL_TAG}> children.`
             : 'Then output tool calls only.',
-        plainTextMode ? 'Example (multiple calls): {"tool_calls":[{"name":"FUNCTION_A","arguments":{"arg1":"value"}},{"name":"FUNCTION_B","arguments":{"arg2":123}}]}' : '',
+        plainTextMode
+            ? `Use <${TOOL_TAG}> for the tool name and <${ARGS_JSON_TAG}><![CDATA[{...}]]></${ARGS_JSON_TAG}> for arguments.`
+            : '',
         required ? `Required function name: ${required}.` : '',
         'Do not output any extra prose after the function payload.',
     ].filter(Boolean).join('\n');
@@ -1125,16 +1228,34 @@ export function formatToolResultForModel(toolName, toolArguments, resultContent,
     ].join('\n');
 }
 
+function normalizeToolArgumentsText(toolArguments) {
+    if (toolArguments && typeof toolArguments === 'object' && !Array.isArray(toolArguments)) {
+        return JSON.stringify(toolArguments);
+    }
+    if (typeof toolArguments === 'string' && toolArguments.trim()) {
+        const parsed = JSON.parse(toolArguments);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('Tool arguments must decode to a JSON object.');
+        }
+        return JSON.stringify(parsed);
+    }
+    return '{}';
+}
+
 export function formatToolCallForModel(toolName, toolArguments) {
+    const normalizedName = normalizeToolName(toolName);
+    const normalizedArguments = normalizeToolArgumentsText(toolArguments);
     return [
-        'Tool execution request:',
-        `- Tool name: ${String(toolName || '')}`,
-        `- Tool arguments: ${String(toolArguments || '{}')}`,
+        `<${FUNCTION_CALL_TAG}>`,
+        `  <${TOOL_TAG}>${escapeXmlText(normalizedName)}</${TOOL_TAG}>`,
+        `  <${ARGS_JSON_TAG}>${wrapCdata(normalizedArguments)}</${ARGS_JSON_TAG}>`,
+        `</${FUNCTION_CALL_TAG}>`,
     ].join('\n');
 }
 
 export function normalizeToolMessagesForPlainTextFunctionCalling(messages = [], options = {}) {
     const toolResultTag = String(options?.resultTag || 'tool_result');
+    const triggerSignal = String(options?.triggerSignal || '').trim();
     const index = buildToolCallIndexFromMessages(messages);
     const output = [];
     for (const message of Array.isArray(messages) ? messages : []) {
@@ -1151,21 +1272,17 @@ export function normalizeToolMessagesForPlainTextFunctionCalling(messages = [], 
                 if (!toolName) {
                     return '';
                 }
-                let toolArguments = '{}';
-                const rawArguments = toolCall?.function?.arguments;
-                if (typeof rawArguments === 'string') {
-                    toolArguments = rawArguments;
-                } else if (rawArguments && typeof rawArguments === 'object') {
-                    try {
-                        toolArguments = JSON.stringify(rawArguments);
-                    } catch {
-                        toolArguments = String(rawArguments);
-                    }
-                }
-                return formatToolCallForModel(toolName, toolArguments);
+                return formatToolCallForModel(toolName, toolCall?.function?.arguments);
             }).filter(Boolean);
 
-            next.content = [String(next.content ?? '').trim(), ...serializedCalls]
+            const xmlPayload = [
+                triggerSignal,
+                `<${FUNCTION_CALLS_TAG}>`,
+                ...serializedCalls,
+                `</${FUNCTION_CALLS_TAG}>`,
+            ].filter(Boolean).join('\n');
+
+            next.content = [String(next.content ?? '').trim(), xmlPayload]
                 .filter(Boolean)
                 .join('\n\n');
             delete next.tool_calls;

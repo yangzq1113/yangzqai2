@@ -966,7 +966,7 @@ Core request API now also supports mode switching:
 
 - `sendOpenAIRequest(type, messages, signal, options?)`
 - New options:
-  - `functionCallMode`: `'native' | 'prompt_json'` (default `'native'`)
+  - `functionCallMode`: `'native' | 'prompt_xml' | 'prompt_json'` (default `'native'`)
   - `functionCallOptions` (optional):
     - `requiredFunctionName?: string`
     - `protocolStyle?: TOOL_PROTOCOL_STYLE.TABLE | TOOL_PROTOCOL_STYLE.JSON_SCHEMA`
@@ -976,15 +976,27 @@ Behavior:
 
 - `functionCallMode='native'`:
   - Uses normal `tools/tool_choice` flow.
-  - If resolved request settings include `function_calling_plain_text=true`, runtime auto-upgrades to `prompt_json` mode (applies to both chat and extension-internal requests).
-- `functionCallMode='prompt_json'`:
+  - If resolved request settings include `function_calling_plain_text=true`, runtime auto-upgrades to `prompt_xml` mode (applies to both chat and extension-internal requests).
+- `functionCallMode='prompt_xml'`:
+  - Preferred plain-text function-calling mode.
   - Core injects an early system protocol prompt automatically.
   - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.
-  - Core parses model text response as JSON tool-calls and normalizes it to `choices[0].message.tool_calls`.
+  - Core parses model text response as Toolify-style XML tool-calls and normalizes it to `choices[0].message.tool_calls`.
+  - Required payload shape is: trigger signal line, then one `<function_calls>` block with one or more `<function_call>` children, each using `<tool>` + `<args_json><![CDATA[{...}]]></args_json>`.
   - Model output may include optional text before the trigger signal / tool-call payload.
   - If a plugin requires a specific preamble format such as `<thought>...</thought>`, that contract should be defined by the plugin's own prompt, not by core protocol settings.
   - If model output has no trigger signal / no tool-call payload, core returns `tool_calls=[]` and leaves policy decisions to the caller/plugin.
-  - If trigger signal appears but tool-call JSON is invalid/unparseable, core throws request error.
+  - If trigger signal appears but tool-call XML is invalid/unparseable, core throws request error.
+  - Plugins can keep using `extractAllFunctionCalls(...)` as if it were native output.
+- `functionCallMode='prompt_json'`:
+  - Legacy alias for `prompt_xml`.
+  - Core injects an early system protocol prompt automatically.
+  - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.
+  - Runtime behavior is identical to `prompt_xml`.
+  - Model output may include optional text before the trigger signal / tool-call payload.
+  - If a plugin requires a specific preamble format such as `<thought>...</thought>`, that contract should be defined by the plugin's own prompt, not by core protocol settings.
+  - If model output has no trigger signal / no tool-call payload, core returns `tool_calls=[]` and leaves policy decisions to the caller/plugin.
+  - If trigger signal appears but tool-call XML is invalid/unparseable, core throws request error.
   - Plugins can keep using `extractAllFunctionCalls(...)` as if it were native output.
 
 Retry responsibility:
@@ -1016,7 +1028,7 @@ Practical rules:
 
 - Prefer `sendOpenAIRequest(..., { functionCallMode })` over manually injecting/parsing in each plugin.
 - Prefer native tool-calling where available.
-- Keep plain-text mode (`prompt_json`) as fallback and keep the core contract minimal: trigger signal plus one parseable tool-call payload.
+- Keep plain-text mode (`prompt_xml`) as fallback and keep the core contract minimal: trigger signal plus one parseable XML tool-call payload.
 - If a plugin needs `<thought>` or any other fixed preamble format, require it in that plugin's own prompt.
 - Use shared helpers instead of per-plugin parser copies to avoid drift.
 

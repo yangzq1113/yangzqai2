@@ -263,7 +263,7 @@
     "openrouter_web_search_fee": "收费，每个提示词会多收 $0.02。",
     "Enable function calling": "启用函数调用",
     "Use plain-text function calling in main chat": "使用纯文本函数调用",
-    "When enabled, main chat uses prompt-based JSON tool calling (prompt_json) instead of native tool-call protocol.": "启用后，请求将使用基于提示词的 JSON 工具调用（prompt_json），而不是原生工具调用协议。",
+    "When enabled, main chat uses prompt-based JSON tool calling (prompt_json) instead of native tool-call protocol.": "启用后，请求将使用基于提示词的 XML 工具调用（prompt_xml；兼容旧别名 prompt_json），而不是原生工具调用协议。",
     "Supported by the current model": "当前模型支持",
     "Unsupported by the current model": "当前模型不支持",
     "enable_functions_desc_1": "允许使用",

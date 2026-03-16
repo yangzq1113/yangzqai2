@@ -3318,8 +3318,10 @@ async function sendOpenAIRequest(type, messages, signal, {
     const shouldUsePresetPlainTextFunctionCalling =
         requestedFunctionCallMode === 'native'
         && Boolean(requestSettings?.function_calling_plain_text);
-    const resolvedFunctionCallMode = shouldUsePresetPlainTextFunctionCalling ? 'prompt_json' : requestedFunctionCallMode;
-    const usePromptJsonFunctionCalls = resolvedFunctionCallMode === 'prompt_json';
+    const resolvedFunctionCallMode = shouldUsePresetPlainTextFunctionCalling ? 'prompt_xml' : requestedFunctionCallMode;
+    const usePromptXmlFunctionCalls =
+        resolvedFunctionCallMode === 'prompt_xml'
+        || resolvedFunctionCallMode === 'prompt_json';
     const normalizedTools = Array.isArray(tools) ? tools : [];
     const normalizedToolChoice = toolChoice ?? 'auto';
     const modeOptions = functionCallOptions && typeof functionCallOptions === 'object' ? functionCallOptions : {};
@@ -3331,12 +3333,12 @@ async function sendOpenAIRequest(type, messages, signal, {
     let effectiveReplaceTools = replaceTools;
     let runtimeFunctionCallContext = null;
 
-    if (usePromptJsonFunctionCalls && normalizedTools.length > 0) {
+    if (usePromptXmlFunctionCalls && normalizedTools.length > 0) {
+        const triggerSignal = String(modeOptions.triggerSignal || generateRandomTriggerSignal()).trim();
         if (Array.isArray(requestMessages)) {
-            requestMessages = normalizeToolMessagesForPlainTextFunctionCalling(requestMessages);
+            requestMessages = normalizeToolMessagesForPlainTextFunctionCalling(requestMessages, { triggerSignal });
         }
 
-        const triggerSignal = String(modeOptions.triggerSignal || generateRandomTriggerSignal()).trim();
         const protocolStyle = modeOptions.protocolStyle === TOOL_PROTOCOL_STYLE.TABLE
             ? TOOL_PROTOCOL_STYLE.TABLE
             : TOOL_PROTOCOL_STYLE.JSON_SCHEMA;

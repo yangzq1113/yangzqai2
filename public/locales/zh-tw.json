@@ -236,7 +236,7 @@
     "Combines consecutive system messages into one (excluding example dialogues). May improve coherence for some models.": "將連續的系統訊息合併為一個（不包括對話範例）。可能會提高某些模型的一致性。",
     "Enable function calling": "啟用函式呼叫",
     "Use plain-text function calling in main chat": "使用純文字函式呼叫",
-    "When enabled, main chat uses prompt-based JSON tool calling (prompt_json) instead of native tool-call protocol.": "啟用後，請求會改用基於提示詞的 JSON 工具呼叫（prompt_json），而不是原生工具呼叫協定。",
+    "When enabled, main chat uses prompt-based JSON tool calling (prompt_json) instead of native tool-call protocol.": "啟用後，請求會改用基於提示詞的 XML 工具呼叫（prompt_xml；相容舊別名 prompt_json），而不是原生工具呼叫協定。",
     "Send inline images": "傳送內嵌圖片",
     "image_inlining_hint_1": "如果模型支援，則在提示詞中傳送媒體檔案。",
     "Inline Image Quality": "內嵌圖片品質",
