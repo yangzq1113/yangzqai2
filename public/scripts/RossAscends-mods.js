@@ -60,6 +60,9 @@ var SelectedCharacterTab = document.getElementById('rm_button_selected_ch');
 var connection_made = false;
 var retry_delay = 500;
 let counterNonce = Date.now();
+let navPanelPinsInitialized = false;
+let sendTextareaStateInitialized = false;
+let userInputRestored = false;
 
 const observerConfig = { childList: true, subtree: true };
 const countTokensDebounced = debounce(RA_CountCharTokens, debounce_timeout.relaxed);
@@ -447,11 +450,52 @@ function OpenNavPanels() {
     }
 }
 
+function syncNavPanelPin($pin, $panel, $drawerIcon, storageKey) {
+    const isPinned = !isMobile() && accountStorage.getItem(storageKey) === 'true';
+    $pin.prop('checked', isPinned);
+    $panel.toggleClass('pinnedOpen', isPinned);
+    $drawerIcon.toggleClass('drawerPinnedOpen', isPinned);
+}
+
+function bindNavPanelPin($pin, $panel, $drawerIcon, storageKey, closeToggleSelector = null) {
+    $pin.off('change.navPin').on('change.navPin', function () {
+        const isPinned = $(this).prop('checked') === true;
+        accountStorage.setItem(storageKey, String(isPinned));
+        $panel.toggleClass('pinnedOpen', isPinned);
+        $drawerIcon.toggleClass('drawerPinnedOpen', isPinned);
+
+        if (!isPinned && $panel.hasClass('openDrawer') && $('.openDrawer').length > 1 && closeToggleSelector) {
+            const toggle = $(closeToggleSelector);
+            doNavbarIconClick.call(toggle);
+        }
+    });
+}
+
+export function initNavPanelPins() {
+    syncNavPanelPin($(RPanelPin), $(RightNavPanel), $(RightNavDrawerIcon), 'NavLockOn');
+    syncNavPanelPin($(LPanelPin), $(LeftNavPanel), $(LeftNavDrawerIcon), 'LNavLockOn');
+    syncNavPanelPin($(WIPanelPin), $(WorldInfo), $(WIDrawerIcon), 'WINavLockOn');
+
+    if (navPanelPinsInitialized) {
+        return;
+    }
+
+    bindNavPanelPin($(RPanelPin), $(RightNavPanel), $(RightNavDrawerIcon), 'NavLockOn', '#unimportantYes');
+    bindNavPanelPin($(LPanelPin), $(LeftNavPanel), $(LeftNavDrawerIcon), 'LNavLockOn', '#ai-config-button>.drawer-toggle');
+    bindNavPanelPin($(WIPanelPin), $(WorldInfo), $(WIDrawerIcon), 'WINavLockOn', '#WI-SP-button>.drawer-toggle');
+    navPanelPinsInitialized = true;
+}
+
 const getUserInputKey = () => getCurrentUserHandle() + '_userInput';
 
 function restoreUserInput() {
+    if (userInputRestored) {
+        return;
+    }
+
     if (!power_user.restore_user_input) {
         console.debug('restoreUserInput disabled');
+        userInputRestored = true;
         return;
     }
 
@@ -459,6 +503,8 @@ function restoreUserInput() {
     if (userInput) {
         $('#send_textarea').val(userInput)[0].dispatchEvent(new Event('input', { bubbles: true }));
     }
+
+    userInputRestored = true;
 }
 
 function saveUserInput() {
@@ -671,6 +717,7 @@ export async function initMovingUI() {
 const sendTextArea = document.querySelector('#send_textarea');
 const chatBlock = document.getElementById('chat');
 const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+const sendTextareaCssAutofit = CSS.supports('field-sizing', 'content');
 
 /**
  * this makes the chat input text area resize vertically to match the text size (limited by CSS at 50% window height)
@@ -687,6 +734,36 @@ function autoFitSendTextArea() {
     }
 }
 export const autoFitSendTextAreaDebounced = debounce(autoFitSendTextArea, debounce_timeout.short);
+
+function onSendTextareaInput() {
+    saveUserInputDebounced();
+
+    if (sendTextareaCssAutofit) {
+        // Unset modifications made with a manual resize
+        sendTextArea.style.height = 'auto';
+        return;
+    }
+
+    const hasContent = sendTextArea.value !== '';
+    const fitsCurrentSize = sendTextArea.scrollHeight <= sendTextArea.offsetHeight;
+    const isScrollbarShown = sendTextArea.clientWidth < sendTextArea.offsetWidth;
+    const isHalfScreenHeight = sendTextArea.offsetHeight >= window.innerHeight / 2;
+    const needsDebounce = hasContent && (fitsCurrentSize || (isScrollbarShown && isHalfScreenHeight));
+    if (needsDebounce) {
+        autoFitSendTextAreaDebounced();
+    } else {
+        autoFitSendTextArea();
+    }
+}
+
+export function initSendTextareaState() {
+    if (!sendTextareaStateInitialized) {
+        sendTextArea.addEventListener('input', onSendTextareaInput);
+        sendTextareaStateInitialized = true;
+    }
+
+    restoreUserInput();
+}
 
 // ---------------------------------------------------
 
@@ -708,102 +785,7 @@ export function initRossMods() {
     });
 
     $('#api_button').on('click', () => checkStatusDebounced());
-
-    //toggle pin class when lock toggle clicked
-    $(RPanelPin).on('click', function () {
-        accountStorage.setItem('NavLockOn', $(RPanelPin).prop('checked'));
-        if ($(RPanelPin).prop('checked') == true) {
-            //console.log('adding pin class to right nav');
-            $(RightNavPanel).addClass('pinnedOpen');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
-        } else {
-            //console.log('removing pin class from right nav');
-            $(RightNavPanel).removeClass('pinnedOpen');
-            $(RightNavDrawerIcon).removeClass('drawerPinnedOpen');
-
-            if ($(RightNavPanel).hasClass('openDrawer') && $('.openDrawer').length > 1) {
-                const toggle = $('#unimportantYes');
-                doNavbarIconClick.call(toggle);
-            }
-        }
-    });
-    $(LPanelPin).on('click', function () {
-        accountStorage.setItem('LNavLockOn', $(LPanelPin).prop('checked'));
-        if ($(LPanelPin).prop('checked') == true) {
-            //console.log('adding pin class to Left nav');
-            $(LeftNavPanel).addClass('pinnedOpen');
-            $(LeftNavDrawerIcon).addClass('drawerPinnedOpen');
-        } else {
-            //console.log('removing pin class from Left nav');
-            $(LeftNavPanel).removeClass('pinnedOpen');
-            $(LeftNavDrawerIcon).removeClass('drawerPinnedOpen');
-
-            if ($(LeftNavPanel).hasClass('openDrawer') && $('.openDrawer').length > 1) {
-                const toggle = $('#ai-config-button>.drawer-toggle');
-                doNavbarIconClick.call(toggle);
-            }
-        }
-    });
-
-    $(WIPanelPin).on('click', async function () {
-        accountStorage.setItem('WINavLockOn', $(WIPanelPin).prop('checked'));
-        if ($(WIPanelPin).prop('checked') == true) {
-            console.debug('adding pin class to WI');
-            $(WorldInfo).addClass('pinnedOpen');
-            $(WIDrawerIcon).addClass('drawerPinnedOpen');
-        } else {
-            console.debug('removing pin class from WI');
-            $(WorldInfo).removeClass('pinnedOpen');
-            $(WIDrawerIcon).removeClass('drawerPinnedOpen');
-
-            if ($(WorldInfo).hasClass('openDrawer') && $('.openDrawer').length > 1) {
-                console.debug('closing WI after lock removal');
-                const toggle = $('#WI-SP-button>.drawer-toggle');
-                doNavbarIconClick.call(toggle);
-            }
-        }
-    });
-
-    if (!isMobile()) { //only read/set pin states on non-mobile devices
-        // read the state of right Nav Lock and apply to rightnav classlist
-        $(RPanelPin).prop('checked', accountStorage.getItem('NavLockOn') == 'true');
-        if (accountStorage.getItem('NavLockOn') == 'true') {
-            //console.log('setting pin class via local var');
-            $(RightNavPanel).addClass('pinnedOpen');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
-        if ($(RPanelPin).prop('checked')) {
-            console.debug('setting pin class via checkbox state');
-            $(RightNavPanel).addClass('pinnedOpen');
-            $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
-        // read the state of left Nav Lock and apply to leftnav classlist
-        $(LPanelPin).prop('checked', accountStorage.getItem('LNavLockOn') === 'true');
-        if (accountStorage.getItem('LNavLockOn') == 'true') {
-            //console.log('setting pin class via local var');
-            $(LeftNavPanel).addClass('pinnedOpen');
-            $(LeftNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
-        if ($(LPanelPin).prop('checked')) {
-            console.debug('setting pin class via checkbox state');
-            $(LeftNavPanel).addClass('pinnedOpen');
-            $(LeftNavDrawerIcon).addClass('drawerPinnedOpen');
-        }
-
-        // read the state of left Nav Lock and apply to leftnav classlist
-        $(WIPanelPin).prop('checked', accountStorage.getItem('WINavLockOn') === 'true');
-        if (accountStorage.getItem('WINavLockOn') == 'true') {
-            //console.log('setting pin class via local var');
-            $(WorldInfo).addClass('pinnedOpen');
-            $(WIDrawerIcon).addClass('drawerPinnedOpen');
-        }
-
-        if ($(WIPanelPin).prop('checked')) {
-            console.debug('setting pin class via checkbox state');
-            $(WorldInfo).addClass('pinnedOpen');
-            $(WIDrawerIcon).addClass('drawerPinnedOpen');
-        }
-    }
+    initNavPanelPins();
 
 
     //save state of Right nav being open or closed
@@ -860,9 +842,7 @@ export function initRossMods() {
         saveSettingsDebounced();
     });
 
-    const cssAutofit = CSS.supports('field-sizing', 'content');
-
-    if (cssAutofit) {
+    if (sendTextareaCssAutofit) {
         let lastHeight = chatBlock.offsetHeight;
         const chatBlockResizeObserver = new ResizeObserver((entries) => {
             for (const entry of entries) {
@@ -884,26 +864,7 @@ export function initRossMods() {
 
         chatBlockResizeObserver.observe(chatBlock);
     }
-
-    sendTextArea.addEventListener('input', () => {
-        saveUserInputDebounced();
-
-        if (cssAutofit) {
-            // Unset modifications made with a manual resize
-            sendTextArea.style.height = 'auto';
-            return;
-        }
-
-        const hasContent = sendTextArea.value !== '';
-        const fitsCurrentSize = sendTextArea.scrollHeight <= sendTextArea.offsetHeight;
-        const isScrollbarShown = sendTextArea.clientWidth < sendTextArea.offsetWidth;
-        const isHalfScreenHeight = sendTextArea.offsetHeight >= window.innerHeight / 2;
-        const needsDebounce = hasContent && (fitsCurrentSize || (isScrollbarShown && isHalfScreenHeight));
-        if (needsDebounce) autoFitSendTextAreaDebounced();
-        else autoFitSendTextArea();
-    });
-
-    restoreUserInput();
+    initSendTextareaState();
 
     // Swipe gestures (see: https://www.npmjs.com/package/swiped-events)
     document.addEventListener('swiped-left', function (e) {

@@ -11,7 +11,7 @@ import {
     lodash,
 } from './lib.js';
 
-import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initRossMods } from './scripts/RossAscends-mods.js';
+import { humanizedDateTime, favsToHotswap, getMessageTimeStamp, dragElement, isMobile, initNavPanelPins, initRossMods, initSendTextareaState } from './scripts/RossAscends-mods.js';
 import { userStatsHandler, statMesProcess, initStats } from './scripts/stats.js';
 import {
     generateKoboldWithStreaming,
@@ -1601,6 +1601,9 @@ async function firstLoadInit() {
     initWelcomeScreen();
     initKeyboard();
     initDynamicStyles();
+    initNavPanelPins();
+    initSendTextareaState();
+    restoreCharacterSearchVisibility();
 
     if (isLoaderVisible()) {
         await hideLoader();
@@ -15359,8 +15362,6 @@ function initCharacterSearch() {
     const searchInput = $('#character_search_bar');
     const searchButton = $('#rm_button_search');
 
-    const storageKey = 'characterSearchFormVisible';
-
     searchInput.on('input', function () {
         const searchQuery = String($(this).val());
         debouncedCharacterSearch(searchQuery);
@@ -15370,17 +15371,21 @@ function initCharacterSearch() {
         const newVisibility = !searchForm.is(':visible');
         searchForm.toggle(newVisibility);
         searchButton.toggleClass('active', newVisibility);
-        accountStorage.setItem(storageKey, String(newVisibility));
+        accountStorage.setItem(CHARACTER_SEARCH_VISIBILITY_STORAGE_KEY, String(newVisibility));
         if (newVisibility) {
             searchInput.trigger('focus');
         }
     });
+}
 
-    eventSource.on(event_types.APP_READY, () => {
-        const isVisible = accountStorage.getItem(storageKey) === 'true';
-        searchForm.toggle(isVisible);
-        searchButton.toggleClass('active', isVisible);
-    });
+const CHARACTER_SEARCH_VISIBILITY_STORAGE_KEY = 'characterSearchFormVisible';
+
+function restoreCharacterSearchVisibility() {
+    const searchForm = $('#form_character_search_form');
+    const searchButton = $('#rm_button_search');
+    const isVisible = accountStorage.getItem(CHARACTER_SEARCH_VISIBILITY_STORAGE_KEY) === 'true';
+    searchForm.toggle(isVisible);
+    searchButton.toggleClass('active', isVisible);
 }
 
 // MARK: DOM Handlers Start
