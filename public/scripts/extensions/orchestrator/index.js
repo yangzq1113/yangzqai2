@@ -193,7 +193,7 @@ function getDefaultAiSuggestSystemPrompt() {
         'Design a clear pipeline: state distillation -> reasoning workers -> review gate -> final synthesis.',
         'Treat stages as strict hierarchical layers with local dependencies, not a flat pool of globally visible nodes.',
         'Worker nodes before the final stage should return structured tool-call fields for machine processing.',
-        `Review nodes inspect only the immediately previous worker layer outputs, then either approve or request rerun of specific node ids from that directly adjacent layer.`,
+        'Review nodes inspect only the immediately previous worker layer outputs, then either approve or request rerun of specific node ids from that directly adjacent layer.',
         `Review nodes must include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\` on both approve and rerun decisions.`,
         `Runtime preserves passthrough worker outputs and auto-injects approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into later nodes.`,
         'If multiple layers need audit gates, place separate review stages immediately after those layers; multiple critics are allowed and often preferable to one final critic.',
@@ -222,6 +222,10 @@ function getDefaultAiSuggestSystemPrompt() {
         'Any innovation must keep hard-gate coverage, causal clarity, and final-output contract intact.',
         `Allowed template placeholders ONLY: ${AI_VISIBLE_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}.`,
         'Do not invent any other placeholder names.',
+        'Each preset may optionally set apiPresetName to route that agent through a specific Connection Manager profile.',
+        'Leave apiPresetName empty unless the user explicitly asks for per-agent model/provider routing.',
+        'Empty apiPresetName means runtime falls back to the global orchestration API preset.',
+        'If you set apiPresetName, use only names from available_connection_profiles.',
         'Runtime auto-injects previous orchestration result before each node template.',
         'Do not use placeholders for auto-injected context. Encode how to use it in Task rules.',
         'Placeholder usage policy (must follow):',
@@ -505,6 +509,7 @@ function registerLocaleData() {
         'Plain-text function-call mode': '纯文本函数调用模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点提示词预设（参数+提示词，留空=当前）',
+        'Agent API preset (Connection profile, empty = global orchestration API preset)': 'Agent API 预设（连接配置，留空=使用全局编排 API 预设）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成提示词预设（参数+提示词，留空=当前）',
         'AI build system prompt': 'AI 生成系统提示词',
@@ -518,8 +523,8 @@ function registerLocaleData() {
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定义前',
         'After Character Definitions': '角色定义后',
-        "Before Author's Note": '作者注释前',
-        "After Author's Note": '作者注释后',
+        'Before Author\'s Note': '作者注释前',
+        'After Author\'s Note': '作者注释后',
         'Before Example Messages': '示例消息前',
         'After Example Messages': '示例消息后',
         'At Chat Depth': '聊天深度',
@@ -701,8 +706,8 @@ function registerLocaleData() {
         'Character override (configured, currently disabled)': '角色卡覆写（已配置，当前禁用）',
         'Global profile (no character override for current card)': '全局配置（当前角色卡无覆写）',
         'Preset ID cannot be empty.': '预设 ID 不能为空。',
-        "Preset '${0}' already exists.": "预设 '${0}' 已存在。",
-        "Preset '${0}' is still used by workflow nodes.": "预设 '${0}' 仍被工作流节点使用。",
+        'Preset \'${0}\' already exists.': '预设 \'${0}\' 已存在。',
+        'Preset \'${0}\' is still used by workflow nodes.': '预设 \'${0}\' 仍被工作流节点使用。',
         'Reloaded global profile from settings.': '已从设置重载全局配置。',
         'No character selected.': '未选择角色卡。',
         'Character orchestration override saved.': '角色卡编排覆写已保存。',
@@ -732,6 +737,7 @@ function registerLocaleData() {
         'Reloaded character override for ${0}.': '已重载角色卡覆写：${0}。',
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
+        '(Global orchestration API preset)': '（全局编排 API 预设）',
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 构建未显式调用 finalize。已直接采用解析结果。',
         'AI build did not call finalize explicitly.': 'AI 构建未显式调用 finalize。',
@@ -762,6 +768,7 @@ function registerLocaleData() {
         'Plain-text function-call mode': '純文字函式呼叫模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點提示詞預設（參數+提示詞，留空=目前）',
+        'Agent API preset (Connection profile, empty = global orchestration API preset)': 'Agent API 預設（連線設定，留空=使用全域編排 API 預設）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成提示詞預設（參數+提示詞，留空=目前）',
         'AI build system prompt': 'AI 生成系統提示詞',
@@ -775,8 +782,8 @@ function registerLocaleData() {
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定義前',
         'After Character Definitions': '角色定義後',
-        "Before Author's Note": '作者註釋前',
-        "After Author's Note": '作者註釋後',
+        'Before Author\'s Note': '作者註釋前',
+        'After Author\'s Note': '作者註釋後',
         'Before Example Messages': '示例訊息前',
         'After Example Messages': '示例訊息後',
         'At Chat Depth': '聊天深度',
@@ -957,8 +964,8 @@ function registerLocaleData() {
         'Character override (configured, currently disabled)': '角色卡覆寫（已設定，當前停用）',
         'Global profile (no character override for current card)': '全域設定（目前角色卡無覆寫）',
         'Preset ID cannot be empty.': '預設 ID 不能為空。',
-        "Preset '${0}' already exists.": "預設 '${0}' 已存在。",
-        "Preset '${0}' is still used by workflow nodes.": "預設 '${0}' 仍被工作流節點使用。",
+        'Preset \'${0}\' already exists.': '預設 \'${0}\' 已存在。',
+        'Preset \'${0}\' is still used by workflow nodes.': '預設 \'${0}\' 仍被工作流節點使用。',
         'Reloaded global profile from settings.': '已從設定重新載入全域設定。',
         'No character selected.': '未選擇角色卡。',
         'Character orchestration override saved.': '角色卡編排覆寫已儲存。',
@@ -988,6 +995,7 @@ function registerLocaleData() {
         'Reloaded character override for ${0}.': '已重新載入角色卡覆寫：${0}。',
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 設定）',
+        '(Global orchestration API preset)': '（全域編排 API 預設）',
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 建構未明確呼叫 finalize。已直接採用解析結果。',
         'AI build did not call finalize explicitly.': 'AI 建構未明確呼叫 finalize。',
@@ -1096,13 +1104,32 @@ function sanitizePresetMap(presets) {
         if (!presetId) {
             continue;
         }
-        normalized[presetId] = {
-            systemPrompt: String(value.systemPrompt || '').trim(),
-            userPromptTemplate: String(value.userPromptTemplate || '').trim(),
-        };
+        normalized[presetId] = createPresetDraft(value);
     }
 
     return normalized;
+}
+
+function mergePresetMaps(basePresets, patchPresets) {
+    const base = sanitizePresetMap(basePresets);
+    const patchSource = patchPresets && typeof patchPresets === 'object' ? patchPresets : {};
+    const merged = { ...base };
+
+    for (const [key, rawValue] of Object.entries(patchSource)) {
+        if (!rawValue || typeof rawValue !== 'object') {
+            continue;
+        }
+        const presetId = sanitizeIdentifierToken(key, '');
+        if (!presetId) {
+            continue;
+        }
+        merged[presetId] = createPresetDraft({
+            ...(base[presetId] || {}),
+            ...rawValue,
+        });
+    }
+
+    return sanitizePresetMap(merged);
 }
 
 function ensureSettings() {
@@ -1150,9 +1177,11 @@ function ensureSettings() {
 
     extension_settings[MODULE_NAME].orchestrationSpec = sanitizeSpec(extension_settings[MODULE_NAME].orchestrationSpec);
     extension_settings[MODULE_NAME].presets = sanitizePresetMap(extension_settings[MODULE_NAME].presets);
+    extension_settings[MODULE_NAME].llmNodeApiPresetName = sanitizeConnectionProfileName(extension_settings[MODULE_NAME].llmNodeApiPresetName || '');
     if (!String(extension_settings[MODULE_NAME].llmNodePresetName || '').trim()) {
         extension_settings[MODULE_NAME].llmNodePresetName = String(extension_settings[MODULE_NAME].llmNodePromptPresetName || '').trim();
     }
+    extension_settings[MODULE_NAME].aiSuggestApiPresetName = sanitizeConnectionProfileName(extension_settings[MODULE_NAME].aiSuggestApiPresetName || '');
     if (!String(extension_settings[MODULE_NAME].aiSuggestPresetName || '').trim()) {
         extension_settings[MODULE_NAME].aiSuggestPresetName = String(extension_settings[MODULE_NAME].aiSuggestPromptPresetName || '').trim();
     }
@@ -3001,6 +3030,7 @@ function sanitizeProfileForAiPrompt(profile = null) {
         sanitizedPresets[presetId] = {
             systemPrompt: String(preset?.systemPrompt || '').trim(),
             userPromptTemplate: normalizeTemplateForAiPrompt(String(preset?.userPromptTemplate || '').trim()),
+            apiPresetName: getPresetApiPresetName(preset),
         };
     }
 
@@ -3180,6 +3210,7 @@ function buildAiSuggestInputXml({
     overrideGoal = '',
     runtimeContextGuarantees = {},
     injectionContract = {},
+    agentApiRouting = {},
     mandatoryQualityAxes = {},
     qualityGateContract = {},
     recommendedBlueprint = {},
@@ -3195,6 +3226,7 @@ function buildAiSuggestInputXml({
         buildYamlMarkdownBlock('override_goal', 'Optional user goal override for this character profile.', { override_goal: String(overrideGoal || '') }),
         buildYamlMarkdownBlock('runtime_context_guarantees', 'What runtime context is already guaranteed for both orchestration nodes and final generation.', runtimeContextGuarantees),
         buildYamlMarkdownBlock('injection_contract', 'How final orchestration outputs are injected to generation.', injectionContract),
+        buildYamlMarkdownBlock('agent_api_routing', 'Optional per-agent API routing through Connection Manager profiles. Leave apiPresetName empty unless the user explicitly asks for per-agent model routing.', agentApiRouting),
         buildYamlMarkdownBlock('mandatory_quality_axes', 'Quality axes that must be covered by stage/preset design.', mandatoryQualityAxes),
         buildYamlMarkdownBlock('quality_gate_contract', 'Hard quality gates the profile must explicitly enforce.', qualityGateContract),
         buildYamlMarkdownBlock('recommended_blueprint', 'Preferred orchestration blueprint when no special reason to deviate.', recommendedBlueprint),
@@ -3315,6 +3347,15 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
         },
         promptPresetName: selectedPromptPresetName,
         runtimeWorldInfo: resolvedRuntimeWorldInfo,
+    });
+}
+
+function resolveOrchestrationAgentProfileResolution(context, settings, preset = null) {
+    const profileName = getPresetApiPresetName(preset) || sanitizeConnectionProfileName(settings?.llmNodeApiPresetName || '');
+    return resolveChatCompletionRequestProfile({
+        profileName,
+        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
+        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
     });
 }
 
@@ -3814,13 +3855,8 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
     });
 
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
-    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
     const promptPresetName = llmPresetName;
-    const llmProfileResolution = resolveChatCompletionRequestProfile({
-        profileName: llmApiPresetName,
-        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
-        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
-    });
+    const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
     const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
     const apiSettingsOverride = llmProfileResolution.apiSettingsOverride;
     const tools = buildNodeToolSet(nodeSpec, { isFinalStage });
@@ -4023,13 +4059,8 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
     const runtimeTemplate = normalizeTemplateForRuntime(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '');
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
-    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
     const promptPresetName = llmPresetName;
-    const llmProfileResolution = resolveChatCompletionRequestProfile({
-        profileName: llmApiPresetName,
-        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
-        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
-    });
+    const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
     const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
     const apiSettingsOverride = llmProfileResolution.apiSettingsOverride;
     const tools = buildNodeToolSet(nodeSpec);
@@ -4595,12 +4626,7 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
     const settings = extension_settings[MODULE_NAME];
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
-    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
-    const llmProfileResolution = resolveChatCompletionRequestProfile({
-        profileName: llmApiPresetName,
-        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
-        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
-    });
+    const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings);
     const promptText = [
         '## planner_prompt',
         String(profile?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
@@ -4700,14 +4726,9 @@ async function runAgendaTextAgent(context, payload, messages, profile, state, di
     finalReason = '',
 }, abortSignal = null) {
     const settings = extension_settings[MODULE_NAME];
-    const llmPresetName = String(settings.llmNodePresetName || '').trim();
-    const llmApiPresetName = String(settings.llmNodeApiPresetName || '').trim();
-    const llmProfileResolution = resolveChatCompletionRequestProfile({
-        profileName: llmApiPresetName,
-        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
-        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
-    });
     const preset = profile?.agents?.[dispatch.agent] || {};
+    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
     const systemPrompt = [
         String(preset.systemPrompt || 'You are an orchestration agent. Complete the assigned task carefully and return the full useful result through the required tool.').trim(),
         '',
@@ -5370,10 +5391,48 @@ function getConnectionProfiles() {
     return getChatCompletionConnectionProfiles();
 }
 
-function renderConnectionProfileOptions(selectedName = '') {
-    const selected = String(selectedName || '').trim();
+function sanitizeConnectionProfileName(value = '') {
+    return String(value || '').trim();
+}
+
+function getPresetApiPresetName(preset = null) {
+    return sanitizeConnectionProfileName(
+        preset?.apiPresetName
+        ?? preset?.apiPreset
+        ?? preset?.agentApiPresetName
+        ?? '',
+    );
+}
+
+function sanitizeConnectionProfilesForAiPrompt(profiles = getConnectionProfiles()) {
+    return (Array.isArray(profiles) ? profiles : [])
+        .map((profile) => {
+            const name = sanitizeConnectionProfileName(profile?.name);
+            if (!name) {
+                return null;
+            }
+            return {
+                name,
+                api: String(profile?.api || '').trim(),
+                model: String(profile?.model || '').trim(),
+            };
+        })
+        .filter(Boolean);
+}
+
+function buildAgentApiRoutingPromptData(settings = extension_settings[MODULE_NAME]) {
+    return {
+        global_orchestration_api_preset: sanitizeConnectionProfileName(settings?.llmNodeApiPresetName || ''),
+        empty_value_behavior: 'Empty apiPresetName falls back to the global orchestration API preset. If that is also empty, runtime uses the current chat API configuration.',
+        default_policy: 'Do not set per-agent apiPresetName unless the user explicitly asks for a specific provider/model route for that agent.',
+        available_connection_profiles: sanitizeConnectionProfilesForAiPrompt(getConnectionProfiles()),
+    };
+}
+
+function renderConnectionProfileOptions(selectedName = '', emptyLabel = i18n('(Current API config)')) {
+    const selected = sanitizeConnectionProfileName(selectedName);
     const names = getConnectionProfiles().map(profile => profile.name);
-    const options = [`<option value="">${escapeHtml(i18n('(Current API config)'))}</option>`];
+    const options = [`<option value="">${escapeHtml(String(emptyLabel || i18n('(Current API config)')))}</option>`];
     for (const name of names) {
         options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
     }
@@ -5414,6 +5473,7 @@ function createPresetDraft(seed = {}) {
     return {
         systemPrompt: String(seed.systemPrompt || '').trim(),
         userPromptTemplate: String(seed.userPromptTemplate || '').trim(),
+        apiPresetName: getPresetApiPresetName(seed),
     };
 }
 
@@ -5634,10 +5694,7 @@ function resolveOverridePresetMap(override, basePresets = {}) {
     }
     // Legacy compatibility: older overrides stored only presetPatch.
     if (override?.presetPatch && typeof override.presetPatch === 'object') {
-        return sanitizePresetMap({
-            ...sanitizePresetMap(basePresets),
-            ...sanitizePresetMap(override.presetPatch),
-        });
+        return mergePresetMaps(basePresets, override.presetPatch);
     }
     return {};
 }
@@ -5920,6 +5977,10 @@ function renderPresetBoard(scope, editor) {
         <b>${escapeHtml(presetId)}</b>
         <div class="menu_button menu_button_small" data-luker-action="preset-delete" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(i18n('Delete'))}</div>
     </div>
+    <label>${escapeHtml(i18n('Agent API preset (Connection profile, empty = global orchestration API preset)'))}</label>
+    <select class="text_pole" data-luker-field="preset-api-preset" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">
+        ${renderConnectionProfileOptions(preset?.apiPresetName, i18n('(Global orchestration API preset)'))}
+    </select>
     <label>${escapeHtml(i18n('System Prompt'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-field="preset-system-prompt" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(preset.systemPrompt)}</textarea>
     <label>${escapeHtml(i18n('User Prompt Template'))}</label>
@@ -5954,6 +6015,10 @@ function renderAgendaAgentBoard(scope, editor) {
         <b>${escapeHtml(agentId)}</b>
         <div class="menu_button menu_button_small" data-luker-action="agenda-agent-delete" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(i18n('Delete'))}</div>
     </div>
+    <label>${escapeHtml(i18n('Agent API preset (Connection profile, empty = global orchestration API preset)'))}</label>
+    <select class="text_pole" data-luker-agenda-agent-field="apiPresetName" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">
+        ${renderConnectionProfileOptions(preset?.apiPresetName, i18n('(Global orchestration API preset)'))}
+    </select>
     <label>${escapeHtml(i18n('System Prompt'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-agenda-agent-field="systemPrompt" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.systemPrompt)}</textarea>
     <label>${escapeHtml(i18n('User Prompt Template'))}</label>
@@ -6624,10 +6689,15 @@ function buildAiProfileFromToolCalls(toolCalls) {
             if (!presetId) {
                 continue;
             }
-            draftPresets[presetId] = {
+            const nextPreset = {
+                ...(draftPresets[presetId] || {}),
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
             };
+            if (Object.prototype.hasOwnProperty.call(args, 'apiPresetName')) {
+                nextPreset.apiPresetName = sanitizeConnectionProfileName(args.apiPresetName);
+            }
+            draftPresets[presetId] = nextPreset;
             continue;
         }
         if (fnName === 'luker_orch_finalize_profile') {
@@ -6640,10 +6710,14 @@ function buildAiProfileFromToolCalls(toolCalls) {
         if (!preset || typeof preset !== 'object') {
             continue;
         }
-        presetPatch[presetId] = {
+        const nextPreset = {
             systemPrompt: String(preset.systemPrompt || '').trim(),
             userPromptTemplate: String(preset.userPromptTemplate || '').trim(),
         };
+        if (Object.prototype.hasOwnProperty.call(preset, 'apiPresetName')) {
+            nextPreset.apiPresetName = sanitizeConnectionProfileName(preset.apiPresetName);
+        }
+        presetPatch[presetId] = nextPreset;
     }
 
     return {
@@ -6694,6 +6768,10 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Prefer the recommended blueprint unless strong card-specific reasons require deviation.',
         'Do not generate long identity-roleplay blocks for node prompts; keep them process-focused and operational.',
         'Treat the orchestration as hierarchical layers. Critic scope is local to the directly adjacent previous worker layer.',
+        'Per-agent API routing is optional via preset field apiPresetName.',
+        'Leave apiPresetName empty unless the user explicitly asks for per-agent provider/model routing differences.',
+        'Empty apiPresetName means runtime falls back to the global orchestration API preset.',
+        'If you set apiPresetName, use only a profile name from available_connection_profiles.',
         `Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not add placeholders for that context.`,
         'If you use a critic/reviewer, model it as a review node that approves or requests rerun only for node ids in the directly adjacent previous worker layer.',
         'If grounding, reasoning, or other layers each need audit, add separate critics after those layers instead of deferring all review to one final critic.',
@@ -6718,6 +6796,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             expected_guidance_format: 'function_call_text_direct_injection',
             no_json_or_markup_in_final_output: true,
         },
+        agentApiRouting: buildAgentApiRoutingPromptData(settings),
         mandatoryQualityAxes: ORCH_AI_QUALITY_AXES,
         qualityGateContract: {
             continuity: 'No timeline/scene continuity break.',
@@ -6798,6 +6877,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                     preset_id: 'string',
                     systemPrompt: 'string',
                     userPromptTemplate: `Use only: ${AI_VISIBLE_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
+                    apiPresetName: 'optional string; use only a name from available_connection_profiles; leave empty unless user explicitly asks',
                 },
                 placeholder_policy: {
                     general: 'Template should consume dynamic runtime context via placeholders where needed.',
@@ -6884,6 +6964,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                         preset_id: { type: 'string' },
                         systemPrompt: { type: 'string' },
                         userPromptTemplate: { type: 'string' },
+                        apiPresetName: { type: 'string' },
                     },
                     required: ['preset_id', 'systemPrompt', 'userPromptTemplate'],
                     additionalProperties: false,
@@ -6985,10 +7066,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
 
     const suggestedSpec = sanitizeSpec(parsed.orchestrationSpec);
     const suggestedPatch = parsed.presetPatch && typeof parsed.presetPatch === 'object' ? parsed.presetPatch : {};
-    const mergedPresets = sanitizePresetMap({
-        ...serializeEditorPresetMap(settings.presets),
-        ...suggestedPatch,
-    });
+    const mergedPresets = mergePresetMaps(serializeEditorPresetMap(settings.presets), suggestedPatch);
 
     if (isCharacterMode) {
         uiState.characterEditor.spec = toEditableSpec(suggestedSpec, mergedPresets);
@@ -7863,10 +7941,14 @@ function buildAgendaIterationPendingDiffState(session, pending) {
         if (name === 'luker_orch_set_agenda_agent') {
             const agentId = sanitizeIdentifierToken(args.agent_id, '');
             const beforeAgent = agentId ? structuredClone(workingProfile.agents[agentId] || null) : null;
-            const afterAgent = {
+            const afterAgent = createPresetDraft({
+                ...(beforeAgent || {}),
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: String(args.userPromptTemplate || '').trim(),
-            };
+                ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
+                    ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+            });
             if (agentId) {
                 workingProfile.agents[agentId] = afterAgent;
             }
@@ -7882,6 +7964,11 @@ function buildAgendaIterationPendingDiffState(session, pending) {
                 label: 'userPromptTemplate',
                 before: formatDiffValue(beforeAgent?.userPromptTemplate || ''),
                 after: formatDiffValue(afterAgent.userPromptTemplate),
+            });
+            item.fields.push({
+                label: 'apiPresetName',
+                before: formatDiffValue(getPresetApiPresetName(beforeAgent)),
+                after: formatDiffValue(getPresetApiPresetName(afterAgent)),
             });
             entries.push(item);
             continue;
@@ -8185,10 +8272,14 @@ function buildAiIterationPendingDiffState(session, pending) {
             const beforePreset = presets[presetId] && typeof presets[presetId] === 'object'
                 ? structuredClone(presets[presetId])
                 : null;
-            const afterPreset = {
+            const afterPreset = createPresetDraft({
+                ...(beforePreset || {}),
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
-            };
+                ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
+                    ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+            });
             presets[presetId] = afterPreset;
             item.summary = `Preset "${presetId}" ${beforePreset ? 'updated' : 'created'}`;
             item.fields.push({
@@ -8200,6 +8291,11 @@ function buildAiIterationPendingDiffState(session, pending) {
                 label: 'userPromptTemplate',
                 before: formatDiffValue(beforePreset?.userPromptTemplate || ''),
                 after: formatDiffValue(afterPreset.userPromptTemplate),
+            });
+            item.fields.push({
+                label: 'apiPresetName',
+                before: formatDiffValue(getPresetApiPresetName(beforePreset)),
+                after: formatDiffValue(getPresetApiPresetName(afterPreset)),
             });
             entries.push(item);
             continue;
@@ -8360,6 +8456,7 @@ function renderAgendaIterationWorkingProfile(session, { profileOverride = null, 
 <div class="luker_orch_iter_stage">
     <div class="luker_orch_iter_stage_title">${escapeHtml(agentId)}</div>
     <div class="luker_orch_iter_stage_mode">${escapeHtml(agentId === profile.finalAgentId ? i18n('Final Agent') : i18n('Worker'))}</div>
+    <div class="luker_orch_iter_preset_line"><b>API:</b> ${escapeHtml(getPresetApiPresetName(preset) || i18n('(Global orchestration API preset)'))}</div>
     <div class="luker_orch_iter_stage_nodes">${escapeHtml(truncateOrchestrationRuntimePreview(preset?.systemPrompt || '', 180) || '(empty)')}</div>
 </div>`).join('');
     const simulationSummary = session?.lastSimulation
@@ -8378,7 +8475,7 @@ function renderAgendaIterationWorkingProfile(session, { profileOverride = null, 
     <summary>${escapeHtml(i18n('Planner Prompt'))}</summary>
     <pre>${escapeHtml(profile.plannerPrompt || '')}</pre>
 </details>
-<div class="luker_orch_iter_stage_list">${agentCards || `<div class="luker_orch_iter_empty">(no agents)</div>`}</div>`;
+<div class="luker_orch_iter_stage_list">${agentCards || '<div class="luker_orch_iter_empty">(no agents)</div>'}</div>`;
 }
 
 function renderAiIterationWorkingProfile(session, { profileOverride = null, previewPending = false } = {}) {
@@ -8399,7 +8496,14 @@ function renderAiIterationWorkingProfile(session, { profileOverride = null, prev
 </div>`;
     }).join('');
     const presetIds = Object.keys(profile?.presets || {}).sort();
-    const presetSummary = presetIds.length > 0 ? presetIds.join(', ') : '(none)';
+    const presetSummary = presetIds.length > 0
+        ? presetIds.map((presetId) => {
+            const apiPresetName = getPresetApiPresetName(profile?.presets?.[presetId]);
+            return apiPresetName
+                ? `${presetId} -> ${apiPresetName}`
+                : presetId;
+        }).join(', ')
+        : '(none)';
     const simulationSummary = session?.lastSimulation
         ? `${i18n('Simulation')}: ${String(session.lastSimulation.summary || '')}`
         : '';
@@ -8410,7 +8514,7 @@ function renderAiIterationWorkingProfile(session, { profileOverride = null, prev
     ${previewPending ? `<div>${escapeHtml(i18n('AI suggested changes are waiting for approval.'))}</div>` : ''}
     ${simulationSummary ? `<div>${escapeHtml(simulationSummary)}</div>` : ''}
 </div>
-<div class="luker_orch_iter_stage_list">${stageCards || `<div class="luker_orch_iter_empty">(no stages)</div>`}</div>
+<div class="luker_orch_iter_stage_list">${stageCards || '<div class="luker_orch_iter_empty">(no stages)</div>'}</div>
 <div class="luker_orch_iter_preset_line"><b>Presets:</b> ${escapeHtml(presetSummary)}</div>`;
 }
 
@@ -8423,6 +8527,9 @@ function buildAiIterationSystemPrompt(settings, session = null) {
             'Iteration mode contract:',
             '- You are editing an existing agenda orchestration profile incrementally.',
             '- The working profile contains plannerPrompt, agenda agents, finalAgentId, and runtime limits.',
+            '- Agenda agents may optionally set apiPresetName to use a specific Connection Manager profile.',
+            '- Leave agenda agent apiPresetName empty unless the user explicitly asks for per-agent model/provider routing. Empty means fallback to the global orchestration API preset.',
+            '- If you set agenda agent apiPresetName, use only a name from available_connection_profiles.',
             '- Prefer targeted edits. Do not rewrite the full plannerPrompt unless necessary.',
             '- Keep plannerPrompt as the main orchestration contract and keep agent prompts concrete and task-oriented.',
             '- Use luker_orch_set_agenda_agent to create or update one agenda agent at a time.',
@@ -8442,6 +8549,9 @@ function buildAiIterationSystemPrompt(settings, session = null) {
         '- You are editing an existing orchestration profile incrementally (diff-style).',
         '- Prefer targeted edits. Do not rebuild everything unless the user explicitly asks.',
         '- Think through what to change and why before issuing tool calls; output format follows the current prompt policy.',
+        '- Presets may optionally set apiPresetName to use a specific Connection Manager profile.',
+        '- Leave preset apiPresetName empty unless the user explicitly asks for per-agent model/provider routing. Empty means fallback to the global orchestration API preset.',
+        '- If you set preset apiPresetName, use only a name from available_connection_profiles.',
         `- Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not use placeholders for that context.`,
         '- Treat the working profile as hierarchical layers. Preserve or improve that layering when editing.',
         `- Nodes can be worker or review. Review nodes inspect only the directly adjacent previous worker layer, may rerun only specific node ids from that layer, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
@@ -8469,7 +8579,7 @@ function getGlobalIterationBaselineProfile(settings, session = null) {
     };
 }
 
-function buildAiIterationUserPrompt(session, userInputText, {
+function buildAiIterationUserPrompt(settings, session, userInputText, {
     globalProfile = null,
     sourceScope = '',
     sourceName = '',
@@ -8501,6 +8611,11 @@ function buildAiIterationUserPrompt(session, userInputText, {
             '## working_profile',
             '```yaml',
             toReadableYamlText(workingProfileValue, '{}'),
+            '```',
+            '',
+            '## agent_api_routing',
+            '```yaml',
+            toReadableYamlText(buildAgentApiRoutingPromptData(settings), '{}'),
             '```',
             '',
             '## conversation_history',
@@ -8559,6 +8674,11 @@ function buildAiIterationUserPrompt(session, userInputText, {
         toReadableYamlText(aiVisibleWorkingProfile, '{}'),
         '```',
         '',
+        '## agent_api_routing',
+        '```yaml',
+        toReadableYamlText(buildAgentApiRoutingPromptData(settings), '{}'),
+        '```',
+        '',
         '## review_node_contract',
         '```yaml',
         toReadableYamlText({
@@ -8615,13 +8735,14 @@ function buildAiIterationToolSet(session = null) {
                 type: 'function',
                 function: {
                     name: 'luker_orch_set_agenda_agent',
-                    description: 'Create or update one agenda agent preset.',
+                    description: 'Create or update one agenda agent preset. Leave apiPresetName empty unless the user explicitly requests per-agent model routing.',
                     parameters: {
                         type: 'object',
                         properties: {
                             agent_id: { type: 'string' },
                             systemPrompt: { type: 'string' },
                             userPromptTemplate: { type: 'string' },
+                            apiPresetName: { type: 'string' },
                         },
                         required: ['agent_id', 'systemPrompt', 'userPromptTemplate'],
                         additionalProperties: false,
@@ -8793,13 +8914,14 @@ function buildAiIterationToolSet(session = null) {
             type: 'function',
             function: {
                 name: 'luker_orch_set_preset',
-                description: 'Create or update one preset.',
+                description: 'Create or update one preset. Leave apiPresetName empty unless the user explicitly requests per-agent model routing.',
                 parameters: {
                     type: 'object',
                     properties: {
                         preset_id: { type: 'string' },
                         systemPrompt: { type: 'string' },
                         userPromptTemplate: { type: 'string' },
+                        apiPresetName: { type: 'string' },
                     },
                     required: ['preset_id', 'systemPrompt', 'userPromptTemplate'],
                     additionalProperties: false,
@@ -9024,10 +9146,15 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
                 actions.push('Skipped agenda agent update: missing agent_id.');
                 continue;
             }
-            session.workingProfile.agents[agentId] = {
+            const beforeAgent = session.workingProfile.agents[agentId] || null;
+            session.workingProfile.agents[agentId] = createPresetDraft({
+                ...(beforeAgent || {}),
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: String(args.userPromptTemplate || '').trim(),
-            };
+                ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
+                    ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+            });
             actions.push(`Agenda agent "${agentId}" updated.`);
             changed = true;
             continue;
@@ -9235,10 +9362,15 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
                 }
             }
             pendingPresetRemovalActions.delete(presetId);
-            session.workingProfile.presets[presetId] = {
+            const beforePreset = session.workingProfile.presets[presetId] || null;
+            session.workingProfile.presets[presetId] = createPresetDraft({
+                ...(beforePreset || {}),
                 systemPrompt: String(args.systemPrompt || '').trim(),
                 userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
-            };
+                ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
+                    ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+            });
             actions.push(`Preset "${presetId}" updated.`);
             changed = true;
             continue;
@@ -9343,7 +9475,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         context,
         settings,
         buildAiIterationSystemPrompt(settings, session),
-        buildAiIterationUserPrompt(session, text, {
+        buildAiIterationUserPrompt(settings, session, text, {
             globalProfile: globalBaseline,
             sourceScope: String(session?.sourceScope || ''),
             sourceName: String(session?.sourceName || ''),
@@ -9906,7 +10038,7 @@ function bindUi() {
     });
 
     root.on('change.lukerOrch', '#luker_orch_llm_api_preset', function () {
-        settings.llmNodeApiPresetName = String(jQuery(this).val() || '').trim();
+        settings.llmNodeApiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
         saveSettingsDebounced();
     });
 
@@ -9916,7 +10048,7 @@ function bindUi() {
     });
 
     root.on('change.lukerOrch', '#luker_orch_ai_suggest_api_preset', function () {
-        settings.aiSuggestApiPresetName = String(jQuery(this).val() || '').trim();
+        settings.aiSuggestApiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
         saveSettingsDebounced();
     });
 
@@ -10035,11 +10167,13 @@ function bindUi() {
                 preset.systemPrompt = String(jQuery(this).val() || '');
             } else if (field === 'preset-user-template') {
                 preset.userPromptTemplate = String(jQuery(this).val() || '');
+            } else if (field === 'preset-api-preset') {
+                preset.apiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
             }
         }
     });
 
-    jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-agenda-agent-field], .luker_orch_editor_popup [data-luker-agenda-agent-field]`, function () {
+    jQuery(document).on('input.lukerOrchEditor change.lukerOrchEditor', `#${UI_BLOCK_ID} [data-luker-agenda-agent-field], .luker_orch_editor_popup [data-luker-agenda-agent-field]`, function () {
         const scope = getAgendaScopeFromElement(this, context, settings);
         const editor = getAgendaEditorByScope(scope);
         ensureAgendaEditorIntegrity(editor);
@@ -10052,6 +10186,8 @@ function bindUi() {
             editor.agents[agentId].systemPrompt = String(jQuery(this).val() || '');
         } else if (field === 'userPromptTemplate') {
             editor.agents[agentId].userPromptTemplate = String(jQuery(this).val() || '');
+        } else if (field === 'apiPresetName') {
+            editor.agents[agentId].apiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
         }
     });
 
@@ -10097,7 +10233,7 @@ function bindUi() {
                 return;
             }
             if (agendaEditor.agents?.[candidate]) {
-                notifyError(i18nFormat("Preset '${0}' already exists.", candidate));
+                notifyError(i18nFormat('Preset \'${0}\' already exists.', candidate));
                 return;
             }
             agendaEditor.agents[candidate] = createPresetDraft();
@@ -10213,7 +10349,7 @@ function bindUi() {
                 return;
             }
             if (editor.presets[candidate]) {
-                notifyError(i18nFormat("Preset '${0}' already exists.", candidate));
+                notifyError(i18nFormat('Preset \'${0}\' already exists.', candidate));
                 return;
             }
             editor.presets[candidate] = createPresetDraft();
@@ -10227,7 +10363,7 @@ function bindUi() {
                 return;
             }
             if (isPresetUsed(editor, presetId)) {
-                notifyError(i18nFormat("Preset '${0}' is still used by workflow nodes.", presetId));
+                notifyError(i18nFormat('Preset \'${0}\' is still used by workflow nodes.', presetId));
                 return;
             }
             delete editor.presets[presetId];
@@ -11554,8 +11690,8 @@ function ensureUi() {
             <select id="luker_orch_capsule_position" class="text_pole">
                 <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>
                 <option value="${world_info_position.after}">${escapeHtml(i18n('After Character Definitions'))}</option>
-                <option value="${world_info_position.ANTop}">${escapeHtml(i18n("Before Author's Note"))}</option>
-                <option value="${world_info_position.ANBottom}">${escapeHtml(i18n("After Author's Note"))}</option>
+                <option value="${world_info_position.ANTop}">${escapeHtml(i18n('Before Author\'s Note'))}</option>
+                <option value="${world_info_position.ANBottom}">${escapeHtml(i18n('After Author\'s Note'))}</option>
                 <option value="${world_info_position.EMTop}">${escapeHtml(i18n('Before Example Messages'))}</option>
                 <option value="${world_info_position.EMBottom}">${escapeHtml(i18n('After Example Messages'))}</option>
                 <option value="${world_info_position.atDepth}">${escapeHtml(i18n('At Chat Depth'))}</option>
