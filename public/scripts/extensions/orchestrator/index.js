@@ -3273,6 +3273,7 @@ function rewriteDepthWorldInfoToAfter(payload = {}) {
 async function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     api = '',
     promptPresetName = '',
+    historyMessages = null,
     worldInfoMessages = null,
     runtimeWorldInfo = null,
     forceWorldInfoResimulate = false,
@@ -3298,8 +3299,12 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     }
 
     throwIfAborted(abortSignal, 'Orchestration aborted.');
+    const normalizedHistoryMessages = Array.isArray(historyMessages)
+        ? historyMessages.map(message => ({ ...message }))
+        : [];
     return context.buildPresetAwarePromptMessages({
         messages: [
+            ...normalizedHistoryMessages,
             { role: 'system', content: systemText },
             { role: 'user', content: userText },
         ],
@@ -3845,6 +3850,7 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
                 {
                     api,
                     promptPresetName,
+                    historyMessages: runtimeToolMessages,
                     worldInfoMessages: messages,
                     worldInfoType: String(payload?.type || 'quiet'),
                     runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
@@ -3853,7 +3859,7 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
                 },
             );
             throwIfAborted(abortSignal, 'Orchestration aborted.');
-            const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
+            const promptMessages = basePromptMessages;
 
             const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
                 tools,
@@ -4082,6 +4088,7 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
                 {
                     api,
                     promptPresetName,
+                    historyMessages: runtimeToolMessages,
                     worldInfoMessages: messages,
                     worldInfoType: String(payload?.type || 'quiet'),
                     runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
@@ -4089,7 +4096,7 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
                     abortSignal,
                 },
             );
-            const promptMessages = basePromptMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
+            const promptMessages = basePromptMessages;
             const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
                 tools,
                 allowedNames,

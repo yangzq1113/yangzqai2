@@ -1325,6 +1325,7 @@ function syncMutableGenerationPayloadState(target, source) {
 async function buildPresetAwareMessages(context, settings, systemPrompt, userPrompt, {
     api = '',
     promptPresetName = '',
+    historyMessages = null,
     worldInfoMessages = null,
     runtimeWorldInfo = null,
     forceWorldInfoResimulate = false,
@@ -1360,8 +1361,12 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     }
 
     throwIfAborted(abortSignal, 'Search agent aborted.');
+    const normalizedHistoryMessages = Array.isArray(historyMessages)
+        ? historyMessages.map(message => ({ ...message }))
+        : [];
     return context.buildPresetAwarePromptMessages({
         messages: [
+            ...normalizedHistoryMessages,
             { role: 'system', content: systemText },
             { role: 'user', content: userText },
         ],
@@ -2406,6 +2411,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             {
                 api: requestApi,
                 promptPresetName: String(settings.agentPresetName || '').trim(),
+                historyMessages: toolHistoryMessages,
                 worldInfoMessages: Array.isArray(payload?.coreChat) ? payload.coreChat : [],
                 runtimeWorldInfo: internalRuntimeWorldInfo,
                 forceWorldInfoResimulate: false,
@@ -2414,7 +2420,7 @@ async function runPreRequestSearchAgent(context, settings, payload) {
             },
         );
         throwIfAborted(payload?.signal, 'Search agent aborted.');
-        const requestMessages = [...promptMessages, ...toolHistoryMessages];
+        const requestMessages = promptMessages;
         const response = await requestToolCallsWithRetry(settings, requestMessages, {
             tools: isFinalStage ? finalStageTools : tools,
             allowedNames: isFinalStage ? finalStageAllowedNames : allowedNames,

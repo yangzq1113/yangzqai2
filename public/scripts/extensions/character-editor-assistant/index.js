@@ -369,13 +369,29 @@ function getLorebookSyncRequestPresetOptions(context = getContext()) {
 async function buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
     llmPresetName = '',
     requestApi = '',
+    historyMessages = null,
     worldInfoMessages = null,
     runtimeWorldInfo = null,
 } = {}) {
+    const normalizedHistoryMessages = Array.isArray(historyMessages)
+        ? historyMessages.map(message => ({ ...message }))
+        : [];
     const baseMessages = [
+        ...normalizedHistoryMessages,
         { role: 'system', content: String(systemPrompt || '').trim() },
         { role: 'user', content: String(userPrompt || '').trim() },
-    ].filter(item => item.content);
+    ].filter((item) => {
+        if (!item || typeof item !== 'object') {
+            return false;
+        }
+        if (Array.isArray(item.tool_calls) && item.tool_calls.length > 0) {
+            return true;
+        }
+        if (String(item.role || '').trim().toLowerCase() === 'tool' && String(item.tool_call_id || '').trim()) {
+            return true;
+        }
+        return Boolean(item.content);
+    });
 
     if (typeof context?.buildPresetAwarePromptMessages !== 'function') {
         return baseMessages;
@@ -3357,9 +3373,10 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         ].join('\n\n');
         const baseRequestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
             ...requestPresetOptions,
+            historyMessages: runtimeToolMessages,
             runtimeWorldInfo: {},
         });
-        const requestMessages = baseRequestMessages.concat(runtimeToolMessages.map(message => structuredClone(message)));
+        const requestMessages = baseRequestMessages;
         const { calls: rawCalls, assistantText } = await requestLorebookToolCallsWithRetry(
             settings,
             requestMessages,
