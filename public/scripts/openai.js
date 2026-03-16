@@ -50,6 +50,7 @@ import { SECRET_KEYS, secret_state, writeSecret } from './secrets.js';
 
 import { getEventSourceStream } from './sse-stream.js';
 import {
+    buildPresetNameIndexMap,
     findCanonicalNameInList,
     createThumbnail,
     delay,
@@ -59,6 +60,7 @@ import {
     getFileText,
     getImageSizeFromDataURL,
     getSortableDelay,
+    getOrderedPresetNames,
     getStringHash,
     getVideoDurationFromDataURL,
     isDataURL,
@@ -4654,7 +4656,7 @@ function migrateChatCompletionSettings(settings) {
  * @param {ChatCompletionSettings} settings Saved settings from backend
  */
 export function hydrateOpenAIPresetData(data = {}) {
-    openai_setting_names = Array.isArray(data.openai_setting_names) ? [...data.openai_setting_names] : [];
+    openai_setting_names = buildPresetNameIndexMap(data.openai_setting_names ?? openai_setting_names);
     openai_settings = Array.isArray(data.openai_settings)
         ? data.openai_settings.map((item) => {
             if (typeof item !== 'string') {
@@ -4670,16 +4672,12 @@ function loadOpenAISettings(data, settings) {
     hydrateOpenAIPresetData(data);
 
     $('#settings_preset_openai').empty();
-    const settingNames = {};
-    openai_setting_names.forEach(function (item, i) {
-        settingNames[item] = i;
+    getOrderedPresetNames(openai_setting_names).forEach(function (item) {
         const option = document.createElement('option');
-        option.value = i;
+        option.value = String(openai_setting_names[item]);
         option.text = item;
         $('#settings_preset_openai').append(option);
-
     });
-    openai_setting_names = settingNames;
 
     migrateChatCompletionSettings(settings);
 
@@ -5496,16 +5494,26 @@ async function onPresetImportFileChange(e) {
 }
 
 async function onExportPresetClick() {
-    if (!oai_settings.preset_settings_openai) {
+    const presetName = String(oai_settings.preset_settings_openai || '').trim();
+    if (!presetName) {
         toastr.error(t`No preset selected`);
         return;
     }
 
-    const preset = structuredClone(openai_settings[openai_setting_names[oai_settings.preset_settings_openai]]);
+    let preset = getOpenAIPresetByName(presetName);
+    if (!preset) {
+        await ensureFullSettingsLoaded();
+        preset = getOpenAIPresetByName(presetName);
+    }
+    if (!preset || typeof preset !== 'object') {
+        toastr.error(t`Failed to resolve preset for export`);
+        return;
+    }
 
-    await eventSource.emit(event_types.OAI_PRESET_EXPORT_READY, preset);
-    const presetJsonString = JSON.stringify(preset, null, 4);
-    const presetFileName = `${oai_settings.preset_settings_openai}.json`;
+    const presetBody = structuredClone(preset);
+    await eventSource.emit(event_types.OAI_PRESET_EXPORT_READY, presetBody);
+    const presetJsonString = JSON.stringify(presetBody, null, 4);
+    const presetFileName = `${presetName}.json`;
     download(presetJsonString, presetFileName, 'application/json');
 }
 

@@ -15,7 +15,9 @@ import { MAX_CONTEXT_DEFAULT, MAX_RESPONSE_DEFAULT, power_user } from './power-u
 import { getTextTokens, tokenizers } from './tokenizers.js';
 import { getEventSourceStream } from './sse-stream.js';
 import {
+    buildPresetNameIndexMap,
     getSortableDelay,
+    getOrderedPresetNames,
     getStringHash,
     onlyUnique,
 } from './utils.js';
@@ -215,7 +217,7 @@ export function loadNovelPreset(preset) {
 }
 
 export function hydrateNovelPresetData(data = {}) {
-    novelai_setting_names = Array.isArray(data.novelai_setting_names) ? [...data.novelai_setting_names] : [];
+    novelai_setting_names = buildPresetNameIndexMap(data.novelai_setting_names ?? novelai_setting_names);
     novelai_settings = Array.isArray(data.novelai_settings)
         ? data.novelai_settings.map((item) => typeof item === 'string' ? JSON.parse(item) : null)
         : [];
@@ -225,12 +227,9 @@ export function loadNovelSettings(data, settings) {
     hydrateNovelPresetData(data);
 
     $('#settings_preset_novel').empty();
-    const presetNames = {};
-    novelai_setting_names.forEach(function (item, i, arr) {
-        presetNames[item] = i;
-        $('#settings_preset_novel').append(`<option value=${i}>${item}</option>`);
+    getOrderedPresetNames(novelai_setting_names).forEach(function (item) {
+        $('#settings_preset_novel').append(`<option value=${novelai_setting_names[item]}>${item}</option>`);
     });
-    novelai_setting_names = presetNames;
 
     //load the rest of the Novel settings without any checks
     nai_settings.model_novel = settings.model_novel;

@@ -104,6 +104,54 @@ export function isObject(item) {
 }
 
 /**
+ * Builds a stable preset-name to index map from either an ordered name list or an existing map.
+ * Existing numeric indexes are preserved so sparse preset arrays remain addressable.
+ * @param {string[]|Record<string, number>|null|undefined} presetNames
+ * @returns {Record<string, number>}
+ */
+export function buildPresetNameIndexMap(presetNames) {
+    if (Array.isArray(presetNames)) {
+        return presetNames.reduce((acc, name, index) => {
+            const presetName = String(name ?? '').trim();
+            if (presetName) {
+                acc[presetName] = index;
+            }
+            return acc;
+        }, {});
+    }
+
+    if (presetNames && typeof presetNames === 'object') {
+        return Object.entries(presetNames).reduce((acc, [name, index]) => {
+            const presetName = String(name ?? '').trim();
+            const presetIndex = Number(index);
+            if (presetName && Number.isInteger(presetIndex) && presetIndex >= 0) {
+                acc[presetName] = presetIndex;
+            }
+            return acc;
+        }, {});
+    }
+
+    return {};
+}
+
+/**
+ * Returns preset names ordered by their stored index.
+ * @param {string[]|Record<string, number>|null|undefined} presetNames
+ * @returns {string[]}
+ */
+export function getOrderedPresetNames(presetNames) {
+    if (Array.isArray(presetNames)) {
+        return presetNames
+            .map((name) => String(name ?? '').trim())
+            .filter((name) => name.length > 0);
+    }
+
+    return Object.entries(buildPresetNameIndexMap(presetNames))
+        .sort(([, aIndex], [, bIndex]) => aIndex - bIndex)
+        .map(([name]) => name);
+}
+
+/**
  * Merges properties of two objects. If the property is an object, it will be merged recursively.
  * @param {object} target The target object
  * @param {object} source The source object

@@ -21,7 +21,7 @@ import {
     power_user,
 } from './power-user.js';
 import { getEventSourceStream } from './sse-stream.js';
-import { getSortableDelay, versionCompare } from './utils.js';
+import { buildPresetNameIndexMap, getOrderedPresetNames, getSortableDelay, versionCompare } from './utils.js';
 
 export let koboldai_settings;
 export let koboldai_setting_names;
@@ -96,7 +96,7 @@ function selectKoboldGuiPreset() {
 }
 
 export function hydrateKoboldPresetData(data = {}) {
-    koboldai_setting_names = Array.isArray(data.koboldai_setting_names) ? [...data.koboldai_setting_names] : [];
+    koboldai_setting_names = buildPresetNameIndexMap(data.koboldai_setting_names ?? koboldai_setting_names);
     koboldai_settings = Array.isArray(data.koboldai_settings)
         ? data.koboldai_settings.map((item) => typeof item === 'string' ? JSON.parse(item) : null)
         : [];
@@ -107,12 +107,9 @@ export function loadKoboldSettings(data, preset, settings) {
 
     $('#settings_preset').empty();
     $('#settings_preset').append('<option value="gui">GUI KoboldAI Settings</option>');
-    const names = {};
-    koboldai_setting_names.forEach(function (item, i, arr) {
-        names[item] = i;
-        $('#settings_preset').append(`<option value=${i}>${item}</option>`);
+    getOrderedPresetNames(koboldai_setting_names).forEach(function (item) {
+        $('#settings_preset').append(`<option value=${koboldai_setting_names[item]}>${item}</option>`);
     });
-    koboldai_setting_names = names;
 
     kai_settings.preset_settings = preset.preset_settings ?? settings.preset_settings;
     kai_settings.api_server = preset.api_server ?? settings.api_server;
