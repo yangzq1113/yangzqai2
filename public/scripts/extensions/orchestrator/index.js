@@ -211,6 +211,8 @@ function getDefaultAiSuggestSystemPrompt() {
         'Do NOT repeat full character biography in every node prompt. Prefer compact behavior policy and decision criteria.',
         'Each node must have a distinct role, concrete output focus, and minimal overlap.',
         'Prefer practical distiller/planner/critic/synthesizer style agents and add custom presets only when necessary.',
+        'Planner-like presets must not be thin "analyze and plan" prompts; give them explicit sequencing rules, evidence usage rules, branching discipline, and stop conditions.',
+        'When you create a planner role, keep it self-contained and reusable as a dedicated preset rather than scattering planner logic across unrelated nodes.',
         'Design for robust RP quality: user-intent understanding, character independence, anti-OOC, realism, and world autonomy.',
         'Require explicit hard-gate checks (consistency, OOC, causality, continuity, over-interpretation) in the critic review node.',
         'Hard requirement: include one dedicated node id "lorebook_reader" to explicitly study active lorebook/world-info constraints.',
@@ -314,6 +316,12 @@ const defaultAgendaAgents = {
     },
 };
 
+const defaultAgendaPlanner = {
+    systemPrompt: DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT,
+    userPromptTemplate: DEFAULT_AGENDA_PLANNER_PROMPT,
+    apiPresetName: '',
+};
+
 const defaultSettings = {
     enabled: false,
     executionMode: ORCH_EXECUTION_MODE_SPEC,
@@ -333,7 +341,7 @@ const defaultSettings = {
     capsuleCustomInstruction: DEFAULT_CAPSULE_CUSTOM_INSTRUCTION,
     orchestrationSpec: defaultSpec,
     presets: defaultPresets,
-    agendaPlannerPrompt: DEFAULT_AGENDA_PLANNER_PROMPT,
+    agendaPlanner: defaultAgendaPlanner,
     agendaAgents: defaultAgendaAgents,
     agendaFinalAgentId: 'finalizer',
     agendaPlannerMaxRounds: 6,
@@ -572,6 +580,8 @@ function registerLocaleData() {
         'Open Orchestration Editor': '打开编排编辑器',
         'Agenda Orchestration': 'Agenda 编排',
         'Planner Prompt': 'Planner 提示词',
+        'Planner system prompt': 'Planner 系统提示词',
+        'Planner API preset (Connection profile, empty = global orchestration API preset)': 'Planner API 预设（连接配置，留空=使用全局编排 API 预设）',
         'Final Agent': '最终 Agent',
         'Planner max rounds': 'Planner 最大轮数',
         'Max concurrent agents': '最大并行 Agent 数',
@@ -830,6 +840,8 @@ function registerLocaleData() {
         'Open Orchestration Editor': '開啟編排編輯器',
         'Agenda Orchestration': 'Agenda 編排',
         'Planner Prompt': 'Planner 提示詞',
+        'Planner system prompt': 'Planner 系統提示詞',
+        'Planner API preset (Connection profile, empty = global orchestration API preset)': 'Planner API 預設（連線配置，留空=使用全域編排 API 預設）',
         'Final Agent': '最終 Agent',
         'Planner max rounds': 'Planner 最大輪數',
         'Max concurrent agents': '最大並行 Agent 數',
@@ -1152,7 +1164,11 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].singleAgentModeEnabled = extension_settings[MODULE_NAME].executionMode === ORCH_EXECUTION_MODE_SINGLE;
     extension_settings[MODULE_NAME].singleAgentSystemPrompt = String(extension_settings[MODULE_NAME].singleAgentSystemPrompt || DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT);
     extension_settings[MODULE_NAME].singleAgentUserPromptTemplate = String(extension_settings[MODULE_NAME].singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE);
-    extension_settings[MODULE_NAME].agendaPlannerPrompt = String(extension_settings[MODULE_NAME].agendaPlannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
+    extension_settings[MODULE_NAME].agendaPlanner = createAgendaPlannerDraft(
+        extension_settings[MODULE_NAME].agendaPlanner || {
+            userPromptTemplate: extension_settings[MODULE_NAME].agendaPlannerPrompt,
+        },
+    );
     extension_settings[MODULE_NAME].agendaAgents = sanitizePresetMap(extension_settings[MODULE_NAME].agendaAgents);
     if (Object.keys(extension_settings[MODULE_NAME].agendaAgents).length === 0) {
         extension_settings[MODULE_NAME].agendaAgents = sanitizePresetMap(defaultAgendaAgents);
@@ -1177,6 +1193,7 @@ function ensureSettings() {
         Math.min(200, Math.floor(Number(extension_settings[MODULE_NAME].agendaMaxTotalRuns ?? 24) || 24)),
     );
     delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
+    delete extension_settings[MODULE_NAME].agendaPlannerPrompt;
 
     extension_settings[MODULE_NAME].orchestrationSpec = sanitizeSpec(extension_settings[MODULE_NAME].orchestrationSpec);
     extension_settings[MODULE_NAME].presets = sanitizePresetMap(extension_settings[MODULE_NAME].presets);
@@ -2512,7 +2529,7 @@ function getEffectiveProfile(context) {
                 source: String(source || 'agenda'),
                 key: String(key || 'agenda'),
                 mode: ORCH_EXECUTION_MODE_AGENDA,
-                plannerPrompt: profile.plannerPrompt,
+                planner: profile.planner,
                 agents: profile.agents,
                 finalAgentId: profile.finalAgentId,
                 limits: {
@@ -2536,7 +2553,7 @@ function getEffectiveProfile(context) {
         }
 
         return buildAgendaProfile('global', 'agenda', {
-            plannerPrompt: settings.agendaPlannerPrompt,
+            planner: settings.agendaPlanner,
             agents: settings.agendaAgents,
             finalAgentId: settings.agendaFinalAgentId,
             limits: {
@@ -4629,10 +4646,11 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
     const settings = extension_settings[MODULE_NAME];
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
-    const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings);
+    const planner = createAgendaPlannerDraft(profile?.planner);
+    const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, planner);
     const promptText = [
         '## planner_prompt',
-        String(profile?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+        String(planner?.userPromptTemplate || DEFAULT_AGENDA_PLANNER_PROMPT),
         '',
         buildAutoInjectedNodePromptPrelude({
             previousOrchestration,
@@ -4655,7 +4673,7 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
     const promptMessages = await buildPresetAwareMessages(
         context,
         settings,
-        DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT,
+        String(planner?.systemPrompt || DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT),
         promptText,
         {
             api: llmProfileResolution.requestApi,
@@ -4729,6 +4747,7 @@ async function runAgendaTextAgent(context, payload, messages, profile, state, di
     finalReason = '',
 }, abortSignal = null) {
     const settings = extension_settings[MODULE_NAME];
+    const planner = createAgendaPlannerDraft(profile?.planner);
     const preset = profile?.agents?.[dispatch.agent] || {};
     const llmPresetName = String(settings.llmNodePresetName || '').trim();
     const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
@@ -4753,7 +4772,7 @@ async function runAgendaTextAgent(context, payload, messages, profile, state, di
     ).trim();
     const promptText = [
         '## planner_prompt',
-        String(profile?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+        String(planner?.userPromptTemplate || DEFAULT_AGENDA_PLANNER_PROMPT),
         '',
         buildAutoInjectedNodePromptPrelude({
             previousOrchestration,
@@ -5427,7 +5446,7 @@ function buildAgentApiRoutingPromptData(settings = extension_settings[MODULE_NAM
     return {
         global_orchestration_api_preset: sanitizeConnectionProfileName(settings?.llmNodeApiPresetName || ''),
         empty_value_behavior: 'Empty apiPresetName falls back to the global orchestration API preset. If that is also empty, runtime uses the current chat API configuration.',
-        default_policy: 'Do not set per-agent apiPresetName unless the user explicitly asks for a specific provider/model route for that agent.',
+        default_policy: 'Do not set planner/agent apiPresetName unless the user explicitly asks for a specific provider/model route for that planner or agent.',
         available_connection_profiles: sanitizeConnectionProfilesForAiPrompt(getConnectionProfiles()),
     };
 }
@@ -5478,6 +5497,18 @@ function createPresetDraft(seed = {}) {
         userPromptTemplate: String(seed.userPromptTemplate || '').trim(),
         apiPresetName: getPresetApiPresetName(seed),
     };
+}
+
+function createAgendaPlannerDraft(seed = {}) {
+    const source = typeof seed === 'string'
+        ? { userPromptTemplate: seed }
+        : (seed && typeof seed === 'object' ? seed : {});
+    return createPresetDraft({
+        ...defaultAgendaPlanner,
+        ...source,
+        systemPrompt: String(source.systemPrompt || defaultAgendaPlanner.systemPrompt).trim(),
+        userPromptTemplate: String(source.userPromptTemplate || defaultAgendaPlanner.userPromptTemplate).trim(),
+    });
 }
 
 function toEditablePresetMap(presets) {
@@ -5744,7 +5775,7 @@ function ensureAgendaEditorIntegrity(editor) {
         return;
     }
     const normalized = sanitizeAgendaWorkingProfile(editor);
-    editor.plannerPrompt = normalized.plannerPrompt;
+    editor.planner = normalized.planner;
     editor.agents = normalized.agents;
     editor.finalAgentId = normalized.finalAgentId;
     editor.limits = normalized.limits;
@@ -5826,7 +5857,7 @@ function loadCharacterAgendaEditorState(context, avatar) {
         avatar: safeAvatar,
         enabled: Boolean(agendaOverride?.enabled),
         notes: String(agendaOverride?.notes || ''),
-        plannerPrompt: profile.plannerPrompt,
+        planner: profile.planner,
         agents: profile.agents,
         finalAgentId: profile.finalAgentId,
         limits: profile.limits,
@@ -6032,13 +6063,19 @@ function renderAgendaAgentBoard(scope, editor) {
 function renderAgendaWorkspace(scope, editor, title = '') {
     const safeScope = scope === 'character' ? 'character' : 'global';
     ensureAgendaEditorIntegrity(editor);
+    const planner = createAgendaPlannerDraft(editor?.planner);
     return `
 <div class="luker_orch_workspace" data-luker-scope-root="${safeScope}">
     <h5 class="margin0">${escapeHtml(title || i18n('Agenda Orchestration'))}</h5>
     <div class="luker_orch_workspace_grid">
         <div class="luker_orch_workspace_col">
             <div class="luker_orch_col_title">${escapeHtml(i18n('Planner Prompt'))}</div>
-            <textarea id="luker_orch_agenda_planner_prompt" data-scope="${safeScope}" class="text_pole textarea_compact" rows="16">${escapeHtml(String(editor?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT))}</textarea>
+            <label for="luker_orch_agenda_planner_api_preset">${escapeHtml(i18n('Planner API preset (Connection profile, empty = global orchestration API preset)'))}</label>
+            <select id="luker_orch_agenda_planner_api_preset" data-scope="${safeScope}" class="text_pole">${renderConnectionProfileOptions(planner?.apiPresetName, i18n('(Global orchestration API preset)'))}</select>
+            <label for="luker_orch_agenda_planner_system_prompt">${escapeHtml(i18n('Planner system prompt'))}</label>
+            <textarea id="luker_orch_agenda_planner_system_prompt" data-scope="${safeScope}" class="text_pole textarea_compact" rows="5">${escapeHtml(String(planner?.systemPrompt || DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT))}</textarea>
+            <label for="luker_orch_agenda_planner_prompt">${escapeHtml(i18n('Planner Prompt'))}</label>
+            <textarea id="luker_orch_agenda_planner_prompt" data-scope="${safeScope}" class="text_pole textarea_compact" rows="16">${escapeHtml(String(planner?.userPromptTemplate || DEFAULT_AGENDA_PLANNER_PROMPT))}</textarea>
             <label for="luker_orch_agenda_final_agent">${escapeHtml(i18n('Final Agent'))}</label>
             <select id="luker_orch_agenda_final_agent" data-scope="${safeScope}" class="text_pole">${renderAgendaAgentSelectOptions(editor, editor?.finalAgentId)}</select>
             <label for="luker_orch_agenda_planner_rounds">${escapeHtml(i18n('Planner max rounds'))}</label>
@@ -6365,7 +6402,8 @@ async function persistGlobalEditorFrom(settings, editor) {
 
 async function persistGlobalAgendaEditorFrom(settings, editor) {
     ensureAgendaEditorIntegrity(editor);
-    settings.agendaPlannerPrompt = String(editor.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
+    settings.agendaPlanner = createAgendaPlannerDraft(editor.planner);
+    delete settings.agendaPlannerPrompt;
     settings.agendaAgents = sanitizePresetMap(editor.agents);
     settings.agendaFinalAgentId = sanitizeIdentifierToken(editor.finalAgentId, 'finalizer');
     settings.agendaPlannerMaxRounds = Math.max(1, Math.min(20, Math.floor(Number(editor?.limits?.plannerMaxRounds) || 6)));
@@ -6444,7 +6482,7 @@ async function persistCharacterAgendaEditor(context, settings, avatar, {
         mode: ORCH_EXECUTION_MODE_AGENDA,
         agenda: {
             enabled: forceEnabled === null ? Boolean(sourceEnabled) : Boolean(forceEnabled),
-            plannerPrompt: String(editor.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT,
+            planner: createAgendaPlannerDraft(editor.planner),
             agents: sanitizePresetMap(editor.agents),
             finalAgentId: sanitizeIdentifierToken(editor.finalAgentId, 'finalizer'),
             limits: {
@@ -6823,7 +6861,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                 distiller: 'Produce compact evidence-grounded state snapshot.',
                 lorebook_reader: 'Extract only active lorebook/world-info hard constraints relevant to this turn.',
                 anti_data_guard: 'Enforce anti-data hard gates (no quantification/report tone/pseudo-analysis) and produce rewrite-safe guidance.',
-                planner: 'Produce causally coherent next-step plan.',
+                planner: 'Produce causally coherent next-step plan with explicit sequencing, evidence use, branching discipline, and clear stop conditions.',
                 critic: `Audit only the directly adjacent previous worker layer against an explicit hardcoded checklist. Restate all audited-layer hard constraints and pass/fail checks inside the critic prompt itself because the critic does not see upstream worker prompt text at runtime. Then either approve or request rerun of specific node ids from that layer only. Always include mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`. Do not emit synthesis.`,
                 recall_relevance: 'Pick recalled facts that matter for this turn.',
                 synthesizer: `Merge the approved worker outputs and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` into one draft-ready final guidance.`,
@@ -7207,6 +7245,15 @@ function createIterationEditorFromWorkingProfile(workingProfile) {
 function sanitizeAgendaWorkingProfile(workingProfile = null) {
     const source = workingProfile && typeof workingProfile === 'object' ? workingProfile : {};
     const limitsSource = source?.limits && typeof source.limits === 'object' ? source.limits : source;
+    const planner = createAgendaPlannerDraft(
+        source?.planner && typeof source.planner === 'object'
+            ? source.planner
+            : {
+                systemPrompt: source?.plannerSystemPrompt,
+                userPromptTemplate: source?.plannerPrompt,
+                apiPresetName: source?.plannerApiPresetName,
+            },
+    );
     const agents = sanitizePresetMap(source?.agents);
     if (Object.keys(agents).length === 0) {
         agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
@@ -7216,7 +7263,7 @@ function sanitizeAgendaWorkingProfile(workingProfile = null) {
         agents.finalizer ? 'finalizer' : (Object.keys(agents)[0] || 'finalizer'),
     );
     return {
-        plannerPrompt: String(source?.plannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT).trim() || DEFAULT_AGENDA_PLANNER_PROMPT,
+        planner,
         agents,
         finalAgentId: agents[finalAgentId]
             ? finalAgentId
@@ -7231,7 +7278,9 @@ function sanitizeAgendaWorkingProfile(workingProfile = null) {
 
 function cloneAgendaWorkingProfileFromSettings(settings) {
     return sanitizeAgendaWorkingProfile({
-        plannerPrompt: String(settings?.agendaPlannerPrompt || DEFAULT_AGENDA_PLANNER_PROMPT),
+        planner: settings?.agendaPlanner || {
+            userPromptTemplate: settings?.agendaPlannerPrompt,
+        },
         agents: sanitizePresetMap(settings?.agendaAgents),
         finalAgentId: sanitizeIdentifierToken(settings?.agendaFinalAgentId, 'finalizer'),
         limits: {
@@ -7253,7 +7302,7 @@ function buildAgendaProfileForRuntime(workingProfile = null) {
         source: 'agenda',
         key: 'agenda_iteration',
         mode: ORCH_EXECUTION_MODE_AGENDA,
-        plannerPrompt: profile.plannerPrompt,
+        planner: profile.planner,
         agents: profile.agents,
         finalAgentId: profile.finalAgentId,
         limits: {
@@ -7424,6 +7473,7 @@ const AI_ITERATION_EDITABLE_TOOL_NAMES = new Set([
     'luker_orch_remove_node',
     'luker_orch_set_preset',
     'luker_orch_remove_preset',
+    'luker_orch_set_agenda_planner',
     'luker_orch_set_agenda_planner_prompt',
     'luker_orch_set_agenda_agent',
     'luker_orch_remove_agenda_agent',
@@ -7459,7 +7509,7 @@ function summarizeIterationToolCalls(toolCalls) {
         node_remove: 0,
         preset_set: 0,
         preset_remove: 0,
-        agenda_planner_prompt: 0,
+        agenda_planner: 0,
         agenda_agent_set: 0,
         agenda_agent_remove: 0,
         agenda_final_agent: 0,
@@ -7474,7 +7524,7 @@ function summarizeIterationToolCalls(toolCalls) {
         else if (name === 'luker_orch_remove_node') counts.node_remove += 1;
         else if (name === 'luker_orch_set_preset') counts.preset_set += 1;
         else if (name === 'luker_orch_remove_preset') counts.preset_remove += 1;
-        else if (name === 'luker_orch_set_agenda_planner_prompt') counts.agenda_planner_prompt += 1;
+        else if (name === 'luker_orch_set_agenda_planner' || name === 'luker_orch_set_agenda_planner_prompt') counts.agenda_planner += 1;
         else if (name === 'luker_orch_set_agenda_agent') counts.agenda_agent_set += 1;
         else if (name === 'luker_orch_remove_agenda_agent') counts.agenda_agent_remove += 1;
         else if (name === 'luker_orch_set_agenda_final_agent') counts.agenda_final_agent += 1;
@@ -7488,7 +7538,7 @@ function summarizeIterationToolCalls(toolCalls) {
     if (counts.node_remove > 0) lines.push(`删除节点 ${counts.node_remove}`);
     if (counts.preset_set > 0) lines.push(`更新预设 ${counts.preset_set}`);
     if (counts.preset_remove > 0) lines.push(`删除预设 ${counts.preset_remove}`);
-    if (counts.agenda_planner_prompt > 0) lines.push(`更新 agenda plannerPrompt ${counts.agenda_planner_prompt}`);
+    if (counts.agenda_planner > 0) lines.push(`更新 agenda planner ${counts.agenda_planner}`);
     if (counts.agenda_agent_set > 0) lines.push(`更新 agenda agents ${counts.agenda_agent_set}`);
     if (counts.agenda_agent_remove > 0) lines.push(`删除 agenda agents ${counts.agenda_agent_remove}`);
     if (counts.agenda_final_agent > 0) lines.push(`更新 agenda final agent ${counts.agenda_final_agent}`);
@@ -7926,15 +7976,37 @@ function buildAgendaIterationPendingDiffState(session, pending) {
             rawArgs: args,
         };
 
-        if (name === 'luker_orch_set_agenda_planner_prompt') {
-            const nextPrompt = String(args.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
-            item.summary = 'Agenda planner prompt updated';
-            item.fields.push({
-                label: 'plannerPrompt',
-                before: formatDiffValue(workingProfile.plannerPrompt),
-                after: formatDiffValue(nextPrompt),
+        if (name === 'luker_orch_set_agenda_planner' || name === 'luker_orch_set_agenda_planner_prompt') {
+            const beforePlanner = createAgendaPlannerDraft(workingProfile.planner);
+            const afterPlanner = createAgendaPlannerDraft({
+                ...beforePlanner,
+                ...(Object.prototype.hasOwnProperty.call(args, 'systemPrompt')
+                    ? { systemPrompt: String(args.systemPrompt || '').trim() }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'userPromptTemplate') || Object.prototype.hasOwnProperty.call(args, 'plannerPrompt')
+                    ? { userPromptTemplate: String(args.userPromptTemplate ?? args.plannerPrompt ?? '').trim() }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
+                    ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
             });
-            workingProfile.plannerPrompt = nextPrompt;
+            item.summary = 'Agenda planner updated';
+            item.fields.push({
+                label: 'systemPrompt',
+                before: formatDiffValue(beforePlanner.systemPrompt),
+                after: formatDiffValue(afterPlanner.systemPrompt),
+            });
+            item.fields.push({
+                label: 'userPromptTemplate',
+                before: formatDiffValue(beforePlanner.userPromptTemplate),
+                after: formatDiffValue(afterPlanner.userPromptTemplate),
+            });
+            item.fields.push({
+                label: 'apiPresetName',
+                before: formatDiffValue(getPresetApiPresetName(beforePlanner)),
+                after: formatDiffValue(getPresetApiPresetName(afterPlanner)),
+            });
+            workingProfile.planner = afterPlanner;
             entries.push(item);
             continue;
         }
@@ -7982,7 +8054,7 @@ function buildAgendaIterationPendingDiffState(session, pending) {
                 delete workingProfile.agents[agentId];
             }
             const normalized = sanitizeAgendaWorkingProfile(workingProfile);
-            workingProfile.plannerPrompt = normalized.plannerPrompt;
+            workingProfile.planner = normalized.planner;
             workingProfile.agents = normalized.agents;
             workingProfile.finalAgentId = normalized.finalAgentId;
             workingProfile.limits = normalized.limits;
@@ -8451,6 +8523,7 @@ function renderAgendaIterationWorkingProfile(session, { profileOverride = null, 
             ? profileOverride
             : session?.workingProfile,
     );
+    const planner = createAgendaPlannerDraft(profile?.planner);
     const agentCards = Object.entries(profile?.agents || {})
         .sort((left, right) => left[0].localeCompare(right[0]))
         .map(([agentId, preset]) => `
@@ -8471,10 +8544,15 @@ function renderAgendaIterationWorkingProfile(session, { profileOverride = null, 
     ${simulationSummary ? `<div>${escapeHtml(simulationSummary)}</div>` : ''}
 </div>
 <div class="luker_orch_iter_preset_line"><b>Final agent:</b> ${escapeHtml(profile.finalAgentId || '(none)')}</div>
+<div class="luker_orch_iter_preset_line"><b>Planner API:</b> ${escapeHtml(getPresetApiPresetName(planner) || i18n('(Global orchestration API preset)'))}</div>
 <div class="luker_orch_iter_preset_line"><b>Limits:</b> ${escapeHtml(`rounds=${profile.limits.plannerMaxRounds}, concurrent=${profile.limits.maxConcurrentAgents}, totalRuns=${profile.limits.maxTotalRuns}`)}</div>
 <details class="luker_orch_iter_diff_raw" open>
+    <summary>${escapeHtml(i18n('Planner system prompt'))}</summary>
+    <pre>${escapeHtml(planner.systemPrompt || '')}</pre>
+</details>
+<details class="luker_orch_iter_diff_raw" open>
     <summary>${escapeHtml(i18n('Planner Prompt'))}</summary>
-    <pre>${escapeHtml(profile.plannerPrompt || '')}</pre>
+    <pre>${escapeHtml(planner.userPromptTemplate || '')}</pre>
 </details>
 <div class="luker_orch_iter_stage_list">${agentCards || '<div class="luker_orch_iter_empty">(no agents)</div>'}</div>`;
 }
@@ -8527,12 +8605,13 @@ function buildAiIterationSystemPrompt(settings, session = null) {
             '',
             'Iteration mode contract:',
             '- You are editing an existing agenda orchestration profile incrementally.',
-            '- The working profile contains plannerPrompt, agenda agents, finalAgentId, and runtime limits.',
-            '- Agenda agents may optionally set apiPresetName to use a specific Connection Manager profile.',
-            '- Leave agenda agent apiPresetName empty unless the user explicitly asks for per-agent model/provider routing. Empty means fallback to the global orchestration API preset.',
-            '- If you set agenda agent apiPresetName, use only a name from available_connection_profiles.',
-            '- Prefer targeted edits. Do not rewrite the full plannerPrompt unless necessary.',
-            '- Keep plannerPrompt as the main orchestration contract and keep agent prompts concrete and task-oriented.',
+            '- The working profile contains a planner preset, agenda agents, finalAgentId, and runtime limits.',
+            '- The planner preset and agenda agents may optionally set apiPresetName to use a specific Connection Manager profile.',
+            '- Leave planner/agent apiPresetName empty unless the user explicitly asks for per-agent model/provider routing. Empty means fallback to the global orchestration API preset.',
+            '- If you set planner/agent apiPresetName, use only a name from available_connection_profiles.',
+            '- Prefer targeted edits. Do not rewrite the full planner preset unless necessary.',
+            '- Keep the planner preset as the main orchestration contract and keep agent prompts concrete and task-oriented.',
+            '- Use luker_orch_set_agenda_planner to create or update the agenda planner preset.',
             '- Use luker_orch_set_agenda_agent to create or update one agenda agent at a time.',
             '- Use luker_orch_set_agenda_final_agent to point final output to an existing agent id.',
             '- Use luker_orch_set_agenda_limits only for real budget changes, not for stylistic edits.',
@@ -8720,14 +8799,15 @@ function buildAiIterationToolSet(session = null) {
             {
                 type: 'function',
                 function: {
-                    name: 'luker_orch_set_agenda_planner_prompt',
-                    description: 'Create or replace the agenda planner prompt.',
+                    name: 'luker_orch_set_agenda_planner',
+                    description: 'Create or update the agenda planner preset. Leave apiPresetName empty unless the user explicitly requests planner-specific model routing.',
                     parameters: {
                         type: 'object',
                         properties: {
-                            plannerPrompt: { type: 'string' },
+                            systemPrompt: { type: 'string' },
+                            userPromptTemplate: { type: 'string' },
+                            apiPresetName: { type: 'string' },
                         },
-                        required: ['plannerPrompt'],
                         additionalProperties: false,
                     },
                 },
@@ -9135,9 +9215,20 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
         if (!name) {
             continue;
         }
-        if (name === 'luker_orch_set_agenda_planner_prompt') {
-            session.workingProfile.plannerPrompt = String(args.plannerPrompt || '').trim() || DEFAULT_AGENDA_PLANNER_PROMPT;
-            actions.push('Agenda planner prompt updated.');
+        if (name === 'luker_orch_set_agenda_planner' || name === 'luker_orch_set_agenda_planner_prompt') {
+            session.workingProfile.planner = createAgendaPlannerDraft({
+                ...session.workingProfile.planner,
+                ...(Object.prototype.hasOwnProperty.call(args, 'systemPrompt')
+                    ? { systemPrompt: String(args.systemPrompt || '').trim() }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'userPromptTemplate') || Object.prototype.hasOwnProperty.call(args, 'plannerPrompt')
+                    ? { userPromptTemplate: String(args.userPromptTemplate ?? args.plannerPrompt ?? '').trim() }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
+                    ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+            });
+            actions.push('Agenda planner updated.');
             changed = true;
             continue;
         }
@@ -9558,7 +9649,8 @@ async function applyAiIterationSessionToGlobal(context, settings, session, root)
         const profile = sanitizeAgendaWorkingProfile(session?.workingProfile);
         settings.executionMode = ORCH_EXECUTION_MODE_AGENDA;
         settings.singleAgentModeEnabled = false;
-        settings.agendaPlannerPrompt = profile.plannerPrompt;
+        settings.agendaPlanner = createAgendaPlannerDraft(profile.planner);
+        delete settings.agendaPlannerPrompt;
         settings.agendaAgents = sanitizePresetMap(profile.agents);
         settings.agendaFinalAgentId = sanitizeIdentifierToken(profile.finalAgentId, 'finalizer');
         settings.agendaPlannerMaxRounds = profile.limits.plannerMaxRounds;
@@ -10002,11 +10094,25 @@ function bindUi() {
         saveSettingsDebounced();
     });
 
+    jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_api_preset, .luker_orch_editor_popup #luker_orch_agenda_planner_api_preset`, function () {
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.planner.apiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
+    });
+
+    jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_system_prompt, .luker_orch_editor_popup #luker_orch_agenda_planner_system_prompt`, function () {
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.planner.systemPrompt = String(jQuery(this).val() || '');
+    });
+
     jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_prompt, .luker_orch_editor_popup #luker_orch_agenda_planner_prompt`, function () {
         const scope = getAgendaScopeFromElement(this, context, settings);
         const editor = getAgendaEditorByScope(scope);
         ensureAgendaEditorIntegrity(editor);
-        editor.plannerPrompt = String(jQuery(this).val() || '');
+        editor.planner.userPromptTemplate = String(jQuery(this).val() || '');
     });
 
     jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_final_agent, .luker_orch_editor_popup #luker_orch_agenda_final_agent`, function () {
@@ -10411,7 +10517,8 @@ function bindUi() {
                 }
                 settings.executionMode = ORCH_EXECUTION_MODE_AGENDA;
                 settings.singleAgentModeEnabled = false;
-                settings.agendaPlannerPrompt = DEFAULT_AGENDA_PLANNER_PROMPT;
+                settings.agendaPlanner = structuredClone(defaultAgendaPlanner);
+                delete settings.agendaPlannerPrompt;
                 settings.agendaAgents = sanitizePresetMap(defaultAgendaAgents);
                 settings.agendaFinalAgentId = 'finalizer';
                 settings.agendaPlannerMaxRounds = 6;
@@ -10527,7 +10634,8 @@ function bindUi() {
                 if (targetMode === ORCH_EXECUTION_MODE_AGENDA) {
                     if (scope === 'global') {
                         const profile = sanitizeAgendaWorkingProfile(imported.agenda);
-                        settings.agendaPlannerPrompt = profile.plannerPrompt;
+                        settings.agendaPlanner = createAgendaPlannerDraft(profile.planner);
+                        delete settings.agendaPlannerPrompt;
                         settings.agendaAgents = sanitizePresetMap(profile.agents);
                         settings.agendaFinalAgentId = sanitizeIdentifierToken(profile.finalAgentId, 'finalizer');
                         settings.agendaPlannerMaxRounds = profile.limits.plannerMaxRounds;
@@ -10546,7 +10654,9 @@ function bindUi() {
                             return;
                         }
                         const importedEditor = {
-                            plannerPrompt: imported.agenda.plannerPrompt,
+                            planner: createAgendaPlannerDraft(imported.agenda.planner || {
+                                userPromptTemplate: imported.agenda.plannerPrompt,
+                            }),
                             agents: sanitizePresetMap(imported.agenda.agents),
                             finalAgentId: sanitizeIdentifierToken(imported.agenda.finalAgentId, 'finalizer'),
                             limits: {
