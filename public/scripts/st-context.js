@@ -118,6 +118,7 @@ import { ConnectionManagerRequestService } from './extensions/shared.js';
 import { updateReasoningUI, parseReasoningFromString, getReasoningTemplateByName } from './reasoning.js';
 import { IGNORE_SYMBOL, inject_ids } from './constants.js';
 import { macros } from './macros/macro-system.js';
+import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 
 function safeClone(value, fallback = {}) {
     try {
@@ -474,27 +475,6 @@ function getActivePromptPresetEnvelope({
     return envelope;
 }
 
-function getValueByPath(source, path) {
-    if (!source || typeof source !== 'object') {
-        return undefined;
-    }
-    const parts = String(path || '')
-        .split('.')
-        .map(part => part.trim())
-        .filter(Boolean);
-    if (parts.length === 0) {
-        return undefined;
-    }
-    let cursor = source;
-    for (const part of parts) {
-        if (!cursor || typeof cursor !== 'object' || !Object.hasOwn(cursor, part)) {
-            return undefined;
-        }
-        cursor = cursor[part];
-    }
-    return cursor;
-}
-
 function normalizePromptMessages(messages) {
     if (!Array.isArray(messages)) {
         return [];
@@ -549,17 +529,91 @@ function normalizePromptMessages(messages) {
     return result;
 }
 
-function tagsMatch(entryTags, requestedTags) {
-    if (!requestedTags || requestedTags.size === 0) {
-        return true;
+function getPluginRegexPlacementForPromptMessage(message) {
+    const role = normalizePromptMessageRole(message?.role);
+    if (role === 'user') {
+        return regex_placement.USER_INPUT;
     }
-    if (!Array.isArray(entryTags) || entryTags.length === 0) {
-        return true;
+    if (role === 'assistant') {
+        return regex_placement.AI_OUTPUT;
     }
-    if (entryTags.includes('shared')) {
-        return true;
+    return null;
+}
+
+function applyPluginRegexToPromptMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return [];
     }
-    return entryTags.some(tag => requestedTags.has(tag));
+
+    const eligibleIndexes = [];
+    for (let index = 0; index < messages.length; index++) {
+        if (getPluginRegexPlacementForPromptMessage(messages[index]) !== null) {
+            eligibleIndexes.push(index);
+        }
+    }
+
+    const depthByIndex = new Map(
+        eligibleIndexes.map((index, orderIndex) => [index, eligibleIndexes.length - orderIndex - 1]),
+    );
+
+    return messages.map((message, index) => {
+        const placement = getPluginRegexPlacementForPromptMessage(message);
+        if (placement === null || typeof message?.content !== 'string') {
+            return message;
+        }
+
+        return {
+            ...message,
+            content: getRegexedString(message.content, placement, {
+                isPluginPrompt: true,
+                depth: depthByIndex.get(index),
+            }),
+        };
+    });
+}
+
+function applyPluginRegexToRuntimeWorldInfo(runtimeWorldInfo = null) {
+    if (!runtimeWorldInfo || typeof runtimeWorldInfo !== 'object') {
+        return runtimeWorldInfo;
+    }
+
+    const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
+    const applyWorldInfoRegex = (value, options = {}) => {
+        const text = String(value ?? '');
+        if (!text) {
+            return '';
+        }
+        return getRegexedString(text, regex_placement.WORLD_INFO, {
+            isPluginPrompt: true,
+            ...options,
+        });
+    };
+
+    return normalizeRuntimeWorldInfo({
+        ...normalized,
+        worldInfoBefore: applyWorldInfoRegex(normalized.worldInfoBefore),
+        worldInfoAfter: applyWorldInfoRegex(normalized.worldInfoAfter),
+        worldInfoDepth: normalized.worldInfoDepth.map(entry => ({
+            ...entry,
+            entries: Array.isArray(entry?.entries)
+                ? entry.entries.map(item => applyWorldInfoRegex(item, { depth: entry.depth })).filter(Boolean)
+                : [],
+        })),
+        outletEntries: Object.fromEntries(
+            Object.entries(normalized.outletEntries).map(([key, value]) => [
+                key,
+                Array.isArray(value) ? value.map(item => applyWorldInfoRegex(item)).filter(Boolean) : [],
+            ]),
+        ),
+        worldInfoExamples: normalized.worldInfoExamples
+            .map(example => ({
+                ...example,
+                content: applyWorldInfoRegex(example?.content),
+            }))
+            .filter(example => example.content),
+        anBefore: normalized.anBefore.map(item => applyWorldInfoRegex(item)).filter(Boolean),
+        anAfter: normalized.anAfter.map(item => applyWorldInfoRegex(item)).filter(Boolean),
+    });
 }
 
 function getPluginPromptOrderPreferredCharacterIds() {
@@ -1016,14 +1070,17 @@ function collectScriptInjectPromptFields() {
     };
 }
 
-function resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo = null) {
-    if (runtimeWorldInfo && typeof runtimeWorldInfo === 'object') {
-        return normalizeRuntimeWorldInfo(runtimeWorldInfo);
+function resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo = null, { applyPluginRegex = false } = {}) {
+    const normalized = runtimeWorldInfo && typeof runtimeWorldInfo === 'object'
+        ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
+        : normalizeRuntimeWorldInfo({
+            ...getActiveWorldInfoPromptFields(),
+            worldInfoDepth: [],
+        });
+    if (!applyPluginRegex) {
+        return normalized;
     }
-    return normalizeRuntimeWorldInfo({
-        ...getActiveWorldInfoPromptFields(),
-        worldInfoDepth: [],
-    });
+    return applyPluginRegexToRuntimeWorldInfo(normalized);
 }
 
 function normalizeWorldInfoSourceMessages(messages) {
@@ -1128,7 +1185,7 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
 
     const result = [];
     let historyInjected = false;
-    const runtimePromptFields = resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo);
+    const runtimePromptFields = resolveRuntimeWorldInfoForPromptAssembly(runtimeWorldInfo, { applyPluginRegex: true });
     const scriptInjectFields = collectScriptInjectPromptFields();
     const mergedWorldInfoDepth = [
         ...(Array.isArray(runtimePromptFields.worldInfoDepth) ? runtimePromptFields.worldInfoDepth : []),
@@ -1209,41 +1266,6 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
     return result;
 }
 
-function resolveLayoutEntryText(entry, env) {
-    const source = String(entry.source || '').toLowerCase();
-    if (source === 'task_system') {
-        return env.taskSystemText;
-    }
-    if (source === 'task_user') {
-        return env.taskUserText;
-    }
-    if (source === 'envelope_json') {
-        return formatPromptPresetEnvelope(env.envelope);
-    }
-    if (source === 'envelope_field') {
-        const value = getValueByPath(env.envelope, entry.path);
-        if (value === undefined || value === null) {
-            return '';
-        }
-        if (typeof value === 'string') {
-            return value.trim();
-        }
-        return JSON.stringify(value);
-    }
-    if (source === 'prompt_ref') {
-        const promptId = String(entry.promptIdentifier || '').trim();
-        if (!promptId) {
-            return '';
-        }
-        const row = env.promptCatalog?.[promptId];
-        return String(row?.content || '').trim();
-    }
-    if (source === 'literal' || !source) {
-        return entry.content;
-    }
-    return '';
-}
-
 function formatPromptPresetEnvelope(envelope, { label = 'LUKER_PRESET_ENVELOPE' } = {}) {
     const resolved = envelope && typeof envelope === 'object'
         ? envelope
@@ -1289,10 +1311,12 @@ function buildPresetAwarePromptMessages({
         }
     }
 
+    const pluginRegexMessages = applyPluginRegexToPromptMessages(normalizedMessages);
+
     const orderedMessages = buildPluginMessagesFromPromptOrder(
         resolvedEnvelope?.promptCore?.completion,
         resolvedEnvelope,
-        normalizedMessages,
+        pluginRegexMessages,
         runtimeWorldInfo,
     );
     if (Array.isArray(orderedMessages)) {

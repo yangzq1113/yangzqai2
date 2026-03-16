@@ -1764,6 +1764,8 @@
     "Only Format Display": "仅格式显示",
     "ext_regex_only_format_prompt_desc": "聊天记录不会改变，只有在请求发送时（生成时）才会出现提示词。",
     "Only Format Prompt (?)": "仅格式提示词",
+    "ext_regex_only_format_plugin_desc": "不会修改聊天记录文件，但正则会作用于由插件请求构建器（例如 buildPresetAwarePromptMessages()）组装出来的消息。可以和其他短暂作用域同时勾选。",
+    "Alter Plugin Messages": "仅对插件消息生效",
     "This character has embedded regex script(s).": "此角色含有内置正则脚本。",
     "Would you like to allow using them?": "你想要启用它们吗？",
     "If you want to do it later, select 'Regex' from the extensions menu.": "你可以稍后在扩展栏的 \"正则\" 区域管理它们。",

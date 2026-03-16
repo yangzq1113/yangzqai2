@@ -141,6 +141,7 @@ buildWorldInfoGlobalScanData(type, overrides = {})
 Behavior notes:
 
 - `buildPresetAwarePromptMessages(options)` preserves active preset content outside chat-history and only replaces chat-history with your supplied message list.
+- Plugin-only regex rules are applied to the caller-supplied chat messages and `runtimeWorldInfo` passed into `buildPresetAwarePromptMessages(options)`.
 - For popup/sidecar generation, run world-info simulation/finalization helpers before composing the final request body if you need the same world-info behavior as main chat generation.
 - If your plugin composes request messages after `GENERATION_WORLD_INFO_FINALIZED`, depth-based world-info injections are preserved in the final payload.
 
@@ -267,7 +268,7 @@ runRegexScript(script: RegexScript, raw: string, { characterOverride? } = {}): s
 - `replaceString: string`
 - `placement: number[]` (use `regex_placement` enum)
 - `disabled: boolean`
-- Optional controls: `promptOnly`, `markdownOnly`, `runOnEdit`, `substituteRegex`, `trimStrings`, `minDepth`, `maxDepth`
+- Optional controls: `promptOnly`, `markdownOnly`, `pluginOnly`, `runOnEdit`, `substituteRegex`, `trimStrings`, `minDepth`, `maxDepth`
 
 Enums:
 
@@ -307,6 +308,7 @@ function buildRuntimeRegexScripts() {
     disabled: false,
     markdownOnly: false,
     promptOnly: true,
+    pluginOnly: false,
     runOnEdit: false,
     substituteRegex: substitute_find_regex.NONE,
     minDepth: n,
@@ -346,6 +348,7 @@ function syncVisibleWindowRegex() {
     disabled: false,
     markdownOnly: false,
     promptOnly: true,
+    pluginOnly: false,
     runOnEdit: false,
     substituteRegex: substitute_find_regex.NONE,
     minDepth: n,

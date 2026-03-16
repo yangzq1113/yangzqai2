@@ -843,6 +843,7 @@ function fillRegexEditorFields(editorHtml, script) {
     editorHtml.find('input[name="disabled"]').prop('checked', script.disabled ?? false);
     editorHtml.find('input[name="only_format_display"]').prop('checked', script.markdownOnly ?? false);
     editorHtml.find('input[name="only_format_prompt"]').prop('checked', script.promptOnly ?? false);
+    editorHtml.find('input[name="only_format_plugin"]').prop('checked', script.pluginOnly ?? false);
     editorHtml.find('input[name="run_on_edit"]').prop('checked', script.runOnEdit ?? false);
     editorHtml.find('select[name="substitute_regex"]').val(script.substituteRegex ?? substitute_find_regex.NONE);
     editorHtml.find('input[name="min_depth"]').val(script.minDepth ?? '');
@@ -930,6 +931,7 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
             substituteRegex: Number(editorHtml.find('select[name="substitute_regex"]').val()),
             disabled: false,
             promptOnly: false,
+            pluginOnly: false,
             markdownOnly: false,
             runOnEdit: false,
             minDepth: null,
@@ -962,6 +964,7 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
             disabled: editorHtml.find('input[name="disabled"]').prop('checked'),
             markdownOnly: editorHtml.find('input[name="only_format_display"]').prop('checked'),
             promptOnly: editorHtml.find('input[name="only_format_prompt"]').prop('checked'),
+            pluginOnly: editorHtml.find('input[name="only_format_plugin"]').prop('checked'),
             runOnEdit: editorHtml.find('input[name="run_on_edit"]').prop('checked'),
             substituteRegex: Number(editorHtml.find('select[name="substitute_regex"]').val()),
             minDepth: parseInt(String(editorHtml.find('input[name="min_depth"]').val())),

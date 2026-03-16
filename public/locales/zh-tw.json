@@ -1264,6 +1264,8 @@
     "Only Format Display": "僅修改聊天顯示",
     "ext_regex_only_format_prompt_desc": "不修改聊天記錄，僅修改傳送訊息（請求文字生成時）時的系統提示詞。",
     "Only Format Prompt (?)": "僅修改系統提示詞",
+    "ext_regex_only_format_plugin_desc": "不會修改聊天記錄檔案，但正則會套用到由插件請求組裝器（例如 buildPresetAwarePromptMessages()）建立的訊息上。可以和其他短暫作用域同時勾選。",
+    "Alter Plugin Messages": "僅修改插件訊息",
     "Run On Edit": "編輯時執行",
     "ext_regex_substitute_regex_desc": "在執行「尋找正規表達式」前，將 {{macros}}（巨集）替換為對應內容",
     "Substitute Regex": "取代正規表示式",
