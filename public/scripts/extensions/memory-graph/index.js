@@ -6,7 +6,7 @@ import { extension_prompt_roles, extension_prompt_types, saveSettings, saveSetti
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
-import { getStringHash } from '../../utils.js';
+import { download, getFileText, getStringHash } from '../../utils.js';
 import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, world_info_position } from '../../world-info.js';
 import { registerManagedRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
@@ -455,6 +455,8 @@ function registerLocaleData() {
         'Memory graph update running... seq ${0}-${1} / latest ${2}': '记忆图更新进行中... 楼层 ${0}-${1} / 最新 ${2}',
         'No active chat selected.': '未选择有效聊天。',
         'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
+        'Memory graph exported for current chat.': '当前聊天记忆图已导出。',
+        'Downloaded memory graph file: ${0}': '已下载记忆图文件：${0}',
         'Import': '导入',
         'Cancel': '取消',
         'Delete': '删除',
@@ -727,6 +729,8 @@ function registerLocaleData() {
         'Memory graph update running... seq ${0}-${1} / latest ${2}': '記憶圖更新進行中... 樓層 ${0}-${1} / 最新 ${2}',
         'No active chat selected.': '未選擇有效聊天。',
         'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
+        'Memory graph exported for current chat.': '目前聊天記憶圖已匯出。',
+        'Downloaded memory graph file: ${0}': '已下載記憶圖檔案：${0}',
         'Import': '匯入',
         'Cancel': '取消',
         'Delete': '刪除',
@@ -1573,6 +1577,46 @@ function buildMemoryTargetFromContext(context, explicitTarget = null) {
         avatar_url: avatar,
         file_name: fileName,
     };
+}
+
+function sanitizeMemoryGraphFileNamePart(value, fallback = 'current-chat') {
+    const sanitized = String(value || '')
+        .trim()
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[^a-z0-9._-]+/gi, '_')
+        .replace(/^_+|_+$/g, '');
+    return sanitized || fallback;
+}
+
+function getMemoryGraphExportFileName(context) {
+    const target = buildMemoryTargetFromContext(context);
+    if (!target) {
+        return 'memory-graph-current-chat.json';
+    }
+    if (target.is_group) {
+        return `memory-graph-group-${sanitizeMemoryGraphFileNamePart(target.id)}.json`;
+    }
+    return `memory-graph-${sanitizeMemoryGraphFileNamePart(target.file_name)}.json`;
+}
+
+async function importMemoryGraphStore(context, parsed) {
+    const chatKey = getChatKey(context);
+    const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
+    if (target) {
+        memoryStoreTargets.set(chatKey, target);
+    }
+    const migrated = normalizeStoreForRuntime(parsed);
+    rebaseStoreToChatBaseline(migrated, context);
+    updateStoreSourceState(migrated, context);
+    replacePersistedGraphWithStore(
+        chatKey,
+        migrated,
+        Math.max(0, Number(computeChatSourceState(context)?.messageCount || 0)),
+    );
+    clearRollbackHistory(chatKey);
+    latestRecallSnapshot = null;
+    await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
+    refreshUiStats();
 }
 
 async function loadMemoryStoreByTarget(context, target) {
@@ -11493,6 +11537,8 @@ function bindUi() {
         updateUiStatus(i18n('Reset memory graph for current chat.'));
     });
 
+    const importFileInput = root.find('#luker_rpg_memory_import_file');
+
     root.find('#luker_rpg_memory_export').off('click').on('click', async function () {
         await ensureMemoryStoreLoaded(context);
         const store = getMemoryStore(context);
@@ -11500,12 +11546,10 @@ function bindUi() {
             notifyError(i18n('No active chat selected.'));
             return;
         }
-        await context.callGenericPopup(
-            `<pre style="white-space:pre-wrap;">${JSON.stringify(store, null, 2).replace(/</g, '&lt;')}</pre>`,
-            context.POPUP_TYPE.TEXT,
-            '',
-            { wide: true, large: true, allowVerticalScrolling: true },
-        );
+        const fileName = getMemoryGraphExportFileName(context);
+        download(JSON.stringify(store, null, 2), fileName, 'application/json');
+        notifySuccess(i18n('Memory graph exported for current chat.'));
+        updateUiStatus(i18nFormat('Downloaded memory graph file: ${0}', fileName));
     });
 
     root.find('#luker_rpg_memory_import').off('click').on('click', async function () {
@@ -11515,37 +11559,29 @@ function bindUi() {
             notifyError(i18n('No active chat selected.'));
             return;
         }
-        const current = JSON.stringify(store, null, 2);
-        const input = await context.callGenericPopup(
-            i18n('Paste memory graph JSON for current chat.'),
-            context.POPUP_TYPE.INPUT,
-            current,
-            { rows: 16, wide: true, large: true, okButton: i18n('Import'), cancelButton: i18n('Cancel') },
-        );
-
-        if (!input || typeof input !== 'string') {
+        if (!importFileInput.length) {
+            notifyError(i18n('Memory graph import failed.'));
             return;
         }
+        importFileInput.val('');
+        importFileInput.trigger('click');
+    });
 
+    importFileInput.off('change').on('change', async function () {
+        const file = this.files?.[0];
+        this.value = '';
+        if (!file) {
+            return;
+        }
+        await ensureMemoryStoreLoaded(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
         try {
-            const parsed = JSON.parse(input);
-            const chatKey = getChatKey(context);
-            const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
-            if (target) {
-                memoryStoreTargets.set(chatKey, target);
-            }
-            const migrated = normalizeStoreForRuntime(parsed);
-            rebaseStoreToChatBaseline(migrated, context);
-            updateStoreSourceState(migrated, context);
-            replacePersistedGraphWithStore(
-                chatKey,
-                migrated,
-                Math.max(0, Number(computeChatSourceState(context)?.messageCount || 0)),
-            );
-            clearRollbackHistory(chatKey);
-            latestRecallSnapshot = null;
-            await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
-            refreshUiStats();
+            const parsed = JSON.parse(await getFileText(file));
+            await importMemoryGraphStore(context, parsed);
             notifySuccess(i18n('Memory graph imported for current chat.'));
             updateUiStatus(i18n('Imported memory graph JSON as current chat baseline.'));
         } catch (error) {
@@ -11638,6 +11674,7 @@ function ensureUi() {
                 <div id="luker_rpg_memory_export" class="menu_button">${escapeHtml(i18n('Export Current Chat Graph'))}</div>
                 <div id="luker_rpg_memory_import" class="menu_button">${escapeHtml(i18n('Import Current Chat Graph'))}</div>
             </div>
+            <input id="luker_rpg_memory_import_file" type="file" accept=".json,application/json" hidden />
 
             <label for="luker_rpg_memory_debug_query">${escapeHtml(i18n('Recall debug query'))}</label>
             <input id="luker_rpg_memory_debug_query" class="text_pole" type="text" placeholder="${escapeHtml(i18n('e.g. what happened at the ruins with Mira?'))}" />
