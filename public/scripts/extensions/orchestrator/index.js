@@ -231,6 +231,10 @@ function getDefaultAiSuggestSystemPrompt() {
         'Leave apiPresetName empty unless the user explicitly asks for per-agent model/provider routing.',
         'Empty apiPresetName means runtime falls back to the global orchestration API preset.',
         'If you set apiPresetName, use only names from available_connection_profiles.',
+        'Each preset may optionally set promptPresetName to route that agent through a specific chat completion preset.',
+        'Leave promptPresetName empty unless the user explicitly asks for per-agent chat completion preset routing.',
+        'Empty promptPresetName means runtime falls back to the global orchestration chat completion preset.',
+        'If you set promptPresetName, use only names from available_chat_completion_presets.',
         'Runtime auto-injects previous orchestration result before each node template.',
         'Do not use placeholders for auto-injected context. Encode how to use it in Task rules.',
         'Placeholder usage policy (must follow):',
@@ -320,6 +324,7 @@ const defaultAgendaPlanner = {
     systemPrompt: DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT,
     userPromptTemplate: DEFAULT_AGENDA_PLANNER_PROMPT,
     apiPresetName: '',
+    promptPresetName: '',
 };
 
 const defaultSettings = {
@@ -521,6 +526,7 @@ function registerLocaleData() {
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点提示词预设（参数+提示词，留空=当前）',
         'Agent API preset (Connection profile, empty = global orchestration API preset)': 'Agent API 预设（连接配置，留空=使用全局编排 API 预设）',
+        'Agent preset (params + prompt, empty = global orchestration preset)': 'Agent 提示词预设（参数+提示词，留空=使用全局编排提示词预设）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成提示词预设（参数+提示词，留空=当前）',
         'AI build system prompt': 'AI 生成系统提示词',
@@ -582,6 +588,7 @@ function registerLocaleData() {
         'Planner Prompt': 'Planner 提示词',
         'Planner system prompt': 'Planner 系统提示词',
         'Planner API preset (Connection profile, empty = global orchestration API preset)': 'Planner API 预设（连接配置，留空=使用全局编排 API 预设）',
+        'Planner preset (params + prompt, empty = global orchestration preset)': 'Planner 提示词预设（参数+提示词，留空=使用全局编排提示词预设）',
         'Final Agent': '最终 Agent',
         'Planner max rounds': 'Planner 最大轮数',
         'Max concurrent agents': '最大并行 Agent 数',
@@ -782,6 +789,7 @@ function registerLocaleData() {
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點提示詞預設（參數+提示詞，留空=目前）',
         'Agent API preset (Connection profile, empty = global orchestration API preset)': 'Agent API 預設（連線設定，留空=使用全域編排 API 預設）',
+        'Agent preset (params + prompt, empty = global orchestration preset)': 'Agent 提示詞預設（參數+提示詞，留空=使用全域編排提示詞預設）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
         'AI build preset (params + prompt, empty = current)': 'AI 生成提示詞預設（參數+提示詞，留空=目前）',
         'AI build system prompt': 'AI 生成系統提示詞',
@@ -842,6 +850,7 @@ function registerLocaleData() {
         'Planner Prompt': 'Planner 提示詞',
         'Planner system prompt': 'Planner 系統提示詞',
         'Planner API preset (Connection profile, empty = global orchestration API preset)': 'Planner API 預設（連線配置，留空=使用全域編排 API 預設）',
+        'Planner preset (params + prompt, empty = global orchestration preset)': 'Planner 提示詞預設（參數+提示詞，留空=使用全域編排提示詞預設）',
         'Final Agent': '最終 Agent',
         'Planner max rounds': 'Planner 最大輪數',
         'Max concurrent agents': '最大並行 Agent 數',
@@ -3051,6 +3060,7 @@ function sanitizeProfileForAiPrompt(profile = null) {
             systemPrompt: String(preset?.systemPrompt || '').trim(),
             userPromptTemplate: normalizeTemplateForAiPrompt(String(preset?.userPromptTemplate || '').trim()),
             apiPresetName: getPresetApiPresetName(preset),
+            promptPresetName: getPresetPromptPresetName(preset),
         };
     }
 
@@ -3231,6 +3241,7 @@ function buildAiSuggestInputXml({
     runtimeContextGuarantees = {},
     injectionContract = {},
     agentApiRouting = {},
+    agentPromptPresetRouting = {},
     mandatoryQualityAxes = {},
     qualityGateContract = {},
     recommendedBlueprint = {},
@@ -3247,6 +3258,7 @@ function buildAiSuggestInputXml({
         buildYamlMarkdownBlock('runtime_context_guarantees', 'What runtime context is already guaranteed for both orchestration nodes and final generation.', runtimeContextGuarantees),
         buildYamlMarkdownBlock('injection_contract', 'How final orchestration outputs are injected to generation.', injectionContract),
         buildYamlMarkdownBlock('agent_api_routing', 'Optional per-agent API routing through Connection Manager profiles. Leave apiPresetName empty unless the user explicitly asks for per-agent model routing.', agentApiRouting),
+        buildYamlMarkdownBlock('agent_prompt_preset_routing', 'Optional per-agent chat completion preset routing. Leave promptPresetName empty unless the user explicitly asks for per-agent chat completion preset routing.', agentPromptPresetRouting),
         buildYamlMarkdownBlock('mandatory_quality_axes', 'Quality axes that must be covered by stage/preset design.', mandatoryQualityAxes),
         buildYamlMarkdownBlock('quality_gate_contract', 'Hard quality gates the profile must explicitly enforce.', qualityGateContract),
         buildYamlMarkdownBlock('recommended_blueprint', 'Preferred orchestration blueprint when no special reason to deviate.', recommendedBlueprint),
@@ -3874,7 +3886,7 @@ async function runWorkerNode(context, payload, nodeSpec, preset, messages, previ
         previous_orchestration: AUTO_INJECTED_PLACEHOLDER_RUNTIME_NOTE,
     });
 
-    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmPresetName = resolveOrchestrationAgentPromptPresetName(settings, preset);
     const promptPresetName = llmPresetName;
     const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
     const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
@@ -4078,7 +4090,7 @@ async function runReviewNode(context, payload, profile, nodeSpec, preset, messag
     const { message: lastUser } = extractLastUserMessage(messages);
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
     const runtimeTemplate = normalizeTemplateForRuntime(nodeSpec.userPromptTemplate || preset.userPromptTemplate || '');
-    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmPresetName = resolveOrchestrationAgentPromptPresetName(settings, preset);
     const promptPresetName = llmPresetName;
     const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
     const api = llmProfileResolution.requestApi || String(context.mainApi || 'openai');
@@ -4645,8 +4657,8 @@ function normalizeAgendaDispatches(state, plannerStep = {}, profile = {}, settin
 async function runAgendaPlannerStep(context, payload, messages, profile, state, abortSignal = null) {
     const settings = extension_settings[MODULE_NAME];
     const previousOrchestration = await getPreviousOrchestrationCapsuleText(context, payload);
-    const llmPresetName = String(settings.llmNodePresetName || '').trim();
     const planner = createAgendaPlannerDraft(profile?.planner);
+    const llmPresetName = resolveOrchestrationAgentPromptPresetName(settings, planner);
     const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, planner);
     const promptText = [
         '## planner_prompt',
@@ -4749,7 +4761,7 @@ async function runAgendaTextAgent(context, payload, messages, profile, state, di
     const settings = extension_settings[MODULE_NAME];
     const planner = createAgendaPlannerDraft(profile?.planner);
     const preset = profile?.agents?.[dispatch.agent] || {};
-    const llmPresetName = String(settings.llmNodePresetName || '').trim();
+    const llmPresetName = resolveOrchestrationAgentPromptPresetName(settings, preset);
     const llmProfileResolution = resolveOrchestrationAgentProfileResolution(context, settings, preset);
     const systemPrompt = [
         String(preset.systemPrompt || 'You are an orchestration agent. Complete the assigned task carefully and return the full useful result through the required tool.').trim(),
@@ -5385,7 +5397,7 @@ function escapeHtml(value) {
 }
 
 function getOpenAIPresetNames(context) {
-    const manager = context.getPresetManager?.('openai');
+    const manager = context?.getPresetManager?.('openai');
     if (!manager || typeof manager.getAllPresets !== 'function') {
         return [];
     }
@@ -5426,6 +5438,21 @@ function getPresetApiPresetName(preset = null) {
     );
 }
 
+function sanitizePromptPresetName(value = '') {
+    return String(value || '').trim();
+}
+
+function getPresetPromptPresetName(preset = null) {
+    return sanitizePromptPresetName(
+        preset?.promptPresetName
+        ?? preset?.llmPresetName
+        ?? preset?.chatCompletionPresetName
+        ?? preset?.openAIPresetName
+        ?? preset?.agentPromptPresetName
+        ?? '',
+    );
+}
+
 function sanitizeConnectionProfilesForAiPrompt(profiles = getConnectionProfiles()) {
     return (Array.isArray(profiles) ? profiles : [])
         .map((profile) => {
@@ -5442,6 +5469,10 @@ function sanitizeConnectionProfilesForAiPrompt(profiles = getConnectionProfiles(
         .filter(Boolean);
 }
 
+function sanitizeOpenAIPresetNamesForAiPrompt(context) {
+    return getOpenAIPresetNames(context);
+}
+
 function buildAgentApiRoutingPromptData(settings = extension_settings[MODULE_NAME]) {
     return {
         global_orchestration_api_preset: sanitizeConnectionProfileName(settings?.llmNodeApiPresetName || ''),
@@ -5449,6 +5480,19 @@ function buildAgentApiRoutingPromptData(settings = extension_settings[MODULE_NAM
         default_policy: 'Do not set planner/agent apiPresetName unless the user explicitly asks for a specific provider/model route for that planner or agent.',
         available_connection_profiles: sanitizeConnectionProfilesForAiPrompt(getConnectionProfiles()),
     };
+}
+
+function buildAgentPromptPresetRoutingPromptData(context, settings = extension_settings[MODULE_NAME]) {
+    return {
+        global_orchestration_prompt_preset: sanitizePromptPresetName(settings?.llmNodePresetName || ''),
+        empty_value_behavior: 'Empty promptPresetName falls back to the global orchestration chat completion preset. If that is also empty, runtime uses the current chat completion preset configuration.',
+        default_policy: 'Do not set planner/agent promptPresetName unless the user explicitly asks for a specific chat completion preset route for that planner or agent.',
+        available_chat_completion_presets: sanitizeOpenAIPresetNamesForAiPrompt(context),
+    };
+}
+
+function resolveOrchestrationAgentPromptPresetName(settings, preset = null) {
+    return getPresetPromptPresetName(preset) || sanitizePromptPresetName(settings?.llmNodePresetName || '');
 }
 
 function renderConnectionProfileOptions(selectedName = '', emptyLabel = i18n('(Current API config)')) {
@@ -5496,6 +5540,7 @@ function createPresetDraft(seed = {}) {
         systemPrompt: String(seed.systemPrompt || '').trim(),
         userPromptTemplate: String(seed.userPromptTemplate || '').trim(),
         apiPresetName: getPresetApiPresetName(seed),
+        promptPresetName: getPresetPromptPresetName(seed),
     };
 }
 
@@ -6015,6 +6060,10 @@ function renderPresetBoard(scope, editor) {
     <select class="text_pole" data-luker-field="preset-api-preset" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">
         ${renderConnectionProfileOptions(preset?.apiPresetName, i18n('(Global orchestration API preset)'))}
     </select>
+    <label>${escapeHtml(i18n('Agent preset (params + prompt, empty = global orchestration preset)'))}</label>
+    <select class="text_pole" data-luker-field="preset-prompt-preset" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">
+        ${renderOpenAIPresetOptions(getContext(), preset?.promptPresetName)}
+    </select>
     <label>${escapeHtml(i18n('System Prompt'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-field="preset-system-prompt" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(preset.systemPrompt)}</textarea>
     <label>${escapeHtml(i18n('User Prompt Template'))}</label>
@@ -6053,6 +6102,10 @@ function renderAgendaAgentBoard(scope, editor) {
     <select class="text_pole" data-luker-agenda-agent-field="apiPresetName" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">
         ${renderConnectionProfileOptions(preset?.apiPresetName, i18n('(Global orchestration API preset)'))}
     </select>
+    <label>${escapeHtml(i18n('Agent preset (params + prompt, empty = global orchestration preset)'))}</label>
+    <select class="text_pole" data-luker-agenda-agent-field="promptPresetName" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">
+        ${renderOpenAIPresetOptions(getContext(), preset?.promptPresetName)}
+    </select>
     <label>${escapeHtml(i18n('System Prompt'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-agenda-agent-field="systemPrompt" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(preset.systemPrompt)}</textarea>
     <label>${escapeHtml(i18n('User Prompt Template'))}</label>
@@ -6072,6 +6125,8 @@ function renderAgendaWorkspace(scope, editor, title = '') {
             <div class="luker_orch_col_title">${escapeHtml(i18n('Planner Prompt'))}</div>
             <label for="luker_orch_agenda_planner_api_preset">${escapeHtml(i18n('Planner API preset (Connection profile, empty = global orchestration API preset)'))}</label>
             <select id="luker_orch_agenda_planner_api_preset" data-scope="${safeScope}" class="text_pole">${renderConnectionProfileOptions(planner?.apiPresetName, i18n('(Global orchestration API preset)'))}</select>
+            <label for="luker_orch_agenda_planner_prompt_preset">${escapeHtml(i18n('Planner preset (params + prompt, empty = global orchestration preset)'))}</label>
+            <select id="luker_orch_agenda_planner_prompt_preset" data-scope="${safeScope}" class="text_pole">${renderOpenAIPresetOptions(getContext(), planner?.promptPresetName)}</select>
             <label for="luker_orch_agenda_planner_system_prompt">${escapeHtml(i18n('Planner system prompt'))}</label>
             <textarea id="luker_orch_agenda_planner_system_prompt" data-scope="${safeScope}" class="text_pole textarea_compact" rows="5">${escapeHtml(String(planner?.systemPrompt || DEFAULT_AGENDA_PLANNER_SYSTEM_PROMPT))}</textarea>
             <label for="luker_orch_agenda_planner_prompt">${escapeHtml(i18n('Planner Prompt'))}</label>
@@ -6736,6 +6791,9 @@ function buildAiProfileFromToolCalls(toolCalls) {
             if (Object.prototype.hasOwnProperty.call(args, 'apiPresetName')) {
                 nextPreset.apiPresetName = sanitizeConnectionProfileName(args.apiPresetName);
             }
+            if (Object.prototype.hasOwnProperty.call(args, 'promptPresetName')) {
+                nextPreset.promptPresetName = sanitizePromptPresetName(args.promptPresetName);
+            }
             draftPresets[presetId] = nextPreset;
             continue;
         }
@@ -6755,6 +6813,9 @@ function buildAiProfileFromToolCalls(toolCalls) {
         };
         if (Object.prototype.hasOwnProperty.call(preset, 'apiPresetName')) {
             nextPreset.apiPresetName = sanitizeConnectionProfileName(preset.apiPresetName);
+        }
+        if (Object.prototype.hasOwnProperty.call(preset, 'promptPresetName')) {
+            nextPreset.promptPresetName = sanitizePromptPresetName(preset.promptPresetName);
         }
         presetPatch[presetId] = nextPreset;
     }
@@ -6811,6 +6872,10 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
         'Leave apiPresetName empty unless the user explicitly asks for per-agent provider/model routing differences.',
         'Empty apiPresetName means runtime falls back to the global orchestration API preset.',
         'If you set apiPresetName, use only a profile name from available_connection_profiles.',
+        'Per-agent chat completion preset routing is optional via preset field promptPresetName.',
+        'Leave promptPresetName empty unless the user explicitly asks for per-agent chat completion preset routing differences.',
+        'Empty promptPresetName means runtime falls back to the global orchestration chat completion preset.',
+        'If you set promptPresetName, use only a preset name from available_chat_completion_presets.',
         `Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not add placeholders for that context.`,
         'If you use a critic/reviewer, model it as a review node that approves or requests rerun only for node ids in the directly adjacent previous worker layer.',
         'If grounding, reasoning, or other layers each need audit, add separate critics after those layers instead of deferring all review to one final critic.',
@@ -6836,6 +6901,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             no_json_or_markup_in_final_output: true,
         },
         agentApiRouting: buildAgentApiRoutingPromptData(settings),
+        agentPromptPresetRouting: buildAgentPromptPresetRoutingPromptData(context, settings),
         mandatoryQualityAxes: ORCH_AI_QUALITY_AXES,
         qualityGateContract: {
             continuity: 'No timeline/scene continuity break.',
@@ -6917,6 +6983,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                     systemPrompt: 'string',
                     userPromptTemplate: `Use only: ${AI_VISIBLE_TEMPLATE_VARS.map(x => `{{${x}}}`).join(', ')}`,
                     apiPresetName: 'optional string; use only a name from available_connection_profiles; leave empty unless user explicitly asks',
+                    promptPresetName: 'optional string; use only a name from available_chat_completion_presets; leave empty unless user explicitly asks',
                 },
                 placeholder_policy: {
                     general: 'Template should consume dynamic runtime context via placeholders where needed.',
@@ -6996,7 +7063,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             type: 'function',
             function: {
                 name: 'luker_orch_upsert_preset',
-                description: 'Define or update one node preset.',
+                description: 'Define or update one node preset. Leave apiPresetName and promptPresetName empty unless the user explicitly requests per-agent routing.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -7004,6 +7071,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
                         systemPrompt: { type: 'string' },
                         userPromptTemplate: { type: 'string' },
                         apiPresetName: { type: 'string' },
+                        promptPresetName: { type: 'string' },
                     },
                     required: ['preset_id', 'systemPrompt', 'userPromptTemplate'],
                     additionalProperties: false,
@@ -7252,6 +7320,7 @@ function sanitizeAgendaWorkingProfile(workingProfile = null) {
                 systemPrompt: source?.plannerSystemPrompt,
                 userPromptTemplate: source?.plannerPrompt,
                 apiPresetName: source?.plannerApiPresetName,
+                promptPresetName: source?.plannerPromptPresetName,
             },
     );
     const agents = sanitizePresetMap(source?.agents);
@@ -7989,6 +8058,9 @@ function buildAgendaIterationPendingDiffState(session, pending) {
                 ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
                     ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
                     : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'promptPresetName')
+                    ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
+                    : {}),
             });
             item.summary = 'Agenda planner updated';
             item.fields.push({
@@ -8006,6 +8078,11 @@ function buildAgendaIterationPendingDiffState(session, pending) {
                 before: formatDiffValue(getPresetApiPresetName(beforePlanner)),
                 after: formatDiffValue(getPresetApiPresetName(afterPlanner)),
             });
+            item.fields.push({
+                label: 'promptPresetName',
+                before: formatDiffValue(getPresetPromptPresetName(beforePlanner)),
+                after: formatDiffValue(getPresetPromptPresetName(afterPlanner)),
+            });
             workingProfile.planner = afterPlanner;
             entries.push(item);
             continue;
@@ -8020,6 +8097,9 @@ function buildAgendaIterationPendingDiffState(session, pending) {
                 userPromptTemplate: String(args.userPromptTemplate || '').trim(),
                 ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
                     ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'promptPresetName')
+                    ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
                     : {}),
             });
             if (agentId) {
@@ -8042,6 +8122,11 @@ function buildAgendaIterationPendingDiffState(session, pending) {
                 label: 'apiPresetName',
                 before: formatDiffValue(getPresetApiPresetName(beforeAgent)),
                 after: formatDiffValue(getPresetApiPresetName(afterAgent)),
+            });
+            item.fields.push({
+                label: 'promptPresetName',
+                before: formatDiffValue(getPresetPromptPresetName(beforeAgent)),
+                after: formatDiffValue(getPresetPromptPresetName(afterAgent)),
             });
             entries.push(item);
             continue;
@@ -8352,6 +8437,9 @@ function buildAiIterationPendingDiffState(session, pending) {
                 ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
                     ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
                     : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'promptPresetName')
+                    ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
+                    : {}),
             });
             presets[presetId] = afterPreset;
             item.summary = `Preset "${presetId}" ${beforePreset ? 'updated' : 'created'}`;
@@ -8369,6 +8457,11 @@ function buildAiIterationPendingDiffState(session, pending) {
                 label: 'apiPresetName',
                 before: formatDiffValue(getPresetApiPresetName(beforePreset)),
                 after: formatDiffValue(getPresetApiPresetName(afterPreset)),
+            });
+            item.fields.push({
+                label: 'promptPresetName',
+                before: formatDiffValue(getPresetPromptPresetName(beforePreset)),
+                after: formatDiffValue(getPresetPromptPresetName(afterPreset)),
             });
             entries.push(item);
             continue;
@@ -8531,6 +8624,7 @@ function renderAgendaIterationWorkingProfile(session, { profileOverride = null, 
     <div class="luker_orch_iter_stage_title">${escapeHtml(agentId)}</div>
     <div class="luker_orch_iter_stage_mode">${escapeHtml(agentId === profile.finalAgentId ? i18n('Final Agent') : i18n('Worker'))}</div>
     <div class="luker_orch_iter_preset_line"><b>API:</b> ${escapeHtml(getPresetApiPresetName(preset) || i18n('(Global orchestration API preset)'))}</div>
+    <div class="luker_orch_iter_preset_line"><b>Preset:</b> ${escapeHtml(getPresetPromptPresetName(preset) || i18n('(Current preset)'))}</div>
     <div class="luker_orch_iter_stage_nodes">${escapeHtml(truncateOrchestrationRuntimePreview(preset?.systemPrompt || '', 180) || '(empty)')}</div>
 </div>`).join('');
     const simulationSummary = session?.lastSimulation
@@ -8545,6 +8639,7 @@ function renderAgendaIterationWorkingProfile(session, { profileOverride = null, 
 </div>
 <div class="luker_orch_iter_preset_line"><b>Final agent:</b> ${escapeHtml(profile.finalAgentId || '(none)')}</div>
 <div class="luker_orch_iter_preset_line"><b>Planner API:</b> ${escapeHtml(getPresetApiPresetName(planner) || i18n('(Global orchestration API preset)'))}</div>
+<div class="luker_orch_iter_preset_line"><b>Planner preset:</b> ${escapeHtml(getPresetPromptPresetName(planner) || i18n('(Current preset)'))}</div>
 <div class="luker_orch_iter_preset_line"><b>Limits:</b> ${escapeHtml(`rounds=${profile.limits.plannerMaxRounds}, concurrent=${profile.limits.maxConcurrentAgents}, totalRuns=${profile.limits.maxTotalRuns}`)}</div>
 <details class="luker_orch_iter_diff_raw" open>
     <summary>${escapeHtml(i18n('Planner system prompt'))}</summary>
@@ -8578,8 +8673,13 @@ function renderAiIterationWorkingProfile(session, { profileOverride = null, prev
     const presetSummary = presetIds.length > 0
         ? presetIds.map((presetId) => {
             const apiPresetName = getPresetApiPresetName(profile?.presets?.[presetId]);
-            return apiPresetName
-                ? `${presetId} -> ${apiPresetName}`
+            const promptPresetName = getPresetPromptPresetName(profile?.presets?.[presetId]);
+            const routes = [
+                apiPresetName ? `api=${apiPresetName}` : '',
+                promptPresetName ? `preset=${promptPresetName}` : '',
+            ].filter(Boolean);
+            return routes.length > 0
+                ? `${presetId} -> ${routes.join(', ')}`
                 : presetId;
         }).join(', ')
         : '(none)';
@@ -8609,6 +8709,9 @@ function buildAiIterationSystemPrompt(settings, session = null) {
             '- The planner preset and agenda agents may optionally set apiPresetName to use a specific Connection Manager profile.',
             '- Leave planner/agent apiPresetName empty unless the user explicitly asks for per-agent model/provider routing. Empty means fallback to the global orchestration API preset.',
             '- If you set planner/agent apiPresetName, use only a name from available_connection_profiles.',
+            '- The planner preset and agenda agents may optionally set promptPresetName to use a specific chat completion preset.',
+            '- Leave planner/agent promptPresetName empty unless the user explicitly asks for per-agent chat completion preset routing. Empty means fallback to the global orchestration chat completion preset.',
+            '- If you set planner/agent promptPresetName, use only a name from available_chat_completion_presets.',
             '- Prefer targeted edits. Do not rewrite the full planner preset unless necessary.',
             '- Keep the planner preset as the main orchestration contract and keep agent prompts concrete and task-oriented.',
             '- Use luker_orch_set_agenda_planner to create or update the agenda planner preset.',
@@ -8632,6 +8735,9 @@ function buildAiIterationSystemPrompt(settings, session = null) {
         '- Presets may optionally set apiPresetName to use a specific Connection Manager profile.',
         '- Leave preset apiPresetName empty unless the user explicitly asks for per-agent model/provider routing. Empty means fallback to the global orchestration API preset.',
         '- If you set preset apiPresetName, use only a name from available_connection_profiles.',
+        '- Presets may optionally set promptPresetName to use a specific chat completion preset.',
+        '- Leave preset promptPresetName empty unless the user explicitly asks for per-agent chat completion preset routing. Empty means fallback to the global orchestration chat completion preset.',
+        '- If you set preset promptPresetName, use only a name from available_chat_completion_presets.',
         `- Runtime prepends previous orchestration result and approved \`${ORCH_REVIEW_FEEDBACK_FIELD}\` before node template text; do not use placeholders for that context.`,
         '- Treat the working profile as hierarchical layers. Preserve or improve that layering when editing.',
         `- Nodes can be worker or review. Review nodes inspect only the directly adjacent previous worker layer, may rerun only specific node ids from that layer, and must emit mandatory \`${ORCH_REVIEW_FEEDBACK_FIELD}\`.`,
@@ -8698,6 +8804,11 @@ function buildAiIterationUserPrompt(settings, session, userInputText, {
             toReadableYamlText(buildAgentApiRoutingPromptData(settings), '{}'),
             '```',
             '',
+            '## agent_prompt_preset_routing',
+            '```yaml',
+            toReadableYamlText(buildAgentPromptPresetRoutingPromptData(getContext(), settings), '{}'),
+            '```',
+            '',
             '## conversation_history',
             '```text',
             recentConversation || '(empty)',
@@ -8759,6 +8870,11 @@ function buildAiIterationUserPrompt(settings, session, userInputText, {
         toReadableYamlText(buildAgentApiRoutingPromptData(settings), '{}'),
         '```',
         '',
+        '## agent_prompt_preset_routing',
+        '```yaml',
+        toReadableYamlText(buildAgentPromptPresetRoutingPromptData(getContext(), settings), '{}'),
+        '```',
+        '',
         '## review_node_contract',
         '```yaml',
         toReadableYamlText({
@@ -8800,13 +8916,14 @@ function buildAiIterationToolSet(session = null) {
                 type: 'function',
                 function: {
                     name: 'luker_orch_set_agenda_planner',
-                    description: 'Create or update the agenda planner preset. Leave apiPresetName empty unless the user explicitly requests planner-specific model routing.',
+                    description: 'Create or update the agenda planner preset. Leave apiPresetName and promptPresetName empty unless the user explicitly requests planner-specific routing.',
                     parameters: {
                         type: 'object',
                         properties: {
                             systemPrompt: { type: 'string' },
                             userPromptTemplate: { type: 'string' },
                             apiPresetName: { type: 'string' },
+                            promptPresetName: { type: 'string' },
                         },
                         additionalProperties: false,
                     },
@@ -8816,7 +8933,7 @@ function buildAiIterationToolSet(session = null) {
                 type: 'function',
                 function: {
                     name: 'luker_orch_set_agenda_agent',
-                    description: 'Create or update one agenda agent preset. Leave apiPresetName empty unless the user explicitly requests per-agent model routing.',
+                    description: 'Create or update one agenda agent preset. Leave apiPresetName and promptPresetName empty unless the user explicitly requests per-agent routing.',
                     parameters: {
                         type: 'object',
                         properties: {
@@ -8824,6 +8941,7 @@ function buildAiIterationToolSet(session = null) {
                             systemPrompt: { type: 'string' },
                             userPromptTemplate: { type: 'string' },
                             apiPresetName: { type: 'string' },
+                            promptPresetName: { type: 'string' },
                         },
                         required: ['agent_id', 'systemPrompt', 'userPromptTemplate'],
                         additionalProperties: false,
@@ -8995,7 +9113,7 @@ function buildAiIterationToolSet(session = null) {
             type: 'function',
             function: {
                 name: 'luker_orch_set_preset',
-                description: 'Create or update one preset. Leave apiPresetName empty unless the user explicitly requests per-agent model routing.',
+                description: 'Create or update one preset. Leave apiPresetName and promptPresetName empty unless the user explicitly requests per-agent routing.',
                 parameters: {
                     type: 'object',
                     properties: {
@@ -9003,6 +9121,7 @@ function buildAiIterationToolSet(session = null) {
                         systemPrompt: { type: 'string' },
                         userPromptTemplate: { type: 'string' },
                         apiPresetName: { type: 'string' },
+                        promptPresetName: { type: 'string' },
                     },
                     required: ['preset_id', 'systemPrompt', 'userPromptTemplate'],
                     additionalProperties: false,
@@ -9227,6 +9346,9 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
                 ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
                     ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
                     : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'promptPresetName')
+                    ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
+                    : {}),
             });
             actions.push('Agenda planner updated.');
             changed = true;
@@ -9245,6 +9367,9 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
                 userPromptTemplate: String(args.userPromptTemplate || '').trim(),
                 ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
                     ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'promptPresetName')
+                    ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
                     : {}),
             });
             actions.push(`Agenda agent "${agentId}" updated.`);
@@ -9461,6 +9586,9 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
                 userPromptTemplate: normalizeTemplateForRuntime(String(args.userPromptTemplate || '').trim()),
                 ...(Object.prototype.hasOwnProperty.call(args, 'apiPresetName')
                     ? { apiPresetName: sanitizeConnectionProfileName(args.apiPresetName) }
+                    : {}),
+                ...(Object.prototype.hasOwnProperty.call(args, 'promptPresetName')
+                    ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
                     : {}),
             });
             actions.push(`Preset "${presetId}" updated.`);
@@ -10101,6 +10229,13 @@ function bindUi() {
         editor.planner.apiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
     });
 
+    jQuery(document).on('change.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_prompt_preset, .luker_orch_editor_popup #luker_orch_agenda_planner_prompt_preset`, function () {
+        const scope = getAgendaScopeFromElement(this, context, settings);
+        const editor = getAgendaEditorByScope(scope);
+        ensureAgendaEditorIntegrity(editor);
+        editor.planner.promptPresetName = sanitizePromptPresetName(jQuery(this).val());
+    });
+
     jQuery(document).on('input.lukerOrchEditor', `#${UI_BLOCK_ID} #luker_orch_agenda_planner_system_prompt, .luker_orch_editor_popup #luker_orch_agenda_planner_system_prompt`, function () {
         const scope = getAgendaScopeFromElement(this, context, settings);
         const editor = getAgendaEditorByScope(scope);
@@ -10276,6 +10411,8 @@ function bindUi() {
                 preset.userPromptTemplate = String(jQuery(this).val() || '');
             } else if (field === 'preset-api-preset') {
                 preset.apiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
+            } else if (field === 'preset-prompt-preset') {
+                preset.promptPresetName = sanitizePromptPresetName(jQuery(this).val());
             }
         }
     });
@@ -10295,6 +10432,8 @@ function bindUi() {
             editor.agents[agentId].userPromptTemplate = String(jQuery(this).val() || '');
         } else if (field === 'apiPresetName') {
             editor.agents[agentId].apiPresetName = sanitizeConnectionProfileName(jQuery(this).val());
+        } else if (field === 'promptPresetName') {
+            editor.agents[agentId].promptPresetName = sanitizePromptPresetName(jQuery(this).val());
         }
     });
 
