@@ -8840,14 +8840,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         cy.endBatch();
         syncSearchResultSelectionUi();
     };
-    const focusNodeInGraph = (
-        nodeId,
-        {
-            padding = 170,
-            maxZoom = 0.9,
-            includeNeighborhood = true,
-        } = {},
-    ) => {
+    const focusNodeInGraph = (nodeId) => {
         if (!cy || !nodeId) {
             return;
         }
@@ -8855,28 +8848,8 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (!nodeElement || !nodeElement.length) {
             return;
         }
-        const focusElements = includeNeighborhood
-            ? nodeElement.closedNeighborhood()
-            : nodeElement;
-        const targetElements = focusElements && focusElements.length ? focusElements : nodeElement;
-        const fitViewport = typeof cy.getFitViewport === 'function'
-            ? cy.getFitViewport(targetElements, padding)
-            : null;
-
-        if (fitViewport && Number.isFinite(fitViewport.zoom) && fitViewport.zoom > maxZoom) {
-            cy.animate({
-                center: { eles: nodeElement },
-                zoom: maxZoom,
-                duration: 180,
-            });
-            return;
-        }
-
         cy.animate({
-            fit: {
-                eles: targetElements,
-                padding,
-            },
+            center: { eles: nodeElement },
             duration: 180,
         });
     };
@@ -8901,9 +8874,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             }
             applySearchGraphState();
             if (focusGraph) {
-                focusNodeInGraph(nodeId, searchModel.active
-                    ? { padding: 210, maxZoom: 0.82, includeNeighborhood: true }
-                    : { padding: 150, maxZoom: 0.96, includeNeighborhood: true });
+                focusNodeInGraph(nodeId);
             }
         } else {
             syncSearchResultSelectionUi();
@@ -9476,7 +9447,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         }
         await rerender();
         if (selectedNodeId) {
-            focusNodeInGraph(selectedNodeId, { padding: 210, maxZoom: 0.82, includeNeighborhood: true });
+            focusNodeInGraph(selectedNodeId);
         }
         if (restoreCursor !== null) {
             const input = getPopupRoot().find('.luker-rpg-memory-graph-search-input').get(0);
