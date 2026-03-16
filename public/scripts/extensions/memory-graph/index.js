@@ -8713,6 +8713,7 @@ async function openGraphInspectorPopup(context) {
     let searchQuery = '';
     let searchType = MEMORY_GRAPH_SEARCH_ALL_TYPE;
     let activeSearchNodeId = '';
+    let isSearchComposing = false;
     let runLayout = null;
     let mountRetryTimer = null;
     const popupHtml = `<div id="${popupId}" class="luker-rpg-memory-graph-popup">${renderGraphInspectorHtml(store, {
@@ -9477,7 +9478,23 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
     };
 
     jQuery(document).off(namespace);
-    jQuery(document).on(`input${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, async function () {
+    jQuery(document).on(`compositionstart${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, function () {
+        isSearchComposing = true;
+    });
+    jQuery(document).on(`compositionend${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, async function () {
+        isSearchComposing = false;
+        const cursor = typeof this.selectionStart === 'number' ? this.selectionStart : null;
+        await applySearchControls({
+            nextQuery: jQuery(this).val(),
+            nextType: searchType,
+            restoreCursor: cursor,
+        });
+    });
+    jQuery(document).on(`input${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, async function (event) {
+        if (isSearchComposing || this.composing || event?.originalEvent?.isComposing) {
+            searchQuery = String(jQuery(this).val() || '');
+            return;
+        }
         const cursor = typeof this.selectionStart === 'number' ? this.selectionStart : null;
         await applySearchControls({
             nextQuery: jQuery(this).val(),
