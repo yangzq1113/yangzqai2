@@ -1,4 +1,4 @@
-import { characters, eventSource, event_types, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid } from '../../../script.js';
+import { characters, eventSource, event_types, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid, unshallowCharacter } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
@@ -673,8 +673,29 @@ async function moveRegexScript(script, toType, fromType = null, saveSettings = t
     await saveRegexScript(script, -1, toType, saveSettings);
 }
 
+async function syncRegexEditorState(requestId) {
+    if (!selected_group && this_chid !== undefined) {
+        // Android/app starts from shallow character stubs, so scoped regexes need a hydrated card before render.
+        await unshallowCharacter(this_chid);
+        if (requestId !== regexScriptsRenderRequestId) {
+            return false;
+        }
+    }
+
+    presetManager.renderPresetList();
+    return requestId === regexScriptsRenderRequestId;
+}
+
+async function refreshRegexEditorUi() {
+    presetManager.renderPresetList();
+    await loadRegexScripts();
+}
+
 async function loadRegexScripts() {
     const requestId = ++regexScriptsRenderRequestId;
+    if (!await syncRegexEditorState(requestId)) {
+        return;
+    }
     const scriptTemplate = $(await renderExtensionTemplateAsync('regex', 'scriptTemplate'));
     if (requestId !== regexScriptsRenderRequestId) {
         return;
@@ -1861,12 +1882,14 @@ jQuery(async () => {
     $('#regex_container').append(settingsHtml);
     const regexDrawer = document.querySelector('#regex_container .regex_settings .inline-drawer');
     regexDrawer?.addEventListener('inline-drawer-toggle', () => {
-        const content = regexDrawer.querySelector(':scope > .inline-drawer-content');
-        // The toggle event fires before slideToggle updates the display state.
-        const willOpen = content instanceof HTMLElement && getComputedStyle(content).display === 'none';
-        if (willOpen) {
-            void loadRegexScripts();
-        }
+        // The custom toggle event fires before slideToggle updates display, so read the open state on the next tick.
+        window.setTimeout(() => {
+            const content = regexDrawer.querySelector(':scope > .inline-drawer-content');
+            const isOpen = content instanceof HTMLElement && getComputedStyle(content).display !== 'none';
+            if (isOpen) {
+                void refreshRegexEditorUi();
+            }
+        }, 0);
     });
     bindRegexReloadOnSettingsClose();
     $('#open_regex_editor').on('click', function () {
@@ -2123,13 +2146,13 @@ jQuery(async () => {
     });
 
     window.addEventListener(REGEX_RUNTIME_SCRIPTS_CHANGED_EVENT, (event) => {
-        void loadRegexScripts();
+        void refreshRegexEditorUi();
         const requestReload = Boolean(event?.detail?.requestReload);
         if (requestReload) {
             void requestRegexChatReload();
         }
     });
-    await loadRegexScripts();
+    await refreshRegexEditorUi();
     // @ts-ignore
     $('#saved_regex_scripts').sortable('enable');
 
@@ -2277,4 +2300,6 @@ jQuery(async () => {
 
     presetManager.setupEventListeners();
     presetManager.registerSlashCommands();
+    eventSource.on(event_types.APP_READY, refreshRegexEditorUi);
+    eventSource.on(event_types.CHARACTER_EDITOR_OPENED, refreshRegexEditorUi);
 });
