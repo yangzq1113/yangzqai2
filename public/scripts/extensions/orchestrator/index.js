@@ -692,6 +692,8 @@ function registerLocaleData() {
         'Iteration run cancelled.': '迭代已终止。',
         'Iteration run failed: ${0}': '迭代失败：${0}',
         'Iteration session reset.': '迭代会话已重置。',
+        'Regenerate': '重新生成',
+        'Regenerating message...': '正在重新生成消息...',
         'Workflow': '工作流',
         'Add Stage': '新增阶段',
         'Add Node': '新增节点',
@@ -954,6 +956,8 @@ function registerLocaleData() {
         'Iteration run cancelled.': '迭代已終止。',
         'Iteration run failed: ${0}': '迭代失敗：${0}',
         'Iteration session reset.': '迭代會話已重置。',
+        'Regenerate': '重新生成',
+        'Regenerating message...': '正在重新生成訊息...',
         'Workflow': '工作流',
         'Add Stage': '新增階段',
         'Add Node': '新增節點',
@@ -3652,6 +3656,7 @@ function createPersistentToolTurnMessage({
     toolState = '',
     auto = false,
     at = Date.now(),
+    extra = {},
 } = {}) {
     const message = {
         id: String(messageId || '').trim() || makeAiIterationMessageId(),
@@ -3659,6 +3664,7 @@ function createPersistentToolTurnMessage({
         content: String(assistantText || '').trim(),
         auto: Boolean(auto),
         at: Number(at || Date.now()),
+        ...(extra && typeof extra === 'object' ? extra : {}),
     };
     const normalizedToolCalls = normalizePersistentToolCalls({ tool_calls: toolCalls });
     const normalizedToolResults = normalizePersistentToolResults({ tool_results: toolResults }, normalizedToolCalls);
@@ -7529,6 +7535,58 @@ function isAgendaIterationSession(session) {
     return String(session?.mode || '') === ORCH_EXECUTION_MODE_AGENDA;
 }
 
+function cloneAiIterationWorkingProfile(mode, workingProfile) {
+    if (String(mode || '') === ORCH_EXECUTION_MODE_AGENDA) {
+        return sanitizeAgendaWorkingProfile(structuredClone(workingProfile || {}));
+    }
+    return {
+        spec: sanitizeSpec(structuredClone(workingProfile?.spec || { stages: [] })),
+        presets: sanitizePresetMap(structuredClone(workingProfile?.presets || {})),
+    };
+}
+
+function ensureAiIterationSessionBaseWorkingProfile(session) {
+    if (!session || typeof session !== 'object') {
+        return;
+    }
+    if (!session.baseWorkingProfile || typeof session.baseWorkingProfile !== 'object') {
+        session.baseWorkingProfile = cloneAiIterationWorkingProfile(session.mode, session.workingProfile);
+    }
+}
+
+function restoreAiIterationSessionStateFromMessages(session) {
+    if (!session || typeof session !== 'object') {
+        return;
+    }
+    ensureAiIterationSessionBaseWorkingProfile(session);
+    const messages = Array.isArray(session.messages) ? session.messages : [];
+    const snapshotMessage = [...messages].reverse().find(item => item?.profileSnapshotAfter && typeof item.profileSnapshotAfter === 'object');
+    session.workingProfile = cloneAiIterationWorkingProfile(
+        session.mode,
+        snapshotMessage?.profileSnapshotAfter || session.baseWorkingProfile,
+    );
+    session.lastSimulation = snapshotMessage?.lastSimulationAfter
+        ? structuredClone(snapshotMessage.lastSimulationAfter)
+        : null;
+    const pendingMessage = [...messages].reverse().find(item => String(item?.toolState || '').trim().toLowerCase() === 'pending');
+    const fallbackPendingExecutionCalls = pendingMessage ? buildExecutionToolCalls(normalizePersistentToolCalls(pendingMessage)) : [];
+    const fallbackPendingSplit = pendingMessage ? splitAiIterationToolCallsForApproval(fallbackPendingExecutionCalls) : { approvalCalls: [] };
+    session.pendingApproval = pendingMessage
+        ? {
+            messageId: String(pendingMessage?.id || ''),
+            assistantText: String(pendingMessage?.content || ''),
+            toolCalls: Array.isArray(pendingMessage?.pendingToolCalls)
+                ? structuredClone(pendingMessage.pendingToolCalls)
+                : fallbackPendingSplit.approvalCalls,
+            executionToolCalls: Array.isArray(pendingMessage?.executionToolCalls)
+                ? structuredClone(pendingMessage.executionToolCalls)
+                : fallbackPendingExecutionCalls,
+            createdAt: Number(pendingMessage?.at || Date.now()),
+        }
+        : null;
+    session.updatedAt = Date.now();
+}
+
 function createAiIterationSession(context, settings) {
     if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
         syncCharacterEditorWithActiveAvatar(context);
@@ -7538,6 +7596,7 @@ function createAiIterationSession(context, settings) {
         const sourceName = scope === 'character'
             ? (getCharacterDisplayNameByAvatar(context, avatar) || avatar || i18n('(No character card)'))
             : i18n('Global profile');
+        const workingProfile = cloneAgendaWorkingProfileFromEditor(editor);
         return {
             id: `session_${Date.now()}`,
             mode: ORCH_EXECUTION_MODE_AGENDA,
@@ -7548,7 +7607,8 @@ function createAiIterationSession(context, settings) {
             revision: 1,
             createdAt: Date.now(),
             updatedAt: Date.now(),
-            workingProfile: cloneAgendaWorkingProfileFromEditor(editor),
+            workingProfile,
+            baseWorkingProfile: cloneAiIterationWorkingProfile(ORCH_EXECUTION_MODE_AGENDA, workingProfile),
             messages: [],
             lastSimulation: null,
             pendingApproval: null,
@@ -7561,6 +7621,7 @@ function createAiIterationSession(context, settings) {
     const sourceName = scope === 'character'
         ? (getCharacterDisplayNameByAvatar(context, avatar) || avatar || i18n('(No character card)'))
         : i18n('Global profile');
+    const workingProfile = cloneWorkingProfileFromEditor(editor);
     return {
         id: `session_${Date.now()}`,
         chatKey: getChatKey(context),
@@ -7571,7 +7632,8 @@ function createAiIterationSession(context, settings) {
         revision: 1,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        workingProfile: cloneWorkingProfileFromEditor(editor),
+        workingProfile,
+        baseWorkingProfile: cloneAiIterationWorkingProfile(ORCH_EXECUTION_MODE_SPEC, workingProfile),
         messages: [],
         lastSimulation: null,
         pendingApproval: null,
@@ -7592,6 +7654,7 @@ function ensureAiIterationSession(context, settings, { forceNew = false } = {}) 
         uiState.aiIterationSession = createAiIterationSession(context, settings);
         return uiState.aiIterationSession;
     }
+    ensureAiIterationSessionBaseWorkingProfile(uiState.aiIterationSession);
     return uiState.aiIterationSession;
 }
 
@@ -7649,23 +7712,54 @@ function renderAiIterationMessageBodyHtml(content, { auto = false } = {}) {
 </details>`;
 }
 
+function findPreviousAiIterationUserMessageIndex(messages, startIndex) {
+    const list = Array.isArray(messages) ? messages : [];
+    const index = Math.min(list.length - 1, Math.max(-1, Math.floor(Number(startIndex) || -1)));
+    for (let i = index - 1; i >= 0; i--) {
+        if (String(list[i]?.role || '').trim().toLowerCase() === 'user') {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function canRefreshAiIterationAssistantMessage(session, messageIndex) {
+    const items = Array.isArray(session?.messages) ? session.messages : [];
+    const index = Math.floor(Number(messageIndex));
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+        return false;
+    }
+    const item = items[index];
+    if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+        return false;
+    }
+    if (Boolean(item?.auto)) {
+        return false;
+    }
+    return findPreviousAiIterationUserMessageIndex(items, index) >= 0;
+}
+
 function renderAiIterationConversation(session, { loading = false, loadingText = '' } = {}) {
     const items = Array.isArray(session?.messages) ? session.messages : [];
     if (items.length === 0 && !loading) {
         return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No messages yet. Start by telling AI what you want to optimize.'))}</div>`;
     }
-    const html = items.map((item) => {
+    const html = items.map((item, index) => {
         const role = String(item?.role || 'assistant').toLowerCase();
         const auto = Boolean(item?.auto);
         const label = auto ? 'AUTO' : (role === 'user' ? 'You' : 'AI');
         const bubbleClass = role === 'user' ? 'user' : 'assistant';
         const bodyHtml = renderAiIterationMessageBodyHtml(item?.content || '', { auto });
         const toolSummary = String(item?.toolSummary || '').trim();
+        const actionsHtml = canRefreshAiIterationAssistantMessage(session, index)
+            ? `<div class="luker_orch_iter_msg_actions"><div class="menu_button menu_button_small" data-luker-orch-action="refresh-message" data-luker-orch-message-index="${index}">${escapeHtml(i18n('Regenerate'))}</div></div>`
+            : '';
         return `
 <div class="luker_orch_iter_msg ${bubbleClass}">
     <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
     <div class="luker_orch_iter_msg_body">${bodyHtml}</div>
     ${toolSummary ? `<div class="luker_orch_iter_msg_meta">${escapeHtml(toolSummary)}</div>` : ''}
+    ${actionsHtml}
 </div>`;
     }).join('');
     if (!loading) {
@@ -10007,7 +10101,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
             session.messages.push({
                 role: 'assistant',
                 content: assistantText,
-                auto: false,
+                auto: Boolean(auto),
                 at: Date.now(),
             });
             trimAiIterationMessages(session);
@@ -10029,8 +10123,12 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
             toolResults: buildPendingToolResults(persistentToolCalls, pendingSummary),
             toolSummary: pendingSummary,
             toolState: 'pending',
-            auto: false,
+            auto: Boolean(auto),
             at: Date.now(),
+            extra: {
+                pendingToolCalls: structuredClone(split.approvalCalls),
+                executionToolCalls: structuredClone(split.allCalls),
+            },
         });
         session.messages.push(assistantMessage);
         trimAiIterationMessages(session);
@@ -10053,8 +10151,12 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         toolResults: Array.isArray(executionResult?.toolResults) ? executionResult.toolResults : [],
         toolSummary: buildFriendlyIterationExecutionSummary(executionResult),
         toolState: 'completed',
-        auto: false,
+        auto: Boolean(auto),
         at: Date.now(),
+        extra: {
+            profileSnapshotAfter: cloneAiIterationWorkingProfile(session?.mode, session?.workingProfile),
+            lastSimulationAfter: session?.lastSimulation ? structuredClone(session.lastSimulation) : null,
+        },
     }));
     trimAiIterationMessages(session);
     session.pendingApproval = null;
@@ -10243,6 +10345,56 @@ async function openAiIterationStudio(context, settings, root) {
         return false;
     };
 
+    const runVisibleIterationTurn = async (text, { appendUserMessage = true, loadingText = '' } = {}) => {
+        const safeText = String(text || '').trim();
+        if (!safeText) {
+            return false;
+        }
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return false;
+        }
+        const popupRoot = jQuery(selector);
+        const input = popupRoot.find(`#${popupId}_input`);
+        const controller = new AbortController();
+        activeAiIterationAbortController = controller;
+        if (appendUserMessage) {
+            session.messages.push({ role: 'user', content: safeText, auto: false, at: Date.now() });
+            trimAiIterationMessages(session);
+            input.val('');
+        }
+        isRunning = true;
+        rerender();
+        setStatus(loadingText || i18n('AI iteration is running...'));
+        try {
+            const result = await runAiIterationTurn(context, settings, session, safeText, controller.signal, { appendUserMessage: false });
+            if (result?.pending) {
+                setStatus(i18n('AI suggested changes are waiting for approval.'));
+            } else if (result?.autoApplied) {
+                const didHandle = await maybeRunAutoContinue(result.executionResult, controller, 'auto');
+                if (!didHandle) {
+                    setStatus(i18n('AI iteration updated.'));
+                }
+            } else {
+                setStatus(i18n('AI iteration updated.'));
+            }
+            rerender();
+            return true;
+        } catch (error) {
+            if (isAbortError(error, controller.signal)) {
+                setStatus(i18n('Iteration run cancelled.'));
+            } else {
+                setStatus(i18nFormat('Iteration run failed: ${0}', String(error?.message || error)));
+            }
+            return false;
+        } finally {
+            if (activeAiIterationAbortController === controller) {
+                activeAiIterationAbortController = null;
+            }
+            isRunning = false;
+            rerender();
+        }
+    };
+
     const popupPromise = context.callGenericPopup(
         popupHtml,
         context.POPUP_TYPE.TEXT,
@@ -10268,43 +10420,10 @@ async function openAiIterationStudio(context, settings, root) {
         if (!text) {
             return;
         }
-        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
-            return;
-        }
-        const controller = new AbortController();
-        activeAiIterationAbortController = controller;
-        session.messages.push({ role: 'user', content: text, auto: false, at: Date.now() });
-        trimAiIterationMessages(session);
-        input.val('');
-        isRunning = true;
-        rerender();
-        setStatus(i18n('AI iteration is running...'));
-        try {
-            const result = await runAiIterationTurn(context, settings, session, text, controller.signal, { appendUserMessage: false });
-            if (result?.pending) {
-                setStatus(i18n('AI suggested changes are waiting for approval.'));
-            } else if (result?.autoApplied) {
-                const didHandle = await maybeRunAutoContinue(result.executionResult, controller, 'auto');
-                if (!didHandle) {
-                    setStatus(i18n('AI iteration updated.'));
-                }
-            } else {
-                setStatus(i18n('AI iteration updated.'));
-            }
-            rerender();
-        } catch (error) {
-            if (isAbortError(error, controller.signal)) {
-                setStatus(i18n('Iteration run cancelled.'));
-            } else {
-                setStatus(i18nFormat('Iteration run failed: ${0}', String(error?.message || error)));
-            }
-        } finally {
-            if (activeAiIterationAbortController === controller) {
-                activeAiIterationAbortController = null;
-            }
-            isRunning = false;
-            rerender();
-        }
+        await runVisibleIterationTurn(text, {
+            appendUserMessage: true,
+            loadingText: i18n('AI iteration is running...'),
+        });
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_stop`, function () {
@@ -10325,6 +10444,7 @@ async function openAiIterationStudio(context, settings, root) {
         session.createdAt = nextSession.createdAt;
         session.updatedAt = nextSession.updatedAt;
         session.workingProfile = nextSession.workingProfile;
+        session.baseWorkingProfile = nextSession.baseWorkingProfile;
         session.messages = [];
         session.lastSimulation = null;
         session.pendingApproval = null;
@@ -10337,6 +10457,32 @@ async function openAiIterationStudio(context, settings, root) {
         event.stopPropagation();
         const rootElement = document.querySelector(selector);
         openOrchExpandedDiff(rootElement, this);
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="refresh-message"]`, async function () {
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        const messageIndex = asFiniteInteger(this.getAttribute('data-luker-orch-message-index'), -1);
+        if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= (session?.messages?.length || 0)) {
+            return;
+        }
+        if (!canRefreshAiIterationAssistantMessage(session, messageIndex)) {
+            return;
+        }
+        const userIndex = findPreviousAiIterationUserMessageIndex(session.messages, messageIndex);
+        if (userIndex < 0) {
+            return;
+        }
+        const userText = String(session.messages[userIndex]?.content || '').trim();
+        session.messages.splice(messageIndex);
+        restoreAiIterationSessionStateFromMessages(session);
+        rerender();
+        setStatus(i18n('Regenerating message...'));
+        await runVisibleIterationTurn(userText, {
+            appendUserMessage: false,
+            loadingText: i18n('Regenerating message...'),
+        });
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="close-line-diff-zoom"], ${selector} .luker_orch_line_diff_zoom_backdrop`, function (event) {
@@ -10396,6 +10542,8 @@ async function openAiIterationStudio(context, settings, root) {
                 targetMessage.tool_results = Array.isArray(result?.toolResults) ? result.toolResults : [];
                 targetMessage.toolSummary = buildFriendlyIterationExecutionSummary(result);
                 targetMessage.toolState = 'completed';
+                targetMessage.profileSnapshotAfter = cloneAiIterationWorkingProfile(session?.mode, session?.workingProfile);
+                targetMessage.lastSimulationAfter = session?.lastSimulation ? structuredClone(session.lastSimulation) : null;
             }
             trimAiIterationMessages(session);
             const didHandle = await maybeRunAutoContinue(result, controller, 'approved');
@@ -12085,6 +12233,11 @@ function ensureStyles() {
     white-space: pre-wrap;
     word-break: break-word;
     opacity: 0.9;
+}
+.luker_orch_iter_msg_actions {
+    margin-top: 8px;
+    display: flex;
+    justify-content: flex-end;
 }
 .luker_orch_iter_msg_folded {
     margin: 0;

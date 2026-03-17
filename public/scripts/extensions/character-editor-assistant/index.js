@@ -152,6 +152,9 @@ function registerLocaleData() {
         'No approved diff to apply. Finalizing without additional changes.': '没有已通过差异项，将直接完成同步且不追加修改。',
         'Please approve or reject pending changes first.': '请先批准或拒绝待审批变更。',
         'AI proposed changes are waiting for approval.': 'AI 提出的变更正在等待审批。',
+        'Regenerate': '重新生成',
+        'Regenerating message...': '正在重新生成消息...',
+        'This message cannot be regenerated.': '这条消息无法重新生成。',
         'Approve batch': '批准本批次',
         'Reject batch': '拒绝本批次',
         'Changes applied.': '变更已应用。',
@@ -248,6 +251,9 @@ function registerLocaleData() {
         'No approved diff to apply. Finalizing without additional changes.': '沒有已通過差異項，將直接完成同步且不追加修改。',
         'Please approve or reject pending changes first.': '請先批准或拒絕待審批變更。',
         'AI proposed changes are waiting for approval.': 'AI 提出的變更正在等待審批。',
+        'Regenerate': '重新生成',
+        'Regenerating message...': '正在重新生成訊息...',
+        'This message cannot be regenerated.': '這條訊息無法重新生成。',
         'Approve batch': '批准本批次',
         'Reject batch': '拒絕本批次',
         'Changes applied.': '變更已套用。',
@@ -2425,6 +2431,44 @@ function renderLorebookSyncTurnDiffHtml(message, messageIndex = -1, approvalMap 
 </details>`;
 }
 
+function findPreviousConversationUserMessageIndex(messages, startIndex) {
+    const list = Array.isArray(messages) ? messages : [];
+    const index = Math.min(list.length - 1, Math.max(-1, Math.floor(Number(startIndex) || -1)));
+    for (let i = index - 1; i >= 0; i--) {
+        if (String(list[i]?.role || '').trim().toLowerCase() === 'user') {
+            return i;
+        }
+    }
+    return -1;
+}
+
+function canRefreshConversationAssistantMessage(messages, messageIndex, { allowAuto = true } = {}) {
+    const list = Array.isArray(messages) ? messages : [];
+    const index = Math.floor(Number(messageIndex));
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+        return false;
+    }
+    const item = list[index];
+    if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+        return false;
+    }
+    if (!allowAuto && Boolean(item?.auto)) {
+        return false;
+    }
+    return findPreviousConversationUserMessageIndex(list, index) >= 0;
+}
+
+function renderConversationMessageRefreshAction(attributeName, messageIndex, messages, options = {}) {
+    const allowAuto = options && Object.hasOwn(options, 'allowAuto') ? Boolean(options.allowAuto) : true;
+    if (!canRefreshConversationAssistantMessage(messages, messageIndex, { allowAuto })) {
+        return '';
+    }
+    return `
+<div class="cea_sync_msg_actions">
+    <div class="menu_button menu_button_small" ${attributeName}="refresh-message" data-cea-sync-message-index="${messageIndex}">${escapeHtml(i18n('Regenerate'))}</div>
+</div>`;
+}
+
 function renderLorebookSyncChatMessages(messages, { loading = false, loadingText = '', approvalMap = null } = {}) {
     const list = Array.isArray(messages) ? messages : [];
     const html = list.map((item, index) => {
@@ -2445,6 +2489,7 @@ function renderLorebookSyncChatMessages(messages, { loading = false, loadingText
     ${text ? `<div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>` : ''}
     ${renderLorebookSyncTurnDiffHtml(item, index, approvalMap)}
     ${toolSummary ? `<div class="cea_sync_tool_summary">${escapeHtml(toolSummary)}</div>` : ''}
+    ${renderConversationMessageRefreshAction('data-cea-sync-action', index, list)}
 </div>`;
     }).join('');
 
@@ -2966,13 +3011,15 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
             const state = await loadOperationState(context, { avatar });
             const operation = createOperationEnvelope(state, spec.kind, spec.args, source, { targetAvatar: avatar });
             await persistOperationState(context, state, { avatar });
-            await submitOperation(context, operation, { avatar });
+            const submission = await submitOperation(context, operation, { avatar });
             applied++;
             results.push({
                 ok: true,
                 kind: String(spec?.kind || ''),
                 args: clone(spec?.args || {}),
                 summary: buildOperationSummary(spec),
+                operationId: String(submission?.operation_id || operation?.id || ''),
+                journalId: String(submission?.journal_id || ''),
             });
         } catch (error) {
             failed++;
@@ -3952,7 +3999,7 @@ function renderCharacterEditorRoundDiffHtml(previews, operations, { open = true 
 
 function renderCharacterEditorChatMessages(messages, { loading = false, loadingText = '' } = {}) {
     const list = Array.isArray(messages) ? messages : [];
-    const html = list.map(item => {
+    const html = list.map((item, index) => {
         const role = String(item?.role || 'assistant');
         const text = String(item?.content || '').trim();
         const toolSummary = String(item?.toolSummary || '').trim();
@@ -3973,6 +4020,7 @@ function renderCharacterEditorChatMessages(messages, { loading = false, loadingT
     ${text ? `<div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>` : ''}
     ${hasDiffData ? renderCharacterEditorRoundDiffHtml(previews, operations, { open: false }) : ''}
     ${toolSummary ? `<div class="cea_sync_tool_summary">${escapeHtml(toolSummary)}</div>` : ''}
+    ${renderConversationMessageRefreshAction('data-cea-editor-action', index, list)}
 </div>`;
     }).join('');
     if (!loading) {
@@ -4097,26 +4145,28 @@ async function openCharacterEditorPopup(context = getContext()) {
                     sendBtn.classList.toggle('disabled', disabled);
                     stopBtn.classList.toggle('disabled', !canStop);
                 };
-                const handleSend = async () => {
+                const runAssistantTurn = async (userText, { appendUserMessage = true, loadingText = '' } = {}) => {
+                    const safeUserText = String(userText || '').trim();
                     if (isSending || input.disabled) {
-                        return;
+                        return false;
                     }
                     if (pendingApproval) {
                         notifyWarning(i18n('Please approve or reject pending changes first.'));
-                        return;
+                        return false;
                     }
-                    const userText = String(input.value || '').trim();
-                    if (!userText) {
+                    if (!safeUserText) {
                         notifyWarning(i18n('Message cannot be empty.'));
-                        return;
+                        return false;
                     }
-                    conversationMessages.push({ role: 'user', content: userText });
-                    input.value = '';
+                    if (appendUserMessage) {
+                        conversationMessages.push({ role: 'user', content: safeUserText });
+                        input.value = '';
+                    }
                     const controller = new AbortController();
                     activeRequestAbortController = controller;
                     isSending = true;
                     syncComposerState();
-                    renderConversation(true, i18n('Assistant is thinking...'));
+                    renderConversation(true, loadingText || i18n('Assistant is thinking...'));
                     try {
                         const reply = await requestModelCharacterEditorConversationReply(
                             context,
@@ -4164,6 +4214,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                             toolCalls,
                         } : null;
                         renderPending();
+                        return true;
                     } catch (error) {
                         conversationMessages.push(isAbortError(error, controller.signal)
                             ? {
@@ -4174,6 +4225,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                                 role: 'assistant',
                                 content: i18nFormat('Model reply failed: ${0}', String(error?.message || error || '')),
                             });
+                        return false;
                     } finally {
                         if (activeRequestAbortController === controller) {
                             activeRequestAbortController = null;
@@ -4182,6 +4234,11 @@ async function openCharacterEditorPopup(context = getContext()) {
                         syncComposerState();
                         renderConversation(false);
                     }
+                };
+                const handleSend = async () => {
+                    await runAssistantTurn(String(input.value || '').trim(), {
+                        appendUserMessage: true,
+                    });
                 };
 
                 sendBtn.addEventListener('click', () => void handleSend());
@@ -4197,6 +4254,54 @@ async function openCharacterEditorPopup(context = getContext()) {
                     }
                     event.preventDefault();
                     void handleSend();
+                });
+                chat.addEventListener('click', async (event) => {
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-editor-action]') : null;
+                    if (!(target instanceof HTMLElement) || isSending) {
+                        return;
+                    }
+                    const action = String(target.getAttribute('data-cea-editor-action') || '').trim();
+                    if (action !== 'refresh-message') {
+                        return;
+                    }
+                    const messageIndex = asFiniteInteger(target.getAttribute('data-cea-sync-message-index'), -1);
+                    if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= conversationMessages.length) {
+                        return;
+                    }
+                    const userIndex = findPreviousConversationUserMessageIndex(conversationMessages, messageIndex);
+                    if (userIndex < 0) {
+                        notifyWarning(i18n('This message cannot be regenerated.'));
+                        return;
+                    }
+                    const userText = String(conversationMessages[userIndex]?.content || '').trim();
+                    const removedMessages = conversationMessages.slice(messageIndex);
+                    const previousPendingApproval = pendingApproval;
+                    pendingApproval = null;
+                    isSending = true;
+                    syncComposerState();
+                    renderPending();
+                    renderConversation(true, i18n('Regenerating message...'));
+                    try {
+                        await rollbackCharacterEditorConversationMessages(context, removedMessages, { avatar });
+                        conversationMessages.splice(messageIndex);
+                        rebuildCharacterEditorRejectedOperationKeys(conversationMessages, rejectedOperationKeys);
+                        await refreshUiState(context);
+                        await renderHistory();
+                        await primeActiveCharacterLorebookSnapshot(context);
+                    } catch (error) {
+                        pendingApproval = previousPendingApproval;
+                        renderPending();
+                        notifyError(i18nFormat('Regenerate failed: ${0}', String(error?.message || error || '')));
+                        renderConversation(false);
+                        return;
+                    } finally {
+                        isSending = false;
+                        syncComposerState();
+                    }
+                    await runAssistantTurn(userText, {
+                        appendUserMessage: false,
+                        loadingText: i18n('Regenerating message...'),
+                    });
                 });
                 pendingSlot.addEventListener('click', async (event) => {
                     const target = event.target instanceof Element ? event.target.closest('[data-cea-editor-action]') : null;
@@ -4244,6 +4349,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                                     ? i18nFormat('Apply failed: ${0}', String(result.errors[0] || 'unknown error'))
                                     : i18n('Changes applied.');
                                 targetMessage.toolState = result.failed > 0 ? 'partial' : 'completed';
+                                targetMessage.executionResults = clone(result?.results || []);
                             }
                             await refreshUiState(context);
                             await renderHistory();
@@ -4294,27 +4400,10 @@ async function openCharacterEditorPopup(context = getContext()) {
                             return;
                         }
                         if (action === 'rollback') {
-                            const state = await loadOperationState(context, { force: true, avatar });
-                            const { entry } = getJournalById(state, journalId);
-                            if (!entry) {
-                                throw new Error('Journal entry not found.');
-                            }
-                            if (String(entry.kind || '') === 'rollback') {
-                                throw new Error('Rollback is not supported for rollback records.');
-                            }
-                            const summary = await rollbackJournalEntry(context, entry, { avatar });
-                            const rollbackLog = {
-                                id: nextStateId(state, 'tx'),
-                                operationId: entry.operationId,
-                                kind: 'rollback',
+                            await rollbackJournalEntryWithLog(context, journalId, {
+                                avatar,
                                 source: 'manual',
-                                summary,
-                                data: { targetJournalId: entry.id },
-                                createdAt: Date.now(),
-                            };
-                            appendJournal(state, rollbackLog, settings);
-                            state.updatedAt = Date.now();
-                            await persistOperationState(context, state, { avatar });
+                            });
                             await renderHistory();
                             await refreshUiState(context);
                             await primeActiveCharacterLorebookSnapshot(context);
@@ -4456,6 +4545,30 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     input.disabled = Boolean(disabled);
                     sendBtn.classList.toggle('disabled', Boolean(disabled));
                 };
+                const pruneApprovalMap = () => {
+                    const finalSpecs = getCurrentFinalOperationSpecs();
+                    for (const key of Array.from(operationApprovalMap.keys())) {
+                        const exists = finalSpecs.some(spec => buildLorebookOperationApprovalKey(spec) === key);
+                        if (!exists) {
+                            operationApprovalMap.delete(key);
+                        }
+                    }
+                };
+                const truncateConversationFrom = (removeFrom) => {
+                    const index = asFiniteInteger(removeFrom, -1);
+                    if (!Number.isInteger(index) || index < 0 || index > conversationMessages.length) {
+                        return false;
+                    }
+                    conversationMessages.splice(index);
+                    rebuildLorebookDraftEntriesFromConversation(
+                        plan.targetBook,
+                        baselineTargetEntries,
+                        draftTargetEntries,
+                        conversationMessages,
+                    );
+                    pruneApprovalMap();
+                    return true;
+                };
                 const rollbackToMessage = (messageIndex) => {
                     const index = asFiniteInteger(messageIndex, -1);
                     if (!Number.isInteger(index) || index < 0 || index >= conversationMessages.length) {
@@ -4476,20 +4589,7 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     if (String(targetMessage?.role || '') === 'assistant' && String(previous?.role || '') === 'user') {
                         removeFrom -= 1;
                     }
-                    conversationMessages.splice(removeFrom);
-                    rebuildLorebookDraftEntriesFromConversation(
-                        plan.targetBook,
-                        baselineTargetEntries,
-                        draftTargetEntries,
-                        conversationMessages,
-                    );
-                    const finalSpecs = getCurrentFinalOperationSpecs();
-                    for (const key of Array.from(operationApprovalMap.keys())) {
-                        const exists = finalSpecs.some(spec => buildLorebookOperationApprovalKey(spec) === key);
-                        if (!exists) {
-                            operationApprovalMap.delete(key);
-                        }
-                    }
+                    truncateConversationFrom(removeFrom);
                     renderConversation(false);
                     notifySuccess(i18n('Rolled back to selected round.'));
                 };
@@ -4498,45 +4598,27 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     if (!id) {
                         return;
                     }
-                    const settings = getSettings();
-                    const state = await loadOperationState(context, { force: true, avatar: targetAvatar });
-                    const { entry } = getJournalById(state, id);
-                    if (!entry) {
-                        throw new Error('Journal entry not found.');
-                    }
-                    if (String(entry.kind || '') === 'rollback') {
-                        throw new Error('Rollback is not supported for rollback records.');
-                    }
-                    const summary = await rollbackJournalEntry(context, entry, { avatar: targetAvatar });
-                    const rollbackLog = {
-                        id: nextStateId(state, 'tx'),
-                        operationId: entry.operationId,
-                        kind: 'rollback',
+                    await rollbackJournalEntryWithLog(context, id, {
+                        avatar: targetAvatar,
                         source: 'manual',
-                        summary,
-                        data: {
-                            targetJournalId: entry.id,
-                        },
-                        createdAt: Date.now(),
-                    };
-                    appendJournal(state, rollbackLog, settings);
-                    state.updatedAt = Date.now();
-                    await persistOperationState(context, state, { avatar: targetAvatar });
+                    });
                 };
-                const handleSend = async () => {
+                const runAssistantTurn = async (userText, { appendUserMessage = true, loadingText = '' } = {}) => {
+                    const safeUserText = String(userText || '').trim();
                     if (isSending || input.disabled) {
-                        return;
+                        return false;
                     }
-                    const userText = String(input.value || '').trim();
-                    if (!userText) {
+                    if (!safeUserText) {
                         notifyWarning(i18n('Message cannot be empty.'));
-                        return;
+                        return false;
                     }
-                    conversationMessages.push({ role: 'user', content: userText });
-                    input.value = '';
+                    if (appendUserMessage) {
+                        conversationMessages.push({ role: 'user', content: safeUserText });
+                        input.value = '';
+                    }
                     isSending = true;
                     setComposerState(true);
-                    renderConversation(true, i18n('Assistant is thinking...'));
+                    renderConversation(true, loadingText || i18n('Assistant is thinking...'));
                     try {
                         const reply = await requestModelLorebookConversationReply(context, plan, conversationMessages, {
                             finalOperationSpecs: getCurrentFinalOperationSpecs(),
@@ -4565,18 +4647,25 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                         assistantMessage.operations = draftRound.appliedOperations;
                         assistantMessage.diffPreviews = draftRound.diffPreviews;
                         conversationMessages.push(assistantMessage);
+                        return true;
                     } catch (error) {
                         const errorText = i18nFormat('Model reply failed: ${0}', String(error?.message || error || ''));
                         conversationMessages.push({ role: 'assistant', content: errorText });
+                        return false;
                     } finally {
                         isSending = false;
                         setComposerState(false);
                         renderConversation(false);
                     }
                 };
+                const handleSend = async () => {
+                    await runAssistantTurn(String(input.value || '').trim(), {
+                        appendUserMessage: true,
+                    });
+                };
 
                 sendBtn.addEventListener('click', () => void handleSend());
-                chat.addEventListener('click', (event) => {
+                chat.addEventListener('click', async (event) => {
                     const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-action]') : null;
                     if (!(target instanceof HTMLElement)) {
                         return;
@@ -4585,6 +4674,36 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                     if (action === 'rollback-round') {
                         const messageIndex = target.getAttribute('data-cea-sync-message-index');
                         rollbackToMessage(messageIndex);
+                        return;
+                    }
+                    if (action === 'refresh-message') {
+                        if (isSending || input.disabled) {
+                            notifyWarning(i18n('Assistant is thinking...'));
+                            return;
+                        }
+                        const messageIndex = asFiniteInteger(target.getAttribute('data-cea-sync-message-index'), -1);
+                        if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= conversationMessages.length) {
+                            return;
+                        }
+                        const userIndex = findPreviousConversationUserMessageIndex(conversationMessages, messageIndex);
+                        if (userIndex < 0) {
+                            notifyWarning(i18n('This message cannot be regenerated.'));
+                            return;
+                        }
+                        const userText = String(conversationMessages[userIndex]?.content || '').trim();
+                        isSending = true;
+                        setComposerState(true);
+                        renderConversation(true, i18n('Regenerating message...'));
+                        try {
+                            truncateConversationFrom(messageIndex);
+                        } finally {
+                            isSending = false;
+                            setComposerState(false);
+                        }
+                        await runAssistantTurn(userText, {
+                            appendUserMessage: false,
+                            loadingText: i18n('Regenerating message...'),
+                        });
                         return;
                     }
                     if (action === 'approve-diff' || action === 'reject-diff') {
@@ -5363,6 +5482,78 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
     throw new Error(`Rollback is not supported for kind: ${kind}`);
 }
 
+async function rollbackJournalEntryWithLog(context, journalId, { avatar = '', source = 'manual' } = {}) {
+    const resolvedAvatar = String(avatar || '').trim();
+    const settings = getSettings();
+    const state = await loadOperationState(context, { force: true, avatar: resolvedAvatar });
+    const { entry } = getJournalById(state, journalId);
+    if (!entry) {
+        throw new Error('Journal entry not found.');
+    }
+    if (String(entry.kind || '') === 'rollback') {
+        throw new Error('Rollback is not supported for rollback records.');
+    }
+    const summary = await rollbackJournalEntry(context, entry, { avatar: resolvedAvatar });
+    const rollbackLog = {
+        id: nextStateId(state, 'tx'),
+        operationId: entry.operationId,
+        kind: 'rollback',
+        source: String(source || 'manual'),
+        summary,
+        data: {
+            targetJournalId: entry.id,
+        },
+        createdAt: Date.now(),
+    };
+    appendJournal(state, rollbackLog, settings);
+    state.updatedAt = Date.now();
+    await persistOperationState(context, state, { avatar: resolvedAvatar });
+    return {
+        summary,
+        rollbackJournalId: rollbackLog.id,
+    };
+}
+
+function rebuildCharacterEditorRejectedOperationKeys(messages, targetSet) {
+    const set = targetSet instanceof Set ? targetSet : new Set();
+    set.clear();
+    for (const item of Array.isArray(messages) ? messages : []) {
+        if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+            continue;
+        }
+        if (String(item?.toolState || '').trim().toLowerCase() !== 'rejected') {
+            continue;
+        }
+        for (const operation of Array.isArray(item?.operations) ? item.operations : []) {
+            const key = buildCharacterEditorOperationKey(operation);
+            if (key) {
+                set.add(key);
+            }
+        }
+    }
+    return set;
+}
+
+async function rollbackCharacterEditorConversationMessages(context, messages, { avatar = '' } = {}) {
+    const rollbacks = [];
+    const removedMessages = Array.isArray(messages) ? messages.slice() : [];
+    for (const message of removedMessages.reverse()) {
+        const executionResults = Array.isArray(message?.executionResults) ? message.executionResults.slice() : [];
+        for (const result of executionResults.reverse()) {
+            const journalId = String(result?.journalId || result?.journal_id || '').trim();
+            if (!result?.ok || !journalId) {
+                continue;
+            }
+            await rollbackJournalEntryWithLog(context, journalId, {
+                avatar,
+                source: 'message_refresh',
+            });
+            rollbacks.push(journalId);
+        }
+    }
+    return rollbacks;
+}
+
 function ensureStyles() {
     if (document.getElementById(STYLE_ID)) {
         return;
@@ -5414,6 +5605,7 @@ function ensureStyles() {
 .popup .cea_sync_analysis_empty { opacity:0.8; }
 .popup .cea_sync_chat_text { margin-bottom:6px; }
 .popup .cea_sync_tool_summary { margin-top:8px; padding:8px 10px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent); white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
+.popup .cea_sync_msg_actions { margin-top:8px; display:flex; justify-content:flex-end; }
 .popup .cea_sync_chat_msg :is(p, ul, ol, pre, table, h1, h2, h3, h4) { margin:0 0 8px; }
 .popup .cea_sync_chat_msg :is(pre, code) { white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
 .popup .cea_sync_chat_msg table { display:block; width:100%; overflow:auto; border-collapse:collapse; }
