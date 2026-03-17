@@ -3252,6 +3252,10 @@ function buildCharacterEditorToolCallsFromOperations(operations = []) {
     return toolCalls;
 }
 
+const CHARACTER_EDITOR_ROOT_TEXT_FIELDS = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+const CHARACTER_EDITOR_DATA_TEXT_FIELDS = ['system_prompt', 'post_history_instructions', 'creator_notes'];
+const CHARACTER_EDITOR_DATA_ARRAY_FIELDS = ['alternate_greetings'];
+
 function buildToolCallSummary(toolCalls = []) {
     const names = (Array.isArray(toolCalls) ? toolCalls : [])
         .map(call => String(call?.function?.name || '').trim())
@@ -3410,10 +3414,15 @@ function buildCharacterEditorModelTools({ helperToolApis = [] } = {}) {
                         description: { type: 'string' },
                         personality: { type: 'string' },
                         scenario: { type: 'string' },
+                        first_mes: { type: 'string' },
                         mes_example: { type: 'string' },
                         system_prompt: { type: 'string' },
                         post_history_instructions: { type: 'string' },
                         creator_notes: { type: 'string' },
+                        alternate_greetings: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
                     },
                     additionalProperties: false,
                 },
@@ -3489,17 +3498,22 @@ function buildCharacterEditorModelTools({ helperToolApis = [] } = {}) {
 
 function normalizeCharacterEditorOperationsFromCalls(rawCalls) {
     const output = [];
-    const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
-    const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
     for (const call of Array.isArray(rawCalls) ? rawCalls : []) {
         const name = String(call?.name || '').trim();
         const args = call?.args && typeof call.args === 'object' ? call.args : {};
         if (name === TOOL_NAMES.UPDATE_FIELDS) {
             const normalizedArgs = {};
-            for (const key of [...rootFieldNames, ...dataFieldNames]) {
+            for (const key of [...CHARACTER_EDITOR_ROOT_TEXT_FIELDS, ...CHARACTER_EDITOR_DATA_TEXT_FIELDS]) {
                 if (Object.hasOwn(args, key)) {
                     normalizedArgs[key] = String(args[key] ?? '');
                 }
+            }
+            for (const key of CHARACTER_EDITOR_DATA_ARRAY_FIELDS) {
+                if (!Object.hasOwn(args, key)) {
+                    continue;
+                }
+                const value = Array.isArray(args[key]) ? args[key] : [args[key]];
+                normalizedArgs[key] = value.map(item => String(item ?? ''));
             }
             if (Object.keys(normalizedArgs).length > 0) {
                 output.push({ kind: 'character_fields', args: normalizedArgs });
@@ -3610,10 +3624,14 @@ async function buildCharacterEditorContextPayload(context, avatar = '') {
             description: String(character?.description || ''),
             personality: String(character?.personality || ''),
             scenario: String(character?.scenario || ''),
+            first_mes: String(character?.first_mes || character?.data?.first_mes || ''),
             mes_example: String(character?.mes_example || ''),
             system_prompt: String(character?.data?.system_prompt || ''),
             post_history_instructions: String(character?.data?.post_history_instructions || ''),
             creator_notes: String(character?.data?.creator_notes || ''),
+            alternate_greetings: Array.isArray(character?.data?.alternate_greetings)
+                ? clone(character.data.alternate_greetings)
+                : [],
         },
         primary_lorebook: {
             name: primaryBook,
@@ -3779,9 +3797,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
 function buildCharacterFieldsDiffPreview(operation, draftCharacter) {
     const args = operation?.args && typeof operation.args === 'object' ? operation.args : {};
     const preview = { title: buildOperationSummary(operation), fields: [], meta: [], rawArgs: clone(args) };
-    const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
-    const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
-    for (const key of rootFieldNames) {
+    for (const key of CHARACTER_EDITOR_ROOT_TEXT_FIELDS) {
         if (!Object.hasOwn(args, key)) {
             continue;
         }
@@ -3797,7 +3813,7 @@ function buildCharacterFieldsDiffPreview(operation, draftCharacter) {
     if (!draftCharacter.data || typeof draftCharacter.data !== 'object') {
         draftCharacter.data = data;
     }
-    for (const key of dataFieldNames) {
+    for (const key of CHARACTER_EDITOR_DATA_TEXT_FIELDS) {
         if (!Object.hasOwn(args, key)) {
             continue;
         }
@@ -3808,6 +3824,15 @@ function buildCharacterFieldsDiffPreview(operation, draftCharacter) {
             continue;
         }
         data[key] = afterValue;
+    }
+    for (const key of CHARACTER_EDITOR_DATA_ARRAY_FIELDS) {
+        if (!Object.hasOwn(args, key)) {
+            continue;
+        }
+        const beforeValue = Array.isArray(data?.[key]) ? clone(data[key]) : [];
+        const afterValue = Array.isArray(args[key]) ? clone(args[key]) : [];
+        pushDiffField(preview.fields, key, beforeValue, afterValue);
+        data[key] = clone(afterValue);
     }
     if (preview.fields.length === 0) {
         return null;
@@ -5062,15 +5087,12 @@ function buildOperationSummary(operation) {
 
 async function applyCharacterFieldsOperation(context, record, operation) {
     const args = operation.args && typeof operation.args === 'object' ? operation.args : {};
-    const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
-    const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
-
     const rootPatch = {};
     const dataPatch = {};
     const before = {};
     const after = {};
 
-    for (const key of rootFieldNames) {
+    for (const key of CHARACTER_EDITOR_ROOT_TEXT_FIELDS) {
         if (!Object.hasOwn(args, key)) {
             continue;
         }
@@ -5079,7 +5101,7 @@ async function applyCharacterFieldsOperation(context, record, operation) {
         after[key] = nextValue;
         rootPatch[key] = nextValue;
     }
-    for (const key of dataFieldNames) {
+    for (const key of CHARACTER_EDITOR_DATA_TEXT_FIELDS) {
         if (!Object.hasOwn(args, key)) {
             continue;
         }
@@ -5087,6 +5109,15 @@ async function applyCharacterFieldsOperation(context, record, operation) {
         before[key] = String(record.character?.data?.[key] ?? '');
         after[key] = nextValue;
         dataPatch[key] = nextValue;
+    }
+    for (const key of CHARACTER_EDITOR_DATA_ARRAY_FIELDS) {
+        if (!Object.hasOwn(args, key)) {
+            continue;
+        }
+        const nextValue = Array.isArray(args[key]) ? args[key].map(item => String(item ?? '')) : [];
+        before[key] = Array.isArray(record.character?.data?.[key]) ? clone(record.character.data[key]) : [];
+        after[key] = clone(nextValue);
+        dataPatch[key] = clone(nextValue);
     }
 
     if (Object.keys(rootPatch).length === 0 && Object.keys(dataPatch).length === 0) {
@@ -5430,16 +5461,19 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
         }
         const payload = {};
         const dataPatch = {};
-        const rootFieldNames = ['name', 'description', 'personality', 'scenario', 'mes_example'];
-        const dataFieldNames = ['system_prompt', 'post_history_instructions', 'creator_notes'];
-        for (const key of rootFieldNames) {
+        for (const key of CHARACTER_EDITOR_ROOT_TEXT_FIELDS) {
             if (Object.hasOwn(before, key)) {
                 payload[key] = String(before[key] ?? '');
             }
         }
-        for (const key of dataFieldNames) {
+        for (const key of CHARACTER_EDITOR_DATA_TEXT_FIELDS) {
             if (Object.hasOwn(before, key)) {
                 dataPatch[key] = String(before[key] ?? '');
+            }
+        }
+        for (const key of CHARACTER_EDITOR_DATA_ARRAY_FIELDS) {
+            if (Object.hasOwn(before, key)) {
+                dataPatch[key] = Array.isArray(before[key]) ? clone(before[key]) : [];
             }
         }
         if (Object.keys(dataPatch).length > 0) {
@@ -5781,7 +5815,7 @@ function registerTools(context) {
     context.registerFunctionTool({
         name: TOOL_NAMES.UPDATE_FIELDS,
         displayName: 'Update Character Fields',
-        description: 'Update current character card fields (description, personality, scenario, mes_example, system_prompt, creator_notes, etc).',
+        description: 'Update current character card fields (description, personality, scenario, first_mes, alternate_greetings, mes_example, system_prompt, creator_notes, etc).',
         shouldRegister: async () => canUseToolsInCurrentContext(getContext()),
         parameters: {
             type: 'object',
@@ -5790,10 +5824,15 @@ function registerTools(context) {
                 description: { type: 'string' },
                 personality: { type: 'string' },
                 scenario: { type: 'string' },
+                first_mes: { type: 'string' },
                 mes_example: { type: 'string' },
                 system_prompt: { type: 'string' },
                 post_history_instructions: { type: 'string' },
                 creator_notes: { type: 'string' },
+                alternate_greetings: {
+                    type: 'array',
+                    items: { type: 'string' },
+                },
             },
             additionalProperties: false,
         },
