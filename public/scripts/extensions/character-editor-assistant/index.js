@@ -2430,7 +2430,8 @@ function renderLorebookSyncChatMessages(messages, { loading = false, loadingText
     const html = list.map((item, index) => {
         const role = String(item?.role || 'assistant');
         const text = String(item?.content || '').trim();
-        if (!text) {
+        const toolSummary = String(item?.toolSummary || '').trim();
+        if (!text && !toolSummary) {
             return '';
         }
         if (role === 'user') {
@@ -2441,8 +2442,9 @@ function renderLorebookSyncChatMessages(messages, { loading = false, loadingText
         }
         return `
 <div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
-    <div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>
+    ${text ? `<div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>` : ''}
     ${renderLorebookSyncTurnDiffHtml(item, index, approvalMap)}
+    ${toolSummary ? `<div class="cea_sync_tool_summary">${escapeHtml(toolSummary)}</div>` : ''}
 </div>`;
     }).join('');
 
@@ -2898,6 +2900,7 @@ async function requestModelLorebookConversationReply(context, plan, conversation
     const requestPresetOptions = getLorebookSyncRequestPresetOptions(context);
     const requestMessages = await buildPresetAwareLorebookMessages(context, systemPrompt, userPrompt, {
         ...requestPresetOptions,
+        historyMessages: buildPersistentToolHistoryMessages(conversationMessages),
         runtimeWorldInfo: {},
     });
     const settings = getSettings();
@@ -2957,6 +2960,7 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
     let applied = 0;
     let failed = 0;
     const errors = [];
+    const results = [];
     for (const spec of specs) {
         try {
             const state = await loadOperationState(context, { avatar });
@@ -2964,12 +2968,26 @@ async function submitGeneratedOperations(context, operationSpecs, source = 'char
             await persistOperationState(context, state, { avatar });
             await submitOperation(context, operation, { avatar });
             applied++;
+            results.push({
+                ok: true,
+                kind: String(spec?.kind || ''),
+                args: clone(spec?.args || {}),
+                summary: buildOperationSummary(spec),
+            });
         } catch (error) {
             failed++;
-            errors.push(String(error?.message || error));
+            const errorText = String(error?.message || error);
+            errors.push(errorText);
+            results.push({
+                ok: false,
+                kind: String(spec?.kind || ''),
+                args: clone(spec?.args || {}),
+                error: errorText,
+                summary: buildOperationSummary(spec),
+            });
         }
     }
-    return { applied, failed, errors };
+    return { applied, failed, errors, results };
 }
 
 function splitCharacterEditorToolCalls(rawCalls, helperToolApis = []) {
@@ -3020,6 +3038,10 @@ function makeRuntimeToolCallId() {
     return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function makeConversationMessageId(prefix = 'cea_msg') {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function serializeToolResultContent(result) {
     if (typeof result === 'string') {
         return result;
@@ -3032,6 +3054,260 @@ function serializeToolResultContent(result) {
     } catch {
         return String(result);
     }
+}
+
+function createPersistentToolCallPayload(name, args = {}, id = '') {
+    const toolName = String(name || '').trim();
+    if (!toolName) {
+        return null;
+    }
+    const safeArgs = args && typeof args === 'object' ? clone(args) : {};
+    return {
+        id: String(id || '').trim() || makeRuntimeToolCallId(),
+        type: 'function',
+        function: {
+            name: toolName,
+            arguments: JSON.stringify(safeArgs),
+        },
+    };
+}
+
+function buildPersistentToolCallsFromRawCalls(rawCalls = []) {
+    return (Array.isArray(rawCalls) ? rawCalls : [])
+        .map((call) => createPersistentToolCallPayload(call?.name, call?.args, call?.id))
+        .filter(Boolean);
+}
+
+function normalizePersistentToolCalls(message) {
+    const output = [];
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+        const payload = createPersistentToolCallPayload(
+            call?.function?.name,
+            (() => {
+                if (call?.function?.arguments && typeof call.function.arguments === 'string') {
+                    try {
+                        const parsed = JSON.parse(call.function.arguments);
+                        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+                    } catch {
+                        return {};
+                    }
+                }
+                if (call?.function?.arguments && typeof call.function.arguments === 'object') {
+                    return call.function.arguments;
+                }
+                return {};
+            })(),
+            call?.id,
+        );
+        if (payload) {
+            output.push(payload);
+        }
+    }
+    return output;
+}
+
+function normalizePersistentToolResults(message, toolCalls = []) {
+    const toolCallIds = new Set(toolCalls.map(call => String(call?.id || '').trim()).filter(Boolean));
+    return (Array.isArray(message?.tool_results) ? message.tool_results : [])
+        .map((item) => ({
+            tool_call_id: String(item?.tool_call_id || '').trim(),
+            content: String(item?.content ?? ''),
+        }))
+        .filter(item => item.tool_call_id && toolCallIds.has(item.tool_call_id));
+}
+
+function createPersistentToolTurnMessage({
+    messageId = '',
+    assistantText = '',
+    toolCalls = [],
+    toolResults = [],
+    toolSummary = '',
+    toolState = '',
+    extra = {},
+} = {}) {
+    const message = {
+        id: String(messageId || '').trim() || makeConversationMessageId(),
+        role: 'assistant',
+        content: String(assistantText || '').trim(),
+        ...(extra && typeof extra === 'object' ? extra : {}),
+    };
+    const normalizedToolCalls = normalizePersistentToolCalls({ tool_calls: toolCalls });
+    const normalizedToolResults = normalizePersistentToolResults({ tool_results: toolResults }, normalizedToolCalls);
+    if (normalizedToolCalls.length > 0) {
+        message.tool_calls = normalizedToolCalls;
+    }
+    if (normalizedToolResults.length > 0) {
+        message.tool_results = normalizedToolResults;
+    }
+    if (toolSummary) {
+        message.toolSummary = String(toolSummary);
+    }
+    if (toolState) {
+        message.toolState = String(toolState);
+    }
+    return message;
+}
+
+function buildPersistentToolHistoryMessages(messages = []) {
+    const history = [];
+    for (const item of Array.isArray(messages) ? messages : []) {
+        if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+            continue;
+        }
+        const toolCalls = normalizePersistentToolCalls(item);
+        const toolResults = normalizePersistentToolResults(item, toolCalls);
+        if (toolCalls.length === 0 || toolResults.length === 0) {
+            continue;
+        }
+        history.push({
+            role: 'assistant',
+            content: String(item?.content || '').trim(),
+            tool_calls: toolCalls,
+        });
+        for (const toolResult of toolResults) {
+            history.push({
+                role: 'tool',
+                tool_call_id: toolResult.tool_call_id,
+                content: toolResult.content,
+            });
+        }
+    }
+    return history;
+}
+
+function findConversationMessageById(messages, messageId) {
+    const id = String(messageId || '').trim();
+    if (!id || !Array.isArray(messages)) {
+        return null;
+    }
+    return messages.find(item => String(item?.id || '').trim() === id) || null;
+}
+
+function buildCharacterEditorToolCallsFromOperations(operations = []) {
+    const toolCalls = [];
+    for (const operation of Array.isArray(operations) ? operations : []) {
+        const kind = String(operation?.kind || '').trim();
+        const args = operation?.args && typeof operation.args === 'object' ? clone(operation.args) : {};
+        let payload = null;
+        if (kind === 'character_fields') {
+            payload = createPersistentToolCallPayload(TOOL_NAMES.UPDATE_FIELDS, args);
+        } else if (kind === 'set_primary_lorebook') {
+            payload = createPersistentToolCallPayload(TOOL_NAMES.SET_PRIMARY_BOOK, args);
+        } else if (kind === 'lorebook_upsert_entry') {
+            payload = createPersistentToolCallPayload(TOOL_NAMES.UPSERT_ENTRY, args);
+        } else if (kind === 'lorebook_delete_entry') {
+            payload = createPersistentToolCallPayload(TOOL_NAMES.DELETE_ENTRY, args);
+        }
+        if (payload) {
+            toolCalls.push(payload);
+        }
+    }
+    return toolCalls;
+}
+
+function buildToolCallSummary(toolCalls = []) {
+    const names = (Array.isArray(toolCalls) ? toolCalls : [])
+        .map(call => String(call?.function?.name || '').trim())
+        .filter(Boolean);
+    if (names.length === 0) {
+        return '';
+    }
+    return `Tools: ${names.join(', ')}`;
+}
+
+function buildToolResultsFromOperationSubmission(toolCalls = [], submissionResult = null) {
+    const details = Array.isArray(submissionResult?.results) ? submissionResult.results : [];
+    return toolCalls.map((toolCall, index) => ({
+        tool_call_id: String(toolCall?.id || '').trim(),
+        content: serializeToolResultContent(details[index] || {
+            ok: false,
+            error: 'Missing operation execution result.',
+        }),
+    })).filter(item => item.tool_call_id);
+}
+
+function buildPendingToolResults(toolCalls = [], summaryText = '') {
+    return toolCalls.map((toolCall) => ({
+        tool_call_id: String(toolCall?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: true,
+            pending: true,
+            summary: String(summaryText || 'Pending review.'),
+        }),
+    })).filter(item => item.tool_call_id);
+}
+
+function buildLorebookOperationApprovalToolResults(message, approvalMap) {
+    const toolCalls = normalizePersistentToolCalls(message);
+    const operations = Array.isArray(message?.operations) ? message.operations : [];
+    const map = approvalMap instanceof Map ? approvalMap : new Map();
+    return toolCalls.map((toolCall, index) => {
+        const operation = operations[index];
+        const key = buildLorebookOperationApprovalKey(operation);
+        const state = key ? String(map.get(key) || 'pending') : 'pending';
+        let result = {
+            ok: true,
+            pending: true,
+            summary: 'Pending review',
+        };
+        if (state === 'approved') {
+            result = {
+                ok: true,
+                pending: false,
+                approved: true,
+                summary: 'Approved',
+            };
+        } else if (state === 'rejected') {
+            result = {
+                ok: false,
+                pending: false,
+                rejected: true,
+                summary: 'Rejected',
+            };
+        }
+        return {
+            tool_call_id: String(toolCall?.id || '').trim(),
+            content: serializeToolResultContent(result),
+        };
+    }).filter(item => item.tool_call_id);
+}
+
+function getLorebookOperationApprovalSummaryLabel(message, approvalMap) {
+    const operations = Array.isArray(message?.operations) ? message.operations : [];
+    if (operations.length === 0) {
+        return '';
+    }
+    const summary = getFinalOperationApprovalSummary(operations, approvalMap);
+    if (summary.pending > 0) {
+        return i18nFormat(
+            'Round review: approved ${0}, rejected ${1}, pending ${2}.',
+            summary.approved,
+            summary.rejected,
+            summary.pending,
+        );
+    }
+    if (summary.rejected > 0 && summary.approved === 0) {
+        return i18n('All round operations rejected.');
+    }
+    if (summary.approved > 0 && summary.rejected === 0) {
+        return i18n('All round operations approved.');
+    }
+    return i18nFormat(
+        'Round review complete: approved ${0}, rejected ${1}.',
+        summary.approved,
+        summary.rejected,
+    );
+}
+
+function buildRejectedToolResults(toolCalls = [], summaryText = '') {
+    return toolCalls.map((toolCall) => ({
+        tool_call_id: String(toolCall?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: false,
+            rejected: true,
+            summary: String(summaryText || 'Rejected by user.'),
+        }),
+    })).filter(item => item.tool_call_id);
 }
 
 function appendStandardToolRoundMessages(targetMessages, executedCalls, assistantText = '') {
@@ -3353,7 +3629,8 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
     const settings = getSettings();
     const allowedToolNames = new Set(availableToolNames);
     const conversationHistory = history.map(item => ({ role: item.role, content: item.content }));
-    const runtimeToolMessages = [];
+    const runtimeToolMessages = buildPersistentToolHistoryMessages(conversationMessages);
+    const helperTurnMessages = [];
     let lastAssistantText = '';
 
     for (let round = 1; round <= CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT; round++) {
@@ -3395,6 +3672,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
             return {
                 assistantText: lastAssistantText,
                 operations: normalizeCharacterEditorOperationsFromCalls(editCalls),
+                helperTurnMessages,
             };
         }
 
@@ -3434,6 +3712,17 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 content: lastAssistantText,
             });
         }
+        const helperToolCalls = buildPersistentToolCallsFromRawCalls(executedHelperCalls);
+        helperTurnMessages.push(createPersistentToolTurnMessage({
+            assistantText: lastAssistantText,
+            toolCalls: helperToolCalls,
+            toolResults: executedHelperCalls.map((call) => ({
+                tool_call_id: String(call?.id || '').trim(),
+                content: serializeToolResultContent(call?.result),
+            })),
+            toolSummary: lastAssistantText ? '' : buildToolCallSummary(helperToolCalls),
+            toolState: 'completed',
+        }));
         appendStandardToolRoundMessages(runtimeToolMessages, executedHelperCalls, lastAssistantText);
     }
 
@@ -3666,10 +3955,11 @@ function renderCharacterEditorChatMessages(messages, { loading = false, loadingT
     const html = list.map(item => {
         const role = String(item?.role || 'assistant');
         const text = String(item?.content || '').trim();
+        const toolSummary = String(item?.toolSummary || '').trim();
         const previews = Array.isArray(item?.diffPreviews) ? item.diffPreviews : [];
         const operations = Array.isArray(item?.operations) ? item.operations : [];
         const hasDiffData = previews.length > 0 || operations.length > 0;
-        if (!text && !hasDiffData) {
+        if (!text && !hasDiffData && !toolSummary) {
             return '';
         }
         if (role === 'user') {
@@ -3682,6 +3972,7 @@ function renderCharacterEditorChatMessages(messages, { loading = false, loadingT
 <div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
     ${text ? `<div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>` : ''}
     ${hasDiffData ? renderCharacterEditorRoundDiffHtml(previews, operations, { open: false }) : ''}
+    ${toolSummary ? `<div class="cea_sync_tool_summary">${escapeHtml(toolSummary)}</div>` : ''}
 </div>`;
     }).join('');
     if (!loading) {
@@ -3848,16 +4139,30 @@ async function openCharacterEditorPopup(context = getContext()) {
                             || (operations.length > 0
                                 ? i18nFormat('Proposed ${0} operations in this round.', operations.length)
                                 : i18n('No draft operations proposed in this round.'));
-                        const assistantMessage = {
-                            role: 'assistant',
-                            content: assistantText,
-                        };
+                        const helperTurnMessages = Array.isArray(reply?.helperTurnMessages) ? reply.helperTurnMessages : [];
+                        if (helperTurnMessages.length > 0) {
+                            conversationMessages.push(...helperTurnMessages);
+                        }
+                        const toolCalls = buildCharacterEditorToolCallsFromOperations(operations);
+                        const assistantMessage = createPersistentToolTurnMessage({
+                            messageId: makeConversationMessageId(),
+                            assistantText,
+                            toolCalls,
+                            toolResults: toolCalls.length > 0 ? buildPendingToolResults(toolCalls, i18n('AI proposed changes are waiting for approval.')) : [],
+                            toolSummary: toolCalls.length > 0 ? i18n('AI proposed changes are waiting for approval.') : '',
+                            toolState: toolCalls.length > 0 ? 'pending' : '',
+                        });
                         if (operations.length > 0) {
                             assistantMessage.operations = operations;
                             assistantMessage.diffPreviews = diffPreviews;
                         }
                         conversationMessages.push(assistantMessage);
-                        pendingApproval = operations.length > 0 ? { operations, diffPreviews } : null;
+                        pendingApproval = operations.length > 0 ? {
+                            messageId: assistantMessage.id,
+                            operations,
+                            diffPreviews,
+                            toolCalls,
+                        } : null;
                         renderPending();
                     } catch (error) {
                         conversationMessages.push(isAbortError(error, controller.signal)
@@ -3900,15 +4205,21 @@ async function openCharacterEditorPopup(context = getContext()) {
                     }
                     const action = String(target.getAttribute('data-cea-editor-action') || '').trim();
                     if (action === 'reject-batch') {
+                        const snapshot = pendingApproval;
                         for (const operation of pendingApproval.operations) {
                             const key = buildCharacterEditorOperationKey(operation);
                             if (key) {
                                 rejectedOperationKeys.add(key);
                             }
                         }
+                        const targetMessage = findConversationMessageById(conversationMessages, snapshot?.messageId);
+                        if (targetMessage) {
+                            targetMessage.tool_results = buildRejectedToolResults(snapshot?.toolCalls || [], i18n('Changes rejected.'));
+                            targetMessage.toolSummary = i18n('Changes rejected.');
+                            targetMessage.toolState = 'rejected';
+                        }
                         pendingApproval = null;
                         renderPending();
-                        conversationMessages.push({ role: 'assistant', content: i18n('Changes rejected.') });
                         renderConversation(false);
                         return;
                     }
@@ -3926,10 +4237,13 @@ async function openCharacterEditorPopup(context = getContext()) {
                                 'character_editor_popup',
                                 { targetAvatar: avatar },
                             );
-                            if (result.failed > 0) {
-                                conversationMessages.push({ role: 'assistant', content: i18nFormat('Apply failed: ${0}', String(result.errors[0] || 'unknown error')) });
-                            } else {
-                                conversationMessages.push({ role: 'assistant', content: i18n('Changes applied.') });
+                            const targetMessage = findConversationMessageById(conversationMessages, snapshot?.messageId);
+                            if (targetMessage) {
+                                targetMessage.tool_results = buildToolResultsFromOperationSubmission(snapshot?.toolCalls || [], result);
+                                targetMessage.toolSummary = result.failed > 0
+                                    ? i18nFormat('Apply failed: ${0}', String(result.errors[0] || 'unknown error'))
+                                    : i18n('Changes applied.');
+                                targetMessage.toolState = result.failed > 0 ? 'partial' : 'completed';
                             }
                             await refreshUiState(context);
                             await renderHistory();
@@ -4236,24 +4550,21 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                         );
                         markOperationsPendingApproval(draftRound.appliedOperations, operationApprovalMap);
                         const assistantText = String(reply?.assistantText || '').trim();
-                        if (assistantText) {
-                            conversationMessages.push({
-                                role: 'assistant',
-                                content: assistantText,
-                                operations: draftRound.appliedOperations,
-                                diffPreviews: draftRound.diffPreviews,
-                            });
-                        } else {
-                            const fallbackText = draftRound.appliedOperations.length > 0
-                                ? i18nFormat('Proposed ${0} operations in this round.', draftRound.appliedOperations.length)
-                                : i18n('No draft operations proposed in this round.');
-                            conversationMessages.push({
-                                role: 'assistant',
-                                content: fallbackText,
-                                operations: draftRound.appliedOperations,
-                                diffPreviews: draftRound.diffPreviews,
-                            });
-                        }
+                        const toolCalls = buildCharacterEditorToolCallsFromOperations(draftRound.appliedOperations);
+                        const fallbackText = draftRound.appliedOperations.length > 0
+                            ? i18nFormat('Proposed ${0} operations in this round.', draftRound.appliedOperations.length)
+                            : i18n('No draft operations proposed in this round.');
+                        const assistantMessage = createPersistentToolTurnMessage({
+                            messageId: makeConversationMessageId('cea_sync_msg'),
+                            assistantText: assistantText || fallbackText,
+                            toolCalls,
+                            toolResults: toolCalls.length > 0 ? buildPendingToolResults(toolCalls, i18n('AI proposed changes are waiting for approval.')) : [],
+                            toolSummary: toolCalls.length > 0 ? i18n('AI proposed changes are waiting for approval.') : '',
+                            toolState: toolCalls.length > 0 ? 'pending' : '',
+                        });
+                        assistantMessage.operations = draftRound.appliedOperations;
+                        assistantMessage.diffPreviews = draftRound.diffPreviews;
+                        conversationMessages.push(assistantMessage);
                     } catch (error) {
                         const errorText = i18nFormat('Model reply failed: ${0}', String(error?.message || error || ''));
                         conversationMessages.push({ role: 'assistant', content: errorText });
@@ -4289,6 +4600,12 @@ async function runLorebookSyncFlow(context, previousSnapshot, currentSnapshot, c
                             return;
                         }
                         operationApprovalMap.set(key, action === 'approve-diff' ? 'approved' : 'rejected');
+                        const toolResults = buildLorebookOperationApprovalToolResults(message, operationApprovalMap);
+                        if (toolResults[opIndex]) {
+                            message.tool_results = toolResults;
+                            message.toolSummary = getLorebookOperationApprovalSummaryLabel(message, operationApprovalMap);
+                            message.toolState = 'reviewed';
+                        }
                         renderConversation(false);
                     }
                 });
@@ -5096,6 +5413,7 @@ function ensureStyles() {
 .popup .cea_sync_analysis_error { color:var(--crimson70); font-weight:600; }
 .popup .cea_sync_analysis_empty { opacity:0.8; }
 .popup .cea_sync_chat_text { margin-bottom:6px; }
+.popup .cea_sync_tool_summary { margin-top:8px; padding:8px 10px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent); white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
 .popup .cea_sync_chat_msg :is(p, ul, ol, pre, table, h1, h2, h3, h4) { margin:0 0 8px; }
 .popup .cea_sync_chat_msg :is(pre, code) { white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
 .popup .cea_sync_chat_msg table { display:block; width:100%; overflow:auto; border-collapse:collapse; }

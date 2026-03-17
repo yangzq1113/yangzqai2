@@ -3571,6 +3571,10 @@ function makeRuntimeToolCallId() {
     return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function makeAiIterationMessageId(prefix = 'orch_msg') {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function serializeToolResultContent(result) {
     if (typeof result === 'string') {
         return result;
@@ -3583,6 +3587,178 @@ function serializeToolResultContent(result) {
     } catch {
         return String(result);
     }
+}
+
+function createPersistentToolCallPayload(name, args = {}, id = '') {
+    const toolName = String(name || '').trim();
+    if (!toolName) {
+        return null;
+    }
+    const safeArgs = args && typeof args === 'object' ? structuredClone(args) : {};
+    return {
+        id: String(id || '').trim() || makeRuntimeToolCallId(),
+        type: 'function',
+        function: {
+            name: toolName,
+            arguments: JSON.stringify(safeArgs),
+        },
+    };
+}
+
+function buildPersistentToolCallsFromRawCalls(rawCalls = []) {
+    return (Array.isArray(rawCalls) ? rawCalls : [])
+        .map((call) => createPersistentToolCallPayload(call?.name, call?.args, call?.id))
+        .filter(Boolean);
+}
+
+function normalizePersistentToolCalls(message) {
+    const output = [];
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+        let args = {};
+        if (call?.function?.arguments && typeof call.function.arguments === 'string') {
+            try {
+                const parsed = JSON.parse(call.function.arguments);
+                args = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch {
+                args = {};
+            }
+        } else if (call?.function?.arguments && typeof call.function.arguments === 'object') {
+            args = call.function.arguments;
+        }
+        const payload = createPersistentToolCallPayload(call?.function?.name, args, call?.id);
+        if (payload) {
+            output.push(payload);
+        }
+    }
+    return output;
+}
+
+function normalizePersistentToolResults(message, toolCalls = []) {
+    const toolCallIds = new Set(toolCalls.map(call => String(call?.id || '').trim()).filter(Boolean));
+    return (Array.isArray(message?.tool_results) ? message.tool_results : [])
+        .map((item) => ({
+            tool_call_id: String(item?.tool_call_id || '').trim(),
+            content: String(item?.content ?? ''),
+        }))
+        .filter(item => item.tool_call_id && toolCallIds.has(item.tool_call_id));
+}
+
+function createPersistentToolTurnMessage({
+    messageId = '',
+    assistantText = '',
+    toolCalls = [],
+    toolResults = [],
+    toolSummary = '',
+    toolState = '',
+    auto = false,
+    at = Date.now(),
+} = {}) {
+    const message = {
+        id: String(messageId || '').trim() || makeAiIterationMessageId(),
+        role: 'assistant',
+        content: String(assistantText || '').trim(),
+        auto: Boolean(auto),
+        at: Number(at || Date.now()),
+    };
+    const normalizedToolCalls = normalizePersistentToolCalls({ tool_calls: toolCalls });
+    const normalizedToolResults = normalizePersistentToolResults({ tool_results: toolResults }, normalizedToolCalls);
+    if (normalizedToolCalls.length > 0) {
+        message.tool_calls = normalizedToolCalls;
+    }
+    if (normalizedToolResults.length > 0) {
+        message.tool_results = normalizedToolResults;
+    }
+    if (toolSummary) {
+        message.toolSummary = String(toolSummary);
+    }
+    if (toolState) {
+        message.toolState = String(toolState);
+    }
+    return message;
+}
+
+function buildPersistentToolHistoryMessages(messages = []) {
+    const history = [];
+    for (const item of Array.isArray(messages) ? messages : []) {
+        if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+            continue;
+        }
+        const toolCalls = normalizePersistentToolCalls(item);
+        const toolResults = normalizePersistentToolResults(item, toolCalls);
+        if (toolCalls.length === 0 || toolResults.length === 0) {
+            continue;
+        }
+        history.push({
+            role: 'assistant',
+            content: String(item?.content || '').trim(),
+            tool_calls: toolCalls,
+        });
+        for (const toolResult of toolResults) {
+            history.push({
+                role: 'tool',
+                tool_call_id: toolResult.tool_call_id,
+                content: toolResult.content,
+            });
+        }
+    }
+    return history;
+}
+
+function findAiIterationMessageById(messages, messageId) {
+    const id = String(messageId || '').trim();
+    if (!id || !Array.isArray(messages)) {
+        return null;
+    }
+    return messages.find(item => String(item?.id || '').trim() === id) || null;
+}
+
+function buildToolCallSummary(toolCalls = []) {
+    const names = (Array.isArray(toolCalls) ? toolCalls : [])
+        .map(call => String(call?.function?.name || '').trim())
+        .filter(Boolean);
+    if (names.length === 0) {
+        return '';
+    }
+    return `Tools: ${names.join(', ')}`;
+}
+
+function buildExecutionToolCalls(rawCalls = []) {
+    return buildPersistentToolCallsFromRawCalls(rawCalls).map((call) => {
+        let args = {};
+        try {
+            const parsed = JSON.parse(String(call?.function?.arguments || '{}'));
+            args = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+        } catch {
+            args = {};
+        }
+        return {
+            id: String(call?.id || '').trim(),
+            name: String(call?.function?.name || '').trim(),
+            args,
+        };
+    }).filter(call => call.id && call.name);
+}
+
+function buildPendingToolResults(toolCalls = [], summaryText = '') {
+    return buildPersistentToolCallsFromRawCalls(toolCalls).map((call) => ({
+        tool_call_id: String(call?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: true,
+            pending: true,
+            summary: String(summaryText || 'Pending review.'),
+        }),
+    })).filter(item => item.tool_call_id);
+}
+
+function buildRejectedToolResults(toolCalls = [], summaryText = '') {
+    return buildPersistentToolCallsFromRawCalls(toolCalls).map((call) => ({
+        tool_call_id: String(call?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: false,
+            rejected: true,
+            summary: String(summaryText || 'Rejected by user.'),
+        }),
+    })).filter(item => item.tool_call_id);
 }
 
 function appendStandardToolRoundMessages(targetMessages, executedCalls, assistantText = '') {
@@ -7212,39 +7388,6 @@ function trimAiIterationMessages(session) {
     }
 }
 
-function trimAiIterationToolHistory(session) {
-    if (!session) {
-        return;
-    }
-    if (!Array.isArray(session.toolHistory)) {
-        session.toolHistory = [];
-    }
-}
-
-function recordAiIterationToolHistory(session, toolCalls, executionResult, source = 'approved') {
-    if (!session) {
-        return;
-    }
-    if (!Array.isArray(session.toolHistory)) {
-        session.toolHistory = [];
-    }
-    const safeCalls = Array.isArray(toolCalls)
-        ? toolCalls.map(call => ({
-            name: String(call?.name || '').trim(),
-            args: call?.args && typeof call.args === 'object' ? structuredClone(call.args) : {},
-        }))
-        : [];
-    session.toolHistory.push({
-        at: Date.now(),
-        source: String(source || 'approved'),
-        toolCalls: safeCalls,
-        summary: buildFriendlyIterationExecutionSummary(executionResult),
-        finalized: Boolean(executionResult?.finalized),
-        changed: Boolean(executionResult?.changed),
-    });
-    trimAiIterationToolHistory(session);
-}
-
 function stringifyIterationSimulationForPrompt(simulation) {
     if (!simulation || typeof simulation !== 'object') {
         return '(none)';
@@ -7407,7 +7550,6 @@ function createAiIterationSession(context, settings) {
             updatedAt: Date.now(),
             workingProfile: cloneAgendaWorkingProfileFromEditor(editor),
             messages: [],
-            toolHistory: [],
             lastSimulation: null,
             pendingApproval: null,
         };
@@ -7431,7 +7573,6 @@ function createAiIterationSession(context, settings) {
         updatedAt: Date.now(),
         workingProfile: cloneWorkingProfileFromEditor(editor),
         messages: [],
-        toolHistory: [],
         lastSimulation: null,
         pendingApproval: null,
     };
@@ -7519,10 +7660,12 @@ function renderAiIterationConversation(session, { loading = false, loadingText =
         const label = auto ? 'AUTO' : (role === 'user' ? 'You' : 'AI');
         const bubbleClass = role === 'user' ? 'user' : 'assistant';
         const bodyHtml = renderAiIterationMessageBodyHtml(item?.content || '', { auto });
+        const toolSummary = String(item?.toolSummary || '').trim();
         return `
 <div class="luker_orch_iter_msg ${bubbleClass}">
     <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
     <div class="luker_orch_iter_msg_body">${bodyHtml}</div>
+    ${toolSummary ? `<div class="luker_orch_iter_msg_meta">${escapeHtml(toolSummary)}</div>` : ''}
 </div>`;
     }).join('');
     if (!loading) {
@@ -9322,6 +9465,7 @@ function buildFriendlyIterationExecutionSummary(result) {
 async function executeAgendaIterationToolCalls(context, session, toolCalls, abortSignal = null) {
     const actions = [];
     const simulations = [];
+    const toolResults = [];
     let finalized = false;
     let finalizeSummary = '';
     let continueRequested = false;
@@ -9331,6 +9475,13 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
         const name = String(call?.name || '').trim();
         const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
+        const pushToolResult = (payload) => {
+            toolResults.push({
+                tool_call_id: callId,
+                content: serializeToolResultContent(payload),
+            });
+        };
         if (!name) {
             continue;
         }
@@ -9350,14 +9501,18 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
                     ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
                     : {}),
             });
-            actions.push('Agenda planner updated.');
+            const actionText = 'Agenda planner updated.';
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText });
             changed = true;
             continue;
         }
         if (name === 'luker_orch_set_agenda_agent') {
             const agentId = sanitizeIdentifierToken(args.agent_id, '');
             if (!agentId) {
-                actions.push('Skipped agenda agent update: missing agent_id.');
+                const actionText = 'Skipped agenda agent update: missing agent_id.';
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText });
                 continue;
             }
             const beforeAgent = session.workingProfile.agents[agentId] || null;
@@ -9372,39 +9527,53 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
                     ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
                     : {}),
             });
-            actions.push(`Agenda agent "${agentId}" updated.`);
+            const actionText = `Agenda agent "${agentId}" updated.`;
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText, agent_id: agentId });
             changed = true;
             continue;
         }
         if (name === 'luker_orch_remove_agenda_agent') {
             const agentId = sanitizeIdentifierToken(args.agent_id, '');
             if (!agentId) {
-                actions.push('Skipped agenda agent removal: missing agent_id.');
+                const actionText = 'Skipped agenda agent removal: missing agent_id.';
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText });
                 continue;
             }
             if (!session.workingProfile.agents[agentId]) {
-                actions.push(`Skipped agenda agent removal: "${agentId}" not found.`);
+                const actionText = `Skipped agenda agent removal: "${agentId}" not found.`;
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText, agent_id: agentId });
                 continue;
             }
             delete session.workingProfile.agents[agentId];
             session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
-            actions.push(`Agenda agent "${agentId}" removed.`);
+            const actionText = `Agenda agent "${agentId}" removed.`;
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText, agent_id: agentId });
             changed = true;
             continue;
         }
         if (name === 'luker_orch_set_agenda_final_agent') {
             const agentId = sanitizeIdentifierToken(args.agent_id, '');
             if (!agentId) {
-                actions.push('Skipped agenda final agent update: missing agent_id.');
+                const actionText = 'Skipped agenda final agent update: missing agent_id.';
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText });
                 continue;
             }
             session.workingProfile.finalAgentId = agentId;
             session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
             if (String(session.workingProfile.finalAgentId || '') !== agentId) {
-                actions.push(`Skipped agenda final agent update: "${agentId}" is not available.`);
+                const actionText = `Skipped agenda final agent update: "${agentId}" is not available.`;
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText, agent_id: agentId });
                 continue;
             }
-            actions.push(`Agenda final agent set to "${agentId}".`);
+            const actionText = `Agenda final agent set to "${agentId}".`;
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText, agent_id: agentId });
             changed = true;
             continue;
         }
@@ -9417,7 +9586,9 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
                     maxTotalRuns: args.max_total_runs ?? session.workingProfile.limits.maxTotalRuns,
                 },
             });
-            actions.push('Agenda runtime limits updated.');
+            const actionText = 'Agenda runtime limits updated.';
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText });
             changed = true;
             continue;
         }
@@ -9425,24 +9596,46 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
             const simulation = await runAiIterationSimulation(context, session, args, abortSignal);
             simulations.push(simulation);
             session.lastSimulation = simulation;
-            actions.push(simulation.ok
+            const actionText = simulation.ok
                 ? `Simulation finished: ${simulation.summary}`
-                : `Simulation failed: ${simulation.summary}`);
+                : `Simulation failed: ${simulation.summary}`;
+            actions.push(actionText);
+            pushToolResult({
+                ok: Boolean(simulation?.ok),
+                action: actionText,
+                simulation,
+            });
             continue;
         }
         if (name === 'luker_orch_continue_iteration') {
             continueRequested = true;
             const note = String(args.note || '').trim();
-            actions.push(`Continue requested.${note ? ` ${note}` : ''}`);
+            const actionText = `Continue requested.${note ? ` ${note}` : ''}`;
+            actions.push(actionText);
+            pushToolResult({
+                ok: true,
+                action: actionText,
+                continueRequested: true,
+                note,
+            });
             continue;
         }
         if (name === 'luker_orch_finalize_iteration') {
             finalized = true;
             finalizeSummary = String(args.summary || '').trim();
-            actions.push(`Iteration finalized.${finalizeSummary ? ` ${finalizeSummary}` : ''}`);
+            const actionText = `Iteration finalized.${finalizeSummary ? ` ${finalizeSummary}` : ''}`;
+            actions.push(actionText);
+            pushToolResult({
+                ok: true,
+                action: actionText,
+                finalized: true,
+                summary: finalizeSummary,
+            });
             continue;
         }
-        actions.push(`Ignored unknown action: ${name}`);
+        const actionText = `Ignored unknown action: ${name}`;
+        actions.push(actionText);
+        pushToolResult({ ok: false, ignored: true, action: actionText });
     }
 
     session.workingProfile = sanitizeAgendaWorkingProfile(session.workingProfile);
@@ -9453,6 +9646,7 @@ async function executeAgendaIterationToolCalls(context, session, toolCalls, abor
     return {
         actions,
         simulations,
+        toolResults,
         finalized,
         finalizeSummary,
         continueRequested,
@@ -9466,6 +9660,7 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
     }
     const actions = [];
     const simulations = [];
+    const toolResults = [];
     let finalized = false;
     let finalizeSummary = '';
     let continueRequested = false;
@@ -9475,13 +9670,22 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
     for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
         const name = String(call?.name || '').trim();
         const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
+        const pushToolResult = (payload) => {
+            toolResults.push({
+                tool_call_id: callId,
+                content: serializeToolResultContent(payload),
+            });
+        };
         if (!name) {
             continue;
         }
         if (name === 'luker_orch_set_stage') {
             const stageId = sanitizeIdentifierToken(args.stage_id, '');
             if (!stageId) {
-                actions.push('Skipped stage update: missing stage_id.');
+                const actionText = 'Skipped stage update: missing stage_id.';
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText });
                 continue;
             }
             const mode = String(args.mode || 'serial').toLowerCase() === 'parallel' ? 'parallel' : 'serial';
@@ -9493,7 +9697,9 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             const stages = session.workingProfile.spec.stages;
             const index = stages.findIndex(item => String(item?.id || '') === stageId);
             applyIndexReorder(stages, index, Number.isInteger(args.position) ? Number(args.position) : NaN);
-            actions.push(`Stage "${stageId}" updated (${mode}).`);
+            const actionText = `Stage "${stageId}" updated (${mode}).`;
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText, stage_id: stageId, mode });
             changed = true;
             continue;
         }
@@ -9503,10 +9709,14 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             const index = stages.findIndex(item => String(item?.id || '') === stageId);
             if (index >= 0) {
                 stages.splice(index, 1);
-                actions.push(`Stage "${stageId}" removed.`);
+                const actionText = `Stage "${stageId}" removed.`;
+                actions.push(actionText);
+                pushToolResult({ ok: true, changed: true, action: actionText, stage_id: stageId });
                 changed = true;
             } else {
-                actions.push(`Skipped stage removal: "${stageId}" not found.`);
+                const actionText = `Skipped stage removal: "${stageId}" not found.`;
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText, stage_id: stageId });
             }
             continue;
         }
@@ -9514,7 +9724,9 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             const stageId = sanitizeIdentifierToken(args.stage_id, '');
             const nodeId = sanitizeIdentifierToken(args.node_id, '');
             if (!stageId || !nodeId) {
-                actions.push('Skipped node update: missing stage_id or node_id.');
+                const actionText = 'Skipped node update: missing stage_id or node_id.';
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText });
                 continue;
             }
             const stage = resolveIterationStage(session, stageId, true);
@@ -9538,11 +9750,29 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             if (existingIndex >= 0) {
                 nodes[existingIndex] = nextNode;
                 applyIndexReorder(nodes, existingIndex, Number.isInteger(args.position) ? Number(args.position) : NaN);
-                actions.push(`Node "${nodeId}" updated in stage "${stageId}".`);
+                const actionText = `Node "${nodeId}" updated in stage "${stageId}".`;
+                actions.push(actionText);
+                pushToolResult({
+                    ok: true,
+                    changed: true,
+                    action: actionText,
+                    stage_id: stageId,
+                    node_id: nodeId,
+                    preset_id: presetId,
+                });
             } else {
                 nodes.push(nextNode);
                 applyIndexReorder(nodes, nodes.length - 1, Number.isInteger(args.position) ? Number(args.position) : NaN);
-                actions.push(`Node "${nodeId}" added to stage "${stageId}".`);
+                const actionText = `Node "${nodeId}" added to stage "${stageId}".`;
+                actions.push(actionText);
+                pushToolResult({
+                    ok: true,
+                    changed: true,
+                    action: actionText,
+                    stage_id: stageId,
+                    node_id: nodeId,
+                    preset_id: presetId,
+                });
             }
             stage.nodes = nodes;
             changed = true;
@@ -9553,29 +9783,45 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
             const nodeId = sanitizeIdentifierToken(args.node_id, '');
             const stage = resolveIterationStage(session, stageId, false);
             if (!stage || !Array.isArray(stage.nodes)) {
-                actions.push(`Skipped node removal: stage "${stageId}" not found.`);
+                const actionText = `Skipped node removal: stage "${stageId}" not found.`;
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText, stage_id: stageId, node_id: nodeId });
                 continue;
             }
             const index = stage.nodes.findIndex(item => String(item?.id || '') === nodeId);
             if (index >= 0) {
                 stage.nodes.splice(index, 1);
-                actions.push(`Node "${nodeId}" removed from stage "${stageId}".`);
+                const actionText = `Node "${nodeId}" removed from stage "${stageId}".`;
+                actions.push(actionText);
+                pushToolResult({ ok: true, changed: true, action: actionText, stage_id: stageId, node_id: nodeId });
                 changed = true;
             } else {
-                actions.push(`Skipped node removal: "${nodeId}" not found in stage "${stageId}".`);
+                const actionText = `Skipped node removal: "${nodeId}" not found in stage "${stageId}".`;
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText, stage_id: stageId, node_id: nodeId });
             }
             continue;
         }
         if (name === 'luker_orch_set_preset') {
             const presetId = sanitizeIdentifierToken(args.preset_id, '');
             if (!presetId) {
-                actions.push('Skipped preset update: missing preset_id.');
+                const actionText = 'Skipped preset update: missing preset_id.';
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText });
                 continue;
             }
             const queuedRemovalActionIndexes = pendingPresetRemovalActions.get(presetId) || [];
             for (const actionIndex of queuedRemovalActionIndexes) {
                 if (Number.isInteger(actionIndex) && actionIndex >= 0 && actionIndex < actions.length) {
-                    actions[actionIndex] = `Skipped preset removal: "${presetId}" overridden by later preset update.`;
+                    const actionText = `Skipped preset removal: "${presetId}" overridden by later preset update.`;
+                    actions[actionIndex] = actionText;
+                    if (toolResults[actionIndex]) {
+                        toolResults[actionIndex].content = serializeToolResultContent({
+                            ok: false,
+                            error: actionText,
+                            preset_id: presetId,
+                        });
+                    }
                 }
             }
             pendingPresetRemovalActions.delete(presetId);
@@ -9591,45 +9837,73 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
                     ? { promptPresetName: sanitizePromptPresetName(args.promptPresetName) }
                     : {}),
             });
-            actions.push(`Preset "${presetId}" updated.`);
+            const actionText = `Preset "${presetId}" updated.`;
+            actions.push(actionText);
+            pushToolResult({ ok: true, changed: true, action: actionText, preset_id: presetId });
             changed = true;
             continue;
         }
         if (name === 'luker_orch_remove_preset') {
             const presetId = sanitizeIdentifierToken(args.preset_id, '');
             if (!presetId) {
-                actions.push(`Skipped preset removal: "${presetId}" not found.`);
+                const actionText = `Skipped preset removal: "${presetId}" not found.`;
+                actions.push(actionText);
+                pushToolResult({ ok: false, error: actionText, preset_id: presetId });
                 continue;
             }
             if (!pendingPresetRemovalActions.has(presetId)) {
                 pendingPresetRemovalActions.set(presetId, []);
             }
-            actions.push(`Preset "${presetId}" removal requested.`);
+            const actionText = `Preset "${presetId}" removal requested.`;
+            actions.push(actionText);
             pendingPresetRemovalActions.get(presetId).push(actions.length - 1);
+            pushToolResult({ ok: true, action: actionText, preset_id: presetId });
             continue;
         }
         if (name === 'luker_orch_simulate') {
             const simulation = await runAiIterationSimulation(context, session, args, abortSignal);
             simulations.push(simulation);
             session.lastSimulation = simulation;
-            actions.push(simulation.ok
+            const actionText = simulation.ok
                 ? `Simulation finished: ${simulation.summary}`
-                : `Simulation failed: ${simulation.summary}`);
+                : `Simulation failed: ${simulation.summary}`;
+            actions.push(actionText);
+            pushToolResult({
+                ok: Boolean(simulation?.ok),
+                action: actionText,
+                simulation,
+            });
             continue;
         }
         if (name === 'luker_orch_continue_iteration') {
             continueRequested = true;
             const note = String(args.note || '').trim();
-            actions.push(`Continue requested.${note ? ` ${note}` : ''}`);
+            const actionText = `Continue requested.${note ? ` ${note}` : ''}`;
+            actions.push(actionText);
+            pushToolResult({
+                ok: true,
+                action: actionText,
+                continueRequested: true,
+                note,
+            });
             continue;
         }
         if (name === 'luker_orch_finalize_iteration') {
             finalized = true;
             finalizeSummary = String(args.summary || '').trim();
-            actions.push(`Iteration finalized.${finalizeSummary ? ` ${finalizeSummary}` : ''}`);
+            const actionText = `Iteration finalized.${finalizeSummary ? ` ${finalizeSummary}` : ''}`;
+            actions.push(actionText);
+            pushToolResult({
+                ok: true,
+                action: actionText,
+                finalized: true,
+                summary: finalizeSummary,
+            });
             continue;
         }
-        actions.push(`Ignored unknown action: ${name}`);
+        const actionText = `Ignored unknown action: ${name}`;
+        actions.push(actionText);
+        pushToolResult({ ok: false, ignored: true, action: actionText });
     }
 
     for (const [presetId, actionIndexes] of pendingPresetRemovalActions.entries()) {
@@ -9648,6 +9922,14 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
         for (const actionIndex of actionIndexes) {
             if (Number.isInteger(actionIndex) && actionIndex >= 0 && actionIndex < actions.length) {
                 actions[actionIndex] = message;
+                if (toolResults[actionIndex]) {
+                    toolResults[actionIndex].content = serializeToolResultContent({
+                        ok: !message.startsWith('Skipped'),
+                        action: message,
+                        ...(message.startsWith('Skipped') ? { error: message } : { changed: true }),
+                        preset_id: presetId,
+                    });
+                }
             }
         }
     }
@@ -9661,6 +9943,7 @@ async function executeAiIterationToolCalls(context, session, toolCalls, abortSig
     return {
         actions,
         simulations,
+        toolResults,
         finalized,
         finalizeSummary,
         continueRequested,
@@ -9704,6 +9987,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
             api,
             promptPresetName: suggestPresetName,
             worldInfoMessages: session.messages,
+            historyMessages: buildPersistentToolHistoryMessages(session.messages),
         },
     );
     const detailed = await requestToolCallsWithRetry(settings, promptMessages, {
@@ -9716,9 +10000,9 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         allowNoToolCalls: true,
         applyAgentTimeout: false,
     });
-    const toolCalls = Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : [];
+    const executionToolCalls = buildExecutionToolCalls(Array.isArray(detailed?.toolCalls) ? detailed.toolCalls : []);
     const assistantText = stripIterationThoughtForDisplay(detailed?.assistantText || '');
-    if (toolCalls.length === 0) {
+    if (executionToolCalls.length === 0) {
         if (assistantText) {
             session.messages.push({
                 role: 'assistant',
@@ -9733,10 +10017,26 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         }
         throw new Error(i18n('Function output is invalid.'));
     }
-    const split = splitAiIterationToolCallsForApproval(toolCalls);
+    const split = splitAiIterationToolCallsForApproval(executionToolCalls);
+    const persistentToolCalls = buildPersistentToolCallsFromRawCalls(split.allCalls);
+    const visibleAssistantText = assistantText || buildToolCallSummary(persistentToolCalls);
     if (split.approvalCalls.length > 0) {
+        const pendingSummary = i18n('AI suggested changes are waiting for approval.');
+        const assistantMessage = createPersistentToolTurnMessage({
+            messageId: makeAiIterationMessageId(),
+            assistantText: visibleAssistantText,
+            toolCalls: persistentToolCalls,
+            toolResults: buildPendingToolResults(persistentToolCalls, pendingSummary),
+            toolSummary: pendingSummary,
+            toolState: 'pending',
+            auto: false,
+            at: Date.now(),
+        });
+        session.messages.push(assistantMessage);
+        trimAiIterationMessages(session);
         session.pendingApproval = {
-            assistantText,
+            messageId: assistantMessage.id,
+            assistantText: visibleAssistantText,
             toolCalls: split.approvalCalls,
             executionToolCalls: split.allCalls,
             createdAt: Date.now(),
@@ -9745,22 +10045,17 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         return { ok: true, pending: true };
     }
 
-    if (assistantText) {
-        session.messages.push({
-            role: 'assistant',
-            content: assistantText,
-            auto: false,
-            at: Date.now(),
-        });
-    }
     const executionResult = await executeAiIterationToolCalls(context, session, split.allCalls, abortSignal);
-    recordAiIterationToolHistory(session, split.allCalls, executionResult, 'auto');
-    session.messages.push({
-        role: 'assistant',
-        content: buildFriendlyIterationExecutionSummary(executionResult),
+    session.messages.push(createPersistentToolTurnMessage({
+        messageId: makeAiIterationMessageId(),
+        assistantText: visibleAssistantText,
+        toolCalls: persistentToolCalls,
+        toolResults: Array.isArray(executionResult?.toolResults) ? executionResult.toolResults : [],
+        toolSummary: buildFriendlyIterationExecutionSummary(executionResult),
+        toolState: 'completed',
         auto: false,
         at: Date.now(),
-    });
+    }));
     trimAiIterationMessages(session);
     session.pendingApproval = null;
     session.updatedAt = Date.now();
@@ -10031,7 +10326,6 @@ async function openAiIterationStudio(context, settings, root) {
         session.updatedAt = nextSession.updatedAt;
         session.workingProfile = nextSession.workingProfile;
         session.messages = [];
-        session.toolHistory = [];
         session.lastSimulation = null;
         session.pendingApproval = null;
         setStatus(i18n('Iteration session reset.'));
@@ -10083,6 +10377,7 @@ async function openAiIterationStudio(context, settings, root) {
         isRunning = true;
         rerender();
         const pendingSnapshot = {
+            messageId: String(pending.messageId || ''),
             assistantText: String(pending.assistantText || ''),
             toolCalls: Array.isArray(pending.toolCalls) ? structuredClone(pending.toolCalls) : [],
             executionToolCalls: Array.isArray(pending.executionToolCalls) ? structuredClone(pending.executionToolCalls) : [],
@@ -10092,25 +10387,16 @@ async function openAiIterationStudio(context, settings, root) {
         rerender();
         setStatus(i18n('Applying approved changes...'));
         try {
-            if (pendingSnapshot.assistantText) {
-                session.messages.push({
-                    role: 'assistant',
-                    content: pendingSnapshot.assistantText,
-                    auto: false,
-                    at: Date.now(),
-                });
-            }
             const executionToolCalls = pendingSnapshot.executionToolCalls.length > 0
                 ? pendingSnapshot.executionToolCalls
                 : pendingSnapshot.toolCalls;
             const result = await executeAiIterationToolCalls(context, session, executionToolCalls, controller.signal);
-            recordAiIterationToolHistory(session, executionToolCalls, result, 'approved');
-            session.messages.push({
-                role: 'assistant',
-                content: buildFriendlyIterationExecutionSummary(result),
-                auto: false,
-                at: Date.now(),
-            });
+            const targetMessage = findAiIterationMessageById(session.messages, pendingSnapshot.messageId);
+            if (targetMessage) {
+                targetMessage.tool_results = Array.isArray(result?.toolResults) ? result.toolResults : [];
+                targetMessage.toolSummary = buildFriendlyIterationExecutionSummary(result);
+                targetMessage.toolState = 'completed';
+            }
             trimAiIterationMessages(session);
             const didHandle = await maybeRunAutoContinue(result, controller, 'approved');
             if (!didHandle) {
@@ -10140,13 +10426,14 @@ async function openAiIterationStudio(context, settings, root) {
         if (!session?.pendingApproval) {
             return;
         }
+        const pending = session.pendingApproval;
         session.pendingApproval = null;
-        session.messages.push({
-            role: 'assistant',
-            content: i18n('Changes rejected.'),
-            auto: false,
-            at: Date.now(),
-        });
+        const targetMessage = findAiIterationMessageById(session.messages, pending?.messageId);
+        if (targetMessage) {
+            targetMessage.tool_results = buildRejectedToolResults(pending?.executionToolCalls || pending?.toolCalls || [], i18n('Changes rejected.'));
+            targetMessage.toolSummary = i18n('Changes rejected.');
+            targetMessage.toolState = 'rejected';
+        }
         trimAiIterationMessages(session);
         setStatus(i18n('Changes rejected.'));
         rerender();
@@ -11790,6 +12077,14 @@ function ensureStyles() {
     white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.4;
+}
+.luker_orch_iter_msg_meta {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in oklab, var(--SmartThemeBorderColor, rgba(130,130,130,0.35)) 72%, transparent);
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: 0.9;
 }
 .luker_orch_iter_msg_folded {
     margin: 0;
