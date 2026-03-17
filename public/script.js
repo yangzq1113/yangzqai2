@@ -12380,10 +12380,11 @@ function renderEditedMessage(messageId, { messageElement = null, bias = undefine
     messageBlock.find('.mes_edit_buttons').css('display', 'none');
     messageBlock.find('.mes_buttons').css('display', '');
     const messageName = message.name || (message.is_user ? name1 : name2);
+    const text = message?.extra?.display_text ?? message.mes;
     messageBlock.find('.mes_text')
         .empty()
         .append(messageFormatting(
-            message.mes,
+            text,
             messageName,
             message.is_system,
             message.is_user,
@@ -12391,6 +12392,8 @@ function renderEditedMessage(messageId, { messageElement = null, bias = undefine
             {},
             false,
         ));
+
+    updateReasoningUI(resolvedMessageElement);
 
     if (updateBias) {
         messageBlock.find('.mes_bias').empty();
@@ -12542,6 +12545,7 @@ async function messageEditCancel(messageId = this_edit_mes_id) {
         console.warn(`The message editor was closed on message #${messageId} while #${this_edit_mes_id} is being edited.`);
     }
 
+    await eventSource.emit(event_types.MESSAGE_UPDATED, messageId);
     showSwipeButtons();
 }
 

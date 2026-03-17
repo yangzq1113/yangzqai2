@@ -36,6 +36,7 @@ Use `getContext()` as the primary integration surface.
   - `GENERATION_BEFORE_API_REQUEST`
   - `GENERATION_STARTED` / `GENERATION_STOPPED` / `GENERATION_ENDED`
   - `MESSAGE_EDITED` → `(messageId, meta?)`
+  - `MESSAGE_UPDATED` → `(messageId)`
   - `MESSAGE_DELETED` → `(chatLength, meta?)`
 
 Detailed plugin docs:

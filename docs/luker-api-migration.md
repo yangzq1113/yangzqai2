@@ -697,7 +697,7 @@ Practical notes:
 | `GENERATION_BEFORE_WORLD_INFO_SCAN` | Temporary mutations that should affect lorebook/world-info scanning | Last-mile request-body edits |
 | `GENERATION_WORLD_INFO_FINALIZED` | Reading finalized WI resolution, depth injections, or branch-aware sidecar state | Reconstructing assumptions about the pre-scan chat slice |
 | `GENERATION_BEFORE_API_REQUEST` | Final request inspection, tool/runtime wiring, provider-specific addenda | Changes that must influence world-info activation |
-| `MESSAGE_EDITED` / `MESSAGE_DELETED` | Invalidating per-chat caches and sidecar-derived indexes | Heavy rescans on every render |
+| `MESSAGE_EDITED` / `MESSAGE_UPDATED` / `MESSAGE_DELETED` | `MESSAGE_EDITED` for mutation-aware invalidation, `MESSAGE_UPDATED` for lightweight per-message refresh work, `MESSAGE_DELETED` for truncation/removal handling | Heavy rescans on every render |
 | `CHAT_BRANCH_CREATED` | Copying/truncating chat-bound plugin state to the branch target | Blindly copying “latest” state without considering `mesId` |
 
 Lifecycle hooks:
@@ -751,7 +751,7 @@ The second `meta` argument is backward-compatible and may be absent for older em
 (messageId: number)
 ```
 
-Use `MESSAGE_UPDATED` for lightweight "message content changed locally" notifications when you do not need the richer edit/delete mutation metadata.
+Use `MESSAGE_UPDATED` for lightweight "message block was refreshed locally" notifications when you do not need the richer edit/delete mutation metadata. Core emitters use it after confirmed edits and after canceling an inline edit that restores the rendered message block. If you need to know that message content definitely mutated, prefer `MESSAGE_EDITED`.
 
 `MESSAGE_DELETED` is emitted as:
 
