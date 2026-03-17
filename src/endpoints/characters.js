@@ -32,7 +32,7 @@ const memoryCache = new MemoryLimitedMap(memoryCacheCapacity);
 // Some Android devices require tighter memory management
 const isAndroid = process.platform === 'android';
 // Use shallow character data for the character list
-const useShallowCharacters = !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
+const useShallowCharacters = isAndroid || !!getConfigValue('performance.lazyLoadCharacters', false, 'boolean');
 const useDiskCache = !!getConfigValue('performance.useDiskCache', true, 'boolean');
 const CHARACTER_STATE_FILE_PREFIX = '.state.';
 const CHARACTER_STATE_FILE_SUFFIX = '.json';
@@ -492,11 +492,55 @@ const processCharacter = async (item, directories, { shallow }) => {
     }
 };
 
+/**
+ * Maps items with a bounded concurrency level while preserving input order.
+ * Android runs the embedded Node runtime in-process, so keeping this low helps
+ * avoid large startup memory spikes when a backup restores many character cards.
+ *
+ * @template TInput, TOutput
+ * @param {TInput[]} items Items to process
+ * @param {number} concurrency Maximum number of in-flight mapper calls
+ * @param {(item: TInput, index: number) => Promise<TOutput>} mapper Async mapper
+ * @returns {Promise<TOutput[]>}
+ */
+async function mapWithConcurrency(items, concurrency, mapper) {
+    if (!Array.isArray(items) || items.length === 0) {
+        return [];
+    }
+
+    const safeConcurrency = Math.max(1, Math.min(Math.trunc(concurrency) || 1, items.length));
+    const results = new Array(items.length);
+    let nextIndex = 0;
+
+    const worker = async () => {
+        while (true) {
+            const currentIndex = nextIndex++;
+            if (currentIndex >= items.length) {
+                return;
+            }
+
+            results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+        }
+    };
+
+    await Promise.all(Array.from({ length: safeConcurrency }, () => worker()));
+    return results;
+}
+
 export async function getCharactersSnapshot(directories) {
     const files = fs.readdirSync(directories.characters);
     const pngFiles = files.filter(file => file.endsWith('.png'));
-    const processingPromises = pngFiles.map(file => processCharacter(file, directories, { shallow: useShallowCharacters }));
-    return (await Promise.all(processingPromises)).filter(character => character.name);
+    if (!isAndroid) {
+        const processingPromises = pngFiles.map(file => processCharacter(file, directories, { shallow: useShallowCharacters }));
+        return (await Promise.all(processingPromises)).filter(character => character.name);
+    }
+
+    const characters = await mapWithConcurrency(
+        pngFiles,
+        1,
+        (file) => processCharacter(file, directories, { shallow: useShallowCharacters }),
+    );
+    return characters.filter(character => character.name);
 }
 
 /**
