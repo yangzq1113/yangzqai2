@@ -4577,5 +4577,12 @@
     "sd_prompt_8": "角色（多模态模式）",
     "sd_prompt_9": "用户（多模态模式）",
     "separate with commas w/o space between": "用逗号分隔，之间无空格",
-    "關閉": "关闭"
+    "關閉": "关闭",
+    "Plain-Text Function Calling": "纯文本函数调用",
+    "Use XML-in-text tool calling for models or providers that behave better without native tool-call payloads.": "对于不使用原生工具调用载荷时表现更好的模型或提供商，使用文本内 XML 工具调用。",
+    "Use plain-text tool protocol": "使用纯文本工具协议",
+    "Inject an XML tool-calling protocol into the prompt instead of relying on native tool-call response fields.": "将 XML 工具调用协议注入提示词，而不是依赖原生工具调用响应字段。",
+    "Retry malformed plain-text tool calls": "重试格式错误的纯文本工具调用",
+    "If the model emits an invalid XML tool call or schema-mismatched arguments, send the error details back once more and ask it to correct the payload.": "如果模型输出了无效的 XML 工具调用或与 schema 不匹配的参数，则将错误详情回传一次并要求它修正载荷。",
+    "Plain-text retry attempts": "纯文本重试次数"
 }

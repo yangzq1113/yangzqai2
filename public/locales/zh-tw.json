@@ -4577,5 +4577,12 @@
     "Optional unnamed argument": "可選的未命名引數",
     "Command does not return anything": "命令不返回任何內容",
     "Return value": "返回值",
-    "Are you sure you want to delete this expression? Once deleted, it's gone forever!": "確定要刪除此表情嗎？刪除後將無法復原！"
+    "Are you sure you want to delete this expression? Once deleted, it's gone forever!": "確定要刪除此表情嗎？刪除後將無法復原！",
+    "Plain-Text Function Calling": "純文字函式呼叫",
+    "Use XML-in-text tool calling for models or providers that behave better without native tool-call payloads.": "對於不使用原生工具呼叫載荷時表現更好的模型或提供者，使用文本內 XML 工具呼叫。",
+    "Use plain-text tool protocol": "使用純文字工具協議",
+    "Inject an XML tool-calling protocol into the prompt instead of relying on native tool-call response fields.": "將 XML 工具呼叫協議注入提示詞，而不是依賴原生工具呼叫回應欄位。",
+    "Retry malformed plain-text tool calls": "重試格式錯誤的純文字工具呼叫",
+    "If the model emits an invalid XML tool call or schema-mismatched arguments, send the error details back once more and ask it to correct the payload.": "如果模型輸出了無效的 XML 工具呼叫或與 schema 不匹配的參數，則將錯誤詳情回傳一次並要求它修正載荷。",
+    "Plain-text retry attempts": "純文字重試次數"
 }

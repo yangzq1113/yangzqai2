@@ -88,6 +88,8 @@ import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } fr
 import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
 import { showUndoToast } from './undo-toast.js';
 import {
+    buildFunctionCallRetryAddendum,
+    diagnosePlainTextFunctionCallError,
     PlainTextFunctionCallStreamDetector,
     TOOL_PROTOCOL_STYLE,
     buildPlainTextToolProtocolMessage,
@@ -441,7 +443,9 @@ export const settingsToUpdate = {
     continue_prefill: ['#continue_prefill', 'continue_prefill', true, false],
     continue_postfix: ['#continue_postfix', 'continue_postfix', false, false],
     function_calling: ['#openai_function_calling', 'function_calling', true, false],
-    function_calling_plain_text: ['#openai_function_calling_plain_text', 'function_calling_plain_text', true, true],
+    function_calling_plain_text: ['#connection_profile_function_calling_plain_text', 'function_calling_plain_text', true, true],
+    function_calling_plain_text_error_retry: ['#connection_profile_function_calling_plain_text_error_retry', 'function_calling_plain_text_error_retry', true, true],
+    function_calling_plain_text_error_retry_max_attempts: ['#connection_profile_function_calling_plain_text_error_retry_max_attempts', 'function_calling_plain_text_error_retry_max_attempts', false, true],
     show_thoughts: ['#openai_show_thoughts', 'show_thoughts', true, false],
     reasoning_effort: ['#openai_reasoning_effort', 'reasoning_effort', false, false],
     verbosity: ['#openai_verbosity', 'verbosity', false, false],
@@ -668,6 +672,8 @@ const default_settings = {
     continue_prefill: false,
     function_calling: false,
     function_calling_plain_text: false,
+    function_calling_plain_text_error_retry: false,
+    function_calling_plain_text_error_retry_max_attempts: 3,
     names_behavior: character_names_behavior.DEFAULT,
     continue_postfix: continue_postfix_types.SPACE,
     custom_prompt_post_processing: custom_prompt_post_processing_types.NONE,
@@ -3286,6 +3292,186 @@ export async function createGenerationParameters(settings, model, type, messages
     return { generate_data, stream, canMultiSwipe };
 }
 
+function getPlainTextFunctionCallRetryConfig(settings = null) {
+    settings = settings ?? oai_settings;
+    let maxAttempts = Number(settings.function_calling_plain_text_error_retry_max_attempts);
+    if (!Number.isFinite(maxAttempts)) {
+        maxAttempts = Number(default_settings.function_calling_plain_text_error_retry_max_attempts);
+    }
+    maxAttempts = Math.min(Math.max(Math.round(maxAttempts || 0), 1), 10);
+
+    return {
+        enabled: Boolean(settings.function_calling_plain_text_error_retry),
+        maxAttempts,
+    };
+}
+
+function inspectPlainTextFunctionCallResponse(responseData, runtimeFunctionCallContext = null) {
+    const triggerSignal = String(runtimeFunctionCallContext?.triggerSignal || '').trim();
+    const triggerRequired = Boolean(triggerSignal);
+    const assistantTextRaw = getResponseMessageContent(responseData);
+    const assistantTextDisplay = extractDisplayTextFromPlainTextFunctionResponse(
+        assistantTextRaw,
+        { triggerSignal },
+    );
+    const hasTrigger = triggerRequired
+        && findLastTriggerSignalOutsideThought(assistantTextRaw, triggerSignal) >= 0;
+
+    let parsedCalls = [];
+    let error = null;
+    try {
+        parsedCalls = extractAllFunctionCallsFromText(responseData, null, {
+            triggerSignal,
+            triggerRequired,
+        });
+        const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext?.tools);
+        if (validationError) {
+            throw new Error(validationError);
+        }
+    } catch (reason) {
+        error = reason instanceof Error ? reason : new Error(String(reason));
+    }
+
+    const diagnostic = error
+        ? diagnosePlainTextFunctionCallError(assistantTextRaw, {
+            triggerSignal,
+            triggerRequired,
+        })
+        : '';
+    const errorDetails = error
+        ? (error.message === 'Model text output did not contain parseable function-call XML.'
+            ? diagnostic || error.message
+            : error.message || diagnostic || t`Unknown error`)
+        : '';
+
+    return {
+        assistantTextRaw,
+        assistantTextDisplay,
+        parsedCalls,
+        error,
+        errorDetails,
+        hasTrigger,
+    };
+}
+
+function applyParsedPlainTextToolCallsToResponse(responseData, inspection) {
+    const firstChoice = Array.isArray(responseData?.choices) ? responseData.choices[0] : null;
+    if (!firstChoice || typeof firstChoice !== 'object') {
+        return responseData;
+    }
+
+    if (!firstChoice.message || typeof firstChoice.message !== 'object') {
+        firstChoice.message = { role: 'assistant', content: '' };
+    }
+
+    firstChoice.message.tool_calls = inspection.parsedCalls.map((call) => ({
+        id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
+        type: 'function',
+        function: {
+            name: String(call?.name || ''),
+            arguments: JSON.stringify(call?.args ?? {}),
+        },
+    }));
+    firstChoice.message.content = inspection.assistantTextDisplay;
+    return responseData;
+}
+
+async function postChatCompletionGenerateRequest(requestBody, signal, { quietErrors = false } = {}) {
+    const response = await fetch('/api/backends/chat-completions/generate', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+        headers: getRequestHeaders(),
+        signal,
+    });
+
+    if (!response.ok) {
+        tryParseStreamingError(response, await response.text(), { quiet: quietErrors });
+        throw new Error(`Got response status ${response.status}`);
+    }
+
+    return response;
+}
+
+async function attemptPlainTextFunctionCallRetry({
+    initialResponseData,
+    type,
+    requestMessages,
+    requestSettings,
+    runtimeFunctionCallContext,
+    model,
+    signal,
+    jsonSchema = null,
+    responseLength = null,
+    requestSecretId = '',
+} = {}) {
+    let currentResponseData = initialResponseData;
+    let currentInspection = inspectPlainTextFunctionCallResponse(initialResponseData, runtimeFunctionCallContext);
+    const retryConfig = getPlainTextFunctionCallRetryConfig(requestSettings);
+
+    if (!retryConfig.enabled || !currentInspection.error || !currentInspection.hasTrigger || retryConfig.maxAttempts <= 1) {
+        return { responseData: currentResponseData, inspection: currentInspection };
+    }
+
+    let currentMessages = structuredClone(Array.isArray(requestMessages) ? requestMessages : []);
+    for (let attempt = 1; attempt < retryConfig.maxAttempts; attempt += 1) {
+        const retryPrompt = buildFunctionCallRetryAddendum({
+            rawResponse: currentInspection.assistantTextRaw,
+            errorDetails: currentInspection.errorDetails,
+            triggerSignal: runtimeFunctionCallContext?.triggerSignal,
+            requiredFunctionName: runtimeFunctionCallContext?.requiredFunctionName,
+            plainTextMode: true,
+        });
+        const retryMessages = currentMessages.concat([
+            { role: 'assistant', content: currentInspection.assistantTextRaw },
+            { role: 'user', content: retryPrompt },
+        ]);
+
+        console.info(`[openai] Plain-text function call parsing failed, attempting retry ${attempt + 1}/${retryConfig.maxAttempts}`);
+
+        try {
+            const retrySettings = {
+                ...requestSettings,
+                stream_openai: false,
+                n: 1,
+            };
+            const { generate_data } = await createGenerationParameters(retrySettings, model, type, retryMessages, {
+                jsonSchema,
+                tools: [],
+                toolChoice: 'auto',
+                replaceTools: true,
+                responseLength,
+            });
+            let requestBody = structuredClone(generate_data);
+            if (requestSecretId) {
+                requestBody.secret_id = requestSecretId;
+            }
+
+            const retryResponse = await postChatCompletionGenerateRequest(requestBody, signal, { quietErrors: true });
+            const retryData = await retryResponse.json();
+            checkQuotaError(retryData, { quiet: true });
+            checkModerationError(retryData, { quiet: true });
+
+            if (retryData.error) {
+                console.warn('[openai] Plain-text function-call retry returned an error response', retryData.error);
+                return { responseData: currentResponseData, inspection: currentInspection };
+            }
+
+            currentResponseData = retryData;
+            currentInspection = inspectPlainTextFunctionCallResponse(retryData, runtimeFunctionCallContext);
+            currentMessages = retryMessages;
+
+            if (!currentInspection.error || !currentInspection.hasTrigger) {
+                return { responseData: currentResponseData, inspection: currentInspection };
+            }
+        } catch (error) {
+            console.warn('[openai] Plain-text function-call retry request failed', error);
+            return { responseData: currentResponseData, inspection: currentInspection };
+        }
+    }
+
+    return { responseData: currentResponseData, inspection: currentInspection };
+}
+
 /**
  * Send a chat completion request to backend
  * @param {string} type Request type (impersonate, quiet, continue, etc)
@@ -3365,6 +3551,7 @@ async function sendOpenAIRequest(type, messages, signal, {
         runtimeFunctionCallContext = {
             triggerSignal,
             tools: normalizedTools,
+            requiredFunctionName,
         };
     }
 
@@ -3381,7 +3568,6 @@ async function sendOpenAIRequest(type, messages, signal, {
         await eventSource.emit(event_types.CHAT_COMPLETION_SETTINGS_READY, generate_data);
     }
 
-    const generate_url = '/api/backends/chat-completions/generate';
     let requestBody = structuredClone(generate_data);
     const requestSecretId = String(
         apiSettingsOverride?.secret_id
@@ -3409,17 +3595,7 @@ async function sendOpenAIRequest(type, messages, signal, {
             lastOpenAIGenerationId = generationId;
         }
     }
-    const response = await fetch(generate_url, {
-        method: 'POST',
-        body: JSON.stringify(requestBody),
-        headers: getRequestHeaders(),
-        signal: signal,
-    });
-
-    if (!response.ok) {
-        tryParseStreamingError(response, await response.text());
-        throw new Error(`Got response status ${response.status}`);
-    }
+    const response = await postChatCompletionGenerateRequest(requestBody, signal);
     const generationIdHeader = response.headers.get('x-luker-generation-id');
     if (shouldTrackLukerGenerationState && generationIdHeader) {
         lastOpenAIGenerationId = generationIdHeader;
@@ -3438,7 +3614,7 @@ async function sendOpenAIRequest(type, messages, signal, {
                 ? new PlainTextFunctionCallStreamDetector({ triggerSignal: runtimeFunctionCallContext.triggerSignal })
                 : null;
             let plainTextToolCallFinalized = false;
-            const finalizePlainTextToolCalls = () => {
+            const finalizePlainTextToolCalls = async () => {
                 if (!plainTextToolCallDetector || plainTextToolCallFinalized) {
                     return false;
                 }
@@ -3454,16 +3630,24 @@ async function sendOpenAIRequest(type, messages, signal, {
 
                 if (finalState.detected) {
                     try {
-                        const parsedCalls = extractAllFunctionCallsFromText(finalState.rawText, null, {
-                            triggerSignal: runtimeFunctionCallContext.triggerSignal,
-                            triggerRequired: Boolean(runtimeFunctionCallContext.triggerSignal),
+                        const retryOutcome = await attemptPlainTextFunctionCallRetry({
+                            initialResponseData: finalState.rawText,
+                            type,
+                            requestMessages,
+                            requestSettings,
+                            runtimeFunctionCallContext,
+                            model,
+                            signal,
+                            jsonSchema,
+                            responseLength,
+                            requestSecretId,
                         });
-                        const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext.tools);
-                        if (validationError) {
-                            throw new Error(validationError);
+                        const inspection = retryOutcome.inspection;
+                        if (inspection.error) {
+                            throw inspection.error;
                         }
 
-                        toolCalls[0] = parsedCalls.map((call) => ({
+                        toolCalls[0] = inspection.parsedCalls.map((call) => ({
                             id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
                             type: 'function',
                             function: {
@@ -3486,14 +3670,14 @@ async function sendOpenAIRequest(type, messages, signal, {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) {
-                    if (finalizePlainTextToolCalls()) {
+                    if (await finalizePlainTextToolCalls()) {
                         yield { text, swipes: swipes, logprobs: null, toolCalls: toolCalls, state: state };
                     }
                     return;
                 }
                 const rawData = value.data;
                 if (rawData === '[DONE]') {
-                    if (finalizePlainTextToolCalls()) {
+                    if (await finalizePlainTextToolCalls()) {
                         yield { text, swipes: swipes, logprobs: null, toolCalls: toolCalls, state: state };
                     }
                     continue;
@@ -3536,7 +3720,7 @@ async function sendOpenAIRequest(type, messages, signal, {
         if (shouldTrackLukerGenerationState) {
             lastOpenAIReplyPersistedByServer = response.headers.get('x-luker-server-persisted') === '1';
         }
-        const data = await response.json();
+        let data = await response.json();
 
         checkQuotaError(data);
         checkModerationError(data);
@@ -3548,45 +3732,26 @@ async function sendOpenAIRequest(type, messages, signal, {
         }
 
         if (runtimeFunctionCallContext) {
-            const assistantTextRaw = getResponseMessageContent(data);
-            const assistantTextDisplay = extractDisplayTextFromPlainTextFunctionResponse(
-                assistantTextRaw,
-                { triggerSignal: runtimeFunctionCallContext.triggerSignal },
-            );
-            let parsedCalls = [];
-            try {
-                parsedCalls = extractAllFunctionCallsFromText(data, null, {
-                    triggerSignal: runtimeFunctionCallContext.triggerSignal,
-                    triggerRequired: Boolean(runtimeFunctionCallContext.triggerSignal),
-                });
-                const validationError = validateParsedToolCalls(parsedCalls, runtimeFunctionCallContext.tools);
-                if (validationError) {
-                    throw new Error(validationError);
-                }
-            } catch (error) {
-                const hasTrigger = Boolean(runtimeFunctionCallContext.triggerSignal)
-                    && findLastTriggerSignalOutsideThought(assistantTextRaw, runtimeFunctionCallContext.triggerSignal) >= 0;
-                if (hasTrigger) {
-                    throw error;
-                }
-                parsedCalls = [];
+            const retryOutcome = await attemptPlainTextFunctionCallRetry({
+                initialResponseData: data,
+                type,
+                requestMessages,
+                requestSettings,
+                runtimeFunctionCallContext,
+                model,
+                signal,
+                jsonSchema,
+                responseLength,
+                requestSecretId,
+            });
+            data = retryOutcome.responseData;
+            const inspection = retryOutcome.inspection;
+
+            if (inspection.error && inspection.hasTrigger) {
+                throw inspection.error;
             }
 
-            const firstChoice = Array.isArray(data?.choices) ? data.choices[0] : null;
-            if (firstChoice && typeof firstChoice === 'object') {
-                if (!firstChoice.message || typeof firstChoice.message !== 'object') {
-                    firstChoice.message = { role: 'assistant', content: '' };
-                }
-                firstChoice.message.tool_calls = parsedCalls.map(call => ({
-                    id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
-                    type: 'function',
-                    function: {
-                        name: String(call?.name || ''),
-                        arguments: JSON.stringify(call?.args ?? {}),
-                    },
-                }));
-                firstChoice.message.content = assistantTextDisplay;
-            }
+            applyParsedPlainTextToolCallsToResponse(data, inspection);
         }
 
         if (type !== 'quiet') {
@@ -4677,6 +4842,7 @@ function migrateChatCompletionSettings(settings) {
             }
         }
     }
+
 }
 
 /**
@@ -7757,6 +7923,22 @@ function registerConnectionProfileAdditionalParameterSlashCommands() {
             label: t`Include Request Headers`,
         },
     ];
+    const truthy = new Set(['true', '1', 'yes', 'on']);
+    const falsy = new Set(['false', '0', 'no', 'off']);
+    const parseBooleanValue = (value) => {
+        const raw = String(value ?? '').trim().toLowerCase();
+        if (!truthy.has(raw) && !falsy.has(raw)) {
+            throw new Error(t`Value must be true/false (also supports 1/0, yes/no, on/off).`);
+        }
+        return truthy.has(raw);
+    };
+    const clampPlainTextRetryAttempts = (value) => {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            throw new Error(t`Value must be a number between 1 and 10.`);
+        }
+        return Math.min(Math.max(Math.round(numeric), 1), 10);
+    };
 
     for (const definition of definitions) {
         SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -7786,18 +7968,10 @@ function registerConnectionProfileAdditionalParameterSlashCommands() {
         name: 'function-calling-plain-text',
         callback: (args, value) => {
             const forceApply = String(args?.force || '').toLowerCase() === 'true';
-            const raw = String(value ?? '').trim().toLowerCase();
-            if (!raw && !forceApply) {
+            if (!String(value ?? '').trim() && !forceApply) {
                 return String(Boolean(oai_settings.function_calling_plain_text));
             }
-
-            const truthy = new Set(['true', '1', 'yes', 'on']);
-            const falsy = new Set(['false', '0', 'no', 'off']);
-            if (!truthy.has(raw) && !falsy.has(raw)) {
-                throw new Error(t`Value must be true/false (also supports 1/0, yes/no, on/off).`);
-            }
-
-            oai_settings.function_calling_plain_text = truthy.has(raw);
+            oai_settings.function_calling_plain_text = parseBooleanValue(value);
             saveSettingsDebounced();
             return String(Boolean(oai_settings.function_calling_plain_text));
         },
@@ -7810,6 +7984,50 @@ function registerConnectionProfileAdditionalParameterSlashCommands() {
             }),
         ],
         helpString: t`Sets plain-text function calling mode. Gets current value if no argument is provided.`,
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'function-calling-plain-text-error-retry',
+        callback: (args, value) => {
+            const forceApply = String(args?.force || '').toLowerCase() === 'true';
+            if (!String(value ?? '').trim() && !forceApply) {
+                return String(Boolean(oai_settings.function_calling_plain_text_error_retry));
+            }
+            oai_settings.function_calling_plain_text_error_retry = parseBooleanValue(value);
+            saveSettingsDebounced();
+            return String(Boolean(oai_settings.function_calling_plain_text_error_retry));
+        },
+        returns: t`plain-text function calling error retry state`,
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: t`value`,
+                typeList: [ARGUMENT_TYPE.STRING],
+                isRequired: false,
+            }),
+        ],
+        helpString: t`Sets plain-text function call error retry. Gets current value if no argument is provided.`,
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'function-calling-plain-text-error-retry-max-attempts',
+        callback: (args, value) => {
+            const forceApply = String(args?.force || '').toLowerCase() === 'true';
+            if (!String(value ?? '').trim() && !forceApply) {
+                return String(clampPlainTextRetryAttempts(oai_settings.function_calling_plain_text_error_retry_max_attempts));
+            }
+            oai_settings.function_calling_plain_text_error_retry_max_attempts = clampPlainTextRetryAttempts(value);
+            saveSettingsDebounced();
+            return String(oai_settings.function_calling_plain_text_error_retry_max_attempts);
+        },
+        returns: t`plain-text function calling retry attempts`,
+        unnamedArgumentList: [
+            SlashCommandArgument.fromProps({
+                description: t`value`,
+                typeList: [ARGUMENT_TYPE.NUMBER, ARGUMENT_TYPE.STRING],
+                isRequired: false,
+            }),
+        ],
+        helpString: t`Sets plain-text function call retry attempts. Gets current value if no argument is provided.`,
     }));
 }
 

@@ -21,5 +21,15 @@
         <input id="connection_profile_function_calling_plain_text" type="checkbox" />
         <span data-i18n="Plain-text Function Calling">Plain-text Function Calling</span>
     </label>
+    <div id="connection_profile_function_calling_plain_text_error_retry_block" class="range-block">
+        <label for="connection_profile_function_calling_plain_text_error_retry" class="checkbox_label widthFreeExpand">
+            <input id="connection_profile_function_calling_plain_text_error_retry" type="checkbox" />
+            <span data-i18n="Retry malformed plain-text tool calls">Retry malformed plain-text tool calls</span>
+        </label>
+    </div>
+    <div id="connection_profile_function_calling_plain_text_retry_attempts_block" class="flex-container alignItemsCenter gap10 marginTop10">
+        <label for="connection_profile_function_calling_plain_text_error_retry_max_attempts" data-i18n="Plain-text retry attempts">Plain-text retry attempts</label>
+        <input id="connection_profile_function_calling_plain_text_error_retry_max_attempts" class="text_pole widthUnset" type="number" min="1" max="10" step="1" value="3" />
+    </div>
     <div id="connection_profile_details_content" class="hidden"></div>
 </div>

@@ -723,6 +723,100 @@ export function extractDisplayTextFromPlainTextFunctionResponse(rawText, options
     return source;
 }
 
+function getPlainTextFunctionCallDiagnosisScope(rawText, triggerSignal = '') {
+    const source = String(rawText || '').trim();
+    const trigger = String(triggerSignal || '').trim();
+    if (!source) {
+        return '';
+    }
+
+    if (trigger) {
+        const triggerPos = findLastTriggerSignalOutsideThought(source, trigger);
+        if (triggerPos >= 0) {
+            const afterTrigger = source.slice(triggerPos + trigger.length).trim();
+            if (afterTrigger) {
+                return afterTrigger;
+            }
+        }
+    }
+
+    return stripThoughtBlocks(source).trim() || source;
+}
+
+export function diagnosePlainTextFunctionCallError(responseData, options = null) {
+    const content = getResponseMessageContent(responseData);
+    if (!content) {
+        return 'Model returned empty text response.';
+    }
+
+    const opts = options && typeof options === 'object' ? options : {};
+    const triggerSignal = String(opts.triggerSignal || '').trim();
+    const triggerRequired = Boolean(opts.triggerRequired);
+
+    if (triggerSignal) {
+        const triggerPos = findLastTriggerSignalOutsideThought(content, triggerSignal);
+        if (triggerPos < 0) {
+            return triggerRequired
+                ? 'Model text output did not include the required trigger signal.'
+                : 'No trigger signal found outside thought blocks.';
+        }
+    }
+
+    const scope = getPlainTextFunctionCallDiagnosisScope(content, triggerSignal);
+    if (!scope) {
+        return 'Model text output did not contain parseable function-call XML.';
+    }
+
+    if (!scope.includes(`<${FUNCTION_CALLS_TAG}>`)) {
+        return `Missing <${FUNCTION_CALLS_TAG}> tag after trigger signal.`;
+    }
+    if (!scope.includes(`</${FUNCTION_CALLS_TAG}>`)) {
+        return `Missing closing </${FUNCTION_CALLS_TAG}> tag.`;
+    }
+    if (!scope.includes(`<${FUNCTION_CALL_TAG}>`)) {
+        return `No <${FUNCTION_CALL_TAG}> blocks found inside <${FUNCTION_CALLS_TAG}>.`;
+    }
+    if (!scope.includes(`</${FUNCTION_CALL_TAG}>`)) {
+        return `Missing closing </${FUNCTION_CALL_TAG}> tag.`;
+    }
+
+    const callsBlock = extractXmlTagBlock(scope, FUNCTION_CALLS_TAG);
+    if (!callsBlock) {
+        return `Malformed <${FUNCTION_CALLS_TAG}> block.`;
+    }
+
+    const firstCall = extractXmlTagBlock(callsBlock.inner, FUNCTION_CALL_TAG);
+    if (!firstCall) {
+        return `No <${FUNCTION_CALL_TAG}> blocks found inside <${FUNCTION_CALLS_TAG}>.`;
+    }
+    if (!extractXmlTagBlock(firstCall.inner, TOOL_TAG)) {
+        return `Missing <${TOOL_TAG}> tag inside <${FUNCTION_CALL_TAG}>.`;
+    }
+
+    const argsJsonBlock = extractXmlTagBlock(firstCall.inner, ARGS_JSON_TAG);
+    if (!argsJsonBlock) {
+        return `Missing <${ARGS_JSON_TAG}> tag inside <${FUNCTION_CALL_TAG}>.`;
+    }
+
+    const rawPayload = decodeXmlText(unwrapCdata(argsJsonBlock.inner)).trim();
+    if (!rawPayload) {
+        return `<${ARGS_JSON_TAG}> must contain a JSON object.`;
+    }
+
+    try {
+        const parsed = JSON.parse(rawPayload);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return `<${ARGS_JSON_TAG}> must decode to a JSON object.`;
+        }
+    } catch (error) {
+        return error instanceof Error && error.message
+            ? `Invalid JSON in <${ARGS_JSON_TAG}>: ${error.message}`
+            : `Invalid JSON in <${ARGS_JSON_TAG}>.`;
+    }
+
+    return 'XML structure appears valid but function-call parsing still failed.';
+}
+
 function buildToolRows(tools) {
     const normalizedTools = normalizeTools(tools);
     return normalizedTools.map((tool) => {
@@ -1221,7 +1315,7 @@ export function formatToolResultForModel(toolName, toolArguments, resultContent,
         'Tool execution result:',
         `- Tool name: ${String(toolName || '')}`,
         `- Tool arguments: ${String(toolArguments || '{}')}`,
-        `- Execution result:`,
+        '- Execution result:',
         `<${resultTag}>`,
         String(resultContent || ''),
         `</${resultTag}>`,

@@ -45,6 +45,8 @@ const CC_COMMANDS = [
     'reasoning-template',
     'prompt-post-processing',
     'function-calling-plain-text',
+    'function-calling-plain-text-error-retry',
+    'function-calling-plain-text-error-retry-max-attempts',
     'custom-include-body',
     'custom-exclude-body',
     'custom-include-headers',
@@ -87,6 +89,8 @@ const FANCY_NAMES = {
     'reasoning-template': 'Reasoning Template',
     'prompt-post-processing': 'Prompt Post-Processing',
     'function-calling-plain-text': 'Plain-text Function Calling',
+    'function-calling-plain-text-error-retry': 'Retry malformed plain-text tool calls',
+    'function-calling-plain-text-error-retry-max-attempts': 'Plain-text retry attempts',
     'custom-include-body': 'Include Body Parameters',
     'custom-exclude-body': 'Exclude Body Parameters',
     'custom-include-headers': 'Include Request Headers',
@@ -181,6 +185,8 @@ const profilesProvider = () => [
  * @property {string} [reasoning-template] Reasoning Template
  * @property {string} [prompt-post-processing] Prompt Post-Processing
  * @property {string} [function-calling-plain-text] Plain-text Function Calling
+ * @property {string} [function-calling-plain-text-error-retry] Retry malformed plain-text tool calls
+ * @property {string} [function-calling-plain-text-error-retry-max-attempts] Plain-text retry attempts
  * @property {string} [custom-include-body] Include Body Parameters
  * @property {string} [custom-exclude-body] Exclude Body Parameters
  * @property {string} [custom-include-headers] Include Request Headers
@@ -237,6 +243,43 @@ function parseProfileBoolean(value) {
         return false;
     }
     return null;
+}
+
+/**
+ * Parses a profile integer value.
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function parseProfileInteger(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return null;
+    }
+    return Math.min(Math.max(Math.round(numeric), 1), 10);
+}
+
+/**
+ * Clamps the plain-text retry attempts value.
+ * @param {unknown} value
+ * @returns {number}
+ */
+function clampPlainTextRetryAttempts(value) {
+    const parsed = parseProfileInteger(value);
+    return parsed ?? 3;
+}
+
+/**
+ * Sets one command on the connection profile and ensures it is not excluded.
+ * @param {ConnectionProfile} profile
+ * @param {string} command
+ * @param {string} value
+ */
+function setProfileCommandValue(profile, command, value) {
+    profile[command] = value;
+    if (!Array.isArray(profile.exclude)) {
+        profile.exclude = [];
+    }
+    profile.exclude = profile.exclude.filter(entry => entry !== command);
 }
 
 /**
@@ -579,6 +622,8 @@ async function renderDetailsContent(detailsContent) {
     const detailsContent = document.getElementById('connection_profile_details_content');
     const viewDetails = document.getElementById('view_connection_profile');
     const plainTextFunctionCallingToggle = document.getElementById('connection_profile_function_calling_plain_text');
+    const plainTextFunctionCallingErrorRetryToggle = document.getElementById('connection_profile_function_calling_plain_text_error_retry');
+    const plainTextFunctionCallingRetryAttemptsInput = document.getElementById('connection_profile_function_calling_plain_text_error_retry_max_attempts');
     renderConnectionProfiles(profiles);
 
     /**
@@ -589,60 +634,123 @@ async function renderDetailsContent(detailsContent) {
         return extension_settings.connectionManager.profiles.find(p => p.id === selectedProfileId) || null;
     }
 
-    function syncPlainTextFunctionCallingToggle() {
-        if (!plainTextFunctionCallingToggle) {
+    function syncPlainTextFunctionCallingControls() {
+        if (!plainTextFunctionCallingToggle || !plainTextFunctionCallingErrorRetryToggle || !plainTextFunctionCallingRetryAttemptsInput) {
             return;
         }
         const profile = getSelectedProfile();
         const globalValue = Boolean(oai_settings.function_calling_plain_text);
+        const globalRetryValue = Boolean(oai_settings.function_calling_plain_text_error_retry);
+        const globalRetryAttempts = clampPlainTextRetryAttempts(oai_settings.function_calling_plain_text_error_retry_max_attempts);
         const supported = !profile || profile.mode === 'cc';
-        plainTextFunctionCallingToggle.disabled = !supported;
         const parsed = profile?.mode === 'cc'
             ? parseProfileBoolean(profile['function-calling-plain-text'])
             : null;
-        plainTextFunctionCallingToggle.checked = parsed ?? globalValue;
+        const parsedRetry = profile?.mode === 'cc'
+            ? parseProfileBoolean(profile['function-calling-plain-text-error-retry'])
+            : null;
+        const parsedRetryAttempts = profile?.mode === 'cc'
+            ? parseProfileInteger(profile['function-calling-plain-text-error-retry-max-attempts'])
+            : null;
+        const plainTextEnabled = parsed ?? globalValue;
+        const retryEnabled = parsedRetry ?? globalRetryValue;
+
+        plainTextFunctionCallingToggle.disabled = !supported;
+        plainTextFunctionCallingToggle.checked = plainTextEnabled;
+        plainTextFunctionCallingErrorRetryToggle.disabled = !supported || !plainTextEnabled;
+        plainTextFunctionCallingErrorRetryToggle.checked = retryEnabled;
+        plainTextFunctionCallingRetryAttemptsInput.disabled = !supported || !plainTextEnabled || !retryEnabled;
+        plainTextFunctionCallingRetryAttemptsInput.value = String(parsedRetryAttempts ?? globalRetryAttempts);
+    }
+
+    async function applySelectedProfileMutation(mutator) {
+        const profile = getSelectedProfile();
+        if (!profile || profile.mode !== 'cc') {
+            syncPlainTextFunctionCallingControls();
+            return false;
+        }
+
+        const oldProfile = structuredClone(profile);
+        mutator(profile);
+
+        try {
+            await applyConnectionProfile(profile);
+        } catch (error) {
+            console.error('Failed to apply profile after plain-text function calling change', error);
+        }
+
+        saveSettingsDebounced();
+        await renderDetailsContent(detailsContent);
+        await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
+        await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
+        syncPlainTextFunctionCallingControls();
+        return true;
     }
 
     function toggleProfileSpecificButtons() {
         const profileId = extension_settings.connectionManager.selectedProfile;
         const profileSpecificButtons = ['update_connection_profile', 'reload_connection_profile', 'delete_connection_profile'];
         profileSpecificButtons.forEach(id => document.getElementById(id).classList.toggle('disabled', !profileId));
-        syncPlainTextFunctionCallingToggle();
+        syncPlainTextFunctionCallingControls();
     }
     toggleProfileSpecificButtons();
 
-    if (plainTextFunctionCallingToggle) {
+    if (plainTextFunctionCallingToggle && plainTextFunctionCallingErrorRetryToggle && plainTextFunctionCallingRetryAttemptsInput) {
         plainTextFunctionCallingToggle.addEventListener('input', async () => {
             const profile = getSelectedProfile();
             if (!profile) {
                 oai_settings.function_calling_plain_text = !!plainTextFunctionCallingToggle.checked;
                 saveSettingsDebounced();
-                syncPlainTextFunctionCallingToggle();
+                syncPlainTextFunctionCallingControls();
                 return;
             }
             if (profile.mode !== 'cc') {
-                syncPlainTextFunctionCallingToggle();
+                syncPlainTextFunctionCallingControls();
                 return;
             }
 
-            const oldProfile = structuredClone(profile);
-            profile['function-calling-plain-text'] = plainTextFunctionCallingToggle.checked ? 'true' : 'false';
-            if (!Array.isArray(profile.exclude)) {
-                profile.exclude = [];
-            }
-            profile.exclude = profile.exclude.filter(command => command !== 'function-calling-plain-text');
+            await applySelectedProfileMutation((selectedProfile) => {
+                setProfileCommandValue(selectedProfile, 'function-calling-plain-text', plainTextFunctionCallingToggle.checked ? 'true' : 'false');
+            });
+        });
 
-            try {
-                await applyConnectionProfile(profile);
-            } catch (error) {
-                console.error('Failed to apply profile after plain-text function calling toggle', error);
+        plainTextFunctionCallingErrorRetryToggle.addEventListener('input', async () => {
+            const profile = getSelectedProfile();
+            if (!profile) {
+                oai_settings.function_calling_plain_text_error_retry = !!plainTextFunctionCallingErrorRetryToggle.checked;
+                saveSettingsDebounced();
+                syncPlainTextFunctionCallingControls();
+                return;
+            }
+            if (profile.mode !== 'cc') {
+                syncPlainTextFunctionCallingControls();
+                return;
             }
 
-            saveSettingsDebounced();
-            await renderDetailsContent(detailsContent);
-            await eventSource.emit(event_types.CONNECTION_PROFILE_UPDATED, oldProfile, profile);
-            await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, profile.name);
-            syncPlainTextFunctionCallingToggle();
+            await applySelectedProfileMutation((selectedProfile) => {
+                setProfileCommandValue(selectedProfile, 'function-calling-plain-text-error-retry', plainTextFunctionCallingErrorRetryToggle.checked ? 'true' : 'false');
+            });
+        });
+
+        plainTextFunctionCallingRetryAttemptsInput.addEventListener('input', async () => {
+            const value = clampPlainTextRetryAttempts(plainTextFunctionCallingRetryAttemptsInput.value);
+            plainTextFunctionCallingRetryAttemptsInput.value = String(value);
+
+            const profile = getSelectedProfile();
+            if (!profile) {
+                oai_settings.function_calling_plain_text_error_retry_max_attempts = value;
+                saveSettingsDebounced();
+                syncPlainTextFunctionCallingControls();
+                return;
+            }
+            if (profile.mode !== 'cc') {
+                syncPlainTextFunctionCallingControls();
+                return;
+            }
+
+            await applySelectedProfileMutation((selectedProfile) => {
+                setProfileCommandValue(selectedProfile, 'function-calling-plain-text-error-retry-max-attempts', String(value));
+            });
         });
     }
 

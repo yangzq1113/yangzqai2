@@ -508,6 +508,19 @@ label[for="trim_spaces"]:not(:has(input:checked)) small {
     margin: 10px 0;
 }
 
+#connection_profile_function_calling_plain_text_error_retry_block,
+#connection_profile_function_calling_plain_text_retry_attempts_block {
+    display: none;
+}
+
+#rm_api_block:has(#connection_profile_function_calling_plain_text:checked) #connection_profile_function_calling_plain_text_error_retry_block {
+    display: block;
+}
+
+#rm_api_block:has(#connection_profile_function_calling_plain_text:checked):has(#connection_profile_function_calling_plain_text_error_retry:checked) #connection_profile_function_calling_plain_text_retry_attempts_block {
+    display: flex;
+}
+
 #mistralai_other_models:empty {
     display: none;
 }
