@@ -29,6 +29,7 @@ export const autoModeOptions = {
 
 const incomingTypes = [autoModeOptions.RESPONSES, autoModeOptions.BOTH];
 const outgoingTypes = [autoModeOptions.INPUT, autoModeOptions.BOTH];
+const recentlyEditedMessageIds = new Set();
 
 const defaultSettings = {
     target_language: 'en',
@@ -619,14 +620,23 @@ async function onTranslationsClearClick() {
     await reloadCurrentChat();
 }
 
-async function translateMessageEdit(messageId) {
+async function translateMessageEdit(messageId, { didContentEdit = false } = {}) {
     const context = getContext();
     const chat = context.chat;
     const message = chat[messageId];
+    if (!message) {
+        return;
+    }
 
     let anyChange = false;
-    if (message.is_system || (extension_settings.translate.auto_mode == autoModeOptions.NONE && message.extra?.display_text)) {
-        delete message.extra.display_text;
+    if (!didContentEdit) {
+        if (message.extra?.display_text) {
+            updateMessageBlock(messageId, message);
+        }
+    } else if (message.is_system || (extension_settings.translate.auto_mode == autoModeOptions.NONE && message.extra?.display_text)) {
+        if (message.extra) {
+            delete message.extra.display_text;
+        }
         updateMessageBlock(messageId, message);
         anyChange = true;
     } else if ((message.is_user && shouldTranslate(outgoingTypes)) || (!message.is_user && shouldTranslate(incomingTypes))) {
@@ -701,7 +711,17 @@ const handleIncomingMessage = createEventHandler(async (messageId) => {
 }, () => shouldTranslate(incomingTypes));
 const handleOutgoingMessage = createEventHandler(translateOutgoingMessage, () => shouldTranslate(outgoingTypes));
 const handleImpersonateReady = createEventHandler(translateImpersonate, () => shouldTranslate(incomingTypes));
-const handleMessageEdit = createEventHandler(translateMessageEdit, () => true);
+const handleMessageEdited = createEventHandler((messageId) => {
+    const normalizedMessageId = Number(messageId);
+    if (Number.isInteger(normalizedMessageId) && normalizedMessageId >= 0) {
+        recentlyEditedMessageIds.add(normalizedMessageId);
+    }
+}, () => true);
+const handleMessageUpdate = createEventHandler(async (messageId) => {
+    const normalizedMessageId = Number(messageId);
+    const didContentEdit = recentlyEditedMessageIds.delete(normalizedMessageId);
+    await translateMessageEdit(normalizedMessageId, { didContentEdit });
+}, () => true);
 const handleMessageReasoningEdit = createEventHandler(translateMessageReasoningEdit, () => true);
 const handleMessageReasoningDelete = createEventHandler(removeReasoningDisplayText, () => true);
 
@@ -769,9 +789,11 @@ jQuery(async () => {
     eventSource.makeFirst(event_types.USER_MESSAGE_RENDERED, handleOutgoingMessage);
     eventSource.on(event_types.MESSAGE_SWIPED, handleIncomingMessage);
     eventSource.on(event_types.IMPERSONATE_READY, handleImpersonateReady);
-    eventSource.on(event_types.MESSAGE_UPDATED, handleMessageEdit);
+    eventSource.on(event_types.MESSAGE_EDITED, handleMessageEdited);
+    eventSource.on(event_types.MESSAGE_UPDATED, handleMessageUpdate);
     eventSource.on(event_types.MESSAGE_REASONING_EDITED, handleMessageReasoningEdit);
     eventSource.on(event_types.MESSAGE_REASONING_DELETED, handleMessageReasoningDelete);
+    eventSource.on(event_types.CHAT_CHANGED, () => recentlyEditedMessageIds.clear());
 
     document.body.classList.add('translate');
 
