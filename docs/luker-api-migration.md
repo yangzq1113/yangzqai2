@@ -968,7 +968,7 @@ Core request API now also supports mode switching:
 
 - `sendOpenAIRequest(type, messages, signal, options?)`
 - New options:
-  - `functionCallMode`: `'native' | 'prompt_xml' | 'prompt_json'` (default `'native'`)
+  - `functionCallMode`: `'native' | 'prompt_xml' | 'prompt_json'` (default `'native'`; note: `prompt_json` is a legacy alias of `prompt_xml`, not a JSON-wire/output format)
   - `functionCallOptions` (optional):
     - `requiredFunctionName?: string`
     - `protocolStyle?: TOOL_PROTOCOL_STYLE.TABLE | TOOL_PROTOCOL_STYLE.JSON_SCHEMA`
@@ -992,6 +992,7 @@ Behavior:
   - Plugins can keep using `extractAllFunctionCalls(...)` as if it were native output.
 - `functionCallMode='prompt_json'`:
   - Legacy alias for `prompt_xml`.
+  - `prompt_json` does not switch the protocol to a JSON function-call wire format; response parsing remains XML tool-call parsing.
   - Core injects an early system protocol prompt automatically.
   - Core disables native tool payload for that request (`tools=[]` override) to avoid mixed modes.
   - Runtime behavior is identical to `prompt_xml`.
