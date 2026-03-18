@@ -14,6 +14,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -734,6 +735,24 @@ class MainActivity : AppCompatActivity() {
         }
         if (hasFocus && this::contentRoot.isInitialized) {
             ViewCompat.requestApplyInsets(contentRoot)
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (immersiveModeEnabled) {
+            applyImmersiveMode(true)
+        }
+        window.decorView.post {
+            ViewCompat.requestApplyInsets(window.decorView)
+            if (this::contentRoot.isInitialized) {
+                ViewCompat.requestApplyInsets(contentRoot)
+                contentRoot.requestLayout()
+            }
+            if (this::webView.isInitialized) {
+                webView.requestLayout()
+                syncWebImmersiveMode(immersiveModeEnabled)
+            }
         }
     }
 
