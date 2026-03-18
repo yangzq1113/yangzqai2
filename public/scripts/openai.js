@@ -75,6 +75,7 @@ import {
 import { countTokensOpenAIAsync, getTokenizerModel } from './tokenizers.js';
 import { isMobile } from './RossAscends-mods.js';
 import { saveLogprobsForActiveMessage } from './logprobs.js';
+import { persistPreset } from './preset-persistence.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
@@ -84,6 +85,7 @@ import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
+import { applyPatch as applyJsonPatch } from './util/fast-json-patch.js';
 import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { maybeDeleteLinkedLorebookForPresetDeletion } from './world-info.js';
 import { showUndoToast } from './undo-toast.js';
@@ -5405,10 +5407,10 @@ async function getStatusOpen() {
 /**
  * Get OpenAI preset body from settings
  * @param {ChatCompletionSettings} settings The settings object
- * @param {{ includeConnectionFields?: boolean }} [options] Serialization options
+ * @param {{ includeConnectionFields?: boolean, clone?: boolean }} [options] Serialization options
  * @returns {Object} The preset body object
  */
-export function getChatCompletionPreset(settings = oai_settings, { includeConnectionFields = true } = {}) {
+export function getChatCompletionPreset(settings = oai_settings, { includeConnectionFields = true, clone = true } = {}) {
     const presetBody = {};
     for (const [presetKey, [, settingsKey]] of Object.entries(settingsToUpdate)) {
         if (!includeConnectionFields && isOpenAIConnectionPresetField(presetKey)) {
@@ -5419,7 +5421,7 @@ export function getChatCompletionPreset(settings = oai_settings, { includeConnec
         }
         presetBody[presetKey] = settings[settingsKey];
     }
-    return structuredClone(presetBody);
+    return clone ? structuredClone(presetBody) : presetBody;
 }
 
 function mergeStoredOpenAIPreset(targetPreset, presetBody) {
@@ -5443,52 +5445,71 @@ function mergeStoredOpenAIPreset(targetPreset, presetBody) {
  * Persist a settings preset with the given name
  *
  * @param {string} name - Name of the preset
+ * @param {Object} presetBody The preset body object
+ * @param {boolean} triggerUi Whether the change event of preset UI element should be emitted
+ * @returns {Promise<void>}
+ */
+async function saveOpenAIPresetBody(name, presetBody, triggerUi = true) {
+    const existingNameBeforeSave = findCanonicalNameInList(Object.keys(openai_setting_names || {}), name);
+    const existingIndex = existingNameBeforeSave ? openai_setting_names[existingNameBeforeSave] : null;
+    const existingPreset = Number.isInteger(existingIndex) ? openai_settings?.[existingIndex] : null;
+    const saveResult = await persistPreset({
+        apiId: 'openai',
+        name,
+        preset: presetBody,
+        existingPreset,
+        maxOperations: 4000,
+    });
+
+    if (!saveResult.ok) {
+        toastr.error(t`Failed to save preset`);
+        throw new Error('Failed to save preset');
+    }
+
+    const data = saveResult.data || { name };
+    const existingName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), data.name);
+    if (existingName) {
+        const value = openai_setting_names[existingName];
+        if (saveResult.mode === 'patch' && Array.isArray(saveResult.operations) && saveResult.operations.length > 0 && openai_settings[value]) {
+            const patchResult = applyJsonPatch(openai_settings[value], saveResult.operations, true, false);
+            openai_settings[value] = patchResult.newDocument;
+        } else if (saveResult.mode === 'full') {
+            openai_settings[value] = mergeStoredOpenAIPreset(openai_settings[value], structuredClone(presetBody));
+        }
+
+        if (triggerUi) {
+            oai_settings.preset_settings_openai = existingName;
+            $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
+            $('#settings_preset_openai').trigger('change');
+        }
+        return;
+    }
+
+    const storedPresetBody = structuredClone(presetBody);
+    openai_settings.push(storedPresetBody);
+    openai_setting_names[data.name] = openai_settings.length - 1;
+    const option = document.createElement('option');
+    option.value = String(openai_settings.length - 1);
+    option.innerText = data.name;
+    if (triggerUi) {
+        option.selected = true;
+        $('#settings_preset_openai').append(option).trigger('change');
+    } else {
+        $('#settings_preset_openai').append(option);
+    }
+}
+
+/**
+ * Persist a settings preset with the given name
+ *
+ * @param {string} name - Name of the preset
  * @param {ChatCompletionSettings} settings The settings object
  * @param {boolean} triggerUi Whether the change event of preset UI element should be emitted
  * @returns {Promise<void>}
  */
 async function saveOpenAIPreset(name, settings, triggerUi = true) {
-    const presetBody = getChatCompletionPreset(settings);
-    const savePresetSettings = await fetch('/api/presets/save', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            apiId: 'openai',
-            name: name,
-            preset: presetBody,
-        }),
-    });
-
-    if (savePresetSettings.ok) {
-        const data = await savePresetSettings.json();
-
-        const existingName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), data.name);
-        if (existingName) {
-            const value = openai_setting_names[existingName];
-            mergeStoredOpenAIPreset(openai_settings[value], presetBody);
-            if (triggerUi) {
-                oai_settings.preset_settings_openai = existingName;
-                $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
-                $('#settings_preset_openai').trigger('change');
-            }
-        }
-        else {
-            openai_settings.push(presetBody);
-            openai_setting_names[data.name] = openai_settings.length - 1;
-            const option = document.createElement('option');
-            option.value = String(openai_settings.length - 1);
-            option.innerText = data.name;
-            if (triggerUi) {
-                option.selected = true;
-                $('#settings_preset_openai').append(option).trigger('change');
-            } else {
-                $('#settings_preset_openai').append(option);
-            }
-        }
-    } else {
-        toastr.error(t`Failed to save preset`);
-        throw new Error('Failed to save preset');
-    }
+    const presetBody = getChatCompletionPreset(settings, { clone: false });
+    await saveOpenAIPresetBody(name, presetBody, triggerUi);
 }
 
 function onLogitBiasPresetChange() {
@@ -5653,39 +5674,7 @@ async function onPresetImportFileChange(e) {
 
     await eventSource.emit(event_types.OAI_PRESET_IMPORT_READY, { data: presetBody, presetName: name });
 
-    const savePresetSettings = await fetch('/api/presets/save', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            apiId: 'openai',
-            name: name,
-            preset: presetBody,
-        }),
-    });
-
-    if (!savePresetSettings.ok) {
-        toastr.error(t`Failed to save preset`);
-        return;
-    }
-
-    const data = await savePresetSettings.json();
-
-    const existingName = findCanonicalNameInList(Object.keys(openai_setting_names || {}), data.name);
-    if (existingName) {
-        oai_settings.preset_settings_openai = existingName;
-        const value = openai_setting_names[existingName];
-        mergeStoredOpenAIPreset(openai_settings[value], presetBody);
-        $(`#settings_preset_openai option[value="${value}"]`).prop('selected', true);
-        $('#settings_preset_openai').trigger('change');
-    } else {
-        openai_settings.push(presetBody);
-        openai_setting_names[data.name] = openai_settings.length - 1;
-        const option = document.createElement('option');
-        option.selected = true;
-        option.value = String(openai_settings.length - 1);
-        option.innerText = data.name;
-        $('#settings_preset_openai').append(option).trigger('change');
-    }
+    await saveOpenAIPresetBody(name, presetBody, true);
 }
 
 async function onExportPresetClick() {
@@ -6017,7 +6006,7 @@ function hasUnsavedOpenAIPresetChanges(presetName) {
         return false;
     }
 
-    const currentPresetBody = getComparableOpenAIPresetBody(getChatCompletionPreset(oai_settings));
+    const currentPresetBody = getComparableOpenAIPresetBody(getChatCompletionPreset(oai_settings, { clone: false }));
     const savedComparableBody = getComparableOpenAIPresetBody(savedPresetBody);
     const canonicalCurrent = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(currentPresetBody));
     const canonicalSaved = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(savedComparableBody));

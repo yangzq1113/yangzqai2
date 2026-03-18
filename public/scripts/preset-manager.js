@@ -26,6 +26,7 @@ import { instruct_presets } from './instruct-mode.js';
 import { kai_settings } from './kai-settings.js';
 import { convertNovelPreset } from './nai-settings.js';
 import { getChatCompletionPreset, oai_settings, openai_setting_names, openai_settings } from './openai.js';
+import { persistPreset } from './preset-persistence.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from './popup.js';
 import { context_presets, getContextSettings, power_user } from './power-user.js';
 import { reasoning_templates } from './reasoning.js';
@@ -668,20 +669,31 @@ class PresetManager {
         }
 
         const preset = settings ?? this.getPresetSettings(name);
+        const { presets, preset_names } = this.getPresetList();
+        const presetNames = this.isKeyedApi()
+            ? preset_names
+            : Object.keys(preset_names || {});
+        const existingName = findCanonicalNameInList(presetNames, name);
+        const existingIndex = existingName
+            ? (this.isKeyedApi() ? preset_names.indexOf(existingName) : preset_names[existingName])
+            : null;
+        const existingPreset = Number.isInteger(existingIndex) ? presets?.[existingIndex] : null;
 
-        const response = await fetch('/api/presets/save', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ preset, name, apiId: this.apiId }),
+        const saveResult = await persistPreset({
+            apiId: this.apiId,
+            name,
+            preset,
+            existingPreset,
+            maxOperations: 4000,
         });
 
-        if (!response.ok) {
+        if (!saveResult.ok) {
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Preset could not be saved`);
-            console.error('Preset could not be saved', response);
+            console.error('Preset could not be saved', saveResult.response);
             throw new Error('Preset could not be saved');
         }
 
-        const data = await response.json();
+        const data = saveResult.data || { name };
         name = data.name;
 
         if (skipUpdate) {
