@@ -960,6 +960,7 @@ const memoryStoreTargets = new Map();
 const memoryLoadTasks = new Map();
 const rollbackHistoryCache = new Map();
 const pendingMutationInvalidations = new Map();
+const scheduledExtractionSingleFlightStates = new Map();
 let activeRuntimeInfoToast = null;
 let activePersistentRuntimeNoticeToast = null;
 let activeRecallAbortController = null;
@@ -7893,6 +7894,149 @@ async function captureLatestAssistantAfterGeneration() {
     scheduleExtraction(context);
 }
 
+function getScheduledExtractionSingleFlightState(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return null;
+    }
+    if (!scheduledExtractionSingleFlightStates.has(key)) {
+        scheduledExtractionSingleFlightStates.set(key, {
+            running: false,
+            rerun: false,
+            cancelled: false,
+        });
+    }
+    return scheduledExtractionSingleFlightStates.get(key);
+}
+
+function clearScheduledExtractionSingleFlightState(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return;
+    }
+    scheduledExtractionSingleFlightStates.delete(key);
+}
+
+async function runScheduledExtractionPass(chatKey) {
+    const runtimeContext = getContext();
+    if (getChatKey(runtimeContext) !== chatKey) {
+        return;
+    }
+    const store = await ensureStoreSyncedWithChat(runtimeContext);
+    if (!store) {
+        return;
+    }
+    const extractionAbortController = new AbortController();
+    activeExtractionAbortController = extractionAbortController;
+    try {
+        const settings = getEffectiveSettings(runtimeContext, getSettings());
+        if (!settings.enabled) {
+            refreshUiStats();
+            return;
+        }
+        alignStoreCoverageToChat(store, runtimeContext, settings);
+        const preview = computeExtractionWindow(runtimeContext, store, null, settings);
+        if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
+            store.lastExtractionDebug = {
+                beginSeq: preview.beginSeq,
+                latestSeq: preview.latestSeq,
+                coveredSeqTo: preview.coveredSeqTo,
+                extracted: false,
+                reason: preview.beginSeq > preview.latestSeq ? 'already_up_to_date' : 'gap_below_threshold',
+                at: Date.now(),
+            };
+            const debug = store.lastExtractionDebug || {};
+            updateUiStatus(i18nFormat(
+                'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                'skip',
+                Number(debug.beginSeq || 0),
+                Number(debug.latestSeq || 0),
+                Number(debug.coveredSeqTo || 0),
+            ));
+            refreshUiStats();
+            return;
+        }
+        const workingStore = normalizeStoreForRuntime(store);
+        let committedStore = normalizeStoreForRuntime(store);
+        const extractBatchTurns = Math.max(
+            1,
+            Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+        );
+        const initialEndSeq = Math.min(
+            Number(preview.latestSeq || 0),
+            Number(preview.beginSeq || 1) + extractBatchTurns - 1,
+        );
+        showRuntimeInfoToast(formatExtractionRangeToast(preview.beginSeq, initialEndSeq, preview.latestSeq), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!extractionAbortController.signal.aborted) {
+                    extractionAbortController.abort();
+                }
+            },
+        });
+        await runExtractionForStore(runtimeContext, workingStore, {
+            abortSignal: extractionAbortController.signal,
+            onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+            },
+            onBatchApplied: async ({ endSeq }) => {
+                committedStore = await commitMemoryStoreDiffByChatKey(
+                    runtimeContext,
+                    chatKey,
+                    committedStore,
+                    workingStore,
+                    endSeq,
+                    { syncPersistentProjection: true },
+                );
+            },
+            onCompressionApplied: async ({ beforeStore, roundSeqTo }) => {
+                committedStore = await commitMemoryStoreDiffByChatKey(
+                    runtimeContext,
+                    chatKey,
+                    beforeStore,
+                    workingStore,
+                    roundSeqTo,
+                    { syncPersistentProjection: true },
+                );
+            },
+        });
+        const finalStore = await commitMemoryStoreDiffByChatKey(
+            runtimeContext,
+            chatKey,
+            committedStore,
+            workingStore,
+            Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
+            { syncPersistentProjection: true },
+        );
+        const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
+        updateUiStatus(i18nFormat(
+            'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+            debug.extracted ? 'ok' : 'skip',
+            Number(debug.beginSeq || 0),
+            Number(debug.latestSeq || 0),
+            Number(debug.coveredSeqTo || 0),
+        ));
+        clearPersistentRuntimeNotice();
+        refreshUiStats();
+    } catch (error) {
+        if (isAbortError(error, extractionAbortController.signal)) {
+            updateUiStatus(i18n('Memory graph update cancelled by user.'));
+            clearPersistentRuntimeNotice();
+            refreshUiStats();
+            return;
+        }
+        console.warn(`[${MODULE_NAME}] Extraction failed`, error);
+        const failureText = i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error));
+        updateUiStatus(failureText);
+        showPersistentRuntimeNotice(failureText);
+    } finally {
+        if (activeExtractionAbortController === extractionAbortController) {
+            activeExtractionAbortController = null;
+        }
+        clearRuntimeInfoToast();
+    }
+}
+
 function scheduleExtraction(context) {
     const settings = getEffectiveSettings(context, getSettings());
     if (!settings.enabled) {
@@ -7902,124 +8046,46 @@ function scheduleExtraction(context) {
     if (!chatKey || chatKey === 'invalid_target') {
         return;
     }
+    const singleFlightState = getScheduledExtractionSingleFlightState(chatKey);
+    if (!singleFlightState) {
+        return;
+    }
+    if (singleFlightState.running) {
+        if (!singleFlightState.cancelled) {
+            singleFlightState.rerun = true;
+        }
+        return;
+    }
+    if (singleFlightState.cancelled) {
+        clearScheduledExtractionSingleFlightState(chatKey);
+    }
     if (extractionTimers.has(chatKey)) {
         return;
     }
 
     const timer = setTimeout(async () => {
         extractionTimers.delete(chatKey);
-        const store = await ensureStoreSyncedWithChat(context);
-        if (!store) {
+        const runState = getScheduledExtractionSingleFlightState(chatKey);
+        if (!runState) {
             return;
         }
-        const extractionAbortController = new AbortController();
-        activeExtractionAbortController = extractionAbortController;
+        if (runState.running) {
+            if (!runState.cancelled) {
+                runState.rerun = true;
+            }
+            return;
+        }
+        runState.running = true;
+        runState.cancelled = false;
         try {
-            const settings = getEffectiveSettings(context, getSettings());
-            if (!settings.enabled) {
-                refreshUiStats();
-                return;
-            }
-            alignStoreCoverageToChat(store, context, settings);
-            const preview = computeExtractionWindow(context, store, null, settings);
-            if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
-                store.lastExtractionDebug = {
-                    beginSeq: preview.beginSeq,
-                    latestSeq: preview.latestSeq,
-                    coveredSeqTo: preview.coveredSeqTo,
-                    extracted: false,
-                    reason: preview.beginSeq > preview.latestSeq ? 'already_up_to_date' : 'gap_below_threshold',
-                    at: Date.now(),
-                };
-                const debug = store.lastExtractionDebug || {};
-                updateUiStatus(i18nFormat(
-                    'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
-                    'skip',
-                    Number(debug.beginSeq || 0),
-                    Number(debug.latestSeq || 0),
-                    Number(debug.coveredSeqTo || 0),
-                ));
-                refreshUiStats();
-                return;
-            }
-            const workingStore = normalizeStoreForRuntime(store);
-            let committedStore = normalizeStoreForRuntime(store);
-            const extractBatchTurns = Math.max(
-                1,
-                Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
-            );
-            const initialEndSeq = Math.min(
-                Number(preview.latestSeq || 0),
-                Number(preview.beginSeq || 1) + extractBatchTurns - 1,
-            );
-            showRuntimeInfoToast(formatExtractionRangeToast(preview.beginSeq, initialEndSeq, preview.latestSeq), {
-                stopLabel: i18n('Stop'),
-                onStop: () => {
-                    if (!extractionAbortController.signal.aborted) {
-                        extractionAbortController.abort();
-                    }
-                },
-            });
-            await runExtractionForStore(context, workingStore, {
-                abortSignal: extractionAbortController.signal,
-                onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
-                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
-                },
-                onBatchApplied: async ({ endSeq }) => {
-                    committedStore = await commitMemoryStoreDiffByChatKey(
-                        context,
-                        chatKey,
-                        committedStore,
-                        workingStore,
-                        endSeq,
-                        { syncPersistentProjection: true },
-                    );
-                },
-                onCompressionApplied: async ({ beforeStore, roundSeqTo }) => {
-                    committedStore = await commitMemoryStoreDiffByChatKey(
-                        context,
-                        chatKey,
-                        beforeStore,
-                        workingStore,
-                        roundSeqTo,
-                        { syncPersistentProjection: true },
-                    );
-                },
-            });
-            const finalStore = await commitMemoryStoreDiffByChatKey(
-                context,
-                chatKey,
-                committedStore,
-                workingStore,
-                Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
-                { syncPersistentProjection: true },
-            );
-            const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
-            updateUiStatus(i18nFormat(
-                'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
-                debug.extracted ? 'ok' : 'skip',
-                Number(debug.beginSeq || 0),
-                Number(debug.latestSeq || 0),
-                Number(debug.coveredSeqTo || 0),
-            ));
-            clearPersistentRuntimeNotice();
-            refreshUiStats();
-        } catch (error) {
-            if (isAbortError(error, extractionAbortController.signal)) {
-                updateUiStatus(i18n('Memory graph update cancelled by user.'));
-                clearPersistentRuntimeNotice();
-                refreshUiStats();
-                return;
-            }
-            console.warn(`[${MODULE_NAME}] Extraction failed`, error);
-            const failureText = i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error));
-            updateUiStatus(failureText);
-            showPersistentRuntimeNotice(failureText);
+            do {
+                runState.rerun = false;
+                await runScheduledExtractionPass(chatKey);
+            } while (runState.rerun && !runState.cancelled);
         } finally {
-            if (activeExtractionAbortController === extractionAbortController) {
-                activeExtractionAbortController = null;
-            }
-            clearRuntimeInfoToast();
+            runState.running = false;
+            runState.rerun = false;
+            clearScheduledExtractionSingleFlightState(chatKey);
         }
     }, 0);
 
@@ -9949,6 +10015,10 @@ async function stopMemoryRuntimeWork() {
         clearTimeout(timer);
     }
     extractionTimers.clear();
+    for (const state of scheduledExtractionSingleFlightStates.values()) {
+        state.rerun = false;
+        state.cancelled = true;
+    }
 
     const recallRunToken = Number(activeRecallRunToken || 0);
     if (recallRunToken > 0) {
