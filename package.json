@@ -120,7 +120,7 @@
         "type": "git",
         "url": "https://github.com/funnycups/Luker.git"
     },
-    "version": "1.29.0",
+    "version": "1.29.1",
     "scripts": {
         "start": "node server.js",
         "debug": "node --inspect server.js",
