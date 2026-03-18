@@ -5305,6 +5305,9 @@ async function compressSemanticHierarchical(context, store, settings, spec, type
                 break;
             }
 
+            const roundBeforeStore = typeof options?.onRoundApplied === 'function'
+                ? normalizeStoreForRuntime(store)
+                : null;
             const lines = group.map(node => `${node.title}: ${getNodeSummary(node)}`);
             const instruction = buildCompressionSummaryInstruction(
                 config.summarizeInstruction
@@ -5354,6 +5357,14 @@ async function compressSemanticHierarchical(context, store, settings, spec, type
             changed = true;
             compressedRounds += 1;
             recordCompressionRound(options?.compressionStats, type, 1);
+            if (typeof options?.onRoundApplied === 'function' && roundBeforeStore) {
+                await options.onRoundApplied({
+                    type: String(type || ''),
+                    depth,
+                    roundSeqTo: Number(parent?.seqTo ?? 0),
+                    beforeStore: roundBeforeStore,
+                });
+            }
         }
         if (compressedRounds >= maxRoundsPerType) {
             break;
@@ -5575,6 +5586,7 @@ async function runExtractionForStore(context, store, {
     abortSignal = null,
     onBatchStart = null,
     onBatchApplied = null,
+    onCompressionApplied = null,
     rebuildCreateOnly = false,
 } = {}) {
     const settings = getEffectiveSettings(context, getSettings());
@@ -5712,6 +5724,17 @@ async function runExtractionForStore(context, store, {
             compressionStats,
             maxSeq: latestSeq,
             abortSignal: abortSignal || null,
+            onRoundApplied: typeof onCompressionApplied === 'function'
+                ? async ({ type, depth, roundSeqTo, beforeStore }) => {
+                    await onCompressionApplied({
+                        type,
+                        depth,
+                        roundSeqTo,
+                        latestSeq,
+                        beforeStore,
+                    });
+                }
+                : null,
         });
         const compressionRollbackEntry = buildRollbackEntry(historyChatKey, compressionSnapshot, store, {
             kind: 'compression',
@@ -7391,6 +7414,15 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
             }
             await commitMemoryStoreReplaceByChatKey(context, chatKey, rebuilt, endSeq, { syncPersistentProjection: true });
         },
+        onCompressionApplied: async ({ roundSeqTo }) => {
+            await commitMemoryStoreReplaceByChatKey(
+                context,
+                chatKey,
+                rebuilt,
+                Number(roundSeqTo || getSemanticCoverageSeq(rebuilt) || 0),
+                { syncPersistentProjection: true },
+            );
+        },
         rebuildCreateOnly: true,
     });
     const latestSeq = Math.max(0, Number(rebuilt?.lastExtractionDebug?.latestSeq || 0));
@@ -7940,6 +7972,16 @@ function scheduleExtraction(context) {
                         committedStore,
                         workingStore,
                         endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
+                onCompressionApplied: async ({ beforeStore, roundSeqTo }) => {
+                    committedStore = await commitMemoryStoreDiffByChatKey(
+                        context,
+                        chatKey,
+                        beforeStore,
+                        workingStore,
+                        roundSeqTo,
                         { syncPersistentProjection: true },
                     );
                 },
@@ -11674,6 +11716,16 @@ async function openManualCompressionPopup(context, settings) {
             maxSeq,
             compressionStats,
             abortSignal: compressionAbortController.signal,
+            onRoundApplied: async ({ beforeStore, roundSeqTo }) => {
+                await commitMemoryStoreDiffByChatKey(
+                    context,
+                    getChatKey(context),
+                    beforeStore,
+                    store,
+                    roundSeqTo,
+                    { syncPersistentProjection: true },
+                );
+            },
         });
         if (!changed) {
             notifySuccess(i18n('Manual compression made no changes.'));
@@ -11684,13 +11736,6 @@ async function openManualCompressionPopup(context, settings) {
         const afterArchivedCount = afterNodes.filter(node => Boolean(node?.archived)).length;
         const createdDelta = Math.max(0, afterNodeCount - beforeNodeCount);
         const archivedDelta = Math.max(0, afterArchivedCount - beforeArchivedCount);
-        appendPersistedDiffEntry(
-            getChatKey(context),
-            beforeStore,
-            store,
-            Math.max(0, Number(store?.loggedSeqTo || 0), Number(getSemanticCoverageSeq(store) || 0)),
-        );
-        await persistMemoryStoreByChatKey(context, getChatKey(context), store, { syncPersistentProjection: true });
         refreshUiStats();
         const summary = i18nFormat('Manual compression completed. Created=${0}, archived=${1}', createdDelta, archivedDelta);
         notifySuccess(summary);
@@ -11925,6 +11970,16 @@ function bindUi() {
                         { syncPersistentProjection: true },
                     );
                 },
+                onCompressionApplied: async ({ beforeStore, roundSeqTo }) => {
+                    committedStore = await commitMemoryStoreDiffByChatKey(
+                        context,
+                        chatKey,
+                        beforeStore,
+                        workingStore,
+                        roundSeqTo,
+                        { syncPersistentProjection: true },
+                    );
+                },
             });
             const finalStore = await commitMemoryStoreDiffByChatKey(
                 context,
@@ -12122,6 +12177,15 @@ function bindUi() {
                         chatKey,
                         workingStore,
                         endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
+                onCompressionApplied: async ({ roundSeqTo }) => {
+                    await commitMemoryStoreReplaceByChatKey(
+                        context,
+                        chatKey,
+                        workingStore,
+                        Number(roundSeqTo || latestSeq || getSemanticCoverageSeq(workingStore) || 0),
                         { syncPersistentProjection: true },
                     );
                 },
