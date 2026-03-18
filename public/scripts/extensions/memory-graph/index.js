@@ -49,18 +49,16 @@ const LEVEL = {
     SEMANTIC: 'semantic',
 };
 
-const EVENT_TIME_FIELD = 'time';
-const DEFAULT_EVENT_TIME_COLUMN_HINT = 'Explicit full in-world date/time or date span for this event. Use complete year/month/day-style precision when the world supports it. For non-real-world settings, use that world\'s full calendar notation. Never use placeholders like x年x月x日 or 某年某月某日.';
-const DEFAULT_EVENT_SUMMARY_COLUMN_HINT = 'Start with "时间：<time>；" using the same explicit time text as the time column, then give a concise event abstraction with causality and outcome.';
+const DEFAULT_EVENT_SUMMARY_COLUMN_HINT = 'Start with "时间：<time>；" using an explicit full in-world date/time or date span, then give a concise event abstraction with causality and outcome.';
 const DEFAULT_EVENT_KEY_SENTENCES_COLUMN_HINT = 'Key sentences in this event from characters involved in. Start with characters name and seperated by semicolons.';
-const DEFAULT_EVENT_EXTRACT_HINT = 'Critical plot events, turning points, commitments, betrayals, irreversible outcomes, and their explicit in-world time/time span.';
-const DEFAULT_EVENT_COMPRESSION_INSTRUCTION = 'Compress event nodes into high-value storyline milestones. Preserve explicit in-world time/time span, causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit). Hallucinate is not allowed except continuity-consistent inference for missing event time. You shall only compress and summary instead of continuing any story. Output time as explicit full in-world time/time span, never placeholders. Summary must start with "时间：<time>；". Output key_sentences as a few core lines, each prefixed by character name and separated by semicolons.';
-const EVENT_TIME_EXTRACT_PROMPT_LINES = [
-    'Event time hard rule: every event row must include time with an explicit full in-world date/time or date span.',
-    'Event time completeness rule: use complete year/month/day-style precision when the world supports it; for non-real-world settings, use that world\'s full calendar/date notation instead of modern placeholders.',
-    'Event time inference rule: when dialogue/context does not state a concrete time, infer or invent one plausible full in-world timestamp/span from chronology, world info, and continuity. This constructive inference is allowed only for event.time, and it must stay consistent with known facts.',
-    'Event time placeholder ban: never use placeholders or vague substitutes such as x年x月x日, X年X月X日, 某年某月某日, 未知时间, 待定时间.',
-    'Event summary prefix rule: event summary must begin with the same time text, formatted as "时间：<time>；<summary>".',
+const DEFAULT_EVENT_EXTRACT_HINT = 'Critical plot events, turning points, commitments, betrayals, irreversible outcomes, and their explicit in-world time/time span written at the start of summary.';
+const DEFAULT_EVENT_COMPRESSION_INSTRUCTION = 'Compress event nodes into high-value storyline milestones. Preserve explicit in-world time/time span by writing it at the start of summary, along with causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit). Hallucinate is not allowed except continuity-consistent inference for missing event time. You shall only compress and summary instead of continuing any story. Output time as explicit full in-world time/time span, never placeholders. Summary must start with "时间：<time>；". Output key_sentences as a few core lines, each prefixed by character name and separated by semicolons.';
+const EVENT_SUMMARY_TIME_EXTRACT_PROMPT_LINES = [
+    'Event summary time hard rule: every event row must put an explicit full in-world date/time or date span at the start of summary, formatted as "时间：<time>；<summary>".',
+    'Event summary time completeness rule: use complete year/month/day-style precision when the world supports it; for non-real-world settings, use that world\'s full calendar/date notation instead of modern placeholders.',
+    'Event summary time inference rule: when dialogue/context does not state a concrete time, infer or invent one plausible full in-world timestamp/span from chronology, world info, and continuity. This constructive inference is allowed only for the summary time prefix, and it must stay consistent with known facts.',
+    'Event summary time placeholder ban: never use placeholders or vague substitutes such as x年x月x日, X年X月X日, 某年某月某日, 未知时间, 待定时间.',
+    'Event summary prefix rule: after the time prefix, continue with concise causal summary text.',
 ];
 
 const defaultNodeTypeSchema = [
@@ -68,13 +66,12 @@ const defaultNodeTypeSchema = [
         id: 'event',
         label: 'Event',
         tableName: 'event_table',
-        tableColumns: [EVENT_TIME_FIELD, 'summary', 'key_sentences'],
+        tableColumns: ['summary', 'key_sentences'],
         columnHints: {
-            time: DEFAULT_EVENT_TIME_COLUMN_HINT,
             summary: DEFAULT_EVENT_SUMMARY_COLUMN_HINT,
             key_sentences: DEFAULT_EVENT_KEY_SENTENCES_COLUMN_HINT,
         },
-        requiredColumns: [EVENT_TIME_FIELD, 'summary'],
+        requiredColumns: ['summary'],
         forceUpdate: true,
         editable: false,
         level: LEVEL.SEMANTIC,
@@ -299,7 +296,7 @@ const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
     'Event strict policy: each extraction batch may create AT MOST ONE event node.',
     'If multiple sub-events happened in one batch, merge them into one coherent event summary instead of creating multiple event rows.',
     'If no meaningful event progression occurred, do not fabricate an event; explain the skip clearly in section [1].',
-    ...EVENT_TIME_EXTRACT_PROMPT_LINES,
+    ...EVENT_SUMMARY_TIME_EXTRACT_PROMPT_LINES,
     'Relation modeling rule: encode cross-node relations (who/where linkage) via links, not by stuffing relation lists into node row columns.',
     'Never store relationship linkage text inside node fields when links can represent it.',
     'Link quality rule: include links for involved entities/locations when evidence exists.',
@@ -3826,10 +3823,10 @@ function buildDynamicToolDescription(spec = {}, mode = 'create') {
     if (fields.includes('aliases')) {
         chunks.push('Alias normalization: put nicknames, titles, English names, translated names, short names, and alternative spellings in aliases only. Separate multiple aliases with commas or semicolons.');
     }
-    if (typeId === 'event' && fields.includes(EVENT_TIME_FIELD)) {
-        chunks.push('Event time rule: time must be an explicit full in-world date/time or date span. If source lacks a concrete timestamp, infer or invent one plausible continuity-consistent full time instead of placeholders.');
-        chunks.push('Event time ban: never use x年x月x日, 某年某月某日, 未知时间, 待定时间, or similar placeholders.');
-        chunks.push('Event summary format: summary must begin with "时间：<time>；" using the same text as the time column.');
+    if (typeId === 'event' && fields.includes('summary')) {
+        chunks.push('Event summary time rule: summary must begin with "时间：<time>；" using an explicit full in-world date/time or date span.');
+        chunks.push('Event summary time inference: if source lacks a concrete timestamp, infer or invent one plausible continuity-consistent full time instead of placeholders.');
+        chunks.push('Event summary time ban: never use x年x月x日, 某年某月某日, 未知时间, 待定时间, or similar placeholders.');
     }
     if (latestOnly && primaryKeyColumns.length > 0) {
         chunks.push(`Dedup rule: before create, inspect graph_data.nodes and prefer edit over create when an existing node plausibly matches by primary-key overlap (${primaryKeyColumns.join(', ')}).`);
