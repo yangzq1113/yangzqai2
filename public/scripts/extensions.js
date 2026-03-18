@@ -1629,7 +1629,29 @@ export async function writeExtensionField(characterId, key, value) {
         console.warn('Character not found', characterId);
         return;
     }
+
+    const summary = Array.isArray(value)
+        ? {
+            kind: 'array',
+            length: value.length,
+            sampleIds: value.slice(0, 5).map(item => String(item?.id || '')),
+            serializedLength: JSON.stringify(value).length,
+        }
+        : {
+            kind: typeof value,
+            serializedLength: JSON.stringify(value ?? null).length,
+        };
+
     const path = `data.extensions.${key}`;
+    console.info('[Extensions] writeExtensionField requested', {
+        characterId,
+        contextCharacterId: context.characterId,
+        avatar: character.avatar || null,
+        key,
+        path,
+        hasJsonData: Boolean(character.json_data),
+        valueSummary: summary,
+    });
     setValueByPath(character, path, value);
 
     // Process JSON data
@@ -1642,6 +1664,14 @@ export async function writeExtensionField(characterId, key, value) {
         if (Number(characterId) === Number(context.characterId)) {
             $('#character_json_data').val(character.json_data);
         }
+
+        console.debug('[Extensions] writeExtensionField updated in-memory character JSON', {
+            characterId,
+            avatar: character.avatar || null,
+            key,
+            mirroredToOpenEditor: Number(characterId) === Number(context.characterId),
+            jsonLength: character.json_data.length,
+        });
     }
 
     // Save data to the server
@@ -1657,6 +1687,15 @@ export async function writeExtensionField(characterId, key, value) {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(saveDataRequest),
+    });
+
+    console.info('[Extensions] writeExtensionField merge response', {
+        characterId,
+        avatar: character.avatar || null,
+        key,
+        status: mergeResponse.status,
+        ok: mergeResponse.ok,
+        statusText: mergeResponse.statusText,
     });
 
     if (!mergeResponse.ok) {

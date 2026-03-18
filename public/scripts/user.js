@@ -1,4 +1,10 @@
 import { getRequestHeaders } from '../script.js';
+import {
+    clearFrontendLogs,
+    getFrontendLogsSnapshot,
+    installFrontendLogCapture,
+    isFrontendConsoleDebugLoggingEnabled,
+} from './frontend-log-manager.js';
 import { t } from './i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, callGenericPopup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
@@ -40,106 +46,8 @@ const BACKUP_FULL_SELECTION = Object.freeze({
     ...Object.fromEntries(BACKUP_CATEGORY_KEYS.map((key) => [key, true])),
     globalExtensions: false,
 });
-const FRONTEND_LOG_LIMIT = 3000;
 const DEFAULT_LOG_VIEW_LIMIT = 300;
 const MAX_LOG_VIEW_LIMIT = 5000;
-const frontendLogBuffer = [];
-let frontendLogNextId = 1;
-let frontendLogCaptureInstalled = false;
-
-function serializeFrontendLogValue(value) {
-    if (value instanceof Error) {
-        return value.stack || `${value.name}: ${value.message}`;
-    }
-
-    if (typeof value === 'string') {
-        return value;
-    }
-
-    if (value === undefined) {
-        return 'undefined';
-    }
-
-    if (value === null) {
-        return 'null';
-    }
-
-    if (typeof value === 'function') {
-        return `[Function ${value.name || 'anonymous'}]`;
-    }
-
-    try {
-        return JSON.stringify(value, (_, nestedValue) => {
-            if (nestedValue instanceof Error) {
-                return nestedValue.stack || `${nestedValue.name}: ${nestedValue.message}`;
-            }
-            if (typeof nestedValue === 'bigint') {
-                return `${nestedValue}n`;
-            }
-            return nestedValue;
-        });
-    } catch {
-        return String(value);
-    }
-}
-
-function pushFrontendLog(level, values, source = 'console') {
-    const message = Array.isArray(values)
-        ? values.map(serializeFrontendLogValue).join(' ')
-        : serializeFrontendLogValue(values);
-
-    frontendLogBuffer.push({
-        id: frontendLogNextId++,
-        timestamp: Date.now(),
-        level: String(level || 'log').toLowerCase(),
-        source: String(source || 'console'),
-        message: String(message || ''),
-    });
-
-    if (frontendLogBuffer.length > FRONTEND_LOG_LIMIT) {
-        frontendLogBuffer.splice(0, frontendLogBuffer.length - FRONTEND_LOG_LIMIT);
-    }
-}
-
-function installFrontendLogCapture() {
-    if (frontendLogCaptureInstalled || typeof window === 'undefined') {
-        return;
-    }
-
-    frontendLogCaptureInstalled = true;
-    const methods = ['debug', 'log', 'info', 'warn', 'error'];
-    for (const method of methods) {
-        const original = console[method]?.bind(console);
-        if (typeof original !== 'function') {
-            continue;
-        }
-
-        console[method] = (...args) => {
-            pushFrontendLog(method, args, 'console');
-            return original(...args);
-        };
-    }
-
-    window.addEventListener('error', (event) => {
-        const details = [];
-        if (event.message) {
-            details.push(event.message);
-        }
-        if (event.filename) {
-            details.push(`${event.filename}:${event.lineno || 0}:${event.colno || 0}`);
-        }
-        if (event.error) {
-            details.push(event.error);
-        }
-        pushFrontendLog('error', details, 'window.onerror');
-    });
-
-    window.addEventListener('unhandledrejection', (event) => {
-        pushFrontendLog('error', ['Unhandled promise rejection', event.reason], 'unhandledrejection');
-    });
-
-    pushFrontendLog('info', ['Frontend log capture enabled.'], 'system');
-}
 
 function normalizeOptionalTimestamp(value) {
     if (value === null || value === undefined || value === '') {
@@ -175,21 +83,6 @@ function parseLogTimeInputValue(value, { roundUpMinute = false } = {}) {
     }
 
     return timestamp;
-}
-
-function getFrontendLogsSnapshot(options = {}) {
-    const { limit, sinceId, startTime, endTime } = normalizeLogQueryOptions(options);
-    const entries = frontendLogBuffer
-        .filter((entry) => Number(entry.id) > sinceId)
-        .filter((entry) => startTime === null || Number(entry.timestamp) >= startTime)
-        .filter((entry) => endTime === null || Number(entry.timestamp) <= endTime)
-        .slice(-limit);
-    const latestId = frontendLogBuffer.length ? Number(frontendLogBuffer[frontendLogBuffer.length - 1].id) : 0;
-    return { entries, latestId };
-}
-
-function clearFrontendLogs() {
-    frontendLogBuffer.length = 0;
 }
 
 /**
@@ -1402,9 +1295,14 @@ async function openLogsViewer() {
     sourceSelect.val(currentSource);
 
     const updateNote = () => {
-        noteElement.text(currentSource === 'server'
-            ? t`This viewer shows runtime backend logs captured in memory.`
-            : t`This viewer shows frontend console logs captured in this app session.`);
+        if (currentSource === 'server') {
+            noteElement.text(t`This viewer shows runtime backend logs captured in memory.`);
+            return;
+        }
+
+        noteElement.text(isFrontendConsoleDebugLoggingEnabled()
+            ? t`This viewer shows frontend console logs captured in this app session.`
+            : t`Verbose frontend debug logs are off. Only frontend errors are captured until you enable them in User Settings.`);
     };
 
     const renderOutput = (entries, formatter) => {
@@ -1453,6 +1351,7 @@ async function openLogsViewer() {
             return;
         }
 
+        updateNote();
         const query = readLogQuery();
         if (!query) {
             return;

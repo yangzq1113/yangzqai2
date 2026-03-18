@@ -33,8 +33,33 @@ export const SCRIPT_TYPE_UNKNOWN = -1;
  * @type {Readonly<GetRegexScriptsOptions>}
  */
 const DEFAULT_GET_REGEX_SCRIPTS_OPTIONS = Object.freeze({ allowedOnly: false });
+const REGEX_SCRIPT_TYPE_LABELS = Object.freeze({
+    [SCRIPT_TYPES.GLOBAL]: 'global',
+    [SCRIPT_TYPES.SCOPED]: 'scoped',
+    [SCRIPT_TYPES.PRESET]: 'preset',
+    [SCRIPT_TYPE_UNKNOWN]: 'unknown',
+});
 const warnedInvalidPlacementScripts = new Set();
 let shownInvalidPlacementToast = false;
+
+function summarizeRegexScriptForLog(script) {
+    if (!script || typeof script !== 'object') {
+        return null;
+    }
+
+    return {
+        id: String(script.id || ''),
+        name: String(script.scriptName || ''),
+        disabled: Boolean(script.disabled),
+        placementCount: Array.isArray(script.placement) ? script.placement.length : 0,
+        findRegexLength: String(script.findRegex || '').length,
+        replaceLength: String(script.replaceString || '').length,
+        promptOnly: Boolean(script.promptOnly),
+        markdownOnly: Boolean(script.markdownOnly),
+        pluginOnly: Boolean(script.pluginOnly),
+        runOnEdit: Boolean(script.runOnEdit),
+    };
+}
 /**
  * @typedef {object} RuntimeRegexProviderOptions
  * @property {boolean} [reloadOnChange=false] Request chat reload when provider is registered/unregistered.
@@ -441,17 +466,34 @@ export function getScriptsByType(scriptType, { allowedOnly } = DEFAULT_GET_REGEX
  * @returns {Promise<void>}
  */
 export async function saveScriptsByType(scripts, scriptType) {
+    const normalizedScripts = Array.isArray(scripts) ? scripts : [];
+    const character = characters?.[this_chid];
+    const context = {
+        scriptType: REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType),
+        scriptCount: normalizedScripts.length,
+        chid: this_chid ?? null,
+        avatar: character?.avatar || null,
+        currentPresetApi: getCurrentPresetAPI?.() || null,
+        currentPresetName: getCurrentPresetName?.() || null,
+        scripts: normalizedScripts.slice(0, 5).map(summarizeRegexScriptForLog),
+    };
+
+    console.info('[Regex] saveScriptsByType requested', context);
+
     switch (scriptType) {
         case SCRIPT_TYPES.GLOBAL:
-            extension_settings.regex = scripts;
+            extension_settings.regex = normalizedScripts;
             saveSettingsDebounced();
+            console.info('[Regex] Global scripts staged in extension settings', context);
             break;
         case SCRIPT_TYPES.SCOPED:
-            await writeExtensionField(this_chid, 'regex_scripts', scripts);
+            await writeExtensionField(this_chid, 'regex_scripts', normalizedScripts);
+            console.info('[Regex] Scoped scripts persisted to character extension field', context);
             break;
         case SCRIPT_TYPES.PRESET: {
             const presetManager = getPresetManager();
-            await presetManager.writePresetExtensionField({ path: 'regex_scripts', value: scripts });
+            await presetManager.writePresetExtensionField({ path: 'regex_scripts', value: normalizedScripts });
+            console.info('[Regex] Preset scripts persisted to preset extension field', context);
             break;
         }
         default:
@@ -485,6 +527,10 @@ export function allowScopedScripts(character) {
     if (!extension_settings.character_allowed_regex.includes(avatar)) {
         extension_settings.character_allowed_regex.push(avatar);
         saveSettingsDebounced();
+        console.info('[Regex] Scoped scripts allowed for character', {
+            avatar,
+            chid: this_chid ?? null,
+        });
     }
 }
 
@@ -505,6 +551,10 @@ export function disallowScopedScripts(character) {
     if (index !== -1) {
         extension_settings.character_allowed_regex.splice(index, 1);
         saveSettingsDebounced();
+        console.info('[Regex] Scoped scripts disallowed for character', {
+            avatar,
+            chid: this_chid ?? null,
+        });
     }
 }
 

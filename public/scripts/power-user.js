@@ -65,6 +65,7 @@ import { accountStorage } from './util/AccountStorage.js';
 import { DEFAULT_REASONING_TEMPLATE, loadReasoningTemplates } from './reasoning.js';
 import { bindModelTemplates } from './chat-templates.js';
 import { IMAGE_OVERSWIPE, MEDIA_DISPLAY } from './constants.js';
+import { setFrontendConsoleDebugLoggingEnabled } from './frontend-log-manager.js';
 import { t } from './i18n.js';
 
 export const toastPositionClasses = [
@@ -213,6 +214,7 @@ export const power_user = {
     auto_scroll_chat_to_bottom: true,
     auto_fix_generated_markdown: true,
     send_on_enter: send_on_enter_options.AUTO,
+    frontend_debug_logging: false,
     console_log_prompts: false,
     request_token_probabilities: false,
     show_group_chat_queue: false,
@@ -1763,6 +1765,7 @@ async function showDebugMenu() {
 }
 
 export function applyPowerUserSettings() {
+    setFrontendConsoleDebugLoggingEnabled(power_user.frontend_debug_logging, { announce: false });
     switchUiMode();
     applyFontScale('forced');
     applyThemeColor();
@@ -1966,6 +1969,7 @@ export async function loadPowerUserSettings(settings, data) {
     $('#context_derived').parent().find('i').toggleClass('toggleEnabled', !!power_user.context_derived);
     $('#context_size_derived').prop('checked', !!power_user.context_size_derived);
 
+    $('#frontend_debug_logging').prop('checked', power_user.frontend_debug_logging);
     $('#console_log_prompts').prop('checked', power_user.console_log_prompts);
     $('#request_token_probabilities').prop('checked', power_user.request_token_probabilities);
     $('#show_group_chat_queue').prop('checked', power_user.show_group_chat_queue);
@@ -4072,6 +4076,12 @@ jQuery(() => {
     $('#auto_fix_generated_markdown').on('input', function () {
         power_user.auto_fix_generated_markdown = !!$(this).prop('checked');
         reloadCurrentChat();
+        saveSettingsDebounced();
+    });
+
+    $('#frontend_debug_logging').on('input', function () {
+        power_user.frontend_debug_logging = !!$(this).prop('checked');
+        setFrontendConsoleDebugLoggingEnabled(power_user.frontend_debug_logging, { announce: true });
         saveSettingsDebounced();
     });
 

@@ -23,6 +23,31 @@ const THUMBNAIL_COLUMNS_MIN = 2;
 const THUMBNAIL_COLUMNS_MAX = 8;
 const THUMBNAIL_COLUMNS_DEFAULT_DESKTOP = 5;
 const THUMBNAIL_COLUMNS_DEFAULT_MOBILE = 3;
+const BACKGROUND_LOG_SAMPLE_LIMIT = 5;
+
+function summarizeBackgroundNameForLog(value) {
+    return String(value || '')
+        .split('/')
+        .pop()
+        .split('\\')
+        .pop();
+}
+
+function summarizeBackgroundListForLog(backgrounds) {
+    return (Array.isArray(backgrounds) ? backgrounds : [])
+        .slice(0, BACKGROUND_LOG_SAMPLE_LIMIT)
+        .map(summarizeBackgroundNameForLog);
+}
+
+function getBackgroundViewportInfo() {
+    return {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        activeTab: getActiveBackgroundTab?.() ?? null,
+        thumbnailColumns: background_settings.thumbnailColumns,
+    };
+}
 
 /**
  * Storage for frontend-generated background thumbnails.
@@ -220,6 +245,15 @@ export function loadBackgroundSettings(settings) {
     background_settings.sortOrder = backgroundSettings.sortOrder;
     applyThumbnailColumns(background_settings.thumbnailColumns);
 
+    console.info('[Backgrounds] Loaded background settings', {
+        name: summarizeBackgroundNameForLog(backgroundSettings.name),
+        fitting: backgroundSettings.fitting,
+        animation: Boolean(backgroundSettings.animation),
+        sortOrder: backgroundSettings.sortOrder,
+        thumbnailColumns: background_settings.thumbnailColumns,
+        viewport: getBackgroundViewportInfo(),
+    });
+
     setBackground(backgroundSettings.name, backgroundSettings.url);
     setFittingClass(backgroundSettings.fitting);
     $('#background_fitting').val(backgroundSettings.fitting);
@@ -242,14 +276,29 @@ async function forceSetBackground(backgroundInfo) {
     chat_metadata[LIST_METADATA_KEY] = list;
     saveMetadataDebounced();
     renderChatBackgrounds();
+    console.info('[Backgrounds] Forced chat background appended', {
+        currentChatId: getCurrentChatId?.() || null,
+        background: summarizeBackgroundNameForLog(bg),
+        chatBackgroundCount: list.length,
+        sampleBackgrounds: summarizeBackgroundListForLog(list),
+    });
     highlightNewBackground(bg);
     highlightLockedBackground();
 }
 
 async function onChatChanged() {
     const lockedUrl = chat_metadata[BG_METADATA_KEY];
+    const list = chat_metadata[LIST_METADATA_KEY] || [];
 
     $('#bg1').css('background-image', lockedUrl || background_settings.url);
+
+    console.info('[Backgrounds] Chat changed', {
+        currentChatId: getCurrentChatId?.() || null,
+        lockedBackground: lockedUrl ? summarizeBackgroundNameForLog(lockedUrl) : null,
+        chatBackgroundCount: list.length,
+        sampleBackgrounds: summarizeBackgroundListForLog(list),
+        viewport: getBackgroundViewportInfo(),
+    });
 
     renderChatBackgrounds();
     highlightLockedBackground();
@@ -621,6 +670,14 @@ function renderChatBackgrounds(backgrounds) {
     container.empty();
     $('#bg_chat_hint').toggle(!sourceList.length);
 
+    console.info('[Backgrounds] Rendering chat backgrounds', {
+        currentChatId: getCurrentChatId?.() || null,
+        chatBackgroundCount: sourceList.length,
+        sampleBackgrounds: summarizeBackgroundListForLog(sourceList),
+        hintVisible: !sourceList.length,
+        viewport: getBackgroundViewportInfo(),
+    });
+
     if (sourceList.length === 0) return;
 
     const sortedList = sortBackgrounds(sourceList, true);
@@ -668,6 +725,14 @@ async function refreshBackgrounds() {
 
             await metadataPromise;
 
+            console.info('[Backgrounds] Refreshed system backgrounds', {
+                systemBackgroundCount: images.length,
+                sampleBackgrounds: summarizeBackgroundListForLog(images),
+                thumbnailConfig: { ...THUMBNAIL_CONFIG },
+                metadataCount: METADATA_CACHE.size,
+                viewport: getBackgroundViewportInfo(),
+            });
+
             renderSystemBackgrounds(images);
             highlightSelectedBackground();
             backgroundsLoaded = true;
@@ -699,6 +764,10 @@ async function preloadImageMetadata() {
                 for (const [path, metadata] of Object.entries(data.images)) {
                     METADATA_CACHE.set(path, metadata);
                 }
+                console.info('[Backgrounds] Preloaded image metadata', {
+                    metadataCount: METADATA_CACHE.size,
+                    sampleKeys: Object.keys(data.images).slice(0, BACKGROUND_LOG_SAMPLE_LIMIT).map(summarizeBackgroundNameForLog),
+                });
             }
         }
     } catch (error) {
@@ -721,6 +790,11 @@ function activateLazyLoader() {
         threshold: 0.01,
     };
 
+    console.debug('[Backgrounds] Activating lazy loader', {
+        observedCount: lazyLoadElements.length,
+        viewport: getBackgroundViewportInfo(),
+    });
+
     lazyLoadObserver = new IntersectionObserver((entries, observer) => {
         entries.forEach(entry => {
             if (entry.target instanceof HTMLElement && entry.isIntersecting) {
@@ -730,9 +804,20 @@ function activateLazyLoader() {
                 if (parentThumbnail) {
                     const bg = parentThumbnail.getAttribute('bgfile');
                     const isCustom = parentThumbnail.getAttribute('custom') === 'true';
+                    console.debug('[Backgrounds] Lazy loader intersected background thumbnail', {
+                        background: summarizeBackgroundNameForLog(bg),
+                        isCustom,
+                    });
                     resolveImageUrl(bg, isCustom)
                         .then(url => { clipper.style.backgroundImage = url; })
-                        .catch(() => { clipper.style.backgroundImage = PLACEHOLDER_IMAGE; });
+                        .catch((error) => {
+                            console.debug('[Backgrounds] Failed to resolve thumbnail URL', {
+                                background: summarizeBackgroundNameForLog(bg),
+                                isCustom,
+                                error: error instanceof Error ? error.message : String(error || ''),
+                            });
+                            clipper.style.backgroundImage = PLACEHOLDER_IMAGE;
+                        });
                 }
 
                 clipper.classList.remove('lazy-load-background');
@@ -947,6 +1032,13 @@ async function uploadChatBackground(formData) {
         list.push(imagePath);
         chat_metadata[LIST_METADATA_KEY] = list;
         await saveMetadata();
+        console.info('[Backgrounds] Uploaded chat background', {
+            currentChatId: getCurrentChatId?.() || null,
+            characterName,
+            background: summarizeBackgroundNameForLog(imagePath),
+            chatBackgroundCount: list.length,
+            sampleBackgrounds: summarizeBackgroundListForLog(list),
+        });
         renderChatBackgrounds();
         highlightNewBackground(imagePath);
         highlightLockedBackground();
@@ -1118,6 +1210,12 @@ export function initBackgrounds() {
 
     $('#backgrounds-drawer-toggle').on('click', function () {
         if ($('#Backgrounds').hasClass('closedDrawer')) {
+            console.info('[Backgrounds] Background drawer opening', {
+                currentChatId: getCurrentChatId?.() || null,
+                chatBackgroundCount: (chat_metadata[LIST_METADATA_KEY] || []).length,
+                sampleBackgrounds: summarizeBackgroundListForLog(chat_metadata[LIST_METADATA_KEY] || []),
+                viewport: getBackgroundViewportInfo(),
+            });
             void getBackgrounds();
         }
     });
@@ -1131,4 +1229,13 @@ export function initBackgrounds() {
     });
 
     $('#bg_tabs').tabs();
+    $('#bg_tabs').on('tabsactivate', function () {
+        console.debug('[Backgrounds] Background tab activated', {
+            currentChatId: getCurrentChatId?.() || null,
+            activeTab: getActiveBackgroundTab(),
+            chatBackgroundCount: (chat_metadata[LIST_METADATA_KEY] || []).length,
+            sampleBackgrounds: summarizeBackgroundListForLog(chat_metadata[LIST_METADATA_KEY] || []),
+            viewport: getBackgroundViewportInfo(),
+        });
+    });
 }

@@ -17,6 +17,31 @@ import { getPresetManager } from '../../preset-manager.js';
 export { getRegexScripts };
 
 const sanitizeFileName = name => name.replace(/[\s.<>:"/\\|?*\x00-\x1F\x7F]/g, '_').toLowerCase();
+const REGEX_SCRIPT_TYPE_LABELS = Object.freeze({
+    [SCRIPT_TYPES.GLOBAL]: 'global',
+    [SCRIPT_TYPES.SCOPED]: 'scoped',
+    [SCRIPT_TYPES.PRESET]: 'preset',
+    [SCRIPT_TYPE_UNKNOWN]: 'runtime',
+});
+
+function summarizeRegexScriptForLog(script) {
+    if (!script || typeof script !== 'object') {
+        return null;
+    }
+
+    return {
+        id: String(script.id || ''),
+        name: String(script.scriptName || ''),
+        disabled: Boolean(script.disabled),
+        placementCount: Array.isArray(script.placement) ? script.placement.length : 0,
+        findRegexLength: String(script.findRegex || '').length,
+        replaceLength: String(script.replaceString || '').length,
+        runOnEdit: Boolean(script.runOnEdit),
+        promptOnly: Boolean(script.promptOnly),
+        markdownOnly: Boolean(script.markdownOnly),
+        pluginOnly: Boolean(script.pluginOnly),
+    };
+}
 
 /**
  * @typedef {import('../../char-data.js').RegexScriptData} RegexScript
@@ -563,6 +588,7 @@ function setMoveButtonsVisibility() {
 async function saveRegexScript(regexScript, existingScriptIndex, scriptType, saveSettings = true) {
     // If not editing
     const array = getScriptsByType(scriptType);
+    const scriptTypeLabel = REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType);
 
     // Assign a UUID if it doesn't exist
     if (!regexScript.id) {
@@ -594,6 +620,16 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
         array.push(regexScript);
     }
 
+    console.info('[Regex] saveRegexScript prepared', {
+        scriptType: scriptTypeLabel,
+        existingScriptIndex,
+        saveSettings,
+        chid: this_chid ?? null,
+        selectedGroup: selected_group ?? null,
+        scriptSummary: summarizeRegexScriptForLog(regexScript),
+        nextScriptCount: array.length,
+    });
+
     if (scriptType === SCRIPT_TYPES.SCOPED) {
         await saveScriptsByType(array, SCRIPT_TYPES.SCOPED);
         allowScopedScripts(characters?.[this_chid]);
@@ -609,6 +645,16 @@ async function saveRegexScript(regexScript, existingScriptIndex, scriptType, sav
         await loadRegexScripts();
         await requestRegexChatReload();
     }
+
+    console.info('[Regex] saveRegexScript completed', {
+        scriptType: scriptTypeLabel,
+        saveSettings,
+        chid: this_chid ?? null,
+        scopedAllowed: isScopedScriptsAllowed(characters?.[this_chid]),
+        scopedCount: getScriptsByType(SCRIPT_TYPES.SCOPED).length,
+        globalCount: getScriptsByType(SCRIPT_TYPES.GLOBAL).length,
+        presetCount: getScriptsByType(SCRIPT_TYPES.PRESET).length,
+    });
 
     const debuggerPopup = $('#regex_debugger_popup');
     if (debuggerPopup.length) {
@@ -676,6 +722,11 @@ async function moveRegexScript(script, toType, fromType = null, saveSettings = t
 async function syncRegexEditorState(requestId) {
     if (!selected_group && this_chid !== undefined) {
         // Android/app starts from shallow character stubs, so scoped regexes need a hydrated card before render.
+        console.debug('[Regex] Hydrating scoped regex character state before render', {
+            requestId,
+            chid: this_chid,
+            avatar: characters?.[this_chid]?.avatar || null,
+        });
         await unshallowCharacter(this_chid);
         if (requestId !== regexScriptsRenderRequestId) {
             return false;
@@ -842,15 +893,33 @@ async function loadRegexScripts() {
         $(container).append(scriptHtml);
     }
 
-    getScriptsByType(SCRIPT_TYPES.GLOBAL).forEach((script, index) => renderScript('#saved_regex_scripts', script, SCRIPT_TYPES.GLOBAL, index));
-    getScriptsByType(SCRIPT_TYPES.SCOPED).forEach((script, index) => renderScript('#saved_scoped_scripts', script, SCRIPT_TYPES.SCOPED, index));
-    getScriptsByType(SCRIPT_TYPES.PRESET).forEach((script, index) => renderScript('#saved_preset_scripts', script, SCRIPT_TYPES.PRESET, index));
-    getRuntimeRegexScripts().forEach((script, index) => renderScript('#saved_plugin_scripts', script, SCRIPT_TYPE_UNKNOWN, index, { readOnly: true }));
+    const globalScripts = getScriptsByType(SCRIPT_TYPES.GLOBAL);
+    const scopedScripts = getScriptsByType(SCRIPT_TYPES.SCOPED);
+    const presetScripts = getScriptsByType(SCRIPT_TYPES.PRESET);
+    const runtimeScripts = getRuntimeRegexScripts();
+
+    globalScripts.forEach((script, index) => renderScript('#saved_regex_scripts', script, SCRIPT_TYPES.GLOBAL, index));
+    scopedScripts.forEach((script, index) => renderScript('#saved_scoped_scripts', script, SCRIPT_TYPES.SCOPED, index));
+    presetScripts.forEach((script, index) => renderScript('#saved_preset_scripts', script, SCRIPT_TYPES.PRESET, index));
+    runtimeScripts.forEach((script, index) => renderScript('#saved_plugin_scripts', script, SCRIPT_TYPE_UNKNOWN, index, { readOnly: true }));
 
     $('#regex_scoped_toggle').prop('checked', isScopedScriptsAllowed(characters?.[this_chid]));
     $('#regex_preset_toggle').prop('checked', isPresetScriptsAllowed(getCurrentPresetAPI(), getCurrentPresetName()));
 
     setMoveButtonsVisibility();
+
+    console.info('[Regex] Editor UI loaded', {
+        requestId,
+        chid: this_chid ?? null,
+        avatar: characters?.[this_chid]?.avatar || null,
+        selectedGroup: selected_group ?? null,
+        globalCount: globalScripts.length,
+        scopedCount: scopedScripts.length,
+        presetCount: presetScripts.length,
+        runtimeCount: runtimeScripts.length,
+        scopedAllowed: isScopedScriptsAllowed(characters?.[this_chid]),
+        presetAllowed: isPresetScriptsAllowed(getCurrentPresetAPI(), getCurrentPresetName()),
+    });
 }
 
 function fillRegexEditorFields(editorHtml, script) {
@@ -905,6 +974,15 @@ async function onReadonlyRegexViewOpenClick(script, displayName = '') {
 async function onRegexEditorOpenClick(existingId, scriptType) {
     const editorHtml = $(await renderExtensionTemplateAsync('regex', 'editor'));
     const array = getScriptsByType(scriptType);
+    const scriptTypeLabel = REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType);
+
+    console.info('[Regex] Editor opened', {
+        existingId: existingId || null,
+        scriptType: scriptTypeLabel,
+        currentScriptCount: array.length,
+        chid: this_chid ?? null,
+        selectedGroup: selected_group ?? null,
+    });
 
     // If an ID exists, fill in all the values
     let existingScriptIndex = -1;
@@ -991,6 +1069,15 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
             minDepth: parseInt(String(editorHtml.find('input[name="min_depth"]').val())),
             maxDepth: parseInt(String(editorHtml.find('input[name="max_depth"]').val())),
         };
+
+        console.info('[Regex] Editor save confirmed', {
+            scriptType: scriptTypeLabel,
+            existingId: existingId || null,
+            existingScriptIndex,
+            chid: this_chid ?? null,
+            selectedGroup: selected_group ?? null,
+            scriptSummary: summarizeRegexScriptForLog(newRegexScript),
+        });
 
         saveRegexScript(newRegexScript, existingScriptIndex, scriptType);
     }
@@ -2126,6 +2213,13 @@ jQuery(async () => {
         } else {
             disallowScopedScripts(character);
         }
+
+        console.info('[Regex] Scoped toggle changed', {
+            isEnable,
+            chid: this_chid ?? null,
+            avatar: character?.avatar || null,
+            scopedCount: getScriptsByType(SCRIPT_TYPES.SCOPED).length,
+        });
 
         saveSettingsDebounced();
         void requestRegexChatReload();
