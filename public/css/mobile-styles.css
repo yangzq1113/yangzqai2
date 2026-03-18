@@ -239,6 +239,12 @@
         width: 100dvw;
     }
 
+    body,
+    #bg1,
+    #bg_custom {
+        background-attachment: scroll !important;
+    }
+
     #bg1,
     #bg_custom {
         height: 100vh !important;
@@ -246,7 +252,7 @@
         width: 100vw !important;
         width: 100dvw !important;
         background-position: center;
-
+        transition: none !important;
     }
 
 
