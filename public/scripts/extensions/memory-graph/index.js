@@ -12235,6 +12235,7 @@ function bindUi() {
         if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
             return;
         }
+        await stopMemoryRuntimeWork();
         const chatKey = getChatKey(context);
         const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
         if (target) {
@@ -12288,6 +12289,7 @@ function bindUi() {
         if (!file) {
             return;
         }
+        await stopMemoryRuntimeWork();
         await ensureMemoryStoreLoaded(context);
         const store = getMemoryStore(context);
         if (!store) {
