@@ -134,6 +134,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     }),
     agentApiPresetName: '',
     agentPresetName: '',
+    includeWorldInfoWithPreset: true,
     agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
     agentFinalStagePrompt: DEFAULT_AGENT_FINAL_STAGE_PROMPT,
     agentMaxRounds: 3,
@@ -316,6 +317,7 @@ function ensureSettings() {
     settings.safeSearch = getProviderSettings(settings, 'ddg').safeSearch;
     settings.agentApiPresetName = String(settings.agentApiPresetName ?? DEFAULT_SETTINGS.agentApiPresetName).trim();
     settings.agentPresetName = String(settings.agentPresetName ?? DEFAULT_SETTINGS.agentPresetName).trim();
+    settings.includeWorldInfoWithPreset = Boolean(settings.includeWorldInfoWithPreset ?? DEFAULT_SETTINGS.includeWorldInfoWithPreset);
     const normalizedAgentSystemPrompt = String(settings.agentSystemPrompt ?? DEFAULT_SETTINGS.agentSystemPrompt).trim();
     settings.agentSystemPrompt = normalizedAgentSystemPrompt || DEFAULT_SETTINGS.agentSystemPrompt;
     const normalizedAgentFinalStagePrompt = String(settings.agentFinalStagePrompt ?? DEFAULT_SETTINGS.agentFinalStagePrompt).trim();
@@ -1336,19 +1338,22 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     const userText = String(userPrompt || '').trim() || 'Use tool calls only.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    const includeWorldInfoWithPreset = settings?.includeWorldInfoWithPreset !== false;
     throwIfAborted(abortSignal, 'Search agent aborted.');
-    let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
-        ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
-        : null;
+    let resolvedRuntimeWorldInfo = includeWorldInfoWithPreset
+        ? ((!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
+            ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
+            : null)
+        : {};
     const resolverMessages = normalizeWorldInfoResolverMessages(worldInfoMessages);
-    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
+    if (includeWorldInfoWithPreset && !resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(resolverMessages, {
             type: String(worldInfoType || 'quiet'),
             fallbackToCurrentChat: false,
             postActivationHook: rewriteDepthWorldInfoToAfter,
         });
         throwIfAborted(abortSignal, 'Search agent aborted.');
-    } else if (resolvedRuntimeWorldInfo) {
+    } else if (includeWorldInfoWithPreset && resolvedRuntimeWorldInfo) {
         resolvedRuntimeWorldInfo = normalizeRuntimeWorldInfo(rewriteDepthWorldInfoToAfter({
             ...resolvedRuntimeWorldInfo,
             worldInfoDepth: Array.isArray(resolvedRuntimeWorldInfo.worldInfoDepth)
@@ -2786,6 +2791,10 @@ function renderSettingsBlock() {
         <select id="search_tools_agent_api_preset_name" class="text_pole"></select>
         <label for="search_tools_agent_preset_name">${escapeHtml(i18n('Agent preset (params + prompt, empty = current)'))}</label>
         <select id="search_tools_agent_preset_name" class="text_pole"></select>
+        <label class="checkbox_label">
+            <input id="search_tools_include_world_info_with_preset" type="checkbox" />
+            ${escapeHtml(i18n('Include world info'))}
+        </label>
         <label for="search_tools_agent_max_rounds">${escapeHtml(i18n('Agent max rounds'))}</label>
         <input id="search_tools_agent_max_rounds" class="text_pole" type="number" min="1" max="8" step="1" />
         <label for="search_tools_tool_call_retry_max">${escapeHtml(i18n('Tool call retry count'))}</label>
@@ -2934,6 +2943,7 @@ function bindSettingsUi() {
     root.find('#search_tools_default_visit_max_chars').val(String(settings.defaultVisitMaxChars));
     root.find('#search_tools_agent_api_preset_name').val(String(settings.agentApiPresetName || ''));
     root.find('#search_tools_agent_preset_name').val(String(settings.agentPresetName || ''));
+    root.find('#search_tools_include_world_info_with_preset').prop('checked', Boolean(settings.includeWorldInfoWithPreset));
     root.find('#search_tools_agent_max_rounds').val(String(settings.agentMaxRounds));
     root.find('#search_tools_tool_call_retry_max').val(String(settings.toolCallRetryMax));
     root.find('#search_tools_lorebook_position').val(String(settings.lorebookPosition));
@@ -2995,6 +3005,10 @@ function bindSettingsUi() {
     root.on('change.searchTools', '#search_tools_agent_preset_name', function () {
         settings.agentPresetName = normalizeWhitespace(jQuery(this).val());
         jQuery(this).val(settings.agentPresetName);
+        saveSettingsDebounced();
+    });
+    root.on('input.searchTools', '#search_tools_include_world_info_with_preset', function () {
+        settings.includeWorldInfoWithPreset = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
     root.on('change.searchTools', '#search_tools_agent_max_rounds', function () {
@@ -3100,6 +3114,7 @@ function registerLocaleData() {
         'Default page excerpt max chars (0 = no truncation)': '默认网页摘录最大字符数（0=不截断）',
         'Agent API preset (Connection profile, empty = current)': 'Agent API 预设（连接配置，留空=当前）',
         'Agent preset (params + prompt, empty = current)': 'Agent 预设（参数+提示词，留空=当前）',
+        'Include world info': '包含世界书信息',
         'Agent max rounds': 'Agent 最大轮数',
         'Tool call retry count': '工具调用重试次数',
         'Injection position': '注入位置',
@@ -3155,6 +3170,7 @@ function registerLocaleData() {
         'Default page excerpt max chars (0 = no truncation)': '預設網頁摘錄最大字元數（0=不截斷）',
         'Agent API preset (Connection profile, empty = current)': 'Agent API 預設（連線設定，留空=目前）',
         'Agent preset (params + prompt, empty = current)': 'Agent 預設（參數+提示詞，留空=目前）',
+        'Include world info': '包含世界書資訊',
         'Agent max rounds': 'Agent 最大輪數',
         'Tool call retry count': '工具呼叫重試次數',
         'Injection position': '注入位置',

@@ -339,6 +339,7 @@ const defaultSettings = {
     recallInjectRole: extension_prompt_roles.SYSTEM,
     recallApiPresetName: '',
     recallPresetName: '',
+    includeWorldInfoWithPreset: true,
     toolCallRetryMax: 2,
     recallMaxIterations: 3,
     recallRouteSystemPrompt: DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
@@ -399,6 +400,7 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回提示词预设（参数+提示词，留空=当前）',
         'Extract API preset (Connection profile, empty = current)': '生成图 API 预设（连接配置，留空=当前）',
         'Extract preset (params + prompt, empty = current)': '生成图提示词预设（参数+提示词，留空=当前）',
+        'Include world info': '包含世界书信息',
         'Exclude latest N assistant turns from memory injection': '记忆注入时排除最近 N 条 Assistant 回复',
         'Recall max iterations': '召回最大轮数',
         'Extract context assistant turns': '生成图时参考最近 Assistant 回复条数',
@@ -684,6 +686,7 @@ function registerLocaleData() {
         'Recall preset (params + prompt, empty = current)': '召回提示詞預設（參數+提示詞，留空=目前）',
         'Extract API preset (Connection profile, empty = current)': '生成圖 API 預設（連線設定，留空=目前）',
         'Extract preset (params + prompt, empty = current)': '生成圖提示詞預設（參數+提示詞，留空=目前）',
+        'Include world info': '包含世界書資訊',
         'Exclude latest N assistant turns from memory injection': '記憶注入時排除最近 N 條 Assistant 回覆',
         'Recall max iterations': '召回最大輪數',
         'Extract context assistant turns': '生成圖時參考最近 Assistant 回覆條數',
@@ -1197,6 +1200,7 @@ function ensureSettings() {
         0,
         Math.min(200, Math.floor(Number.isFinite(llmVisibleRecentMessagesRaw) ? llmVisibleRecentMessagesRaw : defaultSettings.llmVisibleRecentMessages)),
     );
+    extension_settings[MODULE_NAME].includeWorldInfoWithPreset = extension_settings[MODULE_NAME].includeWorldInfoWithPreset !== false;
     extension_settings[MODULE_NAME].extractSystemPrompt = String(extension_settings[MODULE_NAME].extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallRouteSystemPrompt = String(extension_settings[MODULE_NAME].recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
     extension_settings[MODULE_NAME].recallFinalizeSystemPrompt = String(extension_settings[MODULE_NAME].recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
@@ -3216,12 +3220,15 @@ async function buildPresetAwareLLMMessages(
     const userText = String(userPrompt || '').trim();
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    const includeWorldInfoWithPreset = settings?.includeWorldInfoWithPreset !== false;
     throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
-    let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
-        ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
-        : null;
+    let resolvedRuntimeWorldInfo = includeWorldInfoWithPreset
+        ? ((!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
+            ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
+            : null)
+        : {};
     const resolverMessages = normalizeWorldInfoResolverMessages(worldInfoMessages);
-    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
+    if (includeWorldInfoWithPreset && !resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(resolverMessages, {
             type: String(worldInfoType || 'quiet'),
             fallbackToCurrentChat: false,
@@ -11915,6 +11922,7 @@ function bindUi() {
     root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
     root.find('#luker_rpg_memory_extract_api_preset').val(String(settings.extractApiPresetName || ''));
     root.find('#luker_rpg_memory_extract_preset').val(String(settings.extractPresetName || ''));
+    root.find('#luker_rpg_memory_include_world_info').prop('checked', Boolean(settings.includeWorldInfoWithPreset));
     root.find('#luker_rpg_memory_update_every').val(String(settings.updateEvery));
     const schemaScopeInfo = getSchemaScopeInfo(context, settings);
     updateSchemaSummary(root, schemaScopeInfo.schema);
@@ -11987,6 +11995,11 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_extract_preset').off('change').on('change', function () {
         settings.extractPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_include_world_info').off('input').on('input', function () {
+        settings.includeWorldInfoWithPreset = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -12498,6 +12511,10 @@ function ensureUi() {
             <select id="luker_rpg_memory_extract_api_preset" class="text_pole"></select>
             <label for="luker_rpg_memory_extract_preset">${escapeHtml(i18n('Extract preset (params + prompt, empty = current)'))}</label>
             <select id="luker_rpg_memory_extract_preset" class="text_pole"></select>
+            <label class="checkbox_label">
+                <input id="luker_rpg_memory_include_world_info" type="checkbox" />
+                ${escapeHtml(i18n('Include world info'))}
+            </label>
 
             <div class="flex-container">
                 <label style="flex:1">${escapeHtml(i18n('Update every N assistant turns'))} <input id="luker_rpg_memory_update_every" class="text_pole" type="number" min="1" step="1" /></label>

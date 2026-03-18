@@ -335,6 +335,7 @@ const defaultSettings = {
     singleAgentUserPromptTemplate: DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE,
     llmNodeApiPresetName: '',
     llmNodePresetName: '',
+    includeWorldInfoWithPreset: true,
     nodeIterationMaxRounds: 3,
     reviewRerunMaxRounds: 2,
     toolCallRetryMax: 2,
@@ -525,6 +526,7 @@ function registerLocaleData() {
         'Plain-text function-call mode': '纯文本函数调用模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 节点 API 预设（连接配置，留空=当前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 节点提示词预设（参数+提示词，留空=当前）',
+        'Include world info': '包含世界书信息',
         'Agent API preset (Connection profile, empty = global orchestration API preset)': 'Agent API 预设（连接配置，留空=使用全局编排 API 预设）',
         'Agent preset (params + prompt, empty = global orchestration preset)': 'Agent 提示词预设（参数+提示词，留空=使用全局编排提示词预设）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 预设（连接配置，留空=当前）',
@@ -790,6 +792,7 @@ function registerLocaleData() {
         'Plain-text function-call mode': '純文字函式呼叫模式',
         'LLM node API preset (Connection profile, empty = current)': 'LLM 節點 API 預設（連線設定，留空=目前）',
         'LLM node preset (params + prompt, empty = current)': 'LLM 節點提示詞預設（參數+提示詞，留空=目前）',
+        'Include world info': '包含世界書資訊',
         'Agent API preset (Connection profile, empty = global orchestration API preset)': 'Agent API 預設（連線設定，留空=使用全域編排 API 預設）',
         'Agent preset (params + prompt, empty = global orchestration preset)': 'Agent 提示詞預設（參數+提示詞，留空=使用全域編排提示詞預設）',
         'AI build API preset (Connection profile, empty = current)': 'AI 生成 API 預設（連線設定，留空=目前）',
@@ -1214,6 +1217,7 @@ function ensureSettings() {
     if (!String(extension_settings[MODULE_NAME].llmNodePresetName || '').trim()) {
         extension_settings[MODULE_NAME].llmNodePresetName = String(extension_settings[MODULE_NAME].llmNodePromptPresetName || '').trim();
     }
+    extension_settings[MODULE_NAME].includeWorldInfoWithPreset = extension_settings[MODULE_NAME].includeWorldInfoWithPreset !== false;
     extension_settings[MODULE_NAME].aiSuggestApiPresetName = sanitizeConnectionProfileName(extension_settings[MODULE_NAME].aiSuggestApiPresetName || '');
     if (!String(extension_settings[MODULE_NAME].aiSuggestPresetName || '').trim()) {
         extension_settings[MODULE_NAME].aiSuggestPresetName = String(extension_settings[MODULE_NAME].aiSuggestPromptPresetName || '').trim();
@@ -3352,12 +3356,15 @@ async function buildPresetAwareMessages(context, settings, systemPrompt, userPro
     const userText = String(userPrompt || '').trim() || 'Use function-call fields only. Do not put JSON strings into summary.';
     const selectedPromptPresetName = String(promptPresetName || '').trim();
     const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    const includeWorldInfoWithPreset = settings?.includeWorldInfoWithPreset !== false;
     throwIfAborted(abortSignal, 'Orchestration aborted.');
-    let resolvedRuntimeWorldInfo = (!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
-        ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
-        : null;
+    let resolvedRuntimeWorldInfo = includeWorldInfoWithPreset
+        ? ((!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
+            ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
+            : null)
+        : {};
     const resolverMessages = normalizeWorldInfoResolverMessages(worldInfoMessages);
-    if (!resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
+    if (includeWorldInfoWithPreset && !resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
         resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(resolverMessages, {
             type: String(worldInfoType || 'quiet'),
             fallbackToCurrentChat: false,
@@ -10617,6 +10624,7 @@ function bindUi() {
     root.find('#luker_orch_single_agent_user_prompt').val(String(settings.singleAgentUserPromptTemplate || DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE));
     root.find('#luker_orch_llm_api_preset').val(String(settings.llmNodeApiPresetName || ''));
     root.find('#luker_orch_llm_preset').val(String(settings.llmNodePresetName || ''));
+    root.find('#luker_orch_include_world_info').prop('checked', Boolean(settings.includeWorldInfoWithPreset));
     root.find('#luker_orch_ai_suggest_api_preset').val(String(settings.aiSuggestApiPresetName || ''));
     root.find('#luker_orch_ai_suggest_preset').val(String(settings.aiSuggestPresetName || ''));
     root.find('#luker_orch_ai_suggest_system_prompt').val(String(settings.aiSuggestSystemPrompt || ''));
@@ -10721,6 +10729,11 @@ function bindUi() {
 
     root.on('change.lukerOrch', '#luker_orch_llm_preset', function () {
         settings.llmNodePresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.on('input.lukerOrch', '#luker_orch_include_world_info', function () {
+        settings.includeWorldInfoWithPreset = Boolean(jQuery(this).prop('checked'));
         saveSettingsDebounced();
     });
 
@@ -12369,6 +12382,10 @@ function ensureUi() {
             <select id="luker_orch_ai_suggest_api_preset" class="text_pole"></select>
             <label for="luker_orch_ai_suggest_preset">${escapeHtml(i18n('AI build preset (params + prompt, empty = current)'))}</label>
             <select id="luker_orch_ai_suggest_preset" class="text_pole"></select>
+            <label class="checkbox_label">
+                <input id="luker_orch_include_world_info" type="checkbox" />
+                ${escapeHtml(i18n('Include world info'))}
+            </label>
             <label for="luker_orch_ai_suggest_system_prompt">${escapeHtml(i18n('AI build system prompt'))}</label>
             <textarea id="luker_orch_ai_suggest_system_prompt" class="text_pole textarea_compact" rows="6"></textarea>
             <div class="flex-container">
