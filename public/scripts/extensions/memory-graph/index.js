@@ -4310,6 +4310,93 @@ function buildDeleteFromDynamicToolCall(call, spec) {
     };
 }
 
+function getSchemaProjectionColumns(spec = null) {
+    return Array.isArray(spec?.tableColumns)
+        ? spec.tableColumns.map(column => String(column || '').trim()).filter(Boolean)
+        : [];
+}
+
+function buildProjectedRowValues(node, spec = null, { includeLegacyFallback = false } = {}) {
+    const rowValues = {};
+    const columns = getSchemaProjectionColumns(spec);
+    if (columns.length > 0) {
+        for (const column of columns) {
+            const value = toDisplayScalar(getTableCellValueFromNode(node, column));
+            if (!value) {
+                continue;
+            }
+            rowValues[column] = value;
+        }
+        return rowValues;
+    }
+    if (!includeLegacyFallback) {
+        return rowValues;
+    }
+    const structured = getStructuredNodeFields(node);
+    for (const [key, rawValue] of Object.entries(structured)) {
+        const normalizedKey = String(key || '').trim();
+        if (!normalizedKey || normalizedKey.toLowerCase() === 'summary') {
+            continue;
+        }
+        const value = toDisplayScalar(rawValue);
+        if (!value) {
+            continue;
+        }
+        rowValues[normalizedKey] = value;
+    }
+    return rowValues;
+}
+
+function buildProjectedKeyValues(node, spec = null) {
+    const keyColumns = Array.from(new Set([
+        ...(
+            Array.isArray(spec?.primaryKeyColumns)
+                ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+                : []
+        ),
+        ...(
+            Array.isArray(spec?.requiredColumns)
+                ? spec.requiredColumns.map(column => String(column || '').trim()).filter(Boolean)
+                : []
+        ),
+    ]));
+    const keyValues = {};
+    for (const column of keyColumns) {
+        const value = toDisplayScalar(getTableCellValueFromNode(node, column));
+        if (!value) {
+            continue;
+        }
+        keyValues[column] = value;
+    }
+    return keyValues;
+}
+
+function buildProjectedRowText(rowValues = {}) {
+    return Object.entries(rowValues)
+        .map(([key, value]) => `${String(key || '').trim()}=${toDisplayScalar(value)}`)
+        .filter(row => !row.endsWith('='))
+        .join('; ');
+}
+
+function buildLlmFriendlyNodeProjection(node, spec = null, options = {}) {
+    const includeLegacyFallback = Boolean(options?.includeLegacyFallback);
+    const rowValues = buildProjectedRowValues(node, spec, { includeLegacyFallback });
+    const keyValues = buildProjectedKeyValues(node, spec);
+    const seqTo = Number.isFinite(Number(node?.seqTo)) ? Number(node.seqTo) : null;
+    return {
+        id: String(node?.id || ''),
+        level: String(node?.level || ''),
+        type: String(node?.type || ''),
+        table_name: String(spec?.tableName || node?.type || '').trim(),
+        title: String(node?.title || ''),
+        summary: getNodeSummary(node),
+        key_values: keyValues,
+        row_values: rowValues,
+        row_text: buildProjectedRowText(rowValues),
+        to_seq: seqTo,
+    };
+}
+
 function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
     const numericLimit = Number(limit);
     const safeLimit = Number.isFinite(numericLimit) && numericLimit > 0
@@ -4321,6 +4408,7 @@ function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
     if (!store || typeof store !== 'object') {
         return [];
     }
+    const scope = String(options?.scope || 'visible').trim().toLowerCase();
     const schemaMap = new Map(
         (Array.isArray(schema) ? schema : [])
             .map(item => [String(item?.id || '').trim().toLowerCase(), item]),
@@ -4335,71 +4423,50 @@ function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
             const seq = Number(node?.seqTo ?? NaN);
             return !Number.isFinite(seq) || seq <= maxSeq;
         });
-    const typeIds = new Set(
-        allSemanticNodes
-            .map(node => String(node?.type || '').trim().toLowerCase())
-            .filter(Boolean),
-    );
-    const visibleNodes = [];
-    const visibleNodeIds = new Set();
-    for (const type of typeIds) {
-        const spec = schemaMap.get(type);
-        const compressionMode = String(spec?.compression?.mode || 'none').trim().toLowerCase();
-        const typeNodes = allSemanticNodes
-            .filter(node => String(node?.type || '').trim().toLowerCase() === type)
-            .sort(compareNodesByTimeline);
-        if (typeNodes.length === 0) {
-            continue;
-        }
-        const selectedTypeNodes = selectVisibleNodesForType(store, typeNodes, type, compressionMode);
-        for (const node of selectedTypeNodes) {
-            if (!node?.id || visibleNodeIds.has(node.id)) {
+    let projectedNodes = allSemanticNodes;
+    if (scope !== 'full') {
+        const typeIds = new Set(
+            allSemanticNodes
+                .map(node => String(node?.type || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
+        const visibleNodes = [];
+        const visibleNodeIds = new Set();
+        for (const type of typeIds) {
+            const spec = schemaMap.get(type);
+            const compressionMode = String(spec?.compression?.mode || 'none').trim().toLowerCase();
+            const typeNodes = allSemanticNodes
+                .filter(node => String(node?.type || '').trim().toLowerCase() === type)
+                .sort(compareNodesByTimeline);
+            if (typeNodes.length === 0) {
                 continue;
             }
-            visibleNodeIds.add(node.id);
-            visibleNodes.push(node);
+            const selectedTypeNodes = selectVisibleNodesForType(store, typeNodes, type, compressionMode);
+            for (const node of selectedTypeNodes) {
+                if (!node?.id || visibleNodeIds.has(node.id)) {
+                    continue;
+                }
+                visibleNodeIds.add(node.id);
+                visibleNodes.push(node);
+            }
         }
+        projectedNodes = visibleNodes;
     }
-    visibleNodes.sort(compareNodesByTimeline);
+    projectedNodes.sort(compareNodesByTimeline);
     const rows = [];
-    for (const node of visibleNodes) {
+    for (const node of projectedNodes) {
         if (rows.length >= safeLimit) {
             break;
         }
         const type = String(node?.type || '').trim().toLowerCase();
         const spec = schemaMap.get(type);
-        const fields = node?.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
-            ? node.fields
-            : {};
-        const keyColumns = Array.from(new Set([
-            ...(
-                Array.isArray(spec?.primaryKeyColumns)
-                    ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
-                    : []
-            ),
-            ...(
-                Array.isArray(spec?.requiredColumns)
-                    ? spec.requiredColumns.map(column => String(column || '').trim()).filter(Boolean)
-                    : []
-            ),
-        ]));
-        const keyValues = {};
-        for (const column of keyColumns) {
-            const value = toDisplayScalar(fields[column]);
-            if (value) {
-                keyValues[column] = value;
-            }
-        }
         rows.push({
-            id: String(node?.id || ''),
+            ...buildLlmFriendlyNodeProjection(node, spec),
             type,
-            title: String(node?.title || ''),
-            to_seq: Number(node?.seqTo ?? 0),
             semantic_depth: Number(node?.semanticDepth ?? node?.metadata?.semantic_depth ?? 0),
             parent_id: String(node?.parentId || ''),
             child_count: Array.isArray(node?.childrenIds) ? node.childrenIds.length : 0,
             editable: Boolean(spec?.editable),
-            key_values: keyValues,
         });
     }
     return rows;
@@ -4456,8 +4523,9 @@ function buildExtractInputXml(requiredTypes, graphData, messages) {
     return [
         '<extract_input>',
         '  <input_guide>Below are the extraction inputs. graph_data is the current semantic memory graph state for extraction.</input_guide>',
-        '  <input_guide>Visibility policy matches core injection for hierarchical types: when parent exists, expose parent instead of child leaf to avoid context explosion.</input_guide>',
-        '  <input_guide>Non-hierarchical types are exposed as full semantic nodes.</input_guide>',
+        '  <input_guide>graph_data is a full schema-aware projection of the current semantic graph for extraction.</input_guide>',
+        '  <input_guide>Each graph_data.nodes row contains key_values (identity keys), row_values (schema columns), and row_text (compact human-readable row rendering).</input_guide>',
+        '  <input_guide>graph_data.edges contains the currently projected semantic relations between nodes.</input_guide>',
         '  <input_guide>If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
         '  <input_guide>required_types are hard-required types for this batch.</input_guide>',
         '  <input_guide>dialogue_batch is the current source dialogue to extract from.</input_guide>',
@@ -4551,7 +4619,19 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
     const rebuildCreateOnly = Boolean(options?.rebuildCreateOnly);
     const graphNodes = rebuildCreateOnly
         ? []
-        : buildGraphNodeHints(store, schema, 0, { maxSeq: extractionMaxSeq });
+        : buildGraphNodeHints(store, schema, 0, { maxSeq: extractionMaxSeq, scope: 'full' });
+    const graphNodeIds = new Set(graphNodes.map(node => String(node?.id || '')).filter(Boolean));
+    const graphEdges = rebuildCreateOnly
+        ? []
+        : buildProjectedEdges(store, {
+            visibleNodeIds: graphNodeIds,
+            excludeInternal: false,
+        }).map(edge => ({
+            from: String(edge?.from || ''),
+            to: String(edge?.to || ''),
+            type: normalizeText(edge?.type || 'related') || 'related',
+            weight: Math.max(1, Number(edge?.weight || 1)),
+        }));
     const semanticNodeTotal = rebuildCreateOnly
         ? 0
         : listNodesByLevel(store, LEVEL.SEMANTIC)
@@ -4570,23 +4650,27 @@ async function extractNodesWithLLM(context, store, settings, schema, messageBatc
             initialized: false,
             editable_type_ids: [],
             projection_policy: {
-                hierarchical_types: 'core_like_parent_preferred',
+                hierarchical_types: 'full',
                 non_hierarchical_types: 'full',
             },
+            graph_scope: 'full',
             semantic_node_total: 0,
             visible_node_count: 0,
             nodes: [],
+            edges: [],
         }
         : {
             initialized: graphNodes.length > 0,
             editable_type_ids: Array.from(editableTypeSet.values()),
             projection_policy: {
-                hierarchical_types: 'core_like_parent_preferred',
+                hierarchical_types: 'full',
                 non_hierarchical_types: 'full',
             },
+            graph_scope: 'full',
             semantic_node_total: semanticNodeTotal,
             visible_node_count: graphNodes.length,
             nodes: graphNodes,
+            edges: graphEdges,
         };
     const promptMessages = await buildPresetAwareLLMMessages(context, settings, {
         api: requestApi,
@@ -5761,31 +5845,22 @@ async function runExtractionForStore(context, store, {
     return extractedAny;
 }
 
-function formatNodeBrief(node, extra = {}) {
+function formatNodeBrief(node, settings = null, context = null, extra = {}) {
+    const spec = settings ? getSemanticTypeSpec(settings, node?.type, context) : null;
     return {
-        id: node.id,
-        level: node.level,
-        type: node.type,
-        title: node.title,
-        summary: getNodeSummary(node),
-        child_count: Array.isArray(node.childrenIds) ? node.childrenIds.length : 0,
-        to_seq: node.seqTo ?? null,
+        ...buildLlmFriendlyNodeProjection(node, spec),
+        child_count: Array.isArray(node?.childrenIds) ? node.childrenIds.length : 0,
         ...extra,
     };
 }
 
-function formatNodeDetail(node, extra = {}) {
+function formatNodeDetail(node, settings = null, context = null, extra = {}) {
+    const spec = settings ? getSemanticTypeSpec(settings, node?.type, context) : null;
     return {
-        id: node.id,
-        level: node.level,
-        type: node.type,
-        title: node.title,
-        summary: getNodeSummary(node),
-        fields: node.fields || {},
-        semantic_depth: Number(node.semanticDepth || 0),
-        semantic_rollup: Boolean(node.semanticRollup),
-        children: Array.isArray(node.childrenIds) ? node.childrenIds : [],
-        to_seq: node.seqTo ?? null,
+        ...buildLlmFriendlyNodeProjection(node, spec),
+        semantic_depth: Number(node?.semanticDepth || 0),
+        semantic_rollup: Boolean(node?.semanticRollup),
+        children: Array.isArray(node?.childrenIds) ? node.childrenIds : [],
         ...extra,
     };
 }
@@ -6231,11 +6306,10 @@ async function chooseRecallRoute(context, settings, recallState) {
         };
     }
     const candidateRows = (recallState.candidates || []).map(node => {
-        const row = formatNodeBrief(node, {
+        const row = formatNodeBrief(node, settings, context, {
             exposure: getNodeRecallExposure(settings, node, context),
             edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 8 }),
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
-            fields: node?.fields && typeof node.fields === 'object' ? node.fields : {},
         });
         return row;
     });
@@ -6440,7 +6514,7 @@ async function chooseFocusNodes(context, settings, recallState) {
         };
     }
     const detailRows = (recallState.candidates || []).map(node => {
-        const row = formatNodeDetail(node, {
+        const row = formatNodeDetail(node, settings, context, {
             exposure: getNodeRecallExposure(settings, node, context),
             edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 12 }),
             always_inject: alwaysInjectIds.includes(String(node?.id || '')),
