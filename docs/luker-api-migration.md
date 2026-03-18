@@ -217,6 +217,8 @@ buildPresetAwarePromptMessages({
   - `worldInfoDepth: Array<{ depth: number, role: 'system'|'user'|'assistant'|number, entries: string[] }>`
   - `outletEntries: object`
   - `worldInfoExamples: any[]`
+- If `runtimeWorldInfo` is omitted or `null`, Luker falls back to the currently active world-info prompt fields when composing preset-aware plugin messages.
+- Pass `runtimeWorldInfo: {}` to explicitly suppress that fallback and build a preset-aware request with no world-info content.
 - Throws when prompt layout cannot produce a valid plugin message sequence.
 
 ```ts
