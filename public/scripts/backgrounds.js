@@ -1098,10 +1098,17 @@ const debouncedOnBackgroundFilterInput = debounce(onBackgroundFilterInput, debou
 
 /**
  * Gets the active background tab source.
- * @returns {BG_SOURCES} Active background tab source
+ * Returns null until the tabs widget has been initialized.
+ * @returns {BG_SOURCES|null} Active background tab source
  */
 export function getActiveBackgroundTab() {
-    return $('#bg_tabs').tabs('option', 'active');
+    const tabs = $('#bg_tabs');
+
+    if (!tabs.length || !tabs.tabs('instance')) {
+        return null;
+    }
+
+    return tabs.tabs('option', 'active');
 }
 
 export function initBackgrounds() {
