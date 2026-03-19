@@ -7658,17 +7658,8 @@ function alignStoreCoverageToChat(store, context, settings = null) {
     const effectiveSettings = settings || getEffectiveSettings(context, getSettings());
     const frames = buildPlayableFramesFromContext(context);
     const latestSeq = getExtractableLatestSeq(frames.length, effectiveSettings);
-    const covered = getSemanticCoverageSeq(store);
-    let changed = false;
-    if (covered > latestSeq) {
-        truncateStoreFromSeq(store, latestSeq + 1, getChatKey(context));
-        changed = true;
-    }
-    const normalizedCovered = Math.min(latestSeq, getSemanticCoverageSeq(store));
-    store.appliedSeqTo = normalizedCovered;
-    store.seqCounter = normalizedCovered;
     updateStoreSourceState(store, context);
-    return { changed, latestSeq };
+    return { changed: false, latestSeq };
 }
 
 async function ensureStoreSyncedWithChat(context, targetHint = null) {
@@ -7681,35 +7672,7 @@ async function ensureStoreSyncedWithChat(context, targetHint = null) {
     if (!target) {
         return store;
     }
-    const chatKey = getChatKey(context, target);
-    const syncState = getStoreSourceSyncState(store, context);
-    let trimmedForSourceDecrease = false;
-    let trimmedForLatestSeq = false;
-    if (syncState.requiresFullRebuild) {
-        const trimResult = trimPersistedOpLogFromSeq(chatKey, Number(syncState.currentMessageCount || 0) + 1);
-        if (trimResult.changed) {
-            trimmedForSourceDecrease = true;
-            store = trimResult.store;
-            store.lastRecallTrace = [];
-            store.lastRecallProjection = null;
-        }
-    }
-    const settings = getEffectiveSettings(context, getSettings());
-    const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
-    if (store.loggedSeqTo > latestSeq) {
-        const trimResult = trimPersistedOpLogFromSeq(chatKey, latestSeq + 1);
-        if (trimResult.changed) {
-            trimmedForLatestSeq = true;
-            store = trimResult.store;
-            store.lastRecallTrace = [];
-            store.lastRecallProjection = null;
-        }
-    }
-    const previousSourceMessageCount = Number(store.sourceMessageCount || 0);
     updateStoreSourceState(store, context);
-    if (trimmedForSourceDecrease || trimmedForLatestSeq || previousSourceMessageCount !== Number(store.sourceMessageCount || 0)) {
-        await persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection: true });
-    }
     return store;
 }
 
