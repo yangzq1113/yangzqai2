@@ -44,6 +44,125 @@ function summarizeRegexScriptForLog(script) {
 }
 
 /**
+ * @param {unknown} script
+ * @returns {script is RegexScript}
+ */
+function isRegexScriptRecord(script) {
+    return Boolean(script) && typeof script === 'object' && !Array.isArray(script);
+}
+
+/**
+ * @param {SCRIPT_TYPES} scriptType
+ * @param {{ readOnly?: boolean }} [options]
+ * @returns {string}
+ */
+function getRegexScriptSourceLabel(scriptType, { readOnly = false } = {}) {
+    if (readOnly) {
+        return 'runtime';
+    }
+
+    switch (scriptType) {
+        case SCRIPT_TYPES.GLOBAL:
+            return 'global';
+        case SCRIPT_TYPES.SCOPED:
+            return 'scoped';
+        case SCRIPT_TYPES.PRESET:
+            return 'preset';
+        default:
+            return String(scriptType);
+    }
+}
+
+/**
+ * @param {SCRIPT_TYPES} scriptType
+ * @param {{ readOnly?: boolean }} [options]
+ * @returns {string}
+ */
+function getInvalidRegexScriptsToastMessage(scriptType, { readOnly = false } = {}) {
+    if (readOnly) {
+        return t`A plugin provided invalid regex entries. They were skipped in Regex Editor. Check the browser console for details.`;
+    }
+
+    switch (scriptType) {
+        case SCRIPT_TYPES.GLOBAL:
+            return t`Global regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.`;
+        case SCRIPT_TYPES.SCOPED:
+            return t`Character-scoped regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.`;
+        case SCRIPT_TYPES.PRESET:
+            return t`Preset regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.`;
+        default:
+            return t`Some regex scripts were invalid and could not be shown in Regex Editor. Check the browser console for details.`;
+    }
+}
+
+/**
+ * @param {unknown} value
+ * @param {number} index
+ * @returns {object}
+ */
+function summarizeInvalidRegexEntry(value, index) {
+    if (value === null) {
+        return { index, type: 'null' };
+    }
+
+    if (Array.isArray(value)) {
+        return { index, type: 'array', length: value.length };
+    }
+
+    return {
+        index,
+        type: typeof value,
+        value: typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+            ? value
+            : null,
+    };
+}
+
+/**
+ * Removes invalid entries from a script list before Regex Editor touches them.
+ * @param {RegexScript[] | unknown} scripts
+ * @param {SCRIPT_TYPES} scriptType
+ * @param {{ readOnly?: boolean, issues?: Set<string> }} [options]
+ * @returns {Promise<RegexScript[]>}
+ */
+async function sanitizeRegexScriptsForEditor(scripts, scriptType, { readOnly = false, issues = new Set() } = {}) {
+    if (!Array.isArray(scripts)) {
+        return [];
+    }
+
+    const validScripts = [];
+    const invalidEntries = [];
+
+    scripts.forEach((script, index) => {
+        if (isRegexScriptRecord(script)) {
+            validScripts.push(script);
+            return;
+        }
+
+        invalidEntries.push(summarizeInvalidRegexEntry(script, index));
+    });
+
+    if (!invalidEntries.length) {
+        return scripts;
+    }
+
+    const source = getRegexScriptSourceLabel(scriptType, { readOnly });
+    console.error('[Regex] Invalid scripts were skipped while rendering Regex Editor', {
+        source,
+        invalidCount: invalidEntries.length,
+        invalidEntries,
+    });
+
+    issues.add(getInvalidRegexScriptsToastMessage(scriptType, { readOnly }));
+
+    if (!readOnly) {
+        await saveScriptsByType(validScripts, scriptType);
+    }
+
+    return validScripts;
+}
+
+/**
  * @typedef {import('../../char-data.js').RegexScriptData} RegexScript
  */
 
@@ -427,7 +546,7 @@ class RegexPresetManager {
             return null;
         }
 
-        return list.filter(x => !x.disabled).map(s => ({ id: s.id }));
+        return list.filter(isRegexScriptRecord).filter(x => !x.disabled).map(s => ({ id: s.id }));
     }
 
     /**
@@ -893,10 +1012,18 @@ async function loadRegexScripts() {
         $(container).append(scriptHtml);
     }
 
-    const globalScripts = getScriptsByType(SCRIPT_TYPES.GLOBAL);
-    const scopedScripts = getScriptsByType(SCRIPT_TYPES.SCOPED);
-    const presetScripts = getScriptsByType(SCRIPT_TYPES.PRESET);
-    const runtimeScripts = getRuntimeRegexScripts();
+    const renderIssues = new Set();
+    const globalScripts = await sanitizeRegexScriptsForEditor(getScriptsByType(SCRIPT_TYPES.GLOBAL), SCRIPT_TYPES.GLOBAL, { issues: renderIssues });
+    const scopedScripts = await sanitizeRegexScriptsForEditor(getScriptsByType(SCRIPT_TYPES.SCOPED), SCRIPT_TYPES.SCOPED, { issues: renderIssues });
+    const presetScripts = await sanitizeRegexScriptsForEditor(getScriptsByType(SCRIPT_TYPES.PRESET), SCRIPT_TYPES.PRESET, { issues: renderIssues });
+    const runtimeScripts = await sanitizeRegexScriptsForEditor(getRuntimeRegexScripts(), SCRIPT_TYPE_UNKNOWN, { readOnly: true, issues: renderIssues });
+
+    if (renderIssues.size) {
+        toastr.error(Array.from(renderIssues).join('<br>'), t`Regex script error`, {
+            escapeHtml: false,
+            timeOut: 10000,
+        });
+    }
 
     globalScripts.forEach((script, index) => renderScript('#saved_regex_scripts', script, SCRIPT_TYPES.GLOBAL, index));
     scopedScripts.forEach((script, index) => renderScript('#saved_scoped_scripts', script, SCRIPT_TYPES.SCOPED, index));

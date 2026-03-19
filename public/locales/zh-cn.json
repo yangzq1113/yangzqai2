@@ -4587,5 +4587,11 @@
     "Inject an XML tool-calling protocol into the prompt instead of relying on native tool-call response fields.": "将 XML 工具调用协议注入提示词，而不是依赖原生工具调用响应字段。",
     "Retry malformed plain-text tool calls": "重试格式错误的纯文本工具调用",
     "If the model emits an invalid XML tool call or schema-mismatched arguments, send the error details back once more and ask it to correct the payload.": "如果模型输出了无效的 XML 工具调用或与 schema 不匹配的参数，则将错误详情回传一次并要求它修正载荷。",
-    "Plain-text retry attempts": "纯文本重试次数"
+    "Plain-text retry attempts": "纯文本重试次数",
+    "A plugin provided invalid regex entries. They were skipped in Regex Editor. Check the browser console for details.": "某个插件提供了无效的正则条目。Regex 编辑器已跳过这些条目。详情请查看浏览器控制台。",
+    "Global regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.": "全局正则条目包含无效数据。无效条目已在打开 Regex 编辑器前移除。详情请查看浏览器控制台。",
+    "Character-scoped regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.": "角色作用域正则条目包含无效数据。无效条目已在打开 Regex 编辑器前移除。详情请查看浏览器控制台。",
+    "Preset regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.": "预设正则条目包含无效数据。无效条目已在打开 Regex 编辑器前移除。详情请查看浏览器控制台。",
+    "Some regex scripts were invalid and could not be shown in Regex Editor. Check the browser console for details.": "部分正则脚本无效，无法在 Regex 编辑器中显示。详情请查看浏览器控制台。",
+    "Regex script error": "正则脚本错误"
 }
