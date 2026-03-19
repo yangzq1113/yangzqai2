@@ -7956,8 +7956,12 @@ export function stopGeneration() {
     }
     if (abortController) {
         abortController.abort('Clicked stop button');
-        hideStopButton();
         stopped = true;
+    }
+    if (stopped) {
+        // Release the UI lock immediately after a user-driven stop. If the aborted request never
+        // settles cleanly, waiting for Generate() cleanup leaves both send and stop controls hidden.
+        forceUnblockGenerationUi();
     }
     eventSource.emit(event_types.GENERATION_STOPPED);
     return stopped;
@@ -8041,6 +8045,13 @@ function unblockGeneration(type) {
     }
 
     is_send_press = false;
+    activateSendButtons();
+    setGenerationProgress(0);
+    flushEphemeralStoppingStrings();
+    flushWIInjections();
+}
+
+function forceUnblockGenerationUi() {
     activateSendButtons();
     setGenerationProgress(0);
     flushEphemeralStoppingStrings();
