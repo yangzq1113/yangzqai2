@@ -944,7 +944,7 @@ For generation requests, send the full `messages` array in the request body.
 
 ### Connection profile resolution (recommended for plugins)
 
-If your plugin supports selecting a Connection Manager profile, do not manually map profile fields (`api`, `model`, `api-url`, `proxy`, `secret-id`, `function-calling-plain-text`) to request payload keys.
+If your plugin supports selecting a Connection Manager profile, do not manually map profile fields (`api`, `model`, `api-url`, `proxy`, `secret-id`, `function-calling-plain-text`, `function-calling-plain-text-error-retry`, `function-calling-plain-text-error-retry-max-attempts`) to request payload keys.
 
 Use shared resolver:
 

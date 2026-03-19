@@ -135,6 +135,15 @@ function parseProfileBoolean(value) {
     return null;
 }
 
+function parseProfileInteger(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return null;
+    }
+
+    return Math.min(Math.max(Math.round(numeric), 1), 10);
+}
+
 function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
     if (!profile) {
         return null;
@@ -173,6 +182,20 @@ function buildApiSettingsOverrideFromProfile(profile, fallbackSource = '') {
         const plainTextFunctionCalling = parseProfileBoolean(profile['function-calling-plain-text']);
         if (plainTextFunctionCalling !== null) {
             overrides.function_calling_plain_text = plainTextFunctionCalling;
+        }
+    }
+
+    if (Object.hasOwn(profile, 'function-calling-plain-text-error-retry')) {
+        const plainTextFunctionCallingErrorRetry = parseProfileBoolean(profile['function-calling-plain-text-error-retry']);
+        if (plainTextFunctionCallingErrorRetry !== null) {
+            overrides.function_calling_plain_text_error_retry = plainTextFunctionCallingErrorRetry;
+        }
+    }
+
+    if (Object.hasOwn(profile, 'function-calling-plain-text-error-retry-max-attempts')) {
+        const plainTextFunctionCallingErrorRetryMaxAttempts = parseProfileInteger(profile['function-calling-plain-text-error-retry-max-attempts']);
+        if (plainTextFunctionCallingErrorRetryMaxAttempts !== null) {
+            overrides.function_calling_plain_text_error_retry_max_attempts = plainTextFunctionCallingErrorRetryMaxAttempts;
         }
     }
 

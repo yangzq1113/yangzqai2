@@ -7,6 +7,36 @@ import { textgen_types, textgenerationwebui_settings } from '../textgen-settings
 import { getTokenCountAsync } from '../tokenizers.js';
 import { createThumbnail, isValidUrl } from '../utils.js';
 
+function parseProfileBoolean(value) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+        return true;
+    }
+
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+        return false;
+    }
+
+    return null;
+}
+
+function parseProfileInteger(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+        return null;
+    }
+
+    return Math.min(Math.max(Math.round(numeric), 1), 10);
+}
+
 /**
  * Generates a caption for an image using a multimodal model.
  * @param {string} base64Img Base64 encoded image
@@ -423,9 +453,9 @@ export class ConnectionManagerRequestService {
                     }
 
                     const proxyPreset = proxies.find((p) => p.name === profile.proxy);
-                    const plainTextFunctionCallingRaw = String(profile['function-calling-plain-text'] ?? '').trim().toLowerCase();
-                    const shouldOverridePlainTextFunctionCalling = plainTextFunctionCallingRaw.length > 0;
-                    const plainTextFunctionCalling = ['true', '1', 'yes', 'on'].includes(plainTextFunctionCallingRaw);
+                    const plainTextFunctionCalling = parseProfileBoolean(profile['function-calling-plain-text']);
+                    const plainTextFunctionCallingErrorRetry = parseProfileBoolean(profile['function-calling-plain-text-error-retry']);
+                    const plainTextFunctionCallingErrorRetryMaxAttempts = parseProfileInteger(profile['function-calling-plain-text-error-retry-max-attempts']);
 
                     const messages = Array.isArray(prompt) ? prompt : [{ role: 'user', content: prompt }];
                     return await context.ChatCompletionService.processRequest({
@@ -440,7 +470,9 @@ export class ConnectionManagerRequestService {
                         reverse_proxy: proxyPreset?.url,
                         proxy_password: proxyPreset?.password,
                         custom_prompt_post_processing: profile['prompt-post-processing'],
-                        ...(shouldOverridePlainTextFunctionCalling ? { function_calling_plain_text: plainTextFunctionCalling } : {}),
+                        ...(plainTextFunctionCalling !== null ? { function_calling_plain_text: plainTextFunctionCalling } : {}),
+                        ...(plainTextFunctionCallingErrorRetry !== null ? { function_calling_plain_text_error_retry: plainTextFunctionCallingErrorRetry } : {}),
+                        ...(plainTextFunctionCallingErrorRetryMaxAttempts !== null ? { function_calling_plain_text_error_retry_max_attempts: plainTextFunctionCallingErrorRetryMaxAttempts } : {}),
                         secret_id: profile['secret-id'],
                         ...overridePayload,
                     }, {
