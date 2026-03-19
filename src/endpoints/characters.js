@@ -1210,7 +1210,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
     const oldAvatarName = request.body.avatar_url;
     const newName = sanitize(request.body.new_name);
     const oldInternalName = path.parse(request.body.avatar_url).name;
-    const newInternalName = getPngName(newName, request.user.directories);
+    const newInternalName = getPngName(newName, request.user.directories, { excludeInternalName: oldInternalName });
     const newAvatarName = `${newInternalName}.png`;
 
     const oldAvatarPath = path.join(request.user.directories.characters, oldAvatarName);
@@ -1737,12 +1737,27 @@ router.post('/chats', validateAvatarUrlMiddleware, async function (request, resp
  * Gets the name for the uploaded PNG file.
  * @param {string} file File name
  * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {{ excludeInternalName?: string }} [options] Options
  * @returns {string} - The name for the uploaded PNG file
  */
-function getPngName(file, directories) {
+function getPngName(file, directories, options = {}) {
+    const excludedName = String(options.excludeInternalName || '').trim();
+    const internalNameExists = (name) => {
+        if (!name) {
+            return false;
+        }
+        if (excludedName && name === excludedName) {
+            return false;
+        }
+
+        const avatarPath = path.join(directories.characters, `${name}.png`);
+        const chatsPath = path.join(directories.chats, name);
+        return fs.existsSync(avatarPath) || fs.existsSync(chatsPath);
+    };
+
     let i = 1;
     const baseName = file;
-    while (fs.existsSync(path.join(directories.characters, `${file}.png`))) {
+    while (internalNameExists(file)) {
         file = baseName + i;
         i++;
     }
@@ -1878,29 +1893,23 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
             console.error('file for dupe not found', filename);
             return response.sendStatus(404);
         }
-        let suffix = 1;
-        let newFilename = filename;
-
-        // If filename ends with a _number, increment the number
         const nameParts = path.basename(filename, path.extname(filename)).split('_');
         const lastPart = nameParts[nameParts.length - 1];
+        const ext = path.extname(filename);
+        const baseName = !isNaN(Number(lastPart)) && nameParts.length > 1
+            ? nameParts.slice(0, -1).join('_')
+            : nameParts.join('_');
+        let suffix = !isNaN(Number(lastPart)) && nameParts.length > 1
+            ? parseInt(lastPart) + 1
+            : 1;
+        let duplicateBaseName = `${baseName}_${suffix}`;
 
-        let baseName;
-
-        if (!isNaN(Number(lastPart)) && nameParts.length > 1) {
-            suffix = parseInt(lastPart) + 1;
-            baseName = nameParts.slice(0, -1).join('_'); // construct baseName without suffix
-        } else {
-            baseName = nameParts.join('_'); // original filename is completely the baseName
-        }
-
-        newFilename = path.join(request.user.directories.characters, `${baseName}_${suffix}${path.extname(filename)}`);
-
-        while (fs.existsSync(newFilename)) {
-            let suffixStr = '_' + suffix;
-            newFilename = path.join(request.user.directories.characters, `${baseName}${suffixStr}${path.extname(filename)}`);
+        while (getPngName(duplicateBaseName, request.user.directories) !== duplicateBaseName) {
             suffix++;
+            duplicateBaseName = `${baseName}_${suffix}`;
         }
+
+        const newFilename = path.join(request.user.directories.characters, `${duplicateBaseName}${ext}`);
 
         fs.copyFileSync(filename, newFilename);
         console.info(`${filename} was copied to ${newFilename}`);
