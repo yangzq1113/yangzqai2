@@ -118,6 +118,7 @@ let lazyLoadObserver = null;
 let cachedSystemBackgrounds = [];
 let backgroundsLoaded = false;
 let backgroundsLoadPromise = null;
+let backgroundDrawerObserver = null;
 
 export let background_settings = {
     name: '__transparent.png',
@@ -1111,6 +1112,22 @@ export function getActiveBackgroundTab() {
     return tabs.tabs('option', 'active');
 }
 
+function onBackgroundDrawerStateChange() {
+    const drawer = document.getElementById('Backgrounds');
+
+    if (!(drawer instanceof HTMLElement) || !drawer.classList.contains('openDrawer')) {
+        return;
+    }
+
+    console.info('[Backgrounds] Background drawer opened', {
+        currentChatId: getCurrentChatId?.() || null,
+        chatBackgroundCount: (chat_metadata[LIST_METADATA_KEY] || []).length,
+        sampleBackgrounds: summarizeBackgroundListForLog(chat_metadata[LIST_METADATA_KEY] || []),
+        viewport: getBackgroundViewportInfo(),
+    });
+    void getBackgrounds();
+}
+
 export function initBackgrounds() {
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.FORCE_SET_BACKGROUND, forceSetBackground);
@@ -1215,17 +1232,19 @@ export function initBackgrounds() {
         await onChatChanged();
     });
 
-    $('#backgrounds-drawer-toggle').on('click', function () {
-        if ($('#Backgrounds').hasClass('closedDrawer')) {
-            console.info('[Backgrounds] Background drawer opening', {
-                currentChatId: getCurrentChatId?.() || null,
-                chatBackgroundCount: (chat_metadata[LIST_METADATA_KEY] || []).length,
-                sampleBackgrounds: summarizeBackgroundListForLog(chat_metadata[LIST_METADATA_KEY] || []),
-                viewport: getBackgroundViewportInfo(),
+    if (!backgroundDrawerObserver) {
+        const drawer = document.getElementById('Backgrounds');
+
+        if (drawer instanceof HTMLElement) {
+            backgroundDrawerObserver = new MutationObserver(mutations => {
+                if (mutations.some(mutation => mutation.type === 'attributes' && mutation.attributeName === 'class')) {
+                    onBackgroundDrawerStateChange();
+                }
             });
-            void getBackgrounds();
+            backgroundDrawerObserver.observe(drawer, { attributes: true, attributeFilter: ['class'] });
+            onBackgroundDrawerStateChange();
         }
-    });
+    }
 
     Object.values(BG_TABS).forEach(tabId => {
         setupScrollToTop({
