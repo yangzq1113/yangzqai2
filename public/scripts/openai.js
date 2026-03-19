@@ -202,6 +202,7 @@ let biasCache = undefined;
 export let model_list = [];
 let lastOpenAIReplyPersistedByServer = false;
 let lastOpenAIGenerationId = '';
+let openAIPresetChangeNotificationToken = 0;
 
 const characterBoundPresetState = {
     active: false,
@@ -211,6 +212,22 @@ const characterBoundPresetState = {
     runtimePresetBody: null,
 };
 let lastOpenAIPresetSelectValue = '';
+
+function scheduleOpenAIPresetChangeNotifications(presetName) {
+    const token = ++openAIPresetChangeNotificationToken;
+    setTimeout(async () => {
+        if (token !== openAIPresetChangeNotificationToken) {
+            return;
+        }
+
+        await eventSource.emit(event_types.OAI_PRESET_CHANGED_AFTER);
+        if (token !== openAIPresetChangeNotificationToken) {
+            return;
+        }
+
+        await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'openai', name: presetName });
+    }, 0);
+}
 
 export const chat_completion_sources = {
     OPENAI: 'openai',
@@ -4994,6 +5011,53 @@ function setContinuePostfixControls() {
     $('#continue_postfix_display').text(checkedItemText);
 }
 
+async function syncOpenAIPresetUiAfterApply() {
+    $('#temp_counter_openai').val(Number(oai_settings.temp_openai).toFixed(2));
+    $('#freq_pen_counter_openai').val(Number(oai_settings.freq_pen_openai).toFixed(2));
+    $('#pres_pen_counter_openai').val(Number(oai_settings.pres_pen_openai).toFixed(2));
+    $('#top_p_counter_openai').val(Number(oai_settings.top_p_openai).toFixed(2));
+    $('#top_k_counter_openai').val(Number(oai_settings.top_k_openai).toFixed(0));
+    $('#top_a_counter_openai').val(Number(oai_settings.top_a_openai));
+    $('#min_p_counter_openai').val(Number(oai_settings.min_p_openai));
+    $('#repetition_penalty_counter_openai').val(Number(oai_settings.repetition_penalty_openai));
+    $('#openai_max_context_counter').val(`${oai_settings.openai_max_context}`);
+
+    setNamesBehaviorControls();
+    setContinuePostfixControls();
+    updateFeatureSupportFlags();
+    calculateOpenRouterCost();
+    calculateElectronHubCost();
+    calculateChutesCost();
+
+    if (!CSS.supports('field-sizing', 'content')) {
+        const autoHeightSelectors = [
+            '#send_if_empty_textarea',
+            '#impersonation_prompt_textarea',
+            '#newchat_prompt_textarea',
+            '#newgroupchat_prompt_textarea',
+            '#newexamplechat_prompt_textarea',
+            '#continue_nudge_prompt_textarea',
+            '#wi_format_textarea',
+            '#scenario_format_textarea',
+            '#personality_format_textarea',
+            '#group_nudge_prompt_textarea',
+            '#claude_assistant_prefill',
+            '#claude_assistant_impersonation',
+            '#continue_postifx',
+        ];
+
+        for (const selector of autoHeightSelectors) {
+            const element = $(selector);
+            if (!element.length) {
+                continue;
+            }
+            await resetScrollHeight(element);
+        }
+    }
+
+    $('#openai_logit_bias_preset').trigger('change');
+}
+
 function getCharacterBoundPresetName(character) {
     const raw = character?.data?.extensions?.luker?.chat_completion_preset;
     if (typeof raw === 'string') {
@@ -6083,8 +6147,8 @@ async function onSettingsPresetChange(event) {
 
     migrateChatCompletionSettings(preset);
 
-    const updateInput = (selector, value) => $(selector).val(value).trigger('input', { source: 'preset' });
-    const updateCheckbox = (selector, value) => $(selector).prop('checked', value).trigger('input', { source: 'preset' });
+    const updateInput = (selector, value) => $(selector).val(value);
+    const updateCheckbox = (selector, value) => $(selector).prop('checked', value);
 
     // Allow subscribers to alter the preset before applying deltas
     try {
@@ -6113,20 +6177,23 @@ async function onSettingsPresetChange(event) {
             }
 
             if (preset[key] !== undefined) {
+                oai_settings[setting] = preset[key];
+
+                if (!selector || selector === '#NULL_SELECTOR') {
+                    continue;
+                }
+
                 if (isCheckbox) {
                     updateCheckbox(selector, preset[key]);
                 } else {
                     updateInput(selector, preset[key]);
                 }
-                oai_settings[setting] = preset[key];
             }
         }
 
-        $('#openai_logit_bias_preset').trigger('change');
-
+        await syncOpenAIPresetUiAfterApply();
         saveSettingsDebounced();
-        await eventSource.emit(event_types.OAI_PRESET_CHANGED_AFTER);
-        await eventSource.emit(event_types.PRESET_CHANGED, { apiId: 'openai', name: presetName });
+        scheduleOpenAIPresetChangeNotifications(presetName);
     }
 
     lastOpenAIPresetSelectValue = String($('#settings_preset_openai').val() ?? currentSelectValue);

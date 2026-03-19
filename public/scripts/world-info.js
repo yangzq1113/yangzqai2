@@ -6832,7 +6832,7 @@ async function checkPresetLinkedLorebookOnPresetChange({ apiId = '', name = '' }
 
     const resolvedPayloadName = resolveWorldInfoName(payload.name);
     const existing = resolvedPayloadName ? await loadWorldInfo(resolvedPayloadName) : null;
-    if (existing && buildObjectPatchOperations(existing, payload.data).length === 0) {
+    if (existing && (await buildObjectPatchOperationsAsync(existing, payload.data)).length === 0) {
         activateLinkedLorebookForPreset(resolvedPayloadName);
         return;
     }

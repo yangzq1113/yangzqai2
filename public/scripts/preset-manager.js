@@ -2,7 +2,7 @@ import { Fuse, lodash } from '../lib.js';
 
 import {
     amount_gen,
-    buildObjectPatchOperations,
+    buildObjectPatchOperationsAsync,
     characters,
     eventSource,
     event_types,
@@ -150,7 +150,7 @@ async function managePresetLinkedLorebook(apiId) {
 
     if (payload) {
         const existing = world_names?.includes(payload.name) ? await loadWorldInfo(payload.name) : null;
-        const canImport = !(existing && buildObjectPatchOperations(existing, payload.data).length === 0);
+        const canImport = !(existing && (await buildObjectPatchOperationsAsync(existing, payload.data)).length === 0);
         const header = t`This preset has a linked World/Lorebook.`;
         const body = `${t`Preset`}: <code>${presetName}</code><br>${t`Linked World/Lorebook`}: <code>${payload.name}</code><br><br>${t`Import and activate it now?`}`;
         const action = await Popup.show.confirm(header, body, {
