@@ -611,6 +611,7 @@ Method notes:
 - `isToolName(name)` is the routing helper for splitting search tool calls from your own plugin tool calls.
 - `invoke(call, options)` dispatches one canonical search tool call by `name`.
 - `search(...)` and `visit(...)` are the low-level direct methods if you do not need tool-call routing.
+- `visit(...)` currently requests `/api/search/visit` with `reader: 'jina'` and falls back server-side to direct page fetch when the public `https://r.jina.ai/` reader cannot provide content.
 - `getSettings()` returns normalized runtime settings currently active for the search-tools extension.
 
 Minimal popup loop example:
@@ -887,6 +888,25 @@ This appendix is intentionally partial and focuses on patch-first flows that plu
 ### World info
 
 - `POST /api/worldinfo/patch`
+
+### Search / visit
+
+- `POST /api/search/visit`
+
+Current `/api/search/visit` request-body notes:
+
+- `url: string` is required.
+- `html: boolean` defaults to `true`.
+- `reader?: 'jina'` enables a Jina Reader-first fetch path (`https://r.jina.ai/<url>`) with automatic fallback to the original direct fetch path.
+
+`html` semantics are intentionally narrow:
+
+- `html=true` means “return HTML text”.
+  - In direct-fetch mode, the server requires upstream `content-type` to be HTML and returns the raw HTML body.
+  - In `reader: 'jina'` mode, the server wraps the readable text into a minimal HTML document so existing HTML-oriented callers can keep their parsing flow unchanged.
+- `html=false` does not mean “extract readable text”.
+  - It means “do not enforce HTML; proxy the upstream response bytes as-is”.
+  - This is mainly for low-level callers that want passthrough behavior and should not be treated as a reader/text-extraction flag.
 
 ### Message patch operation format
 

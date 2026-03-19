@@ -322,6 +322,116 @@ function isHtmlLikeContentType(contentType = '') {
     return normalized.includes('text/html') || normalized.includes('application/xhtml+xml');
 }
 
+function escapeHtml(text) {
+    return String(text || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('\'', '&#39;');
+}
+
+function validateVisitUrl(url) {
+    const urlObj = new URL(url);
+
+    if (urlObj.protocol === null || urlObj.host === null) {
+        throw new Error('Invalid URL format');
+    }
+
+    if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+        throw new Error('Invalid protocol');
+    }
+
+    if (urlObj.port !== '') {
+        throw new Error('Invalid port');
+    }
+
+    if (urlObj.hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+        throw new Error('Invalid hostname');
+    }
+
+    return urlObj;
+}
+
+function extractJinaReaderField(text, label, endLabels = []) {
+    const source = String(text || '').replace(/\r\n/g, '\n');
+    const startMarker = `${label}:`;
+    const startIndex = source.indexOf(startMarker);
+
+    if (startIndex === -1) {
+        return '';
+    }
+
+    const valueStart = startIndex + startMarker.length;
+    let valueEnd = source.length;
+
+    for (const endLabel of endLabels) {
+        const endIndex = source.indexOf(`${endLabel}:`, valueStart);
+        if (endIndex !== -1 && endIndex < valueEnd) {
+            valueEnd = endIndex;
+        }
+    }
+
+    return source.slice(valueStart, valueEnd).trim();
+}
+
+function parseJinaReaderPayload(text) {
+    const source = String(text || '').replace(/\r\n/g, '\n').trim();
+    const title = normalizeWhitespace(extractJinaReaderField(source, 'Title', ['URL Source', 'Published Time', 'Warning', 'Markdown Content']));
+    const content = extractJinaReaderField(source, 'Markdown Content').trim() || source;
+    return { title, content };
+}
+
+function renderReaderHtml(title, content) {
+    const normalizedTitle = normalizeWhitespace(title) || 'Visited Page';
+    const normalizedContent = String(content || '').trim();
+
+    return [
+        '<!doctype html>',
+        '<html>',
+        '<head>',
+        '  <meta charset="utf-8" />',
+        `  <title>${escapeHtml(normalizedTitle)}</title>`,
+        '</head>',
+        '<body>',
+        `  <pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(normalizedContent)}</pre>`,
+        '</body>',
+        '</html>',
+    ].join('\n');
+}
+
+async function fetchViaJinaReader(url) {
+    const readerUrl = `https://r.jina.ai/${url}`;
+    const result = await fetch(readerUrl, {
+        headers: {
+            'Accept': 'text/plain, text/markdown;q=0.9, */*;q=0.1',
+            'User-Agent': visitHeaders['User-Agent'],
+        },
+    });
+
+    if (!result.ok) {
+        const bodyText = await result.text().catch(() => '');
+        const bodySummary = summarizeVisitErrorBody(bodyText);
+        const message = bodySummary
+            ? `Jina Reader failed: upstream returned ${result.status} ${result.statusText}. ${bodySummary}`
+            : `Jina Reader failed: upstream returned ${result.status} ${result.statusText}.`;
+        throw new Error(message);
+    }
+
+    const text = await result.text();
+    const parsed = parseJinaReaderPayload(text);
+    const content = String(parsed.content || '').trim();
+
+    if (!content) {
+        throw new Error('Jina Reader returned empty content.');
+    }
+
+    return {
+        title: parsed.title,
+        content,
+    };
+}
+
 /**
  * Extract the transcript of a YouTube video
  * @param {string} videoPageBody HTML of the video page
@@ -879,6 +989,7 @@ router.post('/visit', async (request, response) => {
     try {
         const url = request.body.url;
         const html = Boolean(request.body.html ?? true);
+        const reader = String(request.body.reader || '').trim().toLowerCase();
 
         if (!url) {
             console.error('No url provided for /visit');
@@ -886,27 +997,7 @@ router.post('/visit', async (request, response) => {
         }
 
         try {
-            const urlObj = new URL(url);
-
-            // Reject relative URLs
-            if (urlObj.protocol === null || urlObj.host === null) {
-                throw new Error('Invalid URL format');
-            }
-
-            // Reject non-HTTP URLs
-            if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
-                throw new Error('Invalid protocol');
-            }
-
-            // Reject URLs with a non-standard port
-            if (urlObj.port !== '') {
-                throw new Error('Invalid port');
-            }
-
-            // Reject IP addresses
-            if (urlObj.hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
-                throw new Error('Invalid hostname');
-            }
+            validateVisitUrl(url);
         } catch (error) {
             const reason = summarizeVisitErrorBody(error?.message || '') || 'Invalid URL';
             console.error('Invalid url provided for /visit', url, reason);
@@ -914,6 +1005,22 @@ router.post('/visit', async (request, response) => {
         }
 
         console.info('Visiting web URL', url);
+
+        if (reader === 'jina') {
+            try {
+                const readerResult = await fetchViaJinaReader(url);
+
+                if (html) {
+                    response.setHeader('Content-Type', 'text/html; charset=utf-8');
+                    return response.send(renderReaderHtml(readerResult.title, readerResult.content));
+                }
+
+                response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                return response.send(readerResult.content);
+            } catch (error) {
+                console.warn('Jina Reader request failed, falling back to direct visit', summarizeVisitErrorBody(error?.message || ''));
+            }
+        }
 
         const result = await fetch(url, { headers: visitHeaders });
 

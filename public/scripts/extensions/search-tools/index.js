@@ -1189,7 +1189,7 @@ async function visitWebPage(args = {}, { abortSignal = null } = {}) {
         method: 'POST',
         headers: getRequestHeaders(),
         signal: isAbortSignalLike(abortSignal) ? abortSignal : null,
-        body: JSON.stringify({ url, html: true }),
+        body: JSON.stringify({ url, html: true, reader: 'jina' }),
     });
 
     if (!response.ok) {
