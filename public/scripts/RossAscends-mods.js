@@ -767,12 +767,17 @@ export function initSendTextareaState() {
 
 // ---------------------------------------------------
 
-export function initRossMods() {
+export async function initRossMods() {
     // initial status check
     checkStatusDebounced();
 
+    let pendingAutoloadChat = null;
     if (power_user.auto_load_chat) {
-        RA_autoloadchat();
+        // Wait for chat autoload before APP_READY so the welcome screen
+        // cannot render during the transient "no active chat" startup state.
+        pendingAutoloadChat = RA_autoloadchat().catch((error) => {
+            console.error('Failed to autoload the current chat.', error);
+        });
     }
 
     if (power_user.auto_connect) {
@@ -786,6 +791,10 @@ export function initRossMods() {
 
     $('#api_button').on('click', () => checkStatusDebounced());
     initNavPanelPins();
+
+    if (pendingAutoloadChat) {
+        await pendingAutoloadChat;
+    }
 
 
     //save state of Right nav being open or closed

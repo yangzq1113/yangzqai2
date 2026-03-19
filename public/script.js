@@ -16087,9 +16087,26 @@ jQuery(async function () {
         return message.is_user ? t`User` : t`Assistant`;
     }
 
+    function canMutateCurrentChatToolsMessages() {
+        return Boolean(resolveChatStateTarget());
+    }
+
+    function getCurrentChatToolsReadOnlyText() {
+        return document.querySelector('#chat .welcomePanel')
+            ? t`Welcome screen messages are read-only.`
+            : t`Current chat is read-only.`;
+    }
+
     function getCurrentChatToolsMessagePreview(message) {
         const raw = String(message?.extra?.display_text ?? message?.mes ?? '');
-        return raw.replace(/\s+/g, ' ').trim();
+        if (!raw) {
+            return '';
+        }
+
+        const previewNode = document.createElement('div');
+        previewNode.innerHTML = raw;
+        const text = previewNode.textContent || previewNode.innerText || raw;
+        return text.replace(/\s+/g, ' ').trim();
     }
 
     function truncateCurrentChatToolsPreview(text, maxChars = CURRENT_CHAT_TOOLS_PREVIEW_MAX_CHARS) {
@@ -16154,10 +16171,11 @@ jQuery(async function () {
         const query = String(currentChatToolsQuery.val() ?? '').trim();
         const selectedCount = getCurrentChatToolsSelectedMessageIds().length;
         const totalCount = currentChatToolsMatches.length;
+        const readOnly = !canMutateCurrentChatToolsMessages();
 
         if (totalCount === 0) {
             if (!query && chat.length === 0) {
-                setCurrentChatToolsStatus(t`No messages in current chat.`);
+                setCurrentChatToolsStatus(readOnly ? getCurrentChatToolsReadOnlyText() : t`No messages in current chat.`);
                 return;
             }
             setCurrentChatToolsStatus(t`No messages matched.`);
@@ -16168,7 +16186,7 @@ jQuery(async function () {
         const status = selectedCount > 0
             ? `${t`Match`} ${currentIndex} / ${totalCount} · ${t`Selected`} ${selectedCount}`
             : `${t`Match`} ${currentIndex} / ${totalCount}`;
-        setCurrentChatToolsStatus(status);
+        setCurrentChatToolsStatus(readOnly ? `${status} · ${getCurrentChatToolsReadOnlyText()}` : status);
     }
 
     function toggleCurrentChatToolsButton(button, disabled) {
@@ -16184,17 +16202,19 @@ jQuery(async function () {
         const hasValidExplicitInsertAt = explicitInsertAt === null || Number.isFinite(explicitInsertAt);
         const hasAnchorForInsert = getCurrentChatToolsMessageId() !== null || getCurrentChatToolsSelectedMessageIds().length > 0 || chat.length === 0;
         const canInsert = hasInsertText && hasValidExplicitInsertAt && (explicitInsertAt !== null || hasAnchorForInsert);
+        const canMutate = canMutateCurrentChatToolsMessages();
 
         toggleCurrentChatToolsButton(currentChatToolsPrev, !hasMatches);
         toggleCurrentChatToolsButton(currentChatToolsNext, !hasMatches);
         toggleCurrentChatToolsButton(currentChatToolsSelectAll, !hasMatches);
         toggleCurrentChatToolsButton(currentChatToolsSelectInvert, !hasMatches);
         toggleCurrentChatToolsButton(currentChatToolsSelectClear, getCurrentChatToolsSelectedMessageIds().length === 0);
-        toggleCurrentChatToolsButton(currentChatToolsHide, !hasSelectedOrActive);
-        toggleCurrentChatToolsButton(currentChatToolsUnhide, !hasSelectedOrActive);
-        toggleCurrentChatToolsButton(currentChatToolsDelete, !hasSelectedOrActive);
-        toggleCurrentChatToolsButton(currentChatToolsInsertBefore, !canInsert);
-        toggleCurrentChatToolsButton(currentChatToolsInsertAfter, !canInsert);
+        toggleCurrentChatToolsButton(currentChatToolsHide, !canMutate || !hasSelectedOrActive);
+        toggleCurrentChatToolsButton(currentChatToolsUnhide, !canMutate || !hasSelectedOrActive);
+        toggleCurrentChatToolsButton(currentChatToolsDelete, !canMutate || !hasSelectedOrActive);
+        toggleCurrentChatToolsButton(currentChatToolsDeleteMode, !canMutate || chat.length === 0);
+        toggleCurrentChatToolsButton(currentChatToolsInsertBefore, !canMutate || !canInsert);
+        toggleCurrentChatToolsButton(currentChatToolsInsertAfter, !canMutate || !canInsert);
     }
 
     function collectCurrentChatMatches(query) {
@@ -16389,6 +16409,11 @@ jQuery(async function () {
     }
 
     async function applyActionToCurrentSelection(action) {
+        if (!canMutateCurrentChatToolsMessages()) {
+            toastr.info(getCurrentChatToolsReadOnlyText());
+            return;
+        }
+
         const messageIds = getCurrentChatToolsSelectedMessageIds({ fallbackToActive: true });
         if (!messageIds.length) {
             toastr.info(t`No messages matched.`);
@@ -16467,6 +16492,11 @@ jQuery(async function () {
     }
 
     async function insertCurrentChatMessage(direction) {
+        if (!canMutateCurrentChatToolsMessages()) {
+            toastr.info(getCurrentChatToolsReadOnlyText());
+            return;
+        }
+
         const text = String(currentChatToolsInsertText.val() ?? '').trim();
         if (!text) {
             toastr.warning(t`Message text cannot be empty.`);
