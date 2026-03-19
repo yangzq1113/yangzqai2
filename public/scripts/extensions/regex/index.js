@@ -44,6 +44,34 @@ function summarizeRegexScriptForLog(script) {
 }
 
 /**
+ * @param {JQuery<HTMLElement>} editorHtml
+ * @returns {object | null}
+ */
+function summarizeRegexEditorDomStateForLog(editorHtml) {
+    if (!editorHtml?.length) {
+        return null;
+    }
+
+    return {
+        scriptNameLength: String(editorHtml.find('.regex_script_name').val() || '').length,
+        findRegexLength: String(editorHtml.find('.find_regex').val() || '').length,
+        replaceLength: String(editorHtml.find('.regex_replace_string').val() || '').length,
+        disabled: Boolean(editorHtml.find('input[name="disabled"]').prop('checked')),
+        markdownOnly: Boolean(editorHtml.find('input[name="only_format_display"]').prop('checked')),
+        promptOnly: Boolean(editorHtml.find('input[name="only_format_prompt"]').prop('checked')),
+        pluginOnly: Boolean(editorHtml.find('input[name="only_format_plugin"]').prop('checked')),
+        runOnEdit: Boolean(editorHtml.find('input[name="run_on_edit"]').prop('checked')),
+        minDepthRaw: String(editorHtml.find('input[name="min_depth"]').val() || ''),
+        maxDepthRaw: String(editorHtml.find('input[name="max_depth"]').val() || ''),
+        placement: editorHtml
+            .find('input[name="replace_position"]')
+            .filter(':checked')
+            .map(function () { return String($(this).val()); })
+            .get(),
+    };
+}
+
+/**
  * @param {unknown} script
  * @returns {script is RegexScript}
  */
@@ -1102,6 +1130,18 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
     const editorHtml = $(await renderExtensionTemplateAsync('regex', 'editor'));
     const array = getScriptsByType(scriptType);
     const scriptTypeLabel = REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType);
+    const logEditorState = (event, extra = {}) => {
+        console.info('[Regex] Editor interaction', {
+            event,
+            scriptType: scriptTypeLabel,
+            existingId: existingId || null,
+            existingScriptIndex,
+            chid: this_chid ?? null,
+            selectedGroup: selected_group ?? null,
+            domState: summarizeRegexEditorDomStateForLog(editorHtml),
+            ...extra,
+        });
+    };
 
     console.info('[Regex] Editor opened', {
         existingId: existingId || null,
@@ -1135,6 +1175,13 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
             .find('input[name="replace_position"][value="1"]')
             .prop('checked', true);
     }
+
+    editorHtml.find('input[name="only_format_plugin"]').on('click input change', function (event) {
+        logEditorState('plugin_only_toggled', {
+            eventType: event.type,
+            inputChecked: Boolean($(this).prop('checked')),
+        });
+    });
 
     editorHtml.find('#regex_test_mode_toggle').on('click', function () {
         editorHtml.find('#regex_test_mode').toggleClass('displayNone');
@@ -1172,7 +1219,50 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
     editorHtml.find('input, textarea, select').on('input', updateTestResult);
     updateInfoBlock(editorHtml);
 
-    const popupResult = await callGenericPopup(editorHtml, POPUP_TYPE.CONFIRM, '', { okButton: t`Save`, cancelButton: t`Cancel`, allowVerticalScrolling: true });
+    logEditorState('popup_show_requested');
+
+    let popupResult;
+    try {
+        popupResult = await callGenericPopup(editorHtml, POPUP_TYPE.CONFIRM, '', {
+            okButton: t`Save`,
+            cancelButton: t`Cancel`,
+            allowVerticalScrolling: true,
+            onOpen: (popup) => {
+                logEditorState('popup_opened');
+                popup.okButton?.addEventListener('click', () => {
+                    logEditorState('save_button_clicked');
+                }, { passive: true });
+                popup.cancelButton?.addEventListener('click', () => {
+                    logEditorState('cancel_button_clicked');
+                }, { passive: true });
+            },
+            onClosing: (popup) => {
+                logEditorState('popup_closing_requested', {
+                    popupResult: popup.result ?? null,
+                    popupValue: popup.value ?? null,
+                });
+                return true;
+            },
+            onClose: (popup) => {
+                logEditorState('popup_closed', {
+                    popupResult: popup.result ?? null,
+                    popupValue: popup.value ?? null,
+                });
+            },
+        });
+    } catch (error) {
+        console.error('[Regex] Editor popup failed', {
+            scriptType: scriptTypeLabel,
+            existingId: existingId || null,
+            existingScriptIndex,
+            chid: this_chid ?? null,
+            selectedGroup: selected_group ?? null,
+            domState: summarizeRegexEditorDomStateForLog(editorHtml),
+        }, error);
+        throw error;
+    }
+
+    logEditorState('popup_returned', { popupResult: popupResult ?? null });
     if (popupResult) {
         const newRegexScript = {
             id: existingId ? String(existingId) : uuidv4(),
@@ -1206,8 +1296,20 @@ async function onRegexEditorOpenClick(existingId, scriptType) {
             scriptSummary: summarizeRegexScriptForLog(newRegexScript),
         });
 
-        saveRegexScript(newRegexScript, existingScriptIndex, scriptType);
+        void saveRegexScript(newRegexScript, existingScriptIndex, scriptType).catch(error => {
+            console.error('[Regex] saveRegexScript failed after editor confirm', {
+                scriptType: scriptTypeLabel,
+                existingId: existingId || null,
+                existingScriptIndex,
+                chid: this_chid ?? null,
+                selectedGroup: selected_group ?? null,
+                scriptSummary: summarizeRegexScriptForLog(newRegexScript),
+            }, error);
+        });
+        return;
     }
+
+    logEditorState('save_not_confirmed', { popupResult: popupResult ?? null });
 }
 
 /**
