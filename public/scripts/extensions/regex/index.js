@@ -2401,7 +2401,7 @@ jQuery(async () => {
         // @ts-ignore
         $(selector).sortable({
             delay: getSortableDelay(),
-            handle: '.drag-handle',
+            handle: '.regex-script-handle',
             stop: async function () {
                 const oldScripts = getter();
                 const newScripts = [];

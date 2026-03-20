@@ -11,7 +11,6 @@ import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
 import { t } from './i18n.js';
-import { isMobile } from './RossAscends-mods.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -2383,16 +2382,16 @@ class PromptManager {
             };
             const roleIcon = promptRoles[iconLookup]?.roleIcon || '';
             const roleTitle = promptRoles[iconLookup]?.roleTitle || '';
+            const markerHandleClass = 'prompt-manager-marker-handle';
 
             listItemHtml += `
                 <li class="${prefix}prompt_manager_prompt ${draggableClass} ${enabledClass} ${markerClass} ${importantClass}" data-pm-identifier="${escapeHtml(prompt.identifier)}">
-                    <span class="drag-handle">☰</span>
                     <span class="${prefix}prompt_manager_prompt_name" data-pm-name="${encodedName}">
-                        ${isMarkerPrompt ? '<span class="fa-fw fa-solid fa-thumb-tack" title="Marker"></span>' : ''}
-                        ${isSystemPrompt ? '<span class="fa-fw fa-solid fa-square-poll-horizontal" title="Global Prompt"></span>' : ''}
-                        ${isImportantPrompt ? '<span class="fa-fw fa-solid fa-star" title="Important Prompt"></span>' : ''}
-                        ${isUserPrompt ? '<span class="fa-fw fa-solid fa-asterisk" title="Preset Prompt"></span>' : ''}
-                        ${isInjectionPrompt ? '<span class="fa-fw fa-solid fa-syringe" title="In-Chat Injection"></span>' : ''}
+                        ${isMarkerPrompt ? `<span class="fa-fw fa-solid fa-thumb-tack ${markerHandleClass}" title="Marker"></span>` : ''}
+                        ${isSystemPrompt ? `<span class="fa-fw fa-solid fa-square-poll-horizontal ${markerHandleClass}" title="Global Prompt"></span>` : ''}
+                        ${isImportantPrompt ? `<span class="fa-fw fa-solid fa-star ${markerHandleClass}" title="Important Prompt"></span>` : ''}
+                        ${isUserPrompt ? `<span class="fa-fw fa-solid fa-asterisk ${markerHandleClass}" title="Preset Prompt"></span>` : ''}
+                        ${isInjectionPrompt ? `<span class="fa-fw fa-solid fa-syringe ${markerHandleClass}" title="In-Chat Injection"></span>` : ''}
                         ${this.isPromptInspectionAllowed(prompt) ? `<a title="${encodedName}" class="prompt-manager-inspect-action">${encodedName}</a>` : `<span title="${encodedName}">${encodedName}</span>`}
                         ${pluginExtraBadgeHtml}
                         ${roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : ''}
@@ -2591,7 +2590,7 @@ class PromptManager {
     makeDraggable() {
         $(`#${this.configuration.prefix}prompt_manager_list`).sortable({
             delay: this.configuration.sortableDelay,
-            handle: isMobile() ? '.drag-handle' : null,
+            handle: '.prompt-manager-marker-handle',
             items: `.${this.configuration.prefix}prompt_manager_prompt_draggable`,
             update: (event, ui) => {
                 const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter);

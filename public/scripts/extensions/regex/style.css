@@ -41,7 +41,7 @@
 }
 
 #plugin_scripts_block .regex-script-label .regex_bulk_checkbox,
-#plugin_scripts_block .regex-script-label .drag-handle,
+#plugin_scripts_block .regex-script-label .regex-script-handle,
 #plugin_scripts_block .regex-script-label .regex_script_expand,
 #plugin_scripts_block .regex-script-label .delete_regex,
 #plugin_scripts_block .regex-script-label .disable_regex,
@@ -76,6 +76,13 @@
     padding: 0 5px;
     margin-top: 1px;
     margin-bottom: 1px;
+}
+
+.regex-script-handle {
+    cursor: grab;
+    flex: 0 0 auto;
+    touch-action: none;
+    user-select: none;
 }
 
 .regex-script-label:has(.disable_regex:checked) .regex_script_name {
