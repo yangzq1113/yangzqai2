@@ -4593,5 +4593,15 @@
     "Character-scoped regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.": "角色範圍正則條目包含無效資料。無效條目已在開啟 Regex 編輯器前移除。詳情請查看瀏覽器主控台。",
     "Preset regex entries contained invalid data. Invalid entries were removed before opening Regex Editor. Check the browser console for details.": "預設正則條目包含無效資料。無效條目已在開啟 Regex 編輯器前移除。詳情請查看瀏覽器主控台。",
     "Some regex scripts were invalid and could not be shown in Regex Editor. Check the browser console for details.": "部分正則腳本無效，無法在 Regex 編輯器中顯示。詳情請查看瀏覽器主控台。",
-    "Regex script error": "正則腳本錯誤"
+    "Regex script error": "正則腳本錯誤",
+    "Search loaded logs": "搜尋已載入日誌",
+    "Showing the newest complete log entries that fit within a ${0} character display budget.": "顯示符合 ${0} 字元顯示預算的最新完整日誌條目。",
+    "No logs matched the current filters.": "沒有日誌符合目前的篩選條件。",
+    "No loaded logs matched the current search.": "目前搜尋沒有符合任何已載入日誌。",
+    "Matching logs exceeded the ${0} character display budget. Narrow the filters to inspect them safely.": "符合條件的日誌超出 ${0} 字元的顯示預算。請縮小篩選範圍後再安全檢視。",
+    "Showing ${0} of ${1} matching loaded entries within the ${2} character display budget. ${3} additional matching entries are hidden.": "在 ${2} 字元顯示預算內，目前顯示 ${1} 筆符合條件的已載入日誌中的 ${0} 筆。另有 ${3} 筆符合條件的日誌被隱藏。",
+    "Showing ${0} complete entries within the ${1} character display budget. ${2} additional entries are hidden.": "在 ${1} 字元顯示預算內，目前顯示 ${0} 筆完整日誌。另有 ${2} 筆日誌被隱藏。",
+    "Showing ${0} matching loaded entries within the ${1} character display budget.": "在 ${1} 字元顯示預算內，目前顯示 ${0} 筆符合條件的已載入日誌。",
+    "Showing ${0} complete entries within the ${1} character display budget.": "在 ${1} 字元顯示預算內，目前顯示 ${0} 筆完整日誌。",
+    "Loading logs...": "正在載入日誌..."
 }

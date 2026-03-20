@@ -8,7 +8,7 @@ import {
 import { t } from './i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, callGenericPopup } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
-import { copyText, ensureImageFormatSupported, getBase64Async, humanFileSize } from './utils.js';
+import { copyText, debounce, ensureImageFormatSupported, getBase64Async, humanFileSize } from './utils.js';
 
 /**
  * @type {import('../../src/users.js').UserViewModel} Logged in user
@@ -68,15 +68,26 @@ function normalizeLogQueryOptions(options = {}) {
     };
 }
 
-function buildLogOutputWithinCharBudget(entries, formatter, maxChars = MAX_LOG_VIEW_CHARS) {
+function buildLogOutputWithinCharBudget(entries, formatter, options = {}) {
+    const maxChars = options?.maxChars ?? MAX_LOG_VIEW_CHARS;
     const normalizedMaxChars = Math.max(1, Math.floor(Number(maxChars) || MAX_LOG_VIEW_CHARS));
+    const normalizedSearchTerm = String(options?.searchTerm || '').trim().toLowerCase();
     const lines = [];
     let totalChars = 0;
+    let matchedEntries = 0;
+    let filteredEntries = 0;
     let hiddenEntries = 0;
     let oversizedEntries = 0;
+    let budgetExceeded = false;
 
     for (let index = entries.length - 1; index >= 0; index--) {
         const line = String(formatter(entries[index]) || '');
+        if (normalizedSearchTerm && !line.toLowerCase().includes(normalizedSearchTerm)) {
+            filteredEntries += 1;
+            continue;
+        }
+
+        matchedEntries += 1;
 
         if (line.length > normalizedMaxChars) {
             hiddenEntries += 1;
@@ -85,9 +96,10 @@ function buildLogOutputWithinCharBudget(entries, formatter, maxChars = MAX_LOG_V
         }
 
         const additionalChars = line.length + (lines.length > 0 ? 1 : 0);
-        if (totalChars + additionalChars > normalizedMaxChars) {
-            hiddenEntries += index + 1;
-            break;
+        if (budgetExceeded || totalChars + additionalChars > normalizedMaxChars) {
+            hiddenEntries += 1;
+            budgetExceeded = true;
+            continue;
         }
 
         lines.push(line);
@@ -99,10 +111,13 @@ function buildLogOutputWithinCharBudget(entries, formatter, maxChars = MAX_LOG_V
     return {
         text: lines.join('\n'),
         totalEntries: entries.length,
+        matchedEntries,
+        filteredEntries,
         visibleEntries: lines.length,
         hiddenEntries,
         oversizedEntries,
         totalChars,
+        searchTerm: normalizedSearchTerm,
     };
 }
 
@@ -1312,6 +1327,12 @@ async function openLogsViewer() {
                     <span>${t`Auto refresh`}</span>
                 </label>
             </div>
+            <div class="backupActionRow flex-container flexGap10 marginBot10">
+                <label class="checkbox_label backupRestoreModeLabel logFilterLabel wide100p">
+                    <span>${t`Search`}</span>
+                    <input type="search" class="serverLogsSearch text_pole" placeholder="${t`Search loaded logs`}">
+                </label>
+            </div>
             <textarea class="text_pole serverLogsOutput" rows="20" readonly></textarea>
             <div class="menu_button_note serverLogsNote"></div>
             <div class="menu_button_note serverLogsStatus"></div>
@@ -1324,12 +1345,14 @@ async function openLogsViewer() {
     const startTimeInput = template.find('.serverLogsStartTime');
     const endTimeInput = template.find('.serverLogsEndTime');
     const limitInput = template.find('.serverLogsLimit');
+    const searchInput = template.find('.serverLogsSearch');
     const noteElement = template.find('.serverLogsNote');
     const statusElement = template.find('.serverLogsStatus');
     let latestServerId = 0;
     let latestFrontendId = 0;
     let renderedServerEntries = [];
     let renderedFrontendEntries = [];
+    let currentSearchTerm = '';
     let closed = false;
     let inFlight = false;
     let currentSource = canViewServerLogs ? 'server' : 'frontend';
@@ -1357,24 +1380,44 @@ async function openLogsViewer() {
             return;
         }
 
+        if (summary.searchTerm && summary.matchedEntries === 0) {
+            statusElement.text(t`No loaded logs matched the current search.`);
+            return;
+        }
+
         if (summary.visibleEntries === 0) {
             statusElement.text(t`Matching logs exceeded the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. Narrow the filters to inspect them safely.`);
             return;
         }
 
+        const matchingEntries = summary.searchTerm ? summary.matchedEntries : summary.totalEntries;
+
         if (summary.hiddenEntries > 0) {
-            statusElement.text(t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional entries are hidden.`);
+            statusElement.text(summary.searchTerm
+                ? t`Showing ${summary.visibleEntries} of ${matchingEntries} matching loaded entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional matching entries are hidden.`
+                : t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional entries are hidden.`);
             return;
         }
 
-        statusElement.text(t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`);
+        statusElement.text(summary.searchTerm
+            ? t`Showing ${summary.visibleEntries} matching loaded entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`
+            : t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`);
     };
 
     const renderOutput = (entries, formatter) => {
-        const summary = buildLogOutputWithinCharBudget(entries, formatter);
+        const summary = buildLogOutputWithinCharBudget(entries, formatter, { searchTerm: currentSearchTerm });
         output.val(summary.text);
         output.scrollTop(summary.visibleEntries > 0 ? (output[0]?.scrollHeight || 0) : 0);
         updateStatus(summary);
+    };
+
+    const renderCurrentSourceLogs = () => {
+        if (currentSource === 'server') {
+            renderOutput(renderedServerEntries, formatServerLogEntry);
+            return;
+        }
+
+        renderOutput(renderedFrontendEntries, formatFrontendLogEntry);
     };
 
     const readLogQuery = ({ sinceId = 0, silent = false } = {}) => {
@@ -1401,7 +1444,9 @@ async function openLogsViewer() {
             ? [...renderedServerEntries, ...incomingEntries].slice(-maxEntries)
             : incomingEntries.slice(-maxEntries);
         latestServerId = Number(payload?.latestId) || latestServerId;
-        renderOutput(renderedServerEntries, formatServerLogEntry);
+        if (currentSource === 'server') {
+            renderCurrentSourceLogs();
+        }
     };
 
     const renderFrontendLogs = (payload, appendOnly = false, maxEntries = DEFAULT_LOG_VIEW_LIMIT) => {
@@ -1410,7 +1455,9 @@ async function openLogsViewer() {
             ? [...renderedFrontendEntries, ...incomingEntries].slice(-maxEntries)
             : incomingEntries.slice(-maxEntries);
         latestFrontendId = Number(payload?.latestId) || latestFrontendId;
-        renderOutput(renderedFrontendEntries, formatFrontendLogEntry);
+        if (currentSource === 'frontend') {
+            renderCurrentSourceLogs();
+        }
     };
 
     const reloadAll = async () => {
@@ -1494,6 +1541,10 @@ async function openLogsViewer() {
         $(this).val(readLogQuery({ silent: true })?.limit || DEFAULT_LOG_VIEW_LIMIT);
         reloadAll();
     });
+    searchInput.on('input', debounce((event) => {
+        currentSearchTerm = String(event?.target?.value || '').trim();
+        renderCurrentSourceLogs();
+    }, 120));
     template.find('.serverLogsCopyButton').on('click', async () => {
         try {
             await navigator.clipboard.writeText(String(output.val() || ''));
@@ -1532,8 +1583,7 @@ async function openLogsViewer() {
                 renderedFrontendEntries = [];
                 toastr.success(t`Frontend logs cleared.`, t`Frontend Logs`);
             }
-            output.val('');
-            updateStatus({ totalEntries: 0, visibleEntries: 0, hiddenEntries: 0 });
+            renderCurrentSourceLogs();
         } catch (error) {
             console.error('Clear logs failed:', error);
             const title = currentSource === 'server' ? t`Failed to clear server logs` : t`Failed to clear frontend logs`;
