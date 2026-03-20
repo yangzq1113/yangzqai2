@@ -65,6 +65,7 @@ function normalizeLogQueryOptions(options = {}) {
         sinceId: Math.max(0, Math.floor(Number(options.sinceId) || 0)),
         startTime: normalizeOptionalTimestamp(options.startTime),
         endTime: normalizeOptionalTimestamp(options.endTime),
+        searchTerm: String(options.searchTerm || '').trim(),
     };
 }
 
@@ -1240,11 +1241,11 @@ async function openBackupManager(handle, callback) {
 }
 
 async function fetchServerLogs(options = {}) {
-    const { limit, sinceId, startTime, endTime } = normalizeLogQueryOptions(options);
+    const { limit, sinceId, startTime, endTime, searchTerm } = normalizeLogQueryOptions(options);
     const response = await fetch('/api/users/logs/get', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ limit, sinceId, startTime, endTime }),
+        body: JSON.stringify({ limit, sinceId, startTime, endTime, searchTerm }),
     });
 
     if (!response.ok) {
@@ -1355,6 +1356,7 @@ async function openLogsViewer() {
     let currentSearchTerm = '';
     let closed = false;
     let inFlight = false;
+    let reloadQueued = false;
     let currentSource = canViewServerLogs ? 'server' : 'frontend';
     sourceSelect.val(currentSource);
 
@@ -1369,6 +1371,13 @@ async function openLogsViewer() {
             : t`Verbose frontend debug logs are off. Only frontend errors are captured until you enable them in User Settings.`);
     };
 
+    const isBackendSearchActive = () => currentSource === 'server' && currentSearchTerm.length > 0;
+
+    const updateSearchPlaceholder = () => {
+        const placeholder = currentSource === 'server' ? t`Search server logs` : t`Search loaded logs`;
+        searchInput.attr('placeholder', placeholder);
+    };
+
     const updateStatus = (summary = null) => {
         if (!summary) {
             statusElement.text(t`Showing the newest complete log entries that fit within a ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`);
@@ -1381,7 +1390,7 @@ async function openLogsViewer() {
         }
 
         if (summary.searchTerm && summary.matchedEntries === 0) {
-            statusElement.text(t`No loaded logs matched the current search.`);
+            statusElement.text(isBackendSearchActive() ? t`No logs matched the current search.` : t`No loaded logs matched the current search.`);
             return;
         }
 
@@ -1394,18 +1403,23 @@ async function openLogsViewer() {
 
         if (summary.hiddenEntries > 0) {
             statusElement.text(summary.searchTerm
-                ? t`Showing ${summary.visibleEntries} of ${matchingEntries} matching loaded entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional matching entries are hidden.`
+                ? (isBackendSearchActive()
+                    ? t`Showing ${summary.visibleEntries} of ${matchingEntries} matching entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional matching entries are hidden.`
+                    : t`Showing ${summary.visibleEntries} of ${matchingEntries} matching loaded entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional matching entries are hidden.`)
                 : t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional entries are hidden.`);
             return;
         }
 
         statusElement.text(summary.searchTerm
-            ? t`Showing ${summary.visibleEntries} matching loaded entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`
+            ? (isBackendSearchActive()
+                ? t`Showing ${summary.visibleEntries} matching entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`
+                : t`Showing ${summary.visibleEntries} matching loaded entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`)
             : t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`);
     };
 
     const renderOutput = (entries, formatter) => {
-        const summary = buildLogOutputWithinCharBudget(entries, formatter, { searchTerm: currentSearchTerm });
+        const summary = buildLogOutputWithinCharBudget(entries, formatter, { searchTerm: currentSource === 'frontend' ? currentSearchTerm : '' });
+        summary.searchTerm = currentSearchTerm;
         output.val(summary.text);
         output.scrollTop(summary.visibleEntries > 0 ? (output[0]?.scrollHeight || 0) : 0);
         updateStatus(summary);
@@ -1435,6 +1449,7 @@ async function openLogsViewer() {
             sinceId,
             startTime,
             endTime,
+            searchTerm: currentSource === 'server' ? currentSearchTerm : '',
         });
     };
 
@@ -1461,7 +1476,12 @@ async function openLogsViewer() {
     };
 
     const reloadAll = async () => {
-        if (inFlight || closed) {
+        if (closed) {
+            return;
+        }
+
+        if (inFlight) {
+            reloadQueued = true;
             return;
         }
 
@@ -1486,6 +1506,10 @@ async function openLogsViewer() {
             toastr.error(String(error.message || error), title);
         } finally {
             inFlight = false;
+            if (reloadQueued && !closed) {
+                reloadQueued = false;
+                void reloadAll();
+            }
         }
     };
 
@@ -1531,6 +1555,7 @@ async function openLogsViewer() {
 
         currentSource = nextSource;
         updateNote();
+        updateSearchPlaceholder();
         await reloadAll();
     });
 
@@ -1543,6 +1568,11 @@ async function openLogsViewer() {
     });
     searchInput.on('input', debounce((event) => {
         currentSearchTerm = String(event?.target?.value || '').trim();
+        if (currentSource === 'server') {
+            void reloadAll();
+            return;
+        }
+
         renderCurrentSourceLogs();
     }, 120));
     template.find('.serverLogsCopyButton').on('click', async () => {
@@ -1592,6 +1622,7 @@ async function openLogsViewer() {
     });
 
     updateNote();
+    updateSearchPlaceholder();
     updateStatus();
     output.val(t`Loading logs...`);
     const timer = setInterval(loadIncremental, 1500);

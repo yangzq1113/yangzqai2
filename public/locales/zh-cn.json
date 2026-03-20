@@ -4604,4 +4604,9 @@
     "Showing ${0} matching loaded entries within the ${1} character display budget.": "在 ${1} 字符展示预算内，当前显示 ${0} 条匹配的已加载日志。",
     "Showing ${0} complete entries within the ${1} character display budget.": "在 ${1} 字符展示预算内，当前显示 ${0} 条完整日志。",
     "Loading logs...": "正在加载日志..."
+    ,
+    "Search server logs": "搜索服务器日志",
+    "No logs matched the current search.": "当前搜索没有匹配到任何日志。",
+    "Showing ${0} of ${1} matching entries within the ${2} character display budget. ${3} additional matching entries are hidden.": "在 ${2} 字符展示预算内，当前显示 ${1} 条匹配日志中的 ${0} 条。另有 ${3} 条匹配日志被隐藏。",
+    "Showing ${0} matching entries within the ${1} character display budget.": "在 ${1} 字符展示预算内，当前显示 ${0} 条匹配日志。"
 }
