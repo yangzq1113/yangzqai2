@@ -5,7 +5,7 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
-import { findNameMatch, tryParse } from '../util.js';
+import { normalizeLookupText, tryParse } from '../util.js';
 import { applyPatch as applyJsonPatch } from '../../public/scripts/util/fast-json-patch.js';
 
 /**
@@ -36,13 +36,51 @@ export function readWorldInfoFile(directories, worldInfoName, allowDummy) {
 }
 
 /**
+ * Builds a world info filename from an uploaded filename while trimming invisible
+ * whitespace from the basename so imports do not create hard-to-address files.
+ * @param {string} originalName
+ * @returns {string}
+ */
+export function sanitizeImportedWorldInfoFilename(originalName) {
+    const parsed = path.parse(sanitize(String(originalName || '')));
+    const baseName = String(parsed.name || '').trim();
+    return baseName ? `${baseName}.json` : '';
+}
+
+/**
+ * Finds the raw filename for a world info entry while comparing names with tolerant lookup rules.
+ * The matched filename is returned exactly as it exists on disk.
+ * @param {string[]} filenames
+ * @param {string} worldInfoName
+ * @returns {string}
+ */
+export function findMatchingWorldInfoFilename(filenames, worldInfoName) {
+    const requested = String(worldInfoName || '').trim();
+    if (!requested || !Array.isArray(filenames)) {
+        return '';
+    }
+
+    const exactMatch = filenames.find((file) => path.parse(file).name === requested);
+    if (exactMatch) {
+        return exactMatch;
+    }
+
+    const normalizedRequested = normalizeLookupText(requested);
+    if (!normalizedRequested) {
+        return '';
+    }
+
+    return filenames.find((file) => normalizeLookupText(path.parse(file).name) === normalizedRequested) || '';
+}
+
+/**
  * Resolves a world info filename from a display name.
  * Falls back to tolerant matching so emoji variation selectors do not break lookups.
  * @param {string} directory
  * @param {string} worldInfoName
  * @returns {string}
  */
-function resolveWorldInfoFilename(directory, worldInfoName) {
+export function resolveWorldInfoFilename(directory, worldInfoName) {
     const requested = String(worldInfoName || '').trim();
     const exactFilename = sanitize(`${requested}.json`);
     const exactPath = path.join(directory, exactFilename);
@@ -52,12 +90,7 @@ function resolveWorldInfoFilename(directory, worldInfoName) {
 
     const jsonFiles = fs.readdirSync(directory)
         .filter(file => path.extname(file).toLowerCase() === '.json');
-    const matchedName = findNameMatch(jsonFiles.map(file => path.parse(file).name), requested);
-    if (!matchedName) {
-        return exactFilename;
-    }
-
-    return jsonFiles.find(file => path.parse(file).name === matchedName) || sanitize(`${matchedName}.json`);
+    return findMatchingWorldInfoFilename(jsonFiles, requested) || exactFilename;
 }
 
 export const router = express.Router();
@@ -195,7 +228,7 @@ router.post('/delete', (request, response) => {
 router.post('/import', (request, response) => {
     if (!request.file) return response.sendStatus(400);
 
-    const filename = `${path.parse(sanitize(request.file.originalname)).name}.json`;
+    const filename = sanitizeImportedWorldInfoFilename(request.file.originalname);
 
     let fileContents = null;
 
