@@ -48,6 +48,7 @@ const BACKUP_FULL_SELECTION = Object.freeze({
 });
 const DEFAULT_LOG_VIEW_LIMIT = 300;
 const MAX_LOG_VIEW_LIMIT = 5000;
+const MAX_LOG_VIEW_CHARS = 250000;
 
 function normalizeOptionalTimestamp(value) {
     if (value === null || value === undefined || value === '') {
@@ -64,6 +65,44 @@ function normalizeLogQueryOptions(options = {}) {
         sinceId: Math.max(0, Math.floor(Number(options.sinceId) || 0)),
         startTime: normalizeOptionalTimestamp(options.startTime),
         endTime: normalizeOptionalTimestamp(options.endTime),
+    };
+}
+
+function buildLogOutputWithinCharBudget(entries, formatter, maxChars = MAX_LOG_VIEW_CHARS) {
+    const normalizedMaxChars = Math.max(1, Math.floor(Number(maxChars) || MAX_LOG_VIEW_CHARS));
+    const lines = [];
+    let totalChars = 0;
+    let hiddenEntries = 0;
+    let oversizedEntries = 0;
+
+    for (let index = entries.length - 1; index >= 0; index--) {
+        const line = String(formatter(entries[index]) || '');
+
+        if (line.length > normalizedMaxChars) {
+            hiddenEntries += 1;
+            oversizedEntries += 1;
+            continue;
+        }
+
+        const additionalChars = line.length + (lines.length > 0 ? 1 : 0);
+        if (totalChars + additionalChars > normalizedMaxChars) {
+            hiddenEntries += index + 1;
+            break;
+        }
+
+        lines.push(line);
+        totalChars += additionalChars;
+    }
+
+    lines.reverse();
+
+    return {
+        text: lines.join('\n'),
+        totalEntries: entries.length,
+        visibleEntries: lines.length,
+        hiddenEntries,
+        oversizedEntries,
+        totalChars,
     };
 }
 
@@ -1275,6 +1314,7 @@ async function openLogsViewer() {
             </div>
             <textarea class="text_pole serverLogsOutput" rows="20" readonly></textarea>
             <div class="menu_button_note serverLogsNote"></div>
+            <div class="menu_button_note serverLogsStatus"></div>
         </div>
     `);
 
@@ -1285,6 +1325,7 @@ async function openLogsViewer() {
     const endTimeInput = template.find('.serverLogsEndTime');
     const limitInput = template.find('.serverLogsLimit');
     const noteElement = template.find('.serverLogsNote');
+    const statusElement = template.find('.serverLogsStatus');
     let latestServerId = 0;
     let latestFrontendId = 0;
     let renderedServerEntries = [];
@@ -1305,9 +1346,35 @@ async function openLogsViewer() {
             : t`Verbose frontend debug logs are off. Only frontend errors are captured until you enable them in User Settings.`);
     };
 
+    const updateStatus = (summary = null) => {
+        if (!summary) {
+            statusElement.text(t`Showing the newest complete log entries that fit within a ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`);
+            return;
+        }
+
+        if (summary.totalEntries === 0) {
+            statusElement.text(t`No logs matched the current filters.`);
+            return;
+        }
+
+        if (summary.visibleEntries === 0) {
+            statusElement.text(t`Matching logs exceeded the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. Narrow the filters to inspect them safely.`);
+            return;
+        }
+
+        if (summary.hiddenEntries > 0) {
+            statusElement.text(t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget. ${summary.hiddenEntries} additional entries are hidden.`);
+            return;
+        }
+
+        statusElement.text(t`Showing ${summary.visibleEntries} complete entries within the ${MAX_LOG_VIEW_CHARS.toLocaleString()} character display budget.`);
+    };
+
     const renderOutput = (entries, formatter) => {
-        output.val(entries.map(formatter).join('\n'));
-        output.scrollTop(output[0]?.scrollHeight || 0);
+        const summary = buildLogOutputWithinCharBudget(entries, formatter);
+        output.val(summary.text);
+        output.scrollTop(summary.visibleEntries > 0 ? (output[0]?.scrollHeight || 0) : 0);
+        updateStatus(summary);
     };
 
     const readLogQuery = ({ sinceId = 0, silent = false } = {}) => {
@@ -1466,6 +1533,7 @@ async function openLogsViewer() {
                 toastr.success(t`Frontend logs cleared.`, t`Frontend Logs`);
             }
             output.val('');
+            updateStatus({ totalEntries: 0, visibleEntries: 0, hiddenEntries: 0 });
         } catch (error) {
             console.error('Clear logs failed:', error);
             const title = currentSource === 'server' ? t`Failed to clear server logs` : t`Failed to clear frontend logs`;
@@ -1474,16 +1542,25 @@ async function openLogsViewer() {
     });
 
     updateNote();
-    await reloadAll();
+    updateStatus();
+    output.val(t`Loading logs...`);
     const timer = setInterval(loadIncremental, 1500);
+    const popupPromise = callGenericPopup(template, POPUP_TYPE.TEXT, '', {
+        okButton: t`Close`,
+        wide: true,
+        large: true,
+        allowVerticalScrolling: true,
+        allowHorizontalScrolling: false,
+    });
+
+    setTimeout(() => {
+        if (!closed) {
+            void reloadAll();
+        }
+    }, 0);
+
     try {
-        await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
-            okButton: t`Close`,
-            wide: true,
-            large: true,
-            allowVerticalScrolling: true,
-            allowHorizontalScrolling: false,
-        });
+        await popupPromise;
     } finally {
         closed = true;
         clearInterval(timer);
