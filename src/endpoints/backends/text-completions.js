@@ -68,9 +68,11 @@ async function parseOllamaStream(jsonStream, request, response, job = null) {
             throw new Error('No body in the response');
         }
 
+        // Decode incrementally so UTF-8 code points split across chunks do not turn into replacement characters.
         let partialData = '';
+        const decoder = new TextDecoder('utf-8');
         for await (const data of jsonStream.body) {
-            const chunk = Buffer.from(data).toString('utf8');
+            const chunk = decoder.decode(data, { stream: true });
             partialData += chunk;
             const lines = partialData.split('\n');
             partialData = lines.pop() || '';
@@ -97,6 +99,7 @@ async function parseOllamaStream(jsonStream, request, response, job = null) {
             }
         }
 
+        partialData += decoder.decode();
         if (partialData.trim()) {
             try {
                 const json = JSON.parse(partialData.trim());

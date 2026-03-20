@@ -625,22 +625,26 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
         return;
     }
 
+    // Preserve the original byte stream for the client and decode incrementally only for SSE bookkeeping.
     let buffer = '';
+    const decoder = new TextDecoder('utf-8');
     try {
         if (fetchResponse.body) {
             for await (const chunk of fetchResponse.body) {
                 if (job.status === 'cancelled') {
                     break;
                 }
-                const chunkText = Buffer.from(chunk).toString('utf8');
+                const chunkBytes = chunk instanceof Uint8Array ? chunk : Buffer.from(chunk);
+                const chunkText = decoder.decode(chunkBytes, { stream: true });
                 if (!clientClosed && !response.writableEnded) {
-                    response.write(chunkText);
+                    response.write(chunkBytes);
                     if (typeof response.flush === 'function') {
                         response.flush();
                     }
                 }
 
-                buffer += chunkText.replace(/\r\n/g, '\n');
+                buffer += chunkText;
+                buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
                 let delimiterIndex = buffer.indexOf('\n\n');
                 while (delimiterIndex !== -1) {
                     const frame = buffer.slice(0, delimiterIndex);
@@ -667,6 +671,8 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
         return;
     }
 
+    buffer += decoder.decode();
+    buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     if (buffer.trim()) {
         const dataLines = buffer
             .split('\n')
