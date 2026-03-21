@@ -1,4 +1,4 @@
-import { characters, eventSource, event_types, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid, unshallowCharacter } from '../../../script.js';
+import { characters, chatElement, eventSource, event_types, getCurrentChatId, messageFormatting, redisplayChat, reloadCurrentChat, saveSettingsDebounced, this_chid, unshallowCharacter } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { selected_group } from '../../group-chats.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
@@ -23,6 +23,49 @@ const REGEX_SCRIPT_TYPE_LABELS = Object.freeze({
     [SCRIPT_TYPES.PRESET]: 'preset',
     [SCRIPT_TYPE_UNKNOWN]: 'runtime',
 });
+
+function buildRegexDragHelper(item) {
+    const itemEl = item?.get?.(0) || item?.[0] || item;
+    const nameEl = itemEl instanceof HTMLElement
+        ? itemEl.querySelector('.regex_script_name')
+        : null;
+    const title = String(
+        nameEl?.textContent
+        || itemEl?.getAttribute?.('title')
+        || itemEl?.getAttribute?.('id')
+        || 'Regex Script',
+    ).trim();
+    const width = Math.round(item?.outerWidth?.() || itemEl?.getBoundingClientRect?.().width || 0);
+    const helper = document.createElement('div');
+    helper.className = 'regex-drag-helper';
+    helper.textContent = title;
+    helper.style.width = width > 0 ? `${width}px` : '';
+    helper.style.padding = '8px 12px';
+    helper.style.border = '1px solid var(--SmartThemeBorderColor)';
+    helper.style.borderRadius = '10px';
+    helper.style.background = 'var(--SmartThemeBlurTintColor)';
+    helper.style.color = 'var(--SmartThemeBodyColor)';
+    helper.style.boxShadow = '0 12px 28px rgba(0, 0, 0, 0.18)';
+    helper.style.pointerEvents = 'none';
+    return $(helper);
+}
+
+function styleRegexDragPlaceholder(ui) {
+    const placeholder = ui?.placeholder;
+    const item = ui?.item;
+    if (!placeholder?.length || !item?.length) {
+        return;
+    }
+
+    placeholder.css({
+        height: `${Math.round(item.outerHeight() || 0)}px`,
+        visibility: 'visible',
+        border: '1px dashed var(--SmartThemeBorderColor)',
+        'border-radius': '10px',
+        background: 'color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent)',
+        opacity: '0.8',
+    });
+}
 
 function summarizeRegexScriptForLog(script) {
     if (!script || typeof script !== 'object') {
@@ -656,6 +699,42 @@ function isRegexSettingsPanelOpen() {
     return jQuery('#rm_extensions_block').hasClass('openDrawer');
 }
 
+async function rerenderVisibleRegexChatMessages() {
+    const firstVisibleMessage = chatElement.children('.mes').first();
+    if (!firstVisibleMessage.length) {
+        return true;
+    }
+
+    const startIndex = Number(firstVisibleMessage.attr('mesid'));
+    if (!Number.isInteger(startIndex) || startIndex < 0) {
+        return false;
+    }
+
+    const previousTop = firstVisibleMessage.get(0)?.getBoundingClientRect?.().top;
+    await redisplayChat({ startIndex, fade: false });
+
+    if (!Number.isFinite(previousTop)) {
+        return true;
+    }
+
+    const anchorAfterRerender = chatElement.children(`.mes[mesid="${startIndex}"]`).first();
+    if (!anchorAfterRerender.length) {
+        return true;
+    }
+
+    const nextTop = anchorAfterRerender.get(0)?.getBoundingClientRect?.().top;
+    if (!Number.isFinite(nextTop)) {
+        return true;
+    }
+
+    const offsetDelta = nextTop - previousTop;
+    if (Math.abs(offsetDelta) > 0.5) {
+        chatElement.scrollTop((chatElement.scrollTop() || 0) + offsetDelta);
+    }
+
+    return true;
+}
+
 async function requestRegexChatReload({ force = false } = {}) {
     if (!getCurrentChatId()) {
         pendingRegexChatReload = false;
@@ -668,6 +747,15 @@ async function requestRegexChatReload({ force = false } = {}) {
     }
 
     pendingRegexChatReload = false;
+    try {
+        const rerendered = await rerenderVisibleRegexChatMessages();
+        if (rerendered) {
+            return;
+        }
+    } catch (error) {
+        console.warn('[Regex] Visible chat rerender failed, falling back to full reload', error);
+    }
+
     await reloadCurrentChat();
 }
 
@@ -2402,6 +2490,18 @@ jQuery(async () => {
         $(selector).sortable({
             delay: getSortableDelay(),
             handle: '.regex-script-handle',
+            helper: (_event, ui) => buildRegexDragHelper(ui),
+            appendTo: document.body,
+            tolerance: 'pointer',
+            forcePlaceholderSize: true,
+            placeholder: 'regex-sortable-placeholder',
+            cursor: 'grabbing',
+            scroll: true,
+            scrollSensitivity: 60,
+            scrollSpeed: 18,
+            start: (_event, ui) => {
+                styleRegexDragPlaceholder(ui);
+            },
             stop: async function () {
                 const oldScripts = getter();
                 const newScripts = [];
