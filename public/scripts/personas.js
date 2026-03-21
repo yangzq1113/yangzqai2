@@ -745,15 +745,9 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         ? nextExtensions.luker
         : {};
 
-    if (nextDedicatedPersonas.length > 0) {
-        nextExtensions.luker.dedicated_personas = nextDedicatedPersonas;
-    } else {
-        delete nextExtensions.luker.dedicated_personas;
-    }
-
-    if (Object.keys(nextExtensions.luker).length === 0) {
-        delete nextExtensions.luker;
-    }
+    // merge-attributes deep-merges nested objects, so deletion-by-omission does not
+    // remove existing keys on the character card. Always send an explicit array value.
+    nextExtensions.luker.dedicated_personas = nextDedicatedPersonas;
 
     character.data = character.data || {};
     character.data.extensions = nextExtensions;
