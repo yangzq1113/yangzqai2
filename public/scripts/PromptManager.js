@@ -6,7 +6,7 @@ import { event_types, eventSource, is_send_press, main_api, substituteParams } f
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
-import { debounce, waitUntilCondition, escapeHtml, toggleDrawer, uuidv4 } from './utils.js';
+import { debounce, waitUntilCondition, escapeHtml, includesIgnoreCaseAndAccents, toggleDrawer, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
@@ -65,6 +65,29 @@ const DEFAULT_ORDER = 100;
 const TOGGLE_UNDO_WINDOW_MS = 6000;
 const DETACH_UNDO_WINDOW_MS = 6000;
 const PROMPT_PLACEHOLDER_REGEX = /\{\{\s*([^{}\s]+)\s*\}\}/g;
+const PROMPT_SEARCH_SCOPES = Object.freeze({
+    ALL: 'all',
+    NAME: 'name',
+    CONTENT: 'content',
+    PLACEHOLDER: 'placeholder',
+    IDENTIFIER: 'identifier',
+    ROLE: 'role',
+    SOURCE: 'source',
+});
+const PROMPT_SEARCH_SCOPE_ALIASES = Object.freeze({
+    name: PROMPT_SEARCH_SCOPES.NAME,
+    title: PROMPT_SEARCH_SCOPES.NAME,
+    content: PROMPT_SEARCH_SCOPES.CONTENT,
+    text: PROMPT_SEARCH_SCOPES.CONTENT,
+    body: PROMPT_SEARCH_SCOPES.CONTENT,
+    placeholder: PROMPT_SEARCH_SCOPES.PLACEHOLDER,
+    placeholders: PROMPT_SEARCH_SCOPES.PLACEHOLDER,
+    ph: PROMPT_SEARCH_SCOPES.PLACEHOLDER,
+    id: PROMPT_SEARCH_SCOPES.IDENTIFIER,
+    identifier: PROMPT_SEARCH_SCOPES.IDENTIFIER,
+    role: PROMPT_SEARCH_SCOPES.ROLE,
+    source: PROMPT_SEARCH_SCOPES.SOURCE,
+});
 
 /**
  * @enum {number}
@@ -400,6 +423,9 @@ class PromptManager {
 
         // Prompt list filter text
         this.promptListSearchQuery = '';
+
+        // Enables advanced syntax for prompt list search.
+        this.promptListSearchAdvancedSyntax = false;
 
         // Currently selected character
         this.activeCharacter = null;
@@ -1725,6 +1751,187 @@ class PromptManager {
             .toLowerCase();
     }
 
+    normalizePromptSearchCandidateValues(values) {
+        const candidates = new Set();
+
+        for (const value of Array.isArray(values) ? values : [values]) {
+            const raw = String(value || '').trim();
+            if (!raw) {
+                continue;
+            }
+
+            candidates.add(raw);
+            const normalized = this.normalizePromptSearchText(raw);
+            if (normalized) {
+                candidates.add(normalized);
+            }
+        }
+
+        return Array.from(candidates);
+    }
+
+    createBasicPromptSearchClauses(searchValue) {
+        const value = String(searchValue || '').trim();
+        return value
+            ? [[{
+                negated: false,
+                scope: PROMPT_SEARCH_SCOPES.ALL,
+                term: value,
+            }]]
+            : [];
+    }
+
+    tokenizePromptSearchQuery(searchValue) {
+        const tokens = [];
+        let current = '';
+        let inQuotes = false;
+        let escapeNext = false;
+
+        const pushCurrentToken = () => {
+            const value = current.trim();
+            if (value) {
+                tokens.push(value);
+            }
+            current = '';
+        };
+
+        for (const character of String(searchValue || '')) {
+            if (escapeNext) {
+                current += character;
+                escapeNext = false;
+                continue;
+            }
+
+            if (character === '\\' && inQuotes) {
+                escapeNext = true;
+                continue;
+            }
+
+            if (character === '"') {
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (!inQuotes && character === '|') {
+                pushCurrentToken();
+                tokens.push('|');
+                continue;
+            }
+
+            if (!inQuotes && /\s/.test(character)) {
+                pushCurrentToken();
+                continue;
+            }
+
+            current += character;
+        }
+
+        pushCurrentToken();
+        return tokens;
+    }
+
+    isPromptSearchOrToken(token) {
+        return token === '|' || /^or$/i.test(String(token || '').trim());
+    }
+
+    isPromptSearchAndToken(token) {
+        return /^and$/i.test(String(token || '').trim());
+    }
+
+    parsePromptSearchToken(token, nextToken = '') {
+        let value = String(token || '').trim();
+        let consumeNextToken = false;
+
+        if (!value) {
+            return null;
+        }
+
+        let negated = false;
+        if (value.startsWith('-') && value.length > 1) {
+            negated = true;
+            value = value.slice(1).trim();
+        }
+
+        if (!value) {
+            return null;
+        }
+
+        let scope = PROMPT_SEARCH_SCOPES.ALL;
+        const scopedMatch = value.match(/^([a-z_]+):(.*)$/i);
+        if (scopedMatch) {
+            const scopeValue = PROMPT_SEARCH_SCOPE_ALIASES[String(scopedMatch[1] || '').trim().toLowerCase()];
+            if (scopeValue) {
+                scope = scopeValue;
+                value = String(scopedMatch[2] || '').trim();
+
+                if (!value) {
+                    const fallbackToken = String(nextToken || '').trim();
+                    if (fallbackToken && !this.isPromptSearchOrToken(fallbackToken) && !this.isPromptSearchAndToken(fallbackToken)) {
+                        value = fallbackToken;
+                        consumeNextToken = true;
+                    }
+                }
+            }
+        }
+
+        value = value.trim();
+        if (!value) {
+            return null;
+        }
+
+        return {
+            term: {
+                negated,
+                scope,
+                term: value,
+            },
+            consumeNextToken,
+        };
+    }
+
+    parsePromptSearchQuery(searchValue, { advancedSyntax = false } = {}) {
+        if (!advancedSyntax) {
+            return this.createBasicPromptSearchClauses(searchValue);
+        }
+
+        const tokens = this.tokenizePromptSearchQuery(searchValue);
+        const clauses = [];
+        let currentClause = [];
+
+        const pushClause = () => {
+            if (currentClause.length > 0) {
+                clauses.push(currentClause);
+            }
+            currentClause = [];
+        };
+
+        for (let index = 0; index < tokens.length; index++) {
+            const token = tokens[index];
+
+            if (this.isPromptSearchOrToken(token)) {
+                pushClause();
+                continue;
+            }
+
+            if (this.isPromptSearchAndToken(token)) {
+                continue;
+            }
+
+            const parsedToken = this.parsePromptSearchToken(token, tokens[index + 1]);
+            if (!parsedToken) {
+                continue;
+            }
+
+            currentClause.push(parsedToken.term);
+            if (parsedToken.consumeNextToken) {
+                index += 1;
+            }
+        }
+
+        pushClause();
+        return clauses;
+    }
+
     /**
      * Extracts placeholder identifiers from prompt content.
      * @param {string} content
@@ -1802,93 +2009,229 @@ class PromptManager {
         return [];
     }
 
-    /**
-     * Builds a searchable index string for a prompt.
-     * Includes raw values, normalized values, and aliases for placeholders referenced in content.
-     * @param {Prompt} prompt
-     * @returns {string}
-     */
-    buildPromptSearchIndex(prompt) {
-        const terms = new Set();
-
-        const addTerm = (value) => {
-            const raw = String(value || '').trim();
-            if (!raw) {
-                return;
-            }
-
-            terms.add(raw.toLowerCase());
-
-            const normalized = this.normalizePromptSearchText(raw);
-            if (normalized) {
-                terms.add(normalized);
-            }
-        };
-
-        addTerm(prompt?.identifier);
-        addTerm(prompt?.name);
-        addTerm(prompt?.content);
-
-        this.getPromptSearchAliases(prompt?.identifier).forEach(addTerm);
-
+    getPromptSearchFields(prompt) {
+        const runtimeMessages = this.getPromptRuntimeMessages(prompt);
+        const placeholderCandidates = [];
         for (const placeholder of this.extractPromptPlaceholders(prompt?.content)) {
-            addTerm(placeholder);
-            this.getPromptSearchAliases(placeholder).forEach(addTerm);
+            placeholderCandidates.push(placeholder, ...this.getPromptSearchAliases(placeholder));
         }
 
-        for (const message of this.getPromptRuntimeMessages(prompt)) {
-            addTerm(message?.identifier);
-            addTerm(message?.name);
-            addTerm(message?.role);
-            addTerm(message?.content);
-        }
-
-        return Array.from(terms).join('\n');
-    }
-
-    /**
-     * Builds a searchable index string for a runtime message.
-     * @param {import('./openai.js').Message} message
-     * @returns {string}
-     */
-    buildPromptMessageSearchIndex(message) {
-        const terms = new Set();
-
-        const addTerm = (value) => {
-            const raw = String(value || '').trim();
-            if (!raw) {
-                return;
-            }
-
-            terms.add(raw.toLowerCase());
-
-            const normalized = this.normalizePromptSearchText(raw);
-            if (normalized) {
-                terms.add(normalized);
-            }
+        return {
+            nameCandidates: this.normalizePromptSearchCandidateValues([
+                prompt?.name,
+                ...runtimeMessages.map(message => message?.name),
+            ]),
+            contentCandidates: this.normalizePromptSearchCandidateValues([
+                prompt?.content,
+                ...runtimeMessages.map(message => message?.content),
+            ]),
+            placeholderCandidates: this.normalizePromptSearchCandidateValues(placeholderCandidates),
+            identifierCandidates: this.normalizePromptSearchCandidateValues([
+                prompt?.identifier,
+                ...runtimeMessages.map(message => message?.identifier),
+            ]),
+            roleCandidates: this.normalizePromptSearchCandidateValues([
+                prompt?.role,
+                ...runtimeMessages.map(message => message?.role),
+            ]),
+            sourceCandidates: this.normalizePromptSearchCandidateValues(this.promptSources[prompt?.identifier]),
         };
-
-        addTerm(message?.identifier);
-        addTerm(message?.name);
-        addTerm(message?.role);
-        addTerm(message?.content);
-
-        return Array.from(terms).join('\n');
     }
 
-    /**
-     * Tests whether a searchable index matches the current prompt-manager query.
-     * @param {string} haystack
-     * @param {string} searchQuery
-     * @param {string} normalizedSearchQuery
-     * @returns {boolean}
-     */
-    matchesPromptSearchIndex(haystack, searchQuery, normalizedSearchQuery) {
-        if (!searchQuery) {
+    getPromptMessageSearchFields(message) {
+        const placeholderCandidates = this.extractPromptPlaceholders(message?.content).flatMap((placeholder) => [
+            placeholder,
+            ...this.getPromptSearchAliases(placeholder),
+        ]);
+
+        return {
+            nameCandidates: this.normalizePromptSearchCandidateValues(message?.name),
+            contentCandidates: this.normalizePromptSearchCandidateValues(message?.content),
+            placeholderCandidates: this.normalizePromptSearchCandidateValues(placeholderCandidates),
+            identifierCandidates: this.normalizePromptSearchCandidateValues(message?.identifier),
+            roleCandidates: this.normalizePromptSearchCandidateValues(message?.role),
+            sourceCandidates: [],
+        };
+    }
+
+    getPromptSearchCandidatesForScope(fields, scope) {
+        switch (scope) {
+            case PROMPT_SEARCH_SCOPES.NAME:
+                return fields.nameCandidates;
+            case PROMPT_SEARCH_SCOPES.CONTENT:
+                return fields.contentCandidates;
+            case PROMPT_SEARCH_SCOPES.PLACEHOLDER:
+                return fields.placeholderCandidates;
+            case PROMPT_SEARCH_SCOPES.IDENTIFIER:
+                return fields.identifierCandidates;
+            case PROMPT_SEARCH_SCOPES.ROLE:
+                return fields.roleCandidates;
+            case PROMPT_SEARCH_SCOPES.SOURCE:
+                return fields.sourceCandidates;
+            default:
+                return [
+                    ...fields.nameCandidates,
+                    ...fields.contentCandidates,
+                    ...fields.placeholderCandidates,
+                    ...fields.identifierCandidates,
+                    ...fields.roleCandidates,
+                    ...fields.sourceCandidates,
+                ];
+        }
+    }
+
+    matchesPromptSearchTerm(fields, term) {
+        const candidates = this.getPromptSearchCandidatesForScope(fields, term.scope);
+        return candidates.some(candidate => includesIgnoreCaseAndAccents(candidate, term.term));
+    }
+
+    matchesPromptSearchClause(fields, clause) {
+        let positiveTerms = 0;
+
+        for (const term of clause) {
+            const isMatched = this.matchesPromptSearchTerm(fields, term);
+            if (term.negated) {
+                if (isMatched) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (!isMatched) {
+                return false;
+            }
+
+            positiveTerms += 1;
+        }
+
+        return positiveTerms > 0 || clause.every(term => term.negated);
+    }
+
+    matchesPromptSearchFields(fields, clauses) {
+        if (!Array.isArray(clauses) || clauses.length === 0) {
             return false;
         }
 
-        return haystack.includes(searchQuery) || (normalizedSearchQuery && haystack.includes(normalizedSearchQuery));
+        return clauses.some(clause => this.matchesPromptSearchClause(fields, clause));
+    }
+
+    buildPromptSearchSyntaxHelpHtml() {
+        const basicRows = [
+            {
+                query: 'chat history',
+                description: t`Default prompt search looks for the exact text chat history.`,
+            },
+            {
+                query: 'name:main',
+                description: t`With Advanced syntax off, this searches the literal text name:main.`,
+            },
+        ];
+        const advancedRows = [
+            {
+                query: 'jailbreak main',
+                description: t`With Advanced syntax enabled, space-separated terms use AND. Both terms must match.`,
+            },
+            {
+                query: '"chat history"',
+                description: t`Quoted text matches an exact phrase.`,
+            },
+            {
+                query: '-system',
+                description: t`Prefix a term with - to exclude matches.`,
+            },
+            {
+                query: 'name:jailbreak content:"Stay in character"',
+                description: t`Scope a term to prompt name or content.`,
+            },
+            {
+                query: 'placeholder:chatHistory role:system',
+                description: t`Scope a term to placeholders or roles.`,
+            },
+            {
+                query: 'id:main source:character',
+                description: t`Scope a term to identifiers or source labels.`,
+            },
+        ];
+
+        const syntaxHeader = escapeHtml(t`Syntax`);
+        const effectHeader = escapeHtml(t`Effect`);
+        const buildTableRows = (rows) => rows.map((row) => `
+            <tr>
+                <td data-label="${syntaxHeader}"><code>${escapeHtml(row.query)}</code></td>
+                <td data-label="${effectHeader}">${escapeHtml(row.description)}</td>
+            </tr>
+        `).join('');
+
+        return `
+            <div class="prompt_manager_search_syntax_help">
+                <p>${escapeHtml(t`Prompt Search defaults to direct whole-query matching across prompt names, identifiers, placeholders, content, sources, and runtime messages.`)}</p>
+                <section class="prompt_manager_search_syntax_section">
+                    <h4>${escapeHtml(t`Default behavior`)}</h4>
+                    <div class="prompt_manager_search_syntax_table_wrap">
+                        <table class="prompt_manager_search_syntax_table">
+                            <thead>
+                                <tr>
+                                    <th>${syntaxHeader}</th>
+                                    <th>${effectHeader}</th>
+                                </tr>
+                            </thead>
+                            <tbody>${buildTableRows(basicRows)}</tbody>
+                        </table>
+                    </div>
+                </section>
+                <p>${escapeHtml(t`Enable Advanced syntax to use operators and field prefixes.`)}</p>
+                <p>${escapeHtml(t`name: searches prompt names. content: searches prompt and runtime message content. placeholder: searches placeholder identifiers. id: searches prompt or runtime identifiers. role: searches prompt and runtime roles. source: searches the prompt source label.`)}</p>
+                <section class="prompt_manager_search_syntax_section">
+                    <h4>${escapeHtml(t`Advanced behavior`)}</h4>
+                    <div class="prompt_manager_search_syntax_table_wrap">
+                        <table class="prompt_manager_search_syntax_table">
+                            <thead>
+                                <tr>
+                                    <th>${syntaxHeader}</th>
+                                    <th>${effectHeader}</th>
+                                </tr>
+                            </thead>
+                            <tbody>${buildTableRows(advancedRows)}</tbody>
+                        </table>
+                    </div>
+                </section>
+                <p>${escapeHtml(t`Aliases: title: maps to name:. text: and body: map to content:. placeholders: and ph: map to placeholder:. identifier: maps to id.`)}</p>
+            </div>
+        `;
+    }
+
+    async showPromptSearchSyntaxHelp() {
+        await Popup.show.text(
+            t`Prompt Search Syntax`,
+            this.buildPromptSearchSyntaxHelpHtml(),
+            {
+                okButton: t`Close`,
+                wide: true,
+                allowVerticalScrolling: true,
+            },
+        );
+    }
+
+    updatePromptSearchInputState() {
+        if (!this.containerElement) {
+            return;
+        }
+
+        const { prefix } = this.configuration;
+        const searchInput = /** @type {HTMLInputElement|null} */ (this.containerElement.querySelector(`#${prefix}prompt_manager_search`));
+        const advancedInput = /** @type {HTMLInputElement|null} */ (this.containerElement.querySelector(`#${prefix}prompt_manager_search_advanced`));
+        const advancedSyntax = Boolean(this.promptListSearchAdvancedSyntax);
+
+        if (searchInput) {
+            searchInput.placeholder = advancedSyntax ? t`Advanced prompt search...` : t`Search prompts or placeholders...`;
+            searchInput.title = advancedSyntax
+                ? t`Advanced prompt search over names, content, placeholders, identifiers, sources, and roles. Supports name:, content:, placeholder:, id:, source:, role:, quotes, -, and OR.`
+                : t`Direct prompt search over names, content, placeholders, identifiers, sources, and roles. Enable Advanced syntax for operators like name:, OR, -, and quotes.`;
+        }
+
+        if (advancedInput) {
+            advancedInput.checked = advancedSyntax;
+        }
     }
 
     /**
@@ -2090,8 +2433,10 @@ class PromptManager {
     loadMessagesIntoInspectForm(messages) {
         if (!messages) return;
 
-        const searchQuery = String(this.promptListSearchQuery || '').trim().toLowerCase();
-        const normalizedSearchQuery = this.normalizePromptSearchText(searchQuery);
+        const searchQuery = String(this.promptListSearchQuery || '').trim();
+        const advancedSyntax = Boolean(this.promptListSearchAdvancedSyntax);
+        const searchClauses = this.parsePromptSearchQuery(searchQuery, { advancedSyntax });
+        const highlightQuery = advancedSyntax ? '' : searchQuery;
 
         const createInlineDrawer = (message) => {
             const content = String(message.content || 'No Content');
@@ -2099,12 +2444,11 @@ class PromptManager {
             const title = String(message.identifier || truncatedTitle);
             const role = String(message.role || '');
             const tokens = message.getTokens();
-            const searchIndex = this.buildPromptMessageSearchIndex(message);
-            const isMatched = this.matchesPromptSearchIndex(searchIndex, searchQuery, normalizedSearchQuery);
-            const matchedBadge = isMatched ? '<small class="prompt-manager-search-hit-badge">match</small>' : '';
-            const highlightedTitle = this.highlightPromptSearchText(title, searchQuery);
-            const highlightedRole = this.highlightPromptSearchText(role, searchQuery);
-            const highlightedContent = this.highlightPromptSearchText(content, searchQuery);
+            const isMatched = this.matchesPromptSearchFields(this.getPromptMessageSearchFields(message), searchClauses);
+            const matchedBadge = isMatched ? `<small class="prompt-manager-search-hit-badge">${escapeHtml(t`Match`)}</small>` : '';
+            const highlightedTitle = this.highlightPromptSearchText(title, highlightQuery);
+            const highlightedRole = this.highlightPromptSearchText(role, highlightQuery);
+            const highlightedContent = this.highlightPromptSearchText(content, highlightQuery);
 
             let drawerHTML = `
         <div class="inline-drawer ${this.configuration.prefix}prompt_manager_prompt ${isMatched ? `${this.configuration.prefix}prompt_manager_search_hit` : ''}">
@@ -2291,7 +2635,10 @@ class PromptManager {
         const headerHtml = await renderTemplateAsync('promptManagerHeader', { error: this.error, errorDiv, prefix: this.configuration.prefix, totalActiveTokens });
         promptManagerDiv.insertAdjacentHTML('beforeend', headerHtml);
 
-        const searchInput = /** @type {HTMLInputElement|null} */(promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_search`));
+        const { prefix } = this.configuration;
+        const searchInput = /** @type {HTMLInputElement|null} */(promptManagerDiv.querySelector(`#${prefix}prompt_manager_search`));
+        const searchHelpButton = /** @type {HTMLButtonElement|null} */(promptManagerDiv.querySelector(`#${prefix}prompt_manager_search_help`));
+        const searchAdvancedInput = /** @type {HTMLInputElement|null} */(promptManagerDiv.querySelector(`#${prefix}prompt_manager_search_advanced`));
         if (searchInput) {
             searchInput.value = this.promptListSearchQuery;
             searchInput.addEventListener('input', (event) => {
@@ -2302,8 +2649,25 @@ class PromptManager {
                 this.renderPromptManagerListItems();
             });
         }
+        if (searchHelpButton) {
+            searchHelpButton.addEventListener('click', async () => {
+                await this.showPromptSearchSyntaxHelp();
+            });
+        }
+        if (searchAdvancedInput) {
+            searchAdvancedInput.checked = Boolean(this.promptListSearchAdvancedSyntax);
+            searchAdvancedInput.addEventListener('change', (event) => {
+                if (!(event.target instanceof HTMLInputElement)) {
+                    return;
+                }
+                this.promptListSearchAdvancedSyntax = Boolean(event.target.checked);
+                this.updatePromptSearchInputState();
+                this.renderPromptManagerListItems();
+            });
+        }
+        this.updatePromptSearchInputState();
 
-        this.listElement = promptManagerDiv.querySelector(`#${this.configuration.prefix}prompt_manager_list`);
+        this.listElement = promptManagerDiv.querySelector(`#${prefix}prompt_manager_list`);
 
         if (null !== this.activeCharacter) {
             const prompts = [...this.serviceSettings.prompts]
@@ -2347,11 +2711,12 @@ class PromptManager {
         promptManagerList.innerHTML = '';
 
         const { prefix } = this.configuration;
-
         let listItemHtml = await renderTemplateAsync('promptManagerListHeader', { prefix });
 
-        const searchQuery = String(this.promptListSearchQuery || '').trim().toLowerCase();
-        const normalizedSearchQuery = this.normalizePromptSearchText(searchQuery);
+        const searchQuery = String(this.promptListSearchQuery || '').trim();
+        const searchClauses = this.parsePromptSearchQuery(searchQuery, {
+            advancedSyntax: Boolean(this.promptListSearchAdvancedSyntax),
+        });
         const visiblePrompts = this.getPromptsForCharacter(this.activeCharacter)
             .filter(prompt => {
                 if (!prompt) {
@@ -2360,8 +2725,7 @@ class PromptManager {
                 if (!searchQuery) {
                     return true;
                 }
-                const haystack = this.buildPromptSearchIndex(prompt);
-                return haystack.includes(searchQuery) || (normalizedSearchQuery && haystack.includes(normalizedSearchQuery));
+                return this.matchesPromptSearchFields(this.getPromptSearchFields(prompt), searchClauses);
             });
 
         visiblePrompts.forEach(prompt => {

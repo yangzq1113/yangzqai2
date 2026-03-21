@@ -9,7 +9,16 @@
         <div><span data-i18n="Total Tokens:">Total Tokens:</span> {{totalActiveTokens}} </div>
     </div>
     <div class="completion_prompt_manager_search">
-        <input id="{{prefix}}prompt_manager_search" class="text_pole" type="search" placeholder="Search prompts or placeholders..." data-i18n="[placeholder]Search prompts or placeholders..." />
+        <div class="completion_prompt_manager_search_controls">
+            <input id="{{prefix}}prompt_manager_search" class="text_pole" type="search" placeholder="Search prompts or placeholders..." data-i18n="[placeholder]Search prompts or placeholders..." />
+            <button type="button" id="{{prefix}}prompt_manager_search_help" class="menu_button prompt_manager_search_help_button" title="Search syntax help" data-i18n="[title]Search syntax help">
+                <i class="fa-solid fa-circle-question"></i>
+            </button>
+            <label class="checkbox_label prompt_manager_search_toggle_label" for="{{prefix}}prompt_manager_search_advanced" title="Enable advanced prompt search syntax such as quotes, OR, -, name:, content:, placeholder:, id:, source:, and role:." data-i18n="[title]Enable advanced prompt search syntax such as quotes, OR, -, name:, content:, placeholder:, id:, source:, and role:.">
+                <input id="{{prefix}}prompt_manager_search_advanced" type="checkbox" />
+                <small data-i18n="Advanced syntax">Advanced syntax</small>
+            </label>
+        </div>
     </div>
     <ul id="{{prefix}}prompt_manager_list" class="text_pole"></ul>
 </div>
