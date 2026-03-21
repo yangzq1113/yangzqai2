@@ -58,6 +58,7 @@ import { isFirefox } from './browser-fixes.js';
  */
 
 const USER_AVATAR_PATH = 'User Avatars/';
+const CHAT_LAST_USER_PERSONA_METADATA_KEY = 'last_user_persona';
 
 let savePersonasPage = 0;
 const GRID_STORAGE_KEY = 'Personas_GridView';
@@ -149,8 +150,9 @@ async function fetchUserAvatarsPayload() {
  * @param {object} [options] Optional settings
  * @param {boolean} [options.toastPersonaNameChange=true] Whether to show a toast when the persona name is changed
  * @param {boolean} [options.navigateToCurrent=false] Whether to navigate to the current persona after setting the avatar
+ * @param {boolean} [options.syncChatPersona=true] Whether to sync the current persona into active chat metadata
  */
-export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, navigateToCurrent = false } = {}) {
+export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, navigateToCurrent = false, syncChatPersona = true } = {}) {
     const currentUserAvatar = user_avatar;
     const nextUserAvatar = imgfile && typeof imgfile === 'string' ? imgfile : $(this).attr('data-avatar-id');
     if (currentUserAvatar === nextUserAvatar) {
@@ -160,7 +162,10 @@ export async function setUserAvatar(imgfile, { toastPersonaNameChange = true, na
     user_avatar = nextUserAvatar;
     reloadUserAvatar();
     updatePersonaUIStates({ navigateToCurrent: navigateToCurrent });
-    selectCurrentPersona({ toastPersonaNameChange: toastPersonaNameChange });
+    await selectCurrentPersona({ toastPersonaNameChange: toastPersonaNameChange });
+    if (syncChatPersona) {
+        syncCurrentPersonaToChatMetadata();
+    }
     await retriggerFirstMessageOnEmptyChat();
     saveSettingsDebounced();
     $('.zoomed_avatar[forchar]').remove();
@@ -556,6 +561,86 @@ function isGlobalPersonaAvatar(avatarId) {
         return false;
     }
     return true;
+}
+
+function hasActiveChatForPersonaTracking() {
+    if (selected_group) {
+        const groupId = String(selected_group || '').trim();
+        const group = groups.find(x => String(x?.id || '') === groupId);
+        return Boolean(String(group?.chat_id || '').trim());
+    }
+
+    const character = characters[Number(this_chid)];
+    return Boolean(String(character?.chat || '').trim());
+}
+
+function getTrackedChatPersona(metadata = chat_metadata) {
+    const trackedPersona = metadata?.[CHAT_LAST_USER_PERSONA_METADATA_KEY];
+    if (!trackedPersona || typeof trackedPersona !== 'object') {
+        return null;
+    }
+
+    const avatar = String(trackedPersona.avatar || '').trim();
+    const name = String(trackedPersona.name || '').trim();
+    if (!avatar) {
+        return null;
+    }
+
+    return { avatar, name };
+}
+
+function getCurrentTrackedChatPersona() {
+    const avatar = String(user_avatar || '').trim();
+    if (!avatar) {
+        return null;
+    }
+
+    const preferredCharacterAvatar = getCurrentCharacterAvatarForDedicatedPersona();
+    const name = String(getPersonaNameByAvatar(avatar, { preferredCharacterAvatar }) || name1 || '').trim();
+    return { avatar, name };
+}
+
+function notifyChatPersonaMismatch(previousPersona, currentPersona) {
+    const preferredCharacterAvatar = getCurrentCharacterAvatarForDedicatedPersona();
+    const previousName = String(previousPersona?.name || getPersonaNameByAvatar(previousPersona?.avatar, { preferredCharacterAvatar }) || previousPersona?.avatar || '').trim();
+    const currentName = String(currentPersona?.name || getPersonaNameByAvatar(currentPersona?.avatar, { preferredCharacterAvatar }) || currentPersona?.avatar || '').trim();
+    if (!previousName || !currentName) {
+        return;
+    }
+
+    toastr.info(
+        t`This chat was last used with ${previousName}, but the current persona is ${currentName}.`,
+        t`Persona Reminder`,
+        { preventDuplicates: true },
+    );
+}
+
+function syncCurrentPersonaToChatMetadata({ notifyOnChange = false } = {}) {
+    if (!hasActiveChatForPersonaTracking()) {
+        return false;
+    }
+
+    const currentPersona = getCurrentTrackedChatPersona();
+    if (!currentPersona) {
+        return false;
+    }
+
+    const previousPersona = getTrackedChatPersona();
+    const hasAvatarChanged = Boolean(previousPersona?.avatar) && previousPersona.avatar !== currentPersona.avatar;
+    const shouldUpdate = !previousPersona
+        || previousPersona.avatar !== currentPersona.avatar
+        || previousPersona.name !== currentPersona.name;
+
+    if (notifyOnChange && hasAvatarChanged && power_user.persona_show_notifications && !isPersonaPanelOpen()) {
+        notifyChatPersonaMismatch(previousPersona, currentPersona);
+    }
+
+    if (shouldUpdate) {
+        chat_metadata[CHAT_LAST_USER_PERSONA_METADATA_KEY] = { ...currentPersona };
+        saveMetadataDebounced();
+    }
+
+    return hasAvatarChanged;
 }
 
 function normalizeDedicatedPersonaEntries(entries) {
@@ -2307,6 +2392,7 @@ function getPersonaTemporaryLockInfo() {
 async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     const shouldRenderPersonaList = doRender || isPersonaPanelOpen();
     const currentConnection = getCurrentConnectionObj();
+    let shouldNotifyTrackedPersonaMismatch = true;
 
     if (!selected_group && Number(this_chid) >= 0 && characters[Number(this_chid)]) {
         const currentCharacter = characters[Number(this_chid)];
@@ -2323,7 +2409,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     // Check if the user avatar is set and exists in the list of user avatars
     if (userAvatars.length && !userAvatars.includes(user_avatar)) {
         console.log(`User avatar ${user_avatar} not found in user avatars list, pick the first available one`);
-        await setUserAvatar(userAvatars[0], { toastPersonaNameChange: false, navigateToCurrent: true });
+        await setUserAvatar(userAvatars[0], { toastPersonaNameChange: false, navigateToCurrent: true, syncChatPersona: false });
     }
 
     // Define a persona for this chat
@@ -2476,7 +2562,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
         const willAutoLock = power_user.persona_auto_lock
             && user_avatar !== chat_metadata['persona']
             && !isPersonaDedicatedToAnyCharacter(chatPersona);
-        await setUserAvatar(chatPersona, { toastPersonaNameChange: false, navigateToCurrent: true });
+        await setUserAvatar(chatPersona, { toastPersonaNameChange: false, navigateToCurrent: true, syncChatPersona: false });
 
         if (power_user.persona_show_notifications) {
             const preferredCharacterAvatar = getCurrentCharacterAvatarForDedicatedPersona();
@@ -2489,6 +2575,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
                 message += '<br /><br />' + t`Auto-locked this persona to current chat.`;
             }
             toastr.success(message, t`Persona Auto Selected`, { escapeHtml: false });
+            shouldNotifyTrackedPersonaMismatch = false;
         }
     }
     // Even if it's the same persona, we still might need to auto-lock to chat if that's enabled
@@ -2497,6 +2584,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     }
 
     updatePersonaUIStates();
+    syncCurrentPersonaToChatMetadata({ notifyOnChange: shouldNotifyTrackedPersonaMismatch });
 
     return !!chatPersona;
 }
