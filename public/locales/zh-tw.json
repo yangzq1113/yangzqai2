@@ -4613,5 +4613,7 @@
     "This persona is currently in the global persona list. After binding it to character ${0}, should it stay in the global persona list as well?": "這個人設目前位於全域人設列表中。綁定到角色 ${0} 後，是否仍要保留在全域人設列表中？",
     "Keep Global": "保留全域",
     "Character Only": "僅角色專屬",
-    "this character": "目前角色"
+    "this character": "目前角色",
+    "Persona Reminder": "人設提醒",
+    "This chat was last used with ${0}, but the current persona is ${1}.": "這個聊天上次使用的人設是 ${0}，但目前人設是 ${1}。"
 }
