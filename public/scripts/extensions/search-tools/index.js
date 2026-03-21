@@ -1873,9 +1873,6 @@ async function ensureSharedLorebook(context, allowCreate = true) {
     }
 
     await context.saveWorldInfo(SHARED_LOREBOOK_NAME, { entries: {} }, true);
-    if (typeof context.updateWorldInfoList === 'function') {
-        await context.updateWorldInfoList();
-    }
     const created = await context.loadWorldInfo(SHARED_LOREBOOK_NAME);
     return {
         bookName: SHARED_LOREBOOK_NAME,
@@ -1885,10 +1882,6 @@ async function ensureSharedLorebook(context, allowCreate = true) {
 }
 
 async function refreshSharedLorebookVisibilityAndSelection(context, selected) {
-    if (typeof context?.updateWorldInfoList === 'function') {
-        await context.updateWorldInfoList();
-    }
-
     if (typeof selected === 'boolean') {
         const changed = await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, selected, {
             refreshList: true,

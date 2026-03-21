@@ -12,7 +12,7 @@ import { sendOpenAIRequest } from '../../openai.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../popup.js';
-import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, reloadEditor, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
+import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
 import {
     TOOL_PROTOCOL_STYLE,
@@ -789,23 +789,6 @@ async function syncWorldBindingUi(context, worldName = '') {
     // Character data can land slightly later; re-apply once after the current tick.
     setTimeout(applyButtonState, 0);
     setTimeout(applyButtonState, 120);
-}
-
-async function refreshWorldInfoEditorUi(bookName = '') {
-    const targetBook = String(bookName || '').trim();
-    try {
-        await updateWorldInfoList();
-    } catch (error) {
-        console.warn(`[${MODULE_NAME}] Failed to refresh world info list`, error);
-    }
-    if (!targetBook) {
-        return;
-    }
-    try {
-        reloadEditor(targetBook, false);
-    } catch (error) {
-        console.warn(`[${MODULE_NAME}] Failed to reload world info editor`, error);
-    }
 }
 
 function getPrimaryLorebookName(character) {
@@ -5286,7 +5269,6 @@ async function applyLorebookUpsertOperation(context, record, operation) {
 
     data.entries[uid] = nextEntry;
     await context.saveWorldInfo(bookName, data, true);
-    await refreshWorldInfoEditorUi(bookName);
 
     return {
         summary: `Upserted lorebook entry #${uid} in ${bookName}`,
@@ -5324,7 +5306,6 @@ async function applyLorebookDeleteOperation(context, record, operation) {
 
     delete data.entries[entryUid];
     await context.saveWorldInfo(bookName, data, true);
-    await refreshWorldInfoEditorUi(bookName);
 
     return {
         summary: `Deleted lorebook entry #${entryUid} from ${bookName}`,
@@ -5509,7 +5490,6 @@ async function rollbackJournalEntry(context, journalEntry, { avatar = '' } = {})
             delete lorebookData.entries[entryUid];
         }
         await context.saveWorldInfo(bookName, lorebookData, true);
-        await refreshWorldInfoEditorUi(bookName);
         return `Rolled back lorebook entry #${entryUid} in ${bookName}`;
     }
 

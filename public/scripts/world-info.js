@@ -1528,6 +1528,27 @@ export function setWorldInfoSettings(settings, data) {
         await getSortedEntries();
     });
 
+    eventSource.on(event_types.WORLDINFO_UPDATED, async (name) => {
+        const updatedName = resolveWorldInfoName(name) || String(name || '').trim();
+        if (!updatedName) {
+            return;
+        }
+
+        if (!hasWorldInfoName(updatedName)) {
+            await updateWorldInfoList();
+        }
+
+        // Avoid interrupting direct in-editor typing flow from the world editor itself.
+        const activeElement = document.activeElement;
+        const isEditorInputFocused = activeElement instanceof HTMLElement
+            && activeElement.closest('#WorldInfo.openDrawer #world_popup') instanceof HTMLElement;
+        if (isEditorInputFocused) {
+            return;
+        }
+
+        reloadEditor(updatedName);
+    });
+
     eventSource.on(event_types.WORLDINFO_FORCE_ACTIVATE, (entries) => {
         for (const entry of entries) {
             if (!Object.hasOwn(entry, 'world') || !Object.hasOwn(entry, 'uid')) {
@@ -4976,7 +4997,7 @@ async function saveWorldInfoInternal(name, data, options = {}) {
         }
     }
 
-    rememberWorldInfoSnapshot(name, payload);
+    cacheWorldInfoData(name, payload);
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, payload);
 }
 
