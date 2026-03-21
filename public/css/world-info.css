@@ -279,7 +279,8 @@
 }
 
 .world_info_manager_pin.is-active,
-.world_info_manager_active_pin.is-active {
+.world_info_manager_active_pin.is-active,
+.world_info_manager_toggle.is-active {
     color: var(--SmartThemeQuoteColor);
 }
 

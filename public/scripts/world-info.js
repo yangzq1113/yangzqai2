@@ -3977,7 +3977,7 @@ function buildWorldInfoManagerItem(item) {
             <div class="world_info_manager_item_actions">
                 <div class="menu_button world_info_manager_tags_button fa-solid fa-tags"></div>
                 <div class="menu_button world_info_manager_pin fa-solid fa-thumbtack"></div>
-                <div class="menu_button world_info_manager_toggle"></div>
+                <div class="menu_button world_info_manager_toggle fa-solid fa-toggle-off"></div>
                 <div class="menu_button world_info_manager_edit fa-solid fa-pen-to-square" title="${escapeHtmlText(t`Open lorebook in editor`)}"></div>
                 <div class="menu_button world_info_manager_delete fa-solid fa-trash-can" title="${escapeHtmlText(t`Delete lorebook`)}"></div>
             </div>
@@ -4049,8 +4049,8 @@ function buildWorldInfoManagerItem(item) {
 
     const toggleButton = itemElement.find('.world_info_manager_toggle');
     toggleButton
-        .toggleClass('fa-solid fa-toggle-on', item.active)
-        .toggleClass('fa-solid fa-toggle-off', !item.active)
+        .toggleClass('fa-flip-horizontal', item.active)
+        .toggleClass('is-active', item.active)
         .attr('title', item.active ? t`Disable lorebook` : t`Enable lorebook`)
         .on('click', async () => {
             await setGlobalWorldInfoSelection(item.name, !item.active);
