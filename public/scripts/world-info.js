@@ -3701,6 +3701,39 @@ function setWorldInfoManagerPageSize(value) {
     accountStorage.setItem(WORLD_INFO_MANAGER_PAGE_SIZE_KEY, String(worldInfoManagerState.pageSize));
 }
 
+function getPinnedWorldInfoNames() {
+    return Array.isArray(world_info?.pinnedWorlds)
+        ? world_info.pinnedWorlds
+            .map((name) => resolveWorldInfoName(name))
+            .filter(Boolean)
+            .filter(onlyUnique)
+        : [];
+}
+
+function isWorldInfoPinned(name) {
+    return getPinnedWorldInfoNames().some((entry) => areLookupNamesEqual(entry, name));
+}
+
+async function setWorldInfoPinned(name, pinned) {
+    const resolvedName = resolveWorldInfoName(name);
+    if (!resolvedName) {
+        return false;
+    }
+
+    const nextPinned = getPinnedWorldInfoNames()
+        .filter((entry) => !areLookupNamesEqual(entry, resolvedName));
+    if (pinned) {
+        nextPinned.unshift(resolvedName);
+    }
+
+    world_info.pinnedWorlds = nextPinned;
+    requestAsyncDiffForNextSettingsSave();
+    saveSettingsDebounced();
+    await eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+    renderWorldInfoManager();
+    return true;
+}
+
 function pruneWorldInfoManagerSelection() {
     for (const name of [...selectedWorldInfoManagerNames]) {
         if (!world_names?.includes(name)) {
@@ -3714,12 +3747,17 @@ function getWorldInfoManagerItems() {
         ? world_names.map((name) => ({
             name,
             active: hasSelectedWorldInfo(name),
+            pinned: isWorldInfoPinned(name),
         }))
         : [];
 }
 
 function getVisibleWorldInfoManagerItems() {
-    return getWorldInfoManagerItems();
+    return getWorldInfoManagerItems().sort((a, b) =>
+        Number(b.pinned) - Number(a.pinned)
+        || Number(b.active) - Number(a.active)
+        || a.name.localeCompare(b.name),
+    );
 }
 
 async function applyBulkWorldInfoSelection(names, selected) {
@@ -3786,6 +3824,7 @@ function buildWorldInfoManagerItem(item) {
                 <div class="world_info_manager_item_meta"></div>
             </div>
             <div class="world_info_manager_item_actions">
+                <div class="menu_button world_info_manager_pin fa-solid fa-thumbtack"></div>
                 <div class="menu_button world_info_manager_toggle"></div>
                 <div class="menu_button world_info_manager_edit fa-solid fa-pen-to-square" title="${escapeHtmlText(t`Open lorebook in editor`)}"></div>
                 <div class="menu_button world_info_manager_delete fa-solid fa-trash-can" title="${escapeHtmlText(t`Delete lorebook`)}"></div>
@@ -3818,11 +3857,26 @@ function buildWorldInfoManagerItem(item) {
         .on('click', () => openWorldInfoEditor(item.name));
 
     const meta = itemElement.find('.world_info_manager_item_meta');
+    if (item.pinned) {
+        meta.append($(`
+            <span class="world_info_manager_badge is-pinned">
+                ${escapeHtmlText(t`Pinned`)}
+            </span>
+        `));
+    }
     meta.append($(`
         <span class="world_info_manager_badge ${item.active ? 'is-active' : ''}">
             ${escapeHtmlText(item.active ? t`Active` : t`Inactive`)}
         </span>
     `));
+
+    itemElement.find('.world_info_manager_pin')
+        .toggleClass('is-active', item.pinned)
+        .attr('title', item.pinned ? t`Unpin lorebook` : t`Pin lorebook`)
+        .on('click', async () => {
+            await setWorldInfoPinned(item.name, !item.pinned);
+            renderWorldInfoManager();
+        });
 
     const toggleButton = itemElement.find('.world_info_manager_toggle');
     toggleButton
@@ -3852,8 +3906,41 @@ function buildWorldInfoManagerItem(item) {
     return itemElement;
 }
 
+function buildActiveWorldInfoChip(item) {
+    const chip = $(`
+        <div class="world_info_manager_active_chip">
+            <button type="button" class="world_info_manager_active_name"></button>
+            <div class="menu_button world_info_manager_active_pin fa-solid fa-thumbtack"></div>
+            <div class="menu_button world_info_manager_active_toggle fa-solid fa-toggle-off"></div>
+        </div>
+    `);
+
+    chip.toggleClass('is-pinned', item.pinned);
+    chip.find('.world_info_manager_active_name')
+        .text(item.name)
+        .attr('title', item.name)
+        .on('click', () => openWorldInfoEditor(item.name));
+    chip.find('.world_info_manager_active_pin')
+        .toggleClass('is-active', item.pinned)
+        .attr('title', item.pinned ? t`Unpin lorebook` : t`Pin lorebook`)
+        .on('click', async () => {
+            await setWorldInfoPinned(item.name, !item.pinned);
+            renderWorldInfoManager();
+        });
+    chip.find('.world_info_manager_active_toggle')
+        .attr('title', t`Disable lorebook`)
+        .on('click', async () => {
+            await setGlobalWorldInfoSelection(item.name, false);
+            renderWorldInfoManager();
+        });
+
+    return chip;
+}
+
 function renderWorldInfoManager() {
     const manager = $('#world_info_manager');
+    const activePanel = $('#world_info_manager_active_panel');
+    const activeList = $('#world_info_manager_active_list');
     const list = $('#world_info_manager_list');
     const pageStatus = $('#world_info_manager_page_status');
     const selectionStatus = $('#world_info_manager_selection_status');
@@ -3884,7 +3971,14 @@ function renderWorldInfoManager() {
     const selectedCount = selectedWorldInfoManagerNames.size;
 
     manager.removeClass('displayNone');
+    activeList.empty();
     list.empty();
+
+    const activeItems = items.filter((item) => item.active);
+    activePanel.toggleClass('displayNone', activeItems.length === 0);
+    if (activeItems.length > 0) {
+        activeList.append(activeItems.map(buildActiveWorldInfoChip));
+    }
 
     if (totalItems === 0) {
         list.append(`<div class="world_info_manager_empty">${escapeHtmlText(t`No lorebooks available.`)}</div>`);
@@ -6084,6 +6178,11 @@ async function renameWorldInfo(name, data) {
         saveSettingsDebounced();
     }
 
+    if (Array.isArray(world_info.pinnedWorlds)) {
+        world_info.pinnedWorlds = world_info.pinnedWorlds.map((entry) => areLookupNamesEqual(entry, oldName) ? newName : entry);
+        saveSettingsDebounced();
+    }
+
     if (entryPreviouslySelected !== -1) {
         const wiElement = getWIElement(newName);
         wiElement.prop('selected', true);
@@ -6129,6 +6228,15 @@ export async function deleteWorldInfo(worldInfoName) {
         selected_world_info.splice(existingWorldIndex, 1);
         requestAsyncDiffForNextSettingsSave();
         saveSettingsDebounced();
+    }
+
+    if (Array.isArray(world_info.pinnedWorlds)) {
+        const nextPinnedWorlds = world_info.pinnedWorlds.filter((entry) => !areLookupNamesEqual(entry, resolvedWorldInfoName));
+        if (nextPinnedWorlds.length !== world_info.pinnedWorlds.length) {
+            world_info.pinnedWorlds = nextPinnedWorlds;
+            requestAsyncDiffForNextSettingsSave();
+            saveSettingsDebounced();
+        }
     }
 
     await updateWorldInfoList();
