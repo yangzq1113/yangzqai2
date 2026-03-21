@@ -69,6 +69,7 @@ import {
     getGroupChat,
     renameGroupMember,
     createNewGroupChat,
+    editGroup,
     getGroupAvatar,
     deleteGroupChat,
     renameGroupChat,
@@ -1452,7 +1453,6 @@ export const ANIMATION_DURATION_DEFAULT = 125;
 export let animation_duration = ANIMATION_DURATION_DEFAULT;
 export let animation_easing = 'ease-in-out';
 let popup_type = '';
-let chat_file_for_del = '';
 export let online_status = 'no_connection';
 
 export let is_send_press = false; //Send generation
@@ -12922,6 +12922,95 @@ export function getCurrentChatDetails() {
     return { sessionName: currentChat, group: group, characterName: displayName, avatarImgURL: avatarImg };
 }
 
+function buildCurrentChatFileActionContext() {
+    if (selected_group) {
+        const groupId = String(selected_group || '').trim();
+        const group = groups.find(x => String(x?.id || '') === groupId);
+        const chatFile = String(group?.chat_id || '').trim();
+        if (!groupId || !group || !chatFile) {
+            return null;
+        }
+
+        return {
+            kind: 'group',
+            groupId,
+            chatFile,
+        };
+    }
+
+    const characterId = String(this_chid ?? '').trim();
+    const character = characters[this_chid];
+    const chatFile = String(character?.chat || '').trim();
+    const avatarUrl = String(character?.avatar || '').trim();
+    const characterName = String(character?.name || name2 || '').trim();
+    if (!characterId || !character || !chatFile || !avatarUrl) {
+        return null;
+    }
+
+    return {
+        kind: 'character',
+        characterId,
+        chatFile,
+        avatarUrl,
+        characterName,
+    };
+}
+
+function isCurrentChatFileActionContextActive(context) {
+    if (!context || typeof context !== 'object') {
+        return false;
+    }
+
+    if (context.kind === 'group') {
+        return String(selected_group || '').trim() === String(context.groupId || '').trim();
+    }
+
+    return !selected_group && String(this_chid ?? '').trim() === String(context.characterId || '').trim();
+}
+
+async function createNewCharacterChatForContext(context) {
+    const characterId = String(context?.characterId || '').trim();
+    const character = characters[characterId];
+    if (!character) {
+        return '';
+    }
+
+    const prefix = String(context?.characterName || character?.name || name2 || neutralCharacterName).trim() || neutralCharacterName;
+    const newChatName = `${prefix} - ${humanizedDateTime()}`;
+
+    if (isCurrentChatFileActionContextActive(context)) {
+        await clearChat({ clearData: true });
+        chat_metadata = {};
+        character.chat = newChatName;
+        $('#selected_chat_pole').val(character.chat);
+        await getChat();
+        await createOrEditCharacter(new CustomEvent('newChat'));
+        return character.chat;
+    }
+
+    await updateRemoteChatName(characterId, newChatName);
+    return newChatName;
+}
+
+async function createNewGroupChatForContext(context) {
+    const groupId = String(context?.groupId || '').trim();
+    const group = groups.find(x => String(x?.id || '') === groupId);
+    if (!group) {
+        return '';
+    }
+
+    if (isCurrentChatFileActionContextActive(context)) {
+        await createNewGroupChat(groupId);
+        return String(group.chat_id || '').trim();
+    }
+
+    const newChatName = humanizedDateTime();
+    group.chats.push(newChatName);
+    group.chat_id = newChatName;
+    await editGroup(group.id, true, false);
+    return newChatName;
+}
+
 /**
  * Displays the past chats for a character or a group based on the selected context.
  * The function first fetches the chats, processes them, and then displays them in
@@ -15024,6 +15113,12 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         return;
     }
 
+    const actionContext = buildCurrentChatFileActionContext();
+    if (!actionContext) {
+        return;
+    }
+    const deleteSaveContext = deleteCurrentChat ? buildActiveChatSaveContext() : null;
+
     const canChangeChat = deleteCurrentChat
         ? await waitForChatSwitchAvailability({ requireCompletedSave: true })
         : await waitForChatSwitchAvailability();
@@ -15031,31 +15126,40 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         return;
     }
 
-    await clearChat({ clearData: true });
-
-    chat_file_for_del = getCurrentChatDetails()?.sessionName;
-
     // Make it easier to find in backups
     if (deleteCurrentChat) {
-        await saveChatConditional();
+        if (deleteSaveContext?.kind === 'group') {
+            await saveGroupChat(deleteSaveContext.groupId, true, false, 0, { ...deleteSaveContext, skipSerialization: true });
+            finishActiveChatSaveContext(deleteSaveContext);
+        } else if (deleteSaveContext?.kind === 'character') {
+            await saveChatInternal({ _context: deleteSaveContext });
+            finishActiveChatSaveContext(deleteSaveContext);
+        } else {
+            await saveChatConditional();
+        }
     }
 
-    if (deleteCurrentChat) {
-        await maybeDeleteChatBoundLorebook(chat_file_for_del, selected_group);
+    if (deleteCurrentChat && actionContext.kind === 'group') {
+        await maybeDeleteChatBoundLorebook(actionContext.chatFile, actionContext.groupId);
     }
 
-    if (selected_group) {
-        await createNewGroupChat(selected_group);
-        if (deleteCurrentChat) await deleteGroupChat(selected_group, chat_file_for_del, { jumpToNewChat: false }); // don't jump, new chat was already created and jumped to above
+    if (deleteCurrentChat && actionContext.kind === 'character') {
+        await maybeDeleteChatBoundLorebook(actionContext.chatFile, null, {
+            avatarUrl: actionContext.avatarUrl,
+            characterName: actionContext.characterName,
+        });
     }
-    else {
-        //RossAscends: added character name to new chat filenames and replaced Date.now() with humanizedDateTime;
-        chat_metadata = {};
-        characters[this_chid].chat = `${name2} - ${humanizedDateTime()}`;
-        $('#selected_chat_pole').val(characters[this_chid].chat);
-        await getChat();
-        await createOrEditCharacter(new CustomEvent('newChat'));
-        if (deleteCurrentChat) await delChat(chat_file_for_del + '.jsonl');
+
+    if (actionContext.kind === 'group') {
+        await createNewGroupChatForContext(actionContext);
+        if (deleteCurrentChat) {
+            await deleteGroupChat(actionContext.groupId, actionContext.chatFile, { jumpToNewChat: false });
+        }
+    } else {
+        await createNewCharacterChatForContext(actionContext);
+        if (deleteCurrentChat) {
+            await deleteCharacterChatByName(actionContext.characterId, actionContext.chatFile);
+        }
     }
 
 }
