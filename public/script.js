@@ -11118,6 +11118,28 @@ export function shouldBlockChatSwitchWhileSaving() {
     return Boolean(isChatSaving && !activeChatSaveContext);
 }
 
+export async function waitForChatSwitchAvailability({ requireCompletedSave = false } = {}) {
+    const predicate = requireCompletedSave
+        ? () => !isChatSaving
+        : () => !shouldBlockChatSwitchWhileSaving();
+
+    try {
+        await waitUntilCondition(predicate, debounce_timeout.extended, 10);
+        return true;
+    } catch {
+        console.warn(requireCompletedSave
+            ? 'Timeout waiting for chat save to finish before changing chats'
+            : 'Timeout waiting for chat to reach a safe switch state');
+        toastr.info(
+            requireCompletedSave
+                ? t`Please wait until the current chat is fully saved before deleting or replacing it.`
+                : t`Please wait until the chat is saved before changing or closing chats.`,
+            t`Your chat is still saving...`,
+        );
+        return false;
+    }
+}
+
 /**
  * Updates only chat metadata on server-side chat storage.
  * Falls back to legacy full-save callers when this returns false.
@@ -11655,7 +11677,9 @@ function getFirstMessage() {
 }
 
 export async function openCharacterChat(file_name) {
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+    if (!await waitForChatSwitchAvailability()) {
+        return;
+    }
     await clearChat({ clearData: true });
     characters[this_chid].chat = file_name;
     chat_metadata = {};
@@ -15000,8 +15024,13 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
         return;
     }
 
-    //Fix it; New chat doesn't create while open create character menu
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+    const canChangeChat = deleteCurrentChat
+        ? await waitForChatSwitchAvailability({ requireCompletedSave: true })
+        : await waitForChatSwitchAvailability();
+    if (!canChangeChat) {
+        return;
+    }
+
     await clearChat({ clearData: true });
 
     chat_file_for_del = getCurrentChatDetails()?.sessionName;
@@ -15124,7 +15153,9 @@ export async function renameChat(oldFileName, newName) {
  */
 export async function closeCurrentChat() {
     if (is_send_press == false) {
-        await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+        if (!await waitForChatSwitchAvailability()) {
+            return false;
+        }
         await clearChat({ clearData: true });
         resetSelectedGroup();
         setCharacterId(undefined);

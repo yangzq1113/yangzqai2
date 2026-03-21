@@ -67,8 +67,8 @@ import {
     getCurrentChatId,
     setCharacterSettingsOverrides,
     system_avatar,
-    isChatSaving,
     shouldBlockChatSwitchWhileSaving,
+    waitForChatSwitchAvailability,
     setExternalAbortController,
     baseChatReplace,
     createLazyFields,
@@ -2275,7 +2275,9 @@ export async function getGroupPastChats(groupId) {
  * @returns {Promise<void>}
  */
 export async function openGroupChat(groupId, chatId) {
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+    if (!await waitForChatSwitchAvailability()) {
+        return;
+    }
     const group = groups.find(x => x.id === groupId);
 
     if (!group || !group.chats.includes(chatId)) {
