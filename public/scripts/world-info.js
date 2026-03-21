@@ -76,8 +76,10 @@ const WORLD_INFO_INDICATOR_DRAG_Z_INDEX = 2147483647;
 const WORLD_INFO_INDICATOR_SCROLL_EDGE_PX = 72;
 const WORLD_INFO_INDICATOR_SCROLL_MIN_SPEED_PX = 4;
 const WORLD_INFO_INDICATOR_SCROLL_MAX_SPEED_PX = 22;
+const WORLD_INFO_DRAWER_FALLBACK_RESERVE_HEIGHT_PX = 620;
 
 const worldInfoIndicatorDragHandlers = new WeakMap();
+const worldInfoDrawerReserveHeightByWidth = new Map();
 let activeWorldInfoIndicatorDrag = null;
 
 export const world_info_insertion_strategy = {
@@ -3427,6 +3429,84 @@ function installWorldInfoIndicatorDrag(worldEntriesList, name, data) {
     });
 }
 
+function getWorldInfoDrawerWidthKey(drawerEl) {
+    if (!(drawerEl instanceof HTMLElement)) {
+        return 0;
+    }
+
+    const width = Math.round(drawerEl.getBoundingClientRect().width || drawerEl.offsetWidth || 0);
+    if (width <= 0) {
+        return 0;
+    }
+
+    return Math.round(width / 32) * 32;
+}
+
+function getWorldInfoDrawerReserveHeight(drawerEl) {
+    const widthKey = getWorldInfoDrawerWidthKey(drawerEl);
+    return worldInfoDrawerReserveHeightByWidth.get(widthKey) ?? WORLD_INFO_DRAWER_FALLBACK_RESERVE_HEIGHT_PX;
+}
+
+function setWorldInfoDrawerReserveHeight(drawerEl, heightPx) {
+    const widthKey = getWorldInfoDrawerWidthKey(drawerEl);
+    const normalizedHeight = Math.round(Number(heightPx) || 0);
+    if (widthKey <= 0 || normalizedHeight <= 80) {
+        return;
+    }
+
+    worldInfoDrawerReserveHeightByWidth.set(widthKey, normalizedHeight);
+}
+
+function ensureWorldInfoDrawerLoadingPlaceholder(editOutlet) {
+    if (!editOutlet?.length) {
+        return;
+    }
+
+    if (editOutlet.children('.world-info-entry-loading').length) {
+        return;
+    }
+
+    const loading = $(`
+        <div class="world-info-entry-loading">
+            <div class="fa-solid fa-spinner fa-spin"></div>
+            <span>${escapeHtmlText(t`Loading entry editor...`)}</span>
+        </div>
+    `);
+    loading.css({
+        display: 'flex',
+        'align-items': 'center',
+        gap: '8px',
+        padding: '12px 14px',
+        margin: '8px 0',
+        border: '1px dashed var(--SmartThemeBorderColor)',
+        'border-radius': '10px',
+        background: 'color-mix(in srgb, var(--SmartThemeBlurTintColor) 82%, transparent)',
+        color: 'var(--SmartThemeBodyColor)',
+        opacity: '0.9',
+    });
+    editOutlet.append(loading);
+}
+
+function clearWorldInfoDrawerLoadingPlaceholder(editOutlet) {
+    editOutlet?.children('.world-info-entry-loading')?.remove();
+}
+
+function reserveWorldInfoDrawerHeight(drawerEl, editOutlet) {
+    const reserveHeight = getWorldInfoDrawerReserveHeight(drawerEl);
+    editOutlet.css({
+        height: `${reserveHeight}px`,
+        overflow: 'hidden',
+    });
+    return reserveHeight;
+}
+
+function releaseWorldInfoDrawerHeight(editOutlet) {
+    editOutlet.css({
+        height: '',
+        overflow: '',
+    });
+}
+
 function destroyWorldEntryBlock($block) {
     if (!$block?.length) {
         return;
@@ -4750,30 +4830,105 @@ export async function getWorldEntry(name, data, entry) {
     });
     headerTemplate.find('.delete_entry_button').after(traceButton);
 
+    const drawerEl = headerTemplate.find('.inline-drawer');
+    const editOutlet = headerTemplate.find('.inline-drawer-outlet');
     let drawerInitialized = false;
+    let drawerBuildQueued = false;
+    let drawerBuildToken = 0;
     let drawerDestroyTimeout = null;
-    headerTemplate.find('.inline-drawer').on('inline-drawer-toggle', function () {
-        if (drawerDestroyTimeout) {
-            clearTimeout(drawerDestroyTimeout);
-            drawerDestroyTimeout = null;
+
+    function clearDrawerDestroyTimeout() {
+        if (!drawerDestroyTimeout) {
+            return;
         }
-        if (drawerInitialized) {
-            drawerDestroyTimeout = setTimeout(() => {
-                // Drawer was reopened, so we don't destroy it
-                if (editOutlet.is(':visible')) {
+
+        clearTimeout(drawerDestroyTimeout);
+        drawerDestroyTimeout = null;
+    }
+
+    function scheduleDrawerBuild() {
+        if (drawerInitialized || drawerBuildQueued) {
+            return;
+        }
+
+        const drawerNode = drawerEl.get(0);
+        if (!(drawerNode instanceof HTMLElement)) {
+            return;
+        }
+
+        drawerBuildQueued = true;
+        const buildToken = ++drawerBuildToken;
+        const reserveHeight = reserveWorldInfoDrawerHeight(drawerNode, editOutlet);
+        ensureWorldInfoDrawerLoadingPlaceholder(editOutlet);
+
+        requestAnimationFrame(() => {
+            editOutlet.promise().done(() => {
+                if (buildToken !== drawerBuildToken) {
                     return;
                 }
+
+                drawerBuildQueued = false;
+                if (!editOutlet.is(':visible') || drawerInitialized) {
+                    return;
+                }
+
+                let buildSucceeded = false;
+                try {
+                    addEditorDrawerContent();
+                    drawerInitialized = true;
+                    buildSucceeded = true;
+                } catch (error) {
+                    console.error(`Error building World Info entry drawer for ${entry.uid}:`, error);
+                } finally {
+                    clearWorldInfoDrawerLoadingPlaceholder(editOutlet);
+
+                    if (buildSucceeded) {
+                        const naturalHeight = Math.round(editOutlet.get(0)?.scrollHeight || 0);
+                        if (naturalHeight > 0) {
+                            setWorldInfoDrawerReserveHeight(drawerNode, naturalHeight);
+                            if (naturalHeight > reserveHeight) {
+                                editOutlet.css('height', `${naturalHeight}px`);
+                            }
+                        }
+                    }
+
+                    requestAnimationFrame(() => {
+                        if (editOutlet.is(':visible')) {
+                            releaseWorldInfoDrawerHeight(editOutlet);
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    drawerEl.on('inline-drawer-toggle', function () {
+        clearDrawerDestroyTimeout();
+        const isOpening = !editOutlet.is(':visible');
+
+        if (isOpening) {
+            scheduleDrawerBuild();
+            return;
+        }
+
+        drawerBuildToken++;
+        drawerBuildQueued = false;
+        drawerDestroyTimeout = setTimeout(() => {
+            if (editOutlet.is(':visible')) {
+                return;
+            }
+
+            clearWorldInfoDrawerLoadingPlaceholder(editOutlet);
+            releaseWorldInfoDrawerHeight(editOutlet);
+
+            if (drawerInitialized) {
                 drawerInitialized = false;
                 clearEntryList(editOutlet);
-                drawerDestroyTimeout = null;
-            }, debounce_timeout.relaxed);
-        } else {
-            drawerInitialized = true;
-            addEditorDrawerContent();
-        }
-    });
+            }
 
-    const editOutlet = headerTemplate.find('.inline-drawer-outlet');
+            drawerDestroyTimeout = null;
+        }, debounce_timeout.relaxed);
+    });
 
     function addEditorDrawerContent() {
         const editTemplate = WI_ENTRY_EDIT_TEMPLATE.clone();
