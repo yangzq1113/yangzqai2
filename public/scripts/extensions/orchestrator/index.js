@@ -16,7 +16,9 @@ import {
     mergeUserAddendumIntoPromptMessages,
     validateParsedToolCalls,
 } from '../function-call-runtime.js';
-import { yaml } from '../../../lib.js';
+import { DiffMatchPatch, yaml } from '../../../lib.js';
+import { create as createDiffPatcher, reverse as reverseDiffDelta } from '../../vendor/diffpatch/index.js';
+import DiffpatchHtmlFormatter from '../../vendor/diffpatch/formatters/html.js';
 
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
@@ -25,8 +27,9 @@ const ORCH_CHAT_STATE_NAMESPACE = 'luker_orchestrator_state';
 const ORCH_CHAT_STATE_VERSION = 2;
 const ORCH_CHAT_CONTENT_NAMESPACE_PREFIX = 'luker_orchestrator_anchor_';
 const ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE = 'orchestrator_iteration_history';
-const ORCH_CHARACTER_ITERATION_HISTORY_VERSION = 1;
+const ORCH_CHARACTER_ITERATION_HISTORY_VERSION = 3;
 const ORCH_CHARACTER_ITERATION_HISTORY_LIMIT = 24;
+const ORCH_ITERATION_DIFF_TEXT_MIN_LENGTH = 80;
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints. Before function-call output, provide one concise <thought>...</thought> that reflects your role-specific reasoning.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
@@ -7622,6 +7625,80 @@ function cloneAiIterationWorkingProfile(mode, workingProfile) {
     };
 }
 
+function getAiIterationDiffObjectHash(obj, index = 0) {
+    if (!obj || typeof obj !== 'object') {
+        return `${typeof obj}:${String(obj)}`;
+    }
+    const id = sanitizeIdentifierToken(obj.id, '');
+    if (id) {
+        return `id:${id}`;
+    }
+    const name = normalizeText(obj.name || '');
+    if (name) {
+        return `name:${name}`;
+    }
+    const preset = sanitizeIdentifierToken(obj.preset, '');
+    if (preset) {
+        return `preset:${preset}`;
+    }
+    const fallback = JSON.stringify(obj);
+    return fallback || `index:${index}`;
+}
+
+const aiIterationDiffPatcher = createDiffPatcher({
+    objectHash: getAiIterationDiffObjectHash,
+    arrays: {
+        detectMove: true,
+        includeValueOnMove: false,
+    },
+    textDiff: {
+        minLength: ORCH_ITERATION_DIFF_TEXT_MIN_LENGTH,
+        diffMatchPatch: DiffMatchPatch,
+    },
+    cloneDiffValues: true,
+});
+
+const aiIterationDiffHtmlFormatter = new DiffpatchHtmlFormatter();
+
+function cloneAiIterationProfileDelta(delta) {
+    if (!delta || typeof delta !== 'object') {
+        return null;
+    }
+    return structuredClone(delta);
+}
+
+function buildAiIterationProfileDeltaPayload(mode, beforeProfile, afterProfile) {
+    const safeBefore = cloneAiIterationWorkingProfile(mode, beforeProfile);
+    const safeAfter = cloneAiIterationWorkingProfile(mode, afterProfile);
+    const delta = aiIterationDiffPatcher.diff(safeBefore, safeAfter);
+    const normalizedDelta = cloneAiIterationProfileDelta(delta);
+    return {
+        beforeProfile: safeBefore,
+        afterProfile: safeAfter,
+        delta: normalizedDelta,
+        reverseDelta: normalizedDelta ? cloneAiIterationProfileDelta(reverseDiffDelta(normalizedDelta)) : null,
+    };
+}
+
+function sanitizeAiIterationProfileDiffHtml(html) {
+    return String(html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
+}
+
+function renderAiIterationProfileDeltaHtml(mode, delta, beforeProfile) {
+    const normalizedDelta = cloneAiIterationProfileDelta(delta);
+    if (!normalizedDelta) {
+        return '';
+    }
+    try {
+        const safeBefore = cloneAiIterationWorkingProfile(mode, beforeProfile);
+        const html = aiIterationDiffHtmlFormatter.format(normalizedDelta, safeBefore);
+        return sanitizeAiIterationProfileDiffHtml(html);
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to render iteration profile delta`, error);
+        return '';
+    }
+}
+
 function ensureAiIterationSessionBaseWorkingProfile(session) {
     if (!session || typeof session !== 'object') {
         return;
@@ -7664,25 +7741,6 @@ function restoreAiIterationSessionStateFromMessages(session) {
     session.updatedAt = Date.now();
 }
 
-function normalizeAiIterationDiffEntries(entries) {
-    return (Array.isArray(entries) ? entries : [])
-        .filter(item => item && typeof item === 'object')
-        .map(item => ({
-            name: String(item?.name || '').trim(),
-            summary: String(item?.summary || '').trim(),
-            fields: (Array.isArray(item?.fields) ? item.fields : [])
-                .filter(field => field && typeof field === 'object')
-                .map(field => ({
-                    label: String(field?.label || '').trim(),
-                    before: field?.before ?? '',
-                    after: field?.after ?? '',
-                })),
-            rawArgs: item?.rawArgs && typeof item.rawArgs === 'object'
-                ? structuredClone(item.rawArgs)
-                : {},
-        }));
-}
-
 function normalizeAiIterationSessionMessage(mode, rawMessage) {
     const role = String(rawMessage?.role || 'assistant').trim().toLowerCase();
     const message = {
@@ -7714,8 +7772,14 @@ function normalizeAiIterationSessionMessage(mode, rawMessage) {
         if (Array.isArray(rawMessage?.executionToolCalls)) {
             message.executionToolCalls = buildExecutionToolCalls(rawMessage.executionToolCalls);
         }
-        if (Array.isArray(rawMessage?.diffEntries)) {
-            message.diffEntries = normalizeAiIterationDiffEntries(rawMessage.diffEntries);
+        if (rawMessage?.profileSnapshotBefore && typeof rawMessage.profileSnapshotBefore === 'object') {
+            message.profileSnapshotBefore = cloneAiIterationWorkingProfile(mode, rawMessage.profileSnapshotBefore);
+        }
+        if (rawMessage?.profileDelta && typeof rawMessage.profileDelta === 'object') {
+            message.profileDelta = cloneAiIterationProfileDelta(rawMessage.profileDelta);
+        }
+        if (rawMessage?.reverseProfileDelta && typeof rawMessage.reverseProfileDelta === 'object') {
+            message.reverseProfileDelta = cloneAiIterationProfileDelta(rawMessage.reverseProfileDelta);
         }
         if (rawMessage?.profileSnapshotAfter && typeof rawMessage.profileSnapshotAfter === 'object') {
             message.profileSnapshotAfter = cloneAiIterationWorkingProfile(mode, rawMessage.profileSnapshotAfter);
@@ -7765,6 +7829,9 @@ function createEmptyAiIterationHistoryState() {
 }
 
 function normalizeAiIterationHistoryState(rawState) {
+    if (Number(rawState?.version || 0) !== ORCH_CHARACTER_ITERATION_HISTORY_VERSION) {
+        return createEmptyAiIterationHistoryState();
+    }
     const sessions = (Array.isArray(rawState?.sessions) ? rawState.sessions : [])
         .map(session => normalizeAiIterationStoredSession(session))
         .sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
@@ -8015,13 +8082,15 @@ function canRollbackAiIterationAssistantMessage(session, messageIndex) {
     if (String(item?.toolState || '').trim().toLowerCase() !== 'completed') {
         return false;
     }
-    const diffEntries = Array.isArray(item?.diffEntries) ? item.diffEntries : [];
-    return diffEntries.length > 0 && Boolean(item?.profileSnapshotAfter && typeof item.profileSnapshotAfter === 'object');
+    return Boolean(item?.profileDelta && typeof item.profileDelta === 'object')
+        && Boolean(item?.profileSnapshotAfter && typeof item.profileSnapshotAfter === 'object');
 }
 
-function renderAiIterationMessageDiffHtml(item, messageIndex) {
-    const diffEntries = Array.isArray(item?.diffEntries) ? item.diffEntries : [];
-    if (diffEntries.length === 0) {
+function renderAiIterationMessageDiffHtml(session, item, messageIndex) {
+    const profileDeltaHtml = item?.profileDelta
+        ? renderAiIterationProfileDeltaHtml(session?.mode, item.profileDelta, item?.profileSnapshotBefore || session?.workingProfile)
+        : '';
+    if (!profileDeltaHtml) {
         return '';
     }
     const toolState = String(item?.toolState || '').trim().toLowerCase();
@@ -8038,7 +8107,7 @@ function renderAiIterationMessageDiffHtml(item, messageIndex) {
 <details class="luker_orch_iter_pending_diff_inline"${toolState === 'pending' ? ' open' : ''}>
     <summary>${escapeHtml(summaryLabel)}</summary>
     <div class="luker_orch_iter_diff_popup">
-        ${renderAiIterationDiffEntriesHtml(diffEntries)}
+        ${profileDeltaHtml}
     </div>
     ${rollbackAction}
 </details>`;
@@ -8093,7 +8162,7 @@ function renderAiIterationConversation(session, { loading = false, loadingText =
             ? `<div class="luker_orch_iter_msg_actions">${actionButtons.join('')}</div>`
             : '';
         const diffHtml = role === 'assistant'
-            ? renderAiIterationMessageDiffHtml(item, index)
+            ? renderAiIterationMessageDiffHtml(session, item, index)
             : '';
         return `
 <div class="luker_orch_iter_msg ${bubbleClass}">
@@ -9138,33 +9207,15 @@ function buildAiIterationPendingDiffState(session, pending) {
     };
 }
 
-function renderAiIterationDiffEntriesHtml(entries) {
-    const list = Array.isArray(entries) ? entries : [];
-    if (!list.length) {
-        return '';
-    }
-    return list.map((entry, index) => `
-<div class="luker_orch_iter_diff_item">
-    <div class="luker_orch_iter_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(entry.summary || entry.name || ''))}</div>
-    <div class="luker_orch_iter_diff_fields">
-        ${(entry.fields || []).map(field => `
-<div class="luker_orch_iter_diff_field">
-    <div class="luker_orch_iter_diff_label">${escapeHtml(String(field?.label || 'field'))}</div>
-    ${renderIterationLineDiffHtml(field?.before ?? '', field?.after ?? '', String(field?.label || 'field'))}
-</div>`).join('')}
-    </div>
-    <details class="luker_orch_iter_diff_raw">
-        <summary>${escapeHtml(i18n('Raw arguments'))}</summary>
-        <pre>${escapeHtml(JSON.stringify(entry.rawArgs || {}, null, 2))}</pre>
-    </details>
-</div>`).join('');
-}
-
-function renderAiIterationPendingApproval(session, popupId, pendingEntries = []) {
+function renderAiIterationPendingApproval(session, popupId) {
     const pending = session?.pendingApproval;
     if (!pending) {
         return '';
     }
+    const pendingMessage = findAiIterationMessageById(session?.messages, pending?.messageId);
+    const pendingProfileDeltaHtml = pendingMessage?.profileDelta
+        ? renderAiIterationProfileDeltaHtml(session?.mode, pendingMessage.profileDelta, pendingMessage?.profileSnapshotBefore || session?.workingProfile)
+        : '';
     const summaryLines = summarizeIterationToolCalls(pending.toolCalls || []);
     const assistantText = stripIterationThoughtForDisplay(pending.assistantText || '');
     return `
@@ -9175,11 +9226,11 @@ function renderAiIterationPendingApproval(session, popupId, pendingEntries = [])
     <div class="luker_orch_iter_pending_ops">
         ${summaryLines.length > 0 ? summaryLines.map(item => `<div class="luker_orch_iter_pending_op">${escapeHtml(item)}</div>`).join('') : `<div class="luker_orch_iter_pending_op">${escapeHtml(i18n('No editable operations were produced.'))}</div>`}
     </div>
-    ${Array.isArray(pendingEntries) && pendingEntries.length > 0 ? `
+    ${pendingProfileDeltaHtml ? `
     <details class="luker_orch_iter_pending_diff_inline" open>
         <summary>${escapeHtml(i18n('Pending changes diff'))}</summary>
         <div class="luker_orch_iter_diff_popup">
-            ${renderAiIterationDiffEntriesHtml(pendingEntries)}
+            ${pendingProfileDeltaHtml}
         </div>
     </details>` : ''}
     <div class="luker_orch_iter_actions">
@@ -10409,6 +10460,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
     const tools = buildAiIterationToolSet(session);
     const allowedNames = new Set(tools.map(tool => String(tool?.function?.name || '').trim()).filter(Boolean));
     const globalBaseline = getGlobalIterationBaselineProfile(settings, session);
+    const beforeWorkingProfile = cloneAiIterationWorkingProfile(session?.mode, session?.workingProfile);
 
     const promptMessages = await buildPresetAwareMessages(
         context,
@@ -10461,6 +10513,11 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         const pendingDiffState = buildAiIterationPendingDiffState(session, {
             toolCalls: split.approvalCalls,
         });
+        const pendingDiffPayload = buildAiIterationProfileDeltaPayload(
+            session?.mode,
+            beforeWorkingProfile,
+            pendingDiffState.projectedProfile,
+        );
         const assistantMessage = createPersistentToolTurnMessage({
             messageId: makeAiIterationMessageId(),
             assistantText: visibleAssistantText,
@@ -10473,7 +10530,9 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
             extra: {
                 pendingToolCalls: structuredClone(split.approvalCalls),
                 executionToolCalls: structuredClone(split.allCalls),
-                diffEntries: normalizeAiIterationDiffEntries(pendingDiffState.entries),
+                profileSnapshotBefore: pendingDiffPayload.beforeProfile,
+                profileDelta: pendingDiffPayload.delta,
+                reverseProfileDelta: pendingDiffPayload.reverseDelta,
             },
         });
         session.messages.push(assistantMessage);
@@ -10489,10 +10548,12 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         return { ok: true, pending: true };
     }
 
-    const completedDiffState = buildAiIterationPendingDiffState(session, {
-        toolCalls: split.allCalls,
-    });
     const executionResult = await executeAiIterationToolCalls(context, session, split.allCalls, abortSignal);
+    const completedDiffPayload = buildAiIterationProfileDeltaPayload(
+        session?.mode,
+        beforeWorkingProfile,
+        session?.workingProfile,
+    );
     session.messages.push(createPersistentToolTurnMessage({
         messageId: makeAiIterationMessageId(),
         assistantText: visibleAssistantText,
@@ -10503,7 +10564,9 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         auto: Boolean(auto),
         at: Date.now(),
         extra: {
-            diffEntries: normalizeAiIterationDiffEntries(completedDiffState.entries),
+            profileSnapshotBefore: completedDiffPayload.beforeProfile,
+            profileDelta: completedDiffPayload.delta,
+            reverseProfileDelta: completedDiffPayload.reverseDelta,
             profileSnapshotAfter: cloneAiIterationWorkingProfile(session?.mode, session?.workingProfile),
             lastSimulationAfter: session?.lastSimulation ? structuredClone(session.lastSimulation) : null,
         },
@@ -10698,12 +10761,11 @@ async function openAiIterationStudio(context, settings, root) {
             return;
         }
         popupRoot.find(`#${popupId}_sub`).text(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')));
-        const pendingState = buildAiIterationPendingDiffState(session, session?.pendingApproval);
         popupRoot.find(`#${popupId}_conversation`).html(renderAiIterationConversation(session, {
             loading: isRunning,
             loadingText: i18n('AI iteration is running...'),
         }));
-        popupRoot.find(`#${popupId}_pending`).html(renderAiIterationPendingApproval(session, popupId, pendingState.entries));
+        popupRoot.find(`#${popupId}_pending`).html(renderAiIterationPendingApproval(session, popupId));
         popupRoot.find(`#${popupId}_profile`).html(renderAiIterationWorkingProfile(session, {
             profileOverride: null,
             previewPending: Boolean(session?.pendingApproval),
@@ -10996,9 +11058,17 @@ async function openAiIterationStudio(context, settings, root) {
             const result = await executeAiIterationToolCalls(context, session, executionToolCalls, controller.signal);
             const targetMessage = findAiIterationMessageById(session.messages, pendingSnapshot.messageId);
             if (targetMessage) {
+                const completedDiffPayload = buildAiIterationProfileDeltaPayload(
+                    session?.mode,
+                    targetMessage?.profileSnapshotBefore || session?.baseWorkingProfile || session?.workingProfile,
+                    session?.workingProfile,
+                );
                 targetMessage.tool_results = Array.isArray(result?.toolResults) ? result.toolResults : [];
                 targetMessage.toolSummary = buildFriendlyIterationExecutionSummary(result);
                 targetMessage.toolState = 'completed';
+                targetMessage.profileSnapshotBefore = completedDiffPayload.beforeProfile;
+                targetMessage.profileDelta = completedDiffPayload.delta;
+                targetMessage.reverseProfileDelta = completedDiffPayload.reverseDelta;
                 targetMessage.profileSnapshotAfter = cloneAiIterationWorkingProfile(session?.mode, session?.workingProfile);
                 targetMessage.lastSimulationAfter = session?.lastSimulation ? structuredClone(session.lastSimulation) : null;
             }
@@ -12237,6 +12307,78 @@ function ensureStyles() {
     padding: 8px;
     display: grid;
     gap: 8px;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-delta {
+    font-size: 0.88rem;
+    line-height: 1.45;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-delta,
+.luker_orch_iter_diff_popup .jsondiffpatch-delta ul,
+.luker_orch_iter_diff_popup .jsondiffpatch-delta li {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-node {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-node > li {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.28));
+    border-radius: 8px;
+    background: rgba(0,0,0,0.14);
+    padding: 8px;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-property-name {
+    font-weight: 600;
+    margin-bottom: 6px;
+    word-break: break-word;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-value pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-added .jsondiffpatch-value,
+.luker_orch_iter_diff_popup .jsondiffpatch-modified .jsondiffpatch-right-value {
+    border-left: 3px solid color-mix(in oklab, #4caf50 68%, transparent);
+    padding-left: 8px;
+    background: color-mix(in oklab, #4caf50 12%, transparent);
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-deleted .jsondiffpatch-value,
+.luker_orch_iter_diff_popup .jsondiffpatch-modified .jsondiffpatch-left-value {
+    border-left: 3px solid color-mix(in oklab, #f44336 68%, transparent);
+    padding-left: 8px;
+    background: color-mix(in oklab, #f44336 10%, transparent);
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-modified .jsondiffpatch-value {
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-textdiff {
+    display: grid;
+    gap: 6px;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-location {
+    display: inline-flex;
+    gap: 6px;
+    opacity: 0.72;
+    font-size: 0.82rem;
+    margin-bottom: 2px;
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-added {
+    background: color-mix(in oklab, #4caf50 20%, transparent);
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-deleted {
+    background: color-mix(in oklab, #f44336 18%, transparent);
+}
+.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-context {
+    opacity: 0.86;
 }
 .luker_orch_iter_diff_title {
     font-weight: 600;
