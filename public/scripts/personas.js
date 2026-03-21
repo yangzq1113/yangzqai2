@@ -740,7 +740,7 @@ function normalizeDedicatedPersonaEntries(entries) {
     return normalized;
 }
 
-async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
+async function setCharacterDedicatedPersonaEntries(characterAvatar, entries, { restoreRemovedToGlobal = true } = {}) {
     const character = getCharacterByAvatar(characterAvatar);
     if (!character) {
         return false;
@@ -793,9 +793,13 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
             .filter(([avatar]) => !!avatar),
     );
 
-    // Removed dedicated personas return to global persona list.
+    // Normal unbind returns removed dedicated personas to the global list.
+    // Delete flows can opt out so the persona stays deleted everywhere.
     for (const [avatarId, removedEntry] of currentByAvatar.entries()) {
         if (nextByAvatar.has(avatarId)) {
+            continue;
+        }
+        if (!restoreRemovedToGlobal) {
             continue;
         }
 
@@ -1190,6 +1194,9 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
  */
 async function uploadUserAvatar(url, name, { render = true } = {}) {
     const fetchResult = await fetch(url);
+    if (!fetchResult.ok) {
+        throw new Error(`Failed to fetch avatar source: ${fetchResult.status} ${fetchResult.statusText}`);
+    }
     const blob = await fetchResult.blob();
     const file = new File([blob], 'avatar.png', { type: 'image/png' });
     const formData = new FormData();
@@ -2118,7 +2125,7 @@ async function deleteUserAvatar() {
         for (const characterAvatar of affectedCharacterAvatars) {
             const entries = getCharacterDedicatedPersonaEntries(characterAvatar)
                 .filter(entry => String(entry?.avatar ?? '').trim() !== avatarId);
-            await setCharacterDedicatedPersonaEntries(characterAvatar, entries);
+            await setCharacterDedicatedPersonaEntries(characterAvatar, entries, { restoreRemovedToGlobal: false });
         }
 
         // Use the existing mechanism to re-render the persona list and choose the next persona here
