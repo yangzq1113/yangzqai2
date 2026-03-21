@@ -11676,6 +11676,33 @@ function getFirstMessage() {
     return message;
 }
 
+async function regenerateFirstCharacterMessageIfNeeded({ isNewChat = false } = {}) {
+    const message = getFirstMessage();
+    const shouldRegenerateMessage =
+        !isNewChat &&
+        message.mes &&
+        !selected_group &&
+        !chat_metadata['tainted'] &&
+        (chat.length === 0 || (chat.length === 1 && !chat[0].is_user && !chat[0].is_system));
+
+    if (!shouldRegenerateMessage) {
+        return false;
+    }
+
+    chat.splice(0, chat.length, message);
+    const messageId = chat.length - 1;
+    await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
+    await clearChat();
+    await printMessages();
+    await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
+    await saveChatConditional();
+    return true;
+}
+
+export async function refreshFirstMessageOnEmptyCharacterChat() {
+    return await regenerateFirstCharacterMessageIfNeeded();
+}
+
 export async function openCharacterChat(file_name) {
     if (!await waitForChatSwitchAvailability()) {
         return;
@@ -14377,24 +14404,7 @@ export async function createOrEditCharacter(e) {
             crop_data = undefined;
             await eventSource.emit(event_types.CHARACTER_EDITED, { detail: { id: this_chid, character: characters[this_chid] } });
 
-            // Recreate the chat if it hasn't been used at least once (i.e. with continue).
-            const message = getFirstMessage();
-            const shouldRegenerateMessage =
-                !isNewChat &&
-                message.mes &&
-                !selected_group &&
-                !chat_metadata['tainted'] &&
-                (chat.length === 0 || (chat.length === 1 && !chat[0].is_user && !chat[0].is_system));
-
-            if (shouldRegenerateMessage) {
-                chat.splice(0, chat.length, message);
-                const messageId = (chat.length - 1);
-                await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, 'first_message');
-                await clearChat();
-                await printMessages();
-                await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, 'first_message');
-                await saveChatConditional();
-            }
+            await regenerateFirstCharacterMessageIfNeeded({ isNewChat });
         } catch (error) {
             console.log(error);
             toastr.error(t`Something went wrong while saving the character, or the image file provided was in an invalid format. Double check that the image is not a webp.`);

@@ -4,7 +4,6 @@ import {
     characters,
     chat,
     chat_metadata,
-    createOrEditCharacter,
     default_user_avatar,
     eventSource,
     event_types,
@@ -15,6 +14,7 @@ import {
     name1,
     name2,
     reloadCurrentChat,
+    refreshFirstMessageOnEmptyCharacterChat,
     saveChatConditional,
     saveMetadata,
     saveSettingsDebounced,
@@ -755,6 +755,7 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
     );
 
     let globalChanged = false;
+    let existingAvatars = null;
 
     if (JSON.stringify(currentEntries) === JSON.stringify(nextDedicatedPersonas)) {
         return false;
@@ -797,9 +798,6 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
         if (nextByAvatar.has(avatarId)) {
             continue;
         }
-        if (isPersonaDedicatedToAnyCharacter(avatarId)) {
-            continue;
-        }
 
         const fallbackName = String(removedEntry?.name ?? '').trim();
         const personaName = fallbackName || String(power_user.personas?.[avatarId] ?? '').trim() || '[Unnamed Persona]';
@@ -832,6 +830,11 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
             power_user.persona_descriptions[avatarId] = nextDescriptor;
             globalChanged = true;
         }
+
+        if (!(existingAvatars instanceof Set)) {
+            existingAvatars = new Set(await getUserAvatars(false));
+        }
+        await ensureGlobalPersonaAvatarExists(avatarId, existingAvatars);
     }
 
     if (globalChanged) {
@@ -839,6 +842,39 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries) {
     }
 
     return true;
+}
+
+async function ensureGlobalPersonaAvatarExists(avatarId, existingAvatars = null) {
+    const targetAvatarId = String(avatarId || '').trim();
+    if (!targetAvatarId) {
+        return false;
+    }
+
+    const knownAvatars = existingAvatars instanceof Set
+        ? existingAvatars
+        : new Set(await getUserAvatars(false));
+    if (knownAvatars.has(targetAvatarId)) {
+        return false;
+    }
+
+    const sources = [
+        getUserAvatar(targetAvatarId),
+        getThumbnailUrl('persona', targetAvatarId, true),
+        default_user_avatar,
+    ];
+
+    for (const source of sources) {
+        try {
+            await uploadUserAvatar(source, targetAvatarId, { render: false });
+            knownAvatars.add(targetAvatarId);
+            return true;
+        } catch {
+            // Try the next available source.
+        }
+    }
+
+    console.warn(`Failed to materialize avatar file for restored global persona ${targetAvatarId}`);
+    return false;
 }
 
 function buildDedicatedPersonaCardEntry(avatarId) {
@@ -2872,7 +2908,7 @@ export async function retriggerFirstMessageOnEmptyChat() {
         await reloadCurrentChat();
     }
     if (!selected_group && Number(this_chid) >= 0 && chat.length === 1) {
-        await createOrEditCharacter();
+        await refreshFirstMessageOnEmptyCharacterChat();
     }
 }
 
