@@ -1,16 +1,16 @@
 import { fuzzySearchCharacters, fuzzySearchGroups, fuzzySearchPersonas, fuzzySearchTags, fuzzySearchWorldInfo, power_user } from './power-user.js';
 import { tag_map } from './tags.js';
-import { includesIgnoreCaseAndAccents } from './utils.js';
+import { equalsIgnoreCaseAndAccents, includesIgnoreCaseAndAccents } from './utils.js';
 
 
 /**
  * @typedef FilterType The filter type possible for this filter helper
- * @type {'search'|'tag'|'folder'|'fav'|'group'|'world_info_search'|'persona_search'}
+ * @type {'search'|'tag'|'folder'|'fav'|'group'|'world_info_search'|'world_info_search_mode'|'world_info_search_advanced'|'persona_search'}
  */
 
 /**
  * The filter types
- * @type {{ SEARCH: 'search', TAG: 'tag', FOLDER: 'folder', FAV: 'fav', GROUP: 'group', WORLD_INFO_SEARCH: 'world_info_search', PERSONA_SEARCH: 'persona_search'}}
+ * @type {{ SEARCH: 'search', TAG: 'tag', FOLDER: 'folder', FAV: 'fav', GROUP: 'group', WORLD_INFO_SEARCH: 'world_info_search', WORLD_INFO_SEARCH_MODE: 'world_info_search_mode', WORLD_INFO_SEARCH_ADVANCED: 'world_info_search_advanced', PERSONA_SEARCH: 'persona_search'}}
  */
 export const FILTER_TYPES = {
     SEARCH: 'search',
@@ -19,8 +19,320 @@ export const FILTER_TYPES = {
     FAV: 'fav',
     GROUP: 'group',
     WORLD_INFO_SEARCH: 'world_info_search',
+    WORLD_INFO_SEARCH_MODE: 'world_info_search_mode',
+    WORLD_INFO_SEARCH_ADVANCED: 'world_info_search_advanced',
     PERSONA_SEARCH: 'persona_search',
 };
+
+export const WORLD_INFO_SEARCH_MODES = Object.freeze({
+    FUZZY: 'fuzzy',
+    KEYWORD: 'keyword',
+});
+
+const WORLD_INFO_KEYWORD_SEARCH_SCOPES = Object.freeze({
+    ALL: 'all',
+    TITLE: 'title',
+    GROUP: 'group',
+    CONTENT: 'content',
+    UID: 'uid',
+    AUTOMATION_ID: 'automation_id',
+});
+
+const WORLD_INFO_KEYWORD_SEARCH_SCOPE_ALIASES = Object.freeze({
+    title: WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE,
+    name: WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE,
+    comment: WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE,
+    key: WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE,
+    keyword: WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE,
+    keywords: WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE,
+    group: WORLD_INFO_KEYWORD_SEARCH_SCOPES.GROUP,
+    content: WORLD_INFO_KEYWORD_SEARCH_SCOPES.CONTENT,
+    text: WORLD_INFO_KEYWORD_SEARCH_SCOPES.CONTENT,
+    body: WORLD_INFO_KEYWORD_SEARCH_SCOPES.CONTENT,
+    uid: WORLD_INFO_KEYWORD_SEARCH_SCOPES.UID,
+    id: WORLD_INFO_KEYWORD_SEARCH_SCOPES.UID,
+    automationid: WORLD_INFO_KEYWORD_SEARCH_SCOPES.AUTOMATION_ID,
+    automation_id: WORLD_INFO_KEYWORD_SEARCH_SCOPES.AUTOMATION_ID,
+    autoid: WORLD_INFO_KEYWORD_SEARCH_SCOPES.AUTOMATION_ID,
+    auto_id: WORLD_INFO_KEYWORD_SEARCH_SCOPES.AUTOMATION_ID,
+});
+
+function normalizeWorldInfoKeywordSearchValue(searchValue) {
+    return String(searchValue || '').trim();
+}
+
+function normalizeWorldInfoKeywordSearchCandidates(values) {
+    return (Array.isArray(values) ? values : [values])
+        .map(value => String(value ?? '').trim())
+        .filter(Boolean);
+}
+
+function createBasicWorldInfoKeywordSearchClauses(searchValue) {
+    const value = normalizeWorldInfoKeywordSearchValue(searchValue);
+    return value
+        ? [[{
+            negated: false,
+            scope: WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL,
+            term: value,
+        }]]
+        : [];
+}
+
+function tokenizeWorldInfoKeywordSearch(searchValue) {
+    const tokens = [];
+    let current = '';
+    let inQuotes = false;
+    let escapeNext = false;
+
+    const pushCurrentToken = () => {
+        const value = current.trim();
+        if (value) {
+            tokens.push(value);
+        }
+        current = '';
+    };
+
+    for (const character of String(searchValue || '')) {
+        if (escapeNext) {
+            current += character;
+            escapeNext = false;
+            continue;
+        }
+
+        if (character === '\\' && inQuotes) {
+            escapeNext = true;
+            continue;
+        }
+
+        if (character === '"') {
+            inQuotes = !inQuotes;
+            continue;
+        }
+
+        if (!inQuotes && character === '|') {
+            pushCurrentToken();
+            tokens.push('|');
+            continue;
+        }
+
+        if (!inQuotes && /\s/.test(character)) {
+            pushCurrentToken();
+            continue;
+        }
+
+        current += character;
+    }
+
+    pushCurrentToken();
+    return tokens;
+}
+
+function isWorldInfoKeywordSearchOrToken(token) {
+    return token === '|' || /^or$/i.test(String(token || '').trim());
+}
+
+function isWorldInfoKeywordSearchAndToken(token) {
+    return /^and$/i.test(String(token || '').trim());
+}
+
+function parseWorldInfoKeywordSearchToken(token, nextToken = '') {
+    let value = String(token || '').trim();
+    let consumeNextToken = false;
+
+    if (!value) {
+        return null;
+    }
+
+    let negated = false;
+    if (value.startsWith('-') && value.length > 1) {
+        negated = true;
+        value = value.slice(1).trim();
+    }
+
+    if (!value) {
+        return null;
+    }
+
+    let scope = WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL;
+    const scopedMatch = value.match(/^([a-z_]+):(.*)$/i);
+    if (scopedMatch) {
+        const scopeValue = WORLD_INFO_KEYWORD_SEARCH_SCOPE_ALIASES[String(scopedMatch[1] || '').trim().toLowerCase()];
+        if (scopeValue) {
+            scope = scopeValue;
+            value = String(scopedMatch[2] || '').trim();
+
+            if (!value) {
+                const fallbackToken = String(nextToken || '').trim();
+                if (fallbackToken && !isWorldInfoKeywordSearchOrToken(fallbackToken) && !isWorldInfoKeywordSearchAndToken(fallbackToken)) {
+                    value = fallbackToken;
+                    consumeNextToken = true;
+                }
+            }
+        }
+    }
+
+    value = value.trim();
+    if (!value) {
+        return null;
+    }
+
+    return {
+        term: {
+            negated,
+            scope,
+            term: value,
+        },
+        consumeNextToken,
+    };
+}
+
+function parseWorldInfoKeywordSearch(searchValue, { advancedSyntax = false } = {}) {
+    if (!advancedSyntax) {
+        return createBasicWorldInfoKeywordSearchClauses(searchValue);
+    }
+
+    const tokens = tokenizeWorldInfoKeywordSearch(searchValue);
+    const clauses = [];
+    let currentClause = [];
+
+    const pushClause = () => {
+        if (currentClause.length > 0) {
+            clauses.push(currentClause);
+        }
+        currentClause = [];
+    };
+
+    for (let index = 0; index < tokens.length; index++) {
+        const token = tokens[index];
+
+        if (isWorldInfoKeywordSearchOrToken(token)) {
+            pushClause();
+            continue;
+        }
+
+        if (isWorldInfoKeywordSearchAndToken(token)) {
+            continue;
+        }
+
+        const parsedToken = parseWorldInfoKeywordSearchToken(token, tokens[index + 1]);
+        if (!parsedToken) {
+            continue;
+        }
+
+        currentClause.push(parsedToken.term);
+        if (parsedToken.consumeNextToken) {
+            index += 1;
+        }
+    }
+
+    pushClause();
+    return clauses;
+}
+
+function getWorldInfoKeywordSearchFields(entry) {
+    const titleCandidates = normalizeWorldInfoKeywordSearchCandidates([
+        String(entry?.comment || '').trim(),
+        ...(Array.isArray(entry?.key) ? entry.key : []),
+        ...(Array.isArray(entry?.keysecondary) ? entry.keysecondary : []),
+    ]);
+    const groupCandidates = normalizeWorldInfoKeywordSearchCandidates(entry?.group);
+    const contentCandidates = normalizeWorldInfoKeywordSearchCandidates(entry?.content);
+    const uidCandidates = normalizeWorldInfoKeywordSearchCandidates(entry?.uid);
+    const automationIdCandidates = normalizeWorldInfoKeywordSearchCandidates(entry?.automationId);
+
+    return {
+        titleCandidates,
+        groupCandidates,
+        contentCandidates,
+        uidCandidates,
+        automationIdCandidates,
+    };
+}
+
+function pushWorldInfoKeywordCandidateScores(scores, candidates, searchTerm, exactScore, includeScore) {
+    for (const value of candidates) {
+        if (equalsIgnoreCaseAndAccents(value, searchTerm)) {
+            scores.push(exactScore);
+            continue;
+        }
+        if (includesIgnoreCaseAndAccents(value, searchTerm)) {
+            scores.push(includeScore);
+        }
+    }
+}
+
+function getWorldInfoKeywordSearchScore(fields, searchTerm, scope = WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL) {
+    /** @type {number[]} */
+    const scores = [];
+
+    if (scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL || scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.TITLE) {
+        pushWorldInfoKeywordCandidateScores(scores, fields.titleCandidates, searchTerm, 0, 1);
+    }
+
+    if (scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL || scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.GROUP) {
+        pushWorldInfoKeywordCandidateScores(scores, fields.groupCandidates, searchTerm, 2, 3);
+    }
+
+    if (scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL || scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.CONTENT) {
+        pushWorldInfoKeywordCandidateScores(scores, fields.contentCandidates, searchTerm, 4, 5);
+    }
+
+    if (scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL || scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.UID) {
+        pushWorldInfoKeywordCandidateScores(scores, fields.uidCandidates, searchTerm, 6, 7);
+    }
+
+    if (scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.ALL || scope === WORLD_INFO_KEYWORD_SEARCH_SCOPES.AUTOMATION_ID) {
+        pushWorldInfoKeywordCandidateScores(scores, fields.automationIdCandidates, searchTerm, 8, 9);
+    }
+
+    return scores.length > 0 ? Math.min(...scores) : null;
+}
+
+function getWorldInfoKeywordClauseScore(fields, clause) {
+    let score = 0;
+    let positiveTermCount = 0;
+
+    for (const term of clause) {
+        const termScore = getWorldInfoKeywordSearchScore(fields, term.term, term.scope);
+
+        if (term.negated) {
+            if (termScore !== null) {
+                return null;
+            }
+            continue;
+        }
+
+        if (termScore === null) {
+            return null;
+        }
+
+        positiveTermCount += 1;
+        score += termScore;
+    }
+
+    return positiveTermCount > 0 ? score : 6;
+}
+
+export function keywordSearchWorldInfo(data, searchValue, { advancedSyntax = false } = {}) {
+    const clauses = parseWorldInfoKeywordSearch(searchValue, { advancedSyntax });
+
+    if (clauses.length === 0) {
+        return [];
+    }
+
+    return data
+        .map((entry) => {
+            const fields = getWorldInfoKeywordSearchFields(entry);
+            const scores = clauses
+                .map((clause) => getWorldInfoKeywordClauseScore(fields, clause))
+                .filter((score) => score !== null);
+            if (scores.length === 0) {
+                return null;
+            }
+            return { item: entry, score: Math.min(...scores) };
+        })
+        .filter(Boolean);
+}
 
 /**
  * @typedef FilterState One of the filter states
@@ -162,6 +474,8 @@ export class FilterHelper {
         [FILTER_TYPES.FOLDER]: false,
         [FILTER_TYPES.TAG]: { excluded: [], selected: [] },
         [FILTER_TYPES.WORLD_INFO_SEARCH]: '',
+        [FILTER_TYPES.WORLD_INFO_SEARCH_MODE]: '',
+        [FILTER_TYPES.WORLD_INFO_SEARCH_ADVANCED]: false,
         [FILTER_TYPES.PERSONA_SEARCH]: '',
     };
 
@@ -172,15 +486,19 @@ export class FilterHelper {
      */
     wiSearchFilter(data) {
         const term = this.filterData[FILTER_TYPES.WORLD_INFO_SEARCH];
+        const mode = this.filterData[FILTER_TYPES.WORLD_INFO_SEARCH_MODE] || WORLD_INFO_SEARCH_MODES.KEYWORD;
+        const advancedSyntax = Boolean(this.filterData[FILTER_TYPES.WORLD_INFO_SEARCH_ADVANCED]);
 
         if (!term) {
             return data;
         }
 
-        const fuzzySearchResults = fuzzySearchWorldInfo(data, term, this.fuzzySearchCaches);
-        this.cacheScores(FILTER_TYPES.WORLD_INFO_SEARCH, new Map(fuzzySearchResults.map(i => [i.item?.uid, i.score])));
+        const searchResults = mode === WORLD_INFO_SEARCH_MODES.KEYWORD
+            ? keywordSearchWorldInfo(data, term, { advancedSyntax })
+            : fuzzySearchWorldInfo(data, term, this.fuzzySearchCaches);
+        this.cacheScores(FILTER_TYPES.WORLD_INFO_SEARCH, new Map(searchResults.map(i => [i.item?.uid, i.score])));
 
-        const filteredData = data.filter(entity => fuzzySearchResults.find(x => x.item === entity));
+        const filteredData = data.filter(entity => searchResults.find(x => x.item === entity));
         return filteredData;
     }
 

@@ -5,7 +5,7 @@ import { areLookupNamesEqual, download, debounce, findCanonicalIndexInList, find
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
 import { isMobile } from './RossAscends-mods.js';
-import { FILTER_TYPES, FilterHelper } from './filters.js';
+import { FILTER_TYPES, FilterHelper, WORLD_INFO_SEARCH_MODES, keywordSearchWorldInfo } from './filters.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import { power_user } from './power-user.js';
 import { getTagKeyForEntity } from './tags.js';
@@ -92,7 +92,16 @@ const worldInfoManagerState = {
     pageSize: 12,
     search: '',
     tag: '',
+    searchEntries: false,
 };
+const worldInfoManagerEntrySearchState = {
+    key: '',
+    pendingKey: '',
+    matches: new Map(),
+    requestId: 0,
+};
+let worldInfoManagerSearchRevision = 0;
+
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -175,6 +184,8 @@ let worldInfoSaveQueuedRequest = null;
 // Do not optimize. updateEditor is a function that is updated by the displayWorldEntries with new data.
 export const worldInfoFilter = new FilterHelper(() => updateEditor());
 export const SORT_ORDER_KEY = 'world_info_sort_order';
+export const SEARCH_MODE_KEY = 'world_info_search_mode';
+export const SEARCH_ADVANCED_KEY = 'world_info_search_advanced';
 export const METADATA_KEY = 'world_info';
 export const PRESET_LINKED_LOREBOOK_KEY = 'preset_lorebook';
 
@@ -202,6 +213,265 @@ function hasWorldInfoName(name) {
 
 function hasSelectedWorldInfo(name) {
     return selected_world_info.some(entry => areLookupNamesEqual(entry, name));
+}
+
+function getStoredWorldInfoSearchMode() {
+    return accountStorage.getItem(SEARCH_MODE_KEY) === WORLD_INFO_SEARCH_MODES.FUZZY
+        ? WORLD_INFO_SEARCH_MODES.FUZZY
+        : WORLD_INFO_SEARCH_MODES.KEYWORD;
+}
+
+function getStoredWorldInfoSearchAdvancedSyntaxEnabled() {
+    return accountStorage.getItem(SEARCH_ADVANCED_KEY) === 'true';
+}
+
+function isWorldInfoSearchAdvancedSyntaxEnabled() {
+    const input = $('#world_info_search_advanced');
+    return input.length
+        ? Boolean(input.prop('checked'))
+        : getStoredWorldInfoSearchAdvancedSyntaxEnabled();
+}
+
+function getWorldInfoSearchMode() {
+    return $('#world_info_search_mode').val() === WORLD_INFO_SEARCH_MODES.FUZZY
+        ? WORLD_INFO_SEARCH_MODES.FUZZY
+        : WORLD_INFO_SEARCH_MODES.KEYWORD;
+}
+
+function setWorldInfoSearchAdvancedSyntaxEnabled(enabled) {
+    const normalized = Boolean(enabled);
+    accountStorage.setItem(SEARCH_ADVANCED_KEY, String(normalized));
+    $('#world_info_search_advanced').prop('checked', normalized);
+    $('#world_info_manager_search_advanced').prop('checked', normalized);
+    updateWorldInfoSearchInputState();
+    updateWorldInfoManagerSearchInputState();
+}
+
+function updateWorldInfoSearchInputState() {
+    const searchInput = $('#world_info_search');
+    const isKeywordMode = getWorldInfoSearchMode() === WORLD_INFO_SEARCH_MODES.KEYWORD;
+    const advancedSyntax = isWorldInfoSearchAdvancedSyntaxEnabled();
+    const advancedInput = $('#world_info_search_advanced');
+
+    searchInput
+        .attr('placeholder', isKeywordMode ? (advancedSyntax ? t`Advanced keyword search...` : t`Keyword search...`) : t`Search...`)
+        .attr(
+            'title',
+            isKeywordMode
+                ? (
+                    advancedSyntax
+                        ? t`Advanced keyword search over entry titles, groups, keys, content, UID, and automation ID. Supports title:, group:, uid:, automationId:, content:, quotes, -, and OR.`
+                        : t`Direct keyword match over entry titles, groups, keys, content, UID, and automation ID. Enable Advanced syntax for operators like title:, OR, -, and quotes.`
+                )
+                : t`Fuzzy search across entry titles, keys, content, UID, and automation ID.`,
+        );
+    advancedInput.prop('disabled', !isKeywordMode);
+}
+
+function setWorldInfoSearchFilter(searchQuery, { suppressDataChanged = false } = {}) {
+    const nextQuery = String(searchQuery || '').trim();
+    const nextMode = nextQuery ? getWorldInfoSearchMode() : '';
+    const nextAdvanced = nextQuery && nextMode === WORLD_INFO_SEARCH_MODES.KEYWORD
+        ? isWorldInfoSearchAdvancedSyntaxEnabled()
+        : false;
+    const previousQuery = worldInfoFilter.getFilterData(FILTER_TYPES.WORLD_INFO_SEARCH);
+    const previousMode = worldInfoFilter.getFilterData(FILTER_TYPES.WORLD_INFO_SEARCH_MODE);
+    const previousAdvanced = worldInfoFilter.getFilterData(FILTER_TYPES.WORLD_INFO_SEARCH_ADVANCED);
+
+    worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH, nextQuery, true);
+    worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH_MODE, nextMode, true);
+    worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH_ADVANCED, nextAdvanced, true);
+
+    if (!suppressDataChanged && (previousQuery !== nextQuery || previousMode !== nextMode || previousAdvanced !== nextAdvanced)) {
+        updateEditor();
+    }
+}
+
+function invalidateWorldInfoManagerEntrySearch() {
+    worldInfoManagerSearchRevision += 1;
+    worldInfoManagerEntrySearchState.key = '';
+    worldInfoManagerEntrySearchState.pendingKey = '';
+    worldInfoManagerEntrySearchState.matches = new Map();
+}
+
+function getWorldInfoManagerEntrySearchKey() {
+    return JSON.stringify({
+        search: String(worldInfoManagerState.search || '').trim(),
+        searchEntries: Boolean(worldInfoManagerState.searchEntries),
+        advancedSyntax: Boolean(isWorldInfoSearchAdvancedSyntaxEnabled()),
+        revision: worldInfoManagerSearchRevision,
+    });
+}
+
+function updateWorldInfoManagerSearchInputState() {
+    const searchInput = $('#world_info_manager_search');
+    const isEntrySearch = Boolean(worldInfoManagerState.searchEntries);
+    const advancedSyntax = isWorldInfoSearchAdvancedSyntaxEnabled();
+    const advancedInput = $('#world_info_manager_search_advanced');
+
+    searchInput
+        .attr('placeholder', isEntrySearch ? (advancedSyntax ? t`Advanced entry/content search across lorebooks...` : t`Search entries or content across lorebooks...`) : t`Search lorebooks or tags...`)
+        .attr(
+            'title',
+            isEntrySearch
+                ? (
+                    advancedSyntax
+                        ? t`Advanced keyword search across all lorebooks. Supports title:, group:, uid:, automationId:, content:, quotes, -, and OR.`
+                        : t`Direct keyword match across entry titles, groups, keys, content, UID, and automation ID in all lorebooks.`
+                )
+                : '',
+        );
+    advancedInput.prop('disabled', !isEntrySearch);
+}
+
+function buildWorldInfoSearchSyntaxHelpHtml() {
+    const basicRows = [
+        {
+            query: 'dragon queen',
+            description: t`Default Keyword Search looks for the exact text dragon queen.`,
+        },
+        {
+            query: 'uid:42',
+            description: t`With Advanced syntax off, this searches the literal text uid:42.`,
+        },
+    ];
+    const advancedRows = [
+        {
+            query: 'dragon queen',
+            description: t`With Advanced syntax enabled, space-separated terms use AND. Both terms must match.`,
+        },
+        {
+            query: '"dragon queen"',
+            description: t`Quoted text matches an exact phrase.`,
+        },
+        {
+            query: '-goblin',
+            description: t`Prefix a term with - to exclude matches.`,
+        },
+        {
+            query: 'dragon | phoenix',
+            description: t`Use | or OR between alternatives.`,
+        },
+        {
+            query: 'title:queen content:"silver city"',
+            description: t`Scope a term to title/keywords or content.`,
+        },
+        {
+            query: 'group:lore uid:42 automationId:hero_1',
+            description: t`Scope a term to group, UID, or automation ID.`,
+        },
+    ];
+
+    const syntaxHeader = escapeHtmlText(t`Syntax`);
+    const effectHeader = escapeHtmlText(t`Effect`);
+    const buildTableRows = (rows) => rows.map((row) => `
+        <tr>
+            <td data-label="${syntaxHeader}"><code>${escapeHtmlText(row.query)}</code></td>
+            <td data-label="${effectHeader}">${escapeHtmlText(row.description)}</td>
+        </tr>
+    `).join('');
+
+    return `
+        <div class="world_info_search_syntax_help">
+            <p>${escapeHtmlText(t`Keyword Search defaults to direct whole-query matching across entry titles, groups, keywords, content, UID, and automation ID.`)}</p>
+            <section class="world_info_search_syntax_section">
+                <h4>${escapeHtmlText(t`Default behavior`)}</h4>
+                <div class="world_info_search_syntax_table_wrap">
+                    <table class="world_info_search_syntax_table">
+                        <thead>
+                            <tr>
+                                <th>${syntaxHeader}</th>
+                                <th>${effectHeader}</th>
+                            </tr>
+                        </thead>
+                        <tbody>${buildTableRows(basicRows)}</tbody>
+                    </table>
+                </div>
+            </section>
+            <p>${escapeHtmlText(t`Enable Advanced syntax to use operators and field prefixes.`)}</p>
+            <p>${escapeHtmlText(t`title: searches entry titles, memo/comment, and primary/secondary keywords. group:, uid:, and automationId: search only those fields. content: searches entry content only.`)}</p>
+            <section class="world_info_search_syntax_section">
+                <h4>${escapeHtmlText(t`Advanced behavior`)}</h4>
+                <div class="world_info_search_syntax_table_wrap">
+                    <table class="world_info_search_syntax_table">
+                        <thead>
+                            <tr>
+                                <th>${syntaxHeader}</th>
+                                <th>${effectHeader}</th>
+                            </tr>
+                        </thead>
+                        <tbody>${buildTableRows(advancedRows)}</tbody>
+                    </table>
+                </div>
+            </section>
+            <p>${escapeHtmlText(t`Aliases: name:, comment:, key:, and keywords: map to title:. text: and body: map to content:. id: maps to uid:, while automation_id: and autoid: map to automationId:.`)}</p>
+        </div>
+    `;
+}
+
+async function showWorldInfoSearchSyntaxHelp() {
+    await Popup.show.text(
+        t`Lorebook Search Syntax`,
+        buildWorldInfoSearchSyntaxHelpHtml(),
+        {
+            okButton: t`Close`,
+            wide: true,
+            allowVerticalScrolling: true,
+        },
+    );
+}
+
+async function refreshWorldInfoManagerSearchResults() {
+    const searchValue = String(worldInfoManagerState.search || '').trim();
+    const searchKey = getWorldInfoManagerEntrySearchKey();
+    const advancedSyntax = isWorldInfoSearchAdvancedSyntaxEnabled();
+
+    if (!searchValue || !worldInfoManagerState.searchEntries) {
+        worldInfoManagerEntrySearchState.key = searchKey;
+        worldInfoManagerEntrySearchState.pendingKey = '';
+        worldInfoManagerEntrySearchState.matches = new Map();
+        renderWorldInfoManager();
+        return;
+    }
+
+    if (worldInfoManagerEntrySearchState.key === searchKey || worldInfoManagerEntrySearchState.pendingKey === searchKey) {
+        return;
+    }
+
+    const requestId = ++worldInfoManagerEntrySearchState.requestId;
+    worldInfoManagerEntrySearchState.pendingKey = searchKey;
+    renderWorldInfoManager();
+
+    const names = Array.isArray(world_names) ? [...world_names] : [];
+    const worldData = await loadWorldInfoBatch(names);
+
+    if (worldInfoManagerEntrySearchState.requestId !== requestId) {
+        return;
+    }
+
+    const matches = new Map();
+    for (const [name, data] of worldData.entries()) {
+        const entries = Object.values(data?.entries ?? {})
+            .filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
+        const results = keywordSearchWorldInfo(entries, searchValue, { advancedSyntax });
+        if (results.length === 0) {
+            continue;
+        }
+        const bestScore = Math.min(...results.map((result) => Number(result.score ?? 0)));
+        matches.set(name, {
+            score: bestScore,
+            count: results.length,
+        });
+    }
+
+    if (worldInfoManagerEntrySearchState.requestId !== requestId) {
+        return;
+    }
+
+    worldInfoManagerEntrySearchState.key = searchKey;
+    worldInfoManagerEntrySearchState.pendingKey = '';
+    worldInfoManagerEntrySearchState.matches = matches;
+    renderWorldInfoManager();
 }
 
 function escapeHtmlText(value) {
@@ -1542,6 +1812,13 @@ export function setWorldInfoSettings(settings, data) {
     setWorldInfoManagerPageSize(getWorldInfoManagerPageSize());
     $('#world_info_manager_page_size').val(String(worldInfoManagerState.pageSize));
     $('#world_info_sort_order').val(accountStorage.getItem(SORT_ORDER_KEY) || '0');
+    if ($('#world_info_sort_order').find(':selected').data('rule') === 'search') {
+        $('#world_info_sort_order').val('0');
+        accountStorage.setItem(SORT_ORDER_KEY, '0');
+    }
+    $('#world_info_search_mode').val(getStoredWorldInfoSearchMode());
+    setWorldInfoSearchAdvancedSyntaxEnabled(getStoredWorldInfoSearchAdvancedSyntaxEnabled());
+    updateWorldInfoSearchInputState();
     $('#world_info').trigger('change');
     $('#world_editor_select').trigger('change');
     renderWorldInfoManager();
@@ -3770,6 +4047,7 @@ function getWorldInfoManagerMetadata(name) {
     return worldInfoManagerMetadata.get(resolvedName) || {};
 }
 
+
 function getWorldInfoTags(name) {
     const metadata = getWorldInfoManagerMetadata(name);
     const lukerMetadata = isPlainObject(metadata?.luker) ? metadata.luker : {};
@@ -3890,6 +4168,21 @@ function getVisibleWorldInfoManagerItems() {
 
     if (!searchValue) {
         return sortWorldInfoManagerItems(items);
+    }
+
+    if (worldInfoManagerState.searchEntries) {
+        const searchKey = getWorldInfoManagerEntrySearchKey();
+        if (worldInfoManagerEntrySearchState.key !== searchKey) {
+            return [];
+        }
+
+        return sortWorldInfoManagerItems(
+            items.flatMap((item) => {
+                const match = worldInfoManagerEntrySearchState.matches.get(item.name);
+                return match ? [{ ...item, searchScore: match.score, entrySearchMatchCount: match.count }] : [];
+            }),
+            { searchActive: true },
+        );
     }
 
     const fuse = new Fuse(items, {
@@ -4153,6 +4446,8 @@ function renderWorldInfoManager() {
     const list = $('#world_info_manager_list');
     const drawerSummary = $('#world_info_manager_drawer_summary');
     const searchInput = $('#world_info_manager_search');
+    const searchEntriesInput = $('#world_info_manager_search_entries');
+    const searchAdvancedInput = $('#world_info_manager_search_advanced');
     const pageStatus = $('#world_info_manager_page_status');
     const selectionStatus = $('#world_info_manager_selection_status');
     const pageSizeSelect = $('#world_info_manager_page_size');
@@ -4170,9 +4465,15 @@ function renderWorldInfoManager() {
 
     worldInfoManagerState.pageSize = getWorldInfoManagerPageSize();
     pruneWorldInfoManagerSelection();
+    updateWorldInfoManagerSearchInputState();
 
     const allItems = getWorldInfoManagerItems();
     const items = getVisibleWorldInfoManagerItems();
+    const searchValue = String(worldInfoManagerState.search || '').trim();
+    const searchKey = getWorldInfoManagerEntrySearchKey();
+    const isEntrySearchPending = Boolean(worldInfoManagerState.searchEntries && searchValue)
+        && worldInfoManagerEntrySearchState.pendingKey === searchKey
+        && worldInfoManagerEntrySearchState.key !== searchKey;
     const activeItemCount = allItems.filter((item) => item.active).length;
     const totalItems = items.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / worldInfoManagerState.pageSize));
@@ -4188,7 +4489,13 @@ function renderWorldInfoManager() {
     activeList.empty();
     list.empty();
     searchInput.val(worldInfoManagerState.search);
+    searchEntriesInput.prop('checked', Boolean(worldInfoManagerState.searchEntries));
+    searchAdvancedInput.prop('checked', isWorldInfoSearchAdvancedSyntaxEnabled());
     renderWorldInfoManagerTagFilters(allItems);
+
+    if (worldInfoManagerState.searchEntries && searchValue && !isEntrySearchPending && worldInfoManagerEntrySearchState.key !== searchKey) {
+        void refreshWorldInfoManagerSearchResults();
+    }
 
     const activeItems = sortWorldInfoManagerItems(allItems.filter((item) => item.active));
     activePanel.toggleClass('displayNone', activeItems.length === 0);
@@ -4197,7 +4504,13 @@ function renderWorldInfoManager() {
     }
 
     if (totalItems === 0) {
-        list.append(`<div class="world_info_manager_empty">${escapeHtmlText(t`No lorebooks available.`)}</div>`);
+        const hasSearchFilter = Boolean(searchValue || worldInfoManagerState.tag || worldInfoManagerState.searchEntries);
+        const emptyMessage = isEntrySearchPending
+            ? t`Searching lorebook entries...`
+            : hasSearchFilter && allItems.length > 0
+                ? t`No lorebooks matched the current search.`
+                : t`No lorebooks available.`;
+        list.append(`<div class="world_info_manager_empty">${escapeHtmlText(emptyMessage)}</div>`);
     } else {
         list.append(pageItems.map(buildWorldInfoManagerItem));
     }
@@ -4707,7 +5020,7 @@ export const originalWIDataKeyMap = {
 
 /** Checks the state of the current search, and adds/removes the search sorting option accordingly */
 function verifyWorldInfoSearchSortRule() {
-    const searchTerm = worldInfoFilter.getFilterData(FILTER_TYPES.WORLD_INFO_SEARCH);
+    const searchTerm = String(worldInfoFilter.getFilterData(FILTER_TYPES.WORLD_INFO_SEARCH) || '').trim();
     const searchOption = $('#world_info_sort_order option[data-rule="search"]');
     const selector = $('#world_info_sort_order');
     const isHidden = searchOption.attr('hidden') !== undefined;
@@ -6300,7 +6613,7 @@ async function saveWorldInfoInternal(name, data, options = {}) {
         }
     }
 
-    cacheWorldInfoData(name, payload);
+    cacheWorldInfoData(name, payload, { invalidateSearch: true });
     await eventSource.emit(event_types.WORLDINFO_UPDATED, name, payload);
 }
 
@@ -6437,6 +6750,7 @@ export async function deleteWorldInfo(worldInfoName) {
         worldInfoCache.delete(resolvedWorldInfoName);
     }
     worldInfoSnapshotCache.delete(resolvedWorldInfoName);
+    invalidateWorldInfoManagerEntrySearch();
 
     const existingWorldIndex = selected_world_info.findIndex((e) => areLookupNamesEqual(e, resolvedWorldInfoName));
     if (existingWorldIndex !== -1) {
@@ -8886,10 +9200,36 @@ export function initWorldInfo() {
     const debouncedWorldInfoManagerSearch = debounce((searchValue) => {
         worldInfoManagerState.search = String(searchValue || '').trim();
         worldInfoManagerState.page = 1;
-        renderWorldInfoManager();
+        if (worldInfoManagerState.searchEntries) {
+            void refreshWorldInfoManagerSearchResults();
+        } else {
+            renderWorldInfoManager();
+        }
     });
     $('#world_info_manager_search').on('input', function () {
         debouncedWorldInfoManagerSearch($(this).val());
+    });
+    $('#world_info_manager_search_help').on('click', async function () {
+        await showWorldInfoSearchSyntaxHelp();
+    });
+    $('#world_info_manager_search_entries').on('change', function () {
+        worldInfoManagerState.searchEntries = Boolean($(this).prop('checked'));
+        worldInfoManagerState.page = 1;
+        updateWorldInfoManagerSearchInputState();
+        void refreshWorldInfoManagerSearchResults();
+    });
+    $('#world_info_manager_search_advanced').on('change', function () {
+        const enabled = Boolean($(this).prop('checked'));
+        setWorldInfoSearchAdvancedSyntaxEnabled(enabled);
+        worldInfoManagerState.page = 1;
+        invalidateWorldInfoManagerEntrySearch();
+        cancelDebounce(debouncedWorldInfoManagerSearch);
+        if (worldInfoManagerState.searchEntries) {
+            void refreshWorldInfoManagerSearchResults();
+        } else {
+            renderWorldInfoManager();
+        }
+        setWorldInfoSearchFilter($('#world_info_search').val());
     });
 
     $('#world_info_manager_prev').on('click', function () {
@@ -8938,8 +9278,9 @@ export function initWorldInfo() {
     });
 
     $('#world_editor_select').on('change', async () => {
+        cancelDebounce(debouncedWorldInfoSearch);
         $('#world_info_search').val('');
-        worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH, '', true);
+        setWorldInfoSearchFilter('', { suppressDataChanged: true });
         const selectedIndex = String($('#world_editor_select').find(':selected').val());
 
         if (selectedIndex === '') {

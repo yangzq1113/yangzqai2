@@ -4590,7 +4590,20 @@
                                 <div class="inline-drawer-content" style="display: none;">
                                     <div id="world_info_manager" class="world_info_manager">
                                         <div class="world_info_manager_filters">
-                                            <input type="search" id="world_info_manager_search" class="text_pole textarea_compact" data-i18n="[placeholder]Search lorebooks or tags..." placeholder="Search lorebooks or tags...">
+                                            <div class="world_info_manager_filter_controls">
+                                                <input type="search" id="world_info_manager_search" class="text_pole textarea_compact" data-i18n="[placeholder]Search lorebooks or tags..." placeholder="Search lorebooks or tags...">
+                                                <button type="button" id="world_info_manager_search_help" class="menu_button world_info_search_help_button" title="Search syntax help" data-i18n="[title]Search syntax help">
+                                                    <i class="fa-solid fa-circle-question"></i>
+                                                </button>
+                                                <label class="checkbox_label world_info_search_toggle_label" for="world_info_manager_search_entries" title="Search entry titles and content across all lorebooks." data-i18n="[title]Search entry titles and content across all lorebooks.">
+                                                    <input type="checkbox" id="world_info_manager_search_entries">
+                                                    <small data-i18n="Search entries/content">Search entries/content</small>
+                                                </label>
+                                                <label class="checkbox_label world_info_search_toggle_label" for="world_info_manager_search_advanced" title="Enable advanced keyword syntax such as quotes, OR, -, title:, group:, uid:, and automationId:." data-i18n="[title]Enable advanced keyword syntax such as quotes, OR, -, title:, group:, uid:, and automationId:.">
+                                                    <input type="checkbox" id="world_info_manager_search_advanced">
+                                                    <small data-i18n="Advanced syntax">Advanced syntax</small>
+                                                </label>
+                                            </div>
                                             <div id="world_info_manager_tag_filters" class="world_info_manager_tag_filters"></div>
                                         </div>
                                         <div id="world_info_manager_active_panel" class="world_info_manager_active_panel displayNone">
@@ -4787,6 +4800,17 @@
                             <div id="world_backfill_memos" class="menu_button fa-solid fa-notes-medical" title="Fill empty Memo/Titles with Keywords" data-i18n="[title]Fill empty Memo/Titles with Keywords"></div>
                             <div id="world_apply_current_sorting" class="menu_button fa-solid fa-solid fa-arrow-down-9-1" title="Apply current sorting as Order" data-i18n="[title]Apply current sorting as Order"></div>
                             <input type="search" class="text_pole textarea_compact" data-i18n="[placeholder]Search..." id="world_info_search" placeholder="Search...">
+                            <button type="button" id="world_info_search_help" class="menu_button world_info_search_help_button" title="Search syntax help" data-i18n="[title]Search syntax help">
+                                <i class="fa-solid fa-circle-question"></i>
+                            </button>
+                            <select id="world_info_search_mode" class="text_pole textarea_compact" title="Search mode" data-i18n="[title]Search mode">
+                                <option value="keyword" data-i18n="Keyword Search">Keyword Search</option>
+                                <option value="fuzzy" data-i18n="Fuzzy Match">Fuzzy Match</option>
+                            </select>
+                            <label class="checkbox_label world_info_search_toggle_label" for="world_info_search_advanced" title="Enable advanced keyword syntax such as quotes, OR, -, title:, group:, uid:, and automationId:." data-i18n="[title]Enable advanced keyword syntax such as quotes, OR, -, title:, group:, uid:, and automationId:.">
+                                <input type="checkbox" id="world_info_search_advanced">
+                                <small data-i18n="Advanced syntax">Advanced syntax</small>
+                            </label>
                             <select id="world_info_sort_order" class="text_pole textarea_compact">
                                 <option data-rule="search" value="14" data-i18n="Search" hidden>Search</option>
                                 <option data-rule="priority" value="0" data-i18n="Priority">Priority</option>
