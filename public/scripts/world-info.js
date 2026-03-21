@@ -4049,7 +4049,8 @@ function buildWorldInfoManagerItem(item) {
 
     const toggleButton = itemElement.find('.world_info_manager_toggle');
     toggleButton
-        .toggleClass('fa-flip-horizontal', item.active)
+        .toggleClass('fa-toggle-on', item.active)
+        .toggleClass('fa-toggle-off', !item.active)
         .toggleClass('is-active', item.active)
         .attr('title', item.active ? t`Disable lorebook` : t`Enable lorebook`)
         .on('click', async () => {
@@ -4080,7 +4081,7 @@ function buildActiveWorldInfoChip(item) {
         <div class="world_info_manager_active_chip">
             <button type="button" class="world_info_manager_active_name"></button>
             <div class="menu_button world_info_manager_active_pin fa-solid fa-thumbtack"></div>
-            <div class="menu_button world_info_manager_active_toggle fa-solid fa-toggle-off"></div>
+            <div class="menu_button world_info_manager_active_toggle fa-solid fa-toggle-on"></div>
         </div>
     `);
 
@@ -4097,6 +4098,9 @@ function buildActiveWorldInfoChip(item) {
             renderWorldInfoManager();
         });
     chip.find('.world_info_manager_active_toggle')
+        .removeClass('fa-toggle-off')
+        .addClass('fa-toggle-on')
+        .toggleClass('is-active', true)
         .attr('title', t`Disable lorebook`)
         .on('click', async () => {
             await setGlobalWorldInfoSelection(item.name, false);
