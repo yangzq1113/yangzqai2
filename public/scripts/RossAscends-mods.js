@@ -63,6 +63,16 @@ let counterNonce = Date.now();
 let navPanelPinsInitialized = false;
 let sendTextareaStateInitialized = false;
 let userInputRestored = false;
+let swipeGuardChatEl = null;
+let swipeGuardLastChatScrollTs = 0;
+let swipeGuardLastChatScrollTop = null;
+let swipeGuardLastChatScrollDeltaPx = 0;
+
+const SWIPE_GUARD_MIN_DX_PX = 60;
+const SWIPE_GUARD_DX_DY_RATIO = 1.8;
+const SWIPE_GUARD_SCROLL_BLOCK_MS = 180;
+const SWIPE_GUARD_MEANINGFUL_SCROLL_DELTA_PX = 8;
+const SWIPE_GUARD_TIMEOUT_MS = 500;
 
 const observerConfig = { childList: true, subtree: true };
 const countTokensDebounced = debounce(RA_CountCharTokens, debounce_timeout.relaxed);
@@ -148,6 +158,119 @@ export function isMobile() {
     const mobileTypes = ['mobile', 'tablet'];
 
     return mobileTypes.includes(getParsedUA()?.platform?.type);
+}
+
+function ensureSwipeGuardChatElement() {
+    const chatEl = document.getElementById('chat');
+    if (!(chatEl instanceof HTMLElement)) {
+        return null;
+    }
+
+    chatEl.setAttribute('data-swipe-threshold', String(SWIPE_GUARD_MIN_DX_PX));
+    chatEl.setAttribute('data-swipe-unit', 'px');
+    chatEl.setAttribute('data-swipe-timeout', String(SWIPE_GUARD_TIMEOUT_MS));
+
+    if (swipeGuardChatEl !== chatEl) {
+        swipeGuardChatEl = chatEl;
+        chatEl.addEventListener('scroll', () => {
+            const now = performance.now();
+            const currentScrollTop = chatEl.scrollTop;
+
+            if (typeof swipeGuardLastChatScrollTop === 'number') {
+                swipeGuardLastChatScrollDeltaPx = Math.abs(currentScrollTop - swipeGuardLastChatScrollTop);
+            } else {
+                swipeGuardLastChatScrollDeltaPx = 0;
+            }
+
+            swipeGuardLastChatScrollTop = currentScrollTop;
+            swipeGuardLastChatScrollTs = now;
+        }, { passive: true });
+    }
+
+    return chatEl;
+}
+
+function shouldBlockSwipeGesture(event) {
+    if (!isMobile()) {
+        return false;
+    }
+
+    const target = event?.target;
+    if (!(target instanceof Element)) {
+        return true;
+    }
+
+    if (!target.closest('#sheld')) {
+        return true;
+    }
+
+    if (!(target.closest('#chat .last_mes') instanceof Element)) {
+        return true;
+    }
+
+    if (document.getElementById('curEditTextarea')) {
+        // Don't swipe while in text edit mode; iOS selection gestures are noisy.
+        return true;
+    }
+
+    ensureSwipeGuardChatElement();
+
+    const detail = event?.detail;
+    const xStart = detail?.xStart;
+    const xEnd = detail?.xEnd;
+    const yStart = detail?.yStart;
+    const yEnd = detail?.yEnd;
+    const hasSwipeVector = [xStart, xEnd, yStart, yEnd].every((value) => typeof value === 'number' && Number.isFinite(value));
+
+    if (!hasSwipeVector) {
+        return false;
+    }
+
+    const absDx = Math.abs(xEnd - xStart);
+    const absDy = Math.abs(yEnd - yStart);
+
+    if (absDx < SWIPE_GUARD_MIN_DX_PX) {
+        return true;
+    }
+
+    if (absDy > 0 && (absDx / absDy) < SWIPE_GUARD_DX_DY_RATIO) {
+        return true;
+    }
+
+    if (SWIPE_GUARD_SCROLL_BLOCK_MS > 0) {
+        const now = performance.now();
+        const recentlyScrolled = (now - swipeGuardLastChatScrollTs) < SWIPE_GUARD_SCROLL_BLOCK_MS;
+        const meaningfulScroll = swipeGuardLastChatScrollDeltaPx >= SWIPE_GUARD_MEANINGFUL_SCROLL_DELTA_PX;
+
+        if (recentlyScrolled && meaningfulScroll) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function triggerSwipeGesture(buttonSelector, event) {
+    if (power_user.gestures === false) {
+        return;
+    }
+
+    if (Popup.util.isPopupOpen()) {
+        return;
+    }
+
+    if (!isSwipingAllowed()) {
+        return;
+    }
+
+    if (shouldBlockSwipeGesture(event)) {
+        return;
+    }
+
+    const swipeButton = $(`${buttonSelector}:last`);
+    if (swipeButton.is(':visible')) {
+        swipeButton.trigger('click');
+    }
 }
 
 export function shouldSendOnEnter() {
@@ -874,55 +997,14 @@ export async function initRossMods() {
         chatBlockResizeObserver.observe(chatBlock);
     }
     initSendTextareaState();
+    ensureSwipeGuardChatElement();
 
     // Swipe gestures (see: https://www.npmjs.com/package/swiped-events)
     document.addEventListener('swiped-left', function (e) {
-        if (power_user.gestures === false) {
-            return;
-        }
-        if (Popup.util.isPopupOpen()) {
-            return;
-        }
-        if (!$(e.target).closest('#sheld').length) {
-            return;
-        }
-        if ($('#curEditTextarea').length) {
-            // Don't swipe while in text edit mode
-            // the ios selection gestures get picked up
-            // as swipe gestures
-            return;
-        }
-        var SwipeButR = $('.swipe_right:last');
-        var SwipeTargetMesClassParent = $(e.target).closest('.last_mes');
-        if (SwipeTargetMesClassParent !== null) {
-            if (SwipeButR.is(':visible')) {
-                SwipeButR.trigger('click');
-            }
-        }
+        triggerSwipeGesture('.swipe_right', e);
     });
     document.addEventListener('swiped-right', function (e) {
-        if (power_user.gestures === false) {
-            return;
-        }
-        if (Popup.util.isPopupOpen()) {
-            return;
-        }
-        if (!$(e.target).closest('#sheld').length) {
-            return;
-        }
-        if ($('#curEditTextarea').length) {
-            // Don't swipe while in text edit mode
-            // the ios selection gestures get picked up
-            // as swipe gestures
-            return;
-        }
-        var SwipeButL = $('.swipe_left:last');
-        var SwipeTargetMesClassParent = $(e.target).closest('.last_mes');
-        if (SwipeTargetMesClassParent !== null) {
-            if (SwipeButL.is(':visible')) {
-                SwipeButL.trigger('click');
-            }
-        }
+        triggerSwipeGesture('.swipe_left', e);
     });
 
 
