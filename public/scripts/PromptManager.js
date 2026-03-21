@@ -27,6 +27,50 @@ function debouncePromise(func, delay) {
     };
 }
 
+function buildPromptManagerDragHelper(item, prefix) {
+    const itemEl = item?.get?.(0) || item?.[0] || item;
+    const promptNameEl = itemEl instanceof HTMLElement
+        ? itemEl.querySelector(`.${prefix}prompt_manager_prompt_name`)
+        : null;
+    const promptName = String(
+        promptNameEl?.getAttribute?.('data-pm-name')
+        || promptNameEl?.querySelector?.('.prompt-manager-inspect-action')?.textContent
+        || promptNameEl?.textContent
+        || itemEl?.getAttribute?.('data-pm-identifier')
+        || 'Prompt',
+    ).trim();
+    const width = Math.round(item?.outerWidth?.() || itemEl?.getBoundingClientRect?.().width || 0);
+    const helper = document.createElement('div');
+    helper.className = 'prompt-manager-drag-helper';
+    helper.textContent = promptName;
+    helper.style.width = width > 0 ? `${width}px` : '';
+    helper.style.padding = '8px 12px';
+    helper.style.border = '1px solid var(--SmartThemeBorderColor)';
+    helper.style.borderRadius = '10px';
+    helper.style.background = 'var(--SmartThemeBlurTintColor)';
+    helper.style.color = 'var(--SmartThemeBodyColor)';
+    helper.style.boxShadow = '0 12px 28px rgba(0, 0, 0, 0.18)';
+    helper.style.pointerEvents = 'none';
+    return $(helper);
+}
+
+function stylePromptManagerDragPlaceholder(ui) {
+    const placeholder = ui?.placeholder;
+    const item = ui?.item;
+    if (!placeholder?.length || !item?.length) {
+        return;
+    }
+
+    placeholder.css({
+        height: `${Math.round(item.outerHeight() || 0)}px`,
+        visibility: 'visible',
+        border: '1px dashed var(--SmartThemeBorderColor)',
+        'border-radius': '10px',
+        background: 'color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent)',
+        opacity: '0.8',
+    });
+}
+
 const DEFAULT_DEPTH = 4;
 const DEFAULT_ORDER = 100;
 const TOGGLE_UNDO_WINDOW_MS = 6000;
@@ -445,6 +489,11 @@ class PromptManager {
 
         /** Debounced version of render */
         this.renderDebounced = debounce(this.render.bind(this), debounce_timeout.relaxed);
+        this.renderRequestId = 0;
+        this.deferredTryGenerateRequestId = 0;
+        this.scheduleDeferredTryGenerate = debounce((requestId) => {
+            void this.runDeferredTryGenerate(requestId);
+        }, debounce_timeout.standard);
     }
 
 
@@ -1215,34 +1264,60 @@ class PromptManager {
 
         if ('character' === this.configuration.promptOrder.strategy && null === this.activeCharacter) return;
         this.error = null;
+        const requestId = ++this.renderRequestId;
 
         waitUntilCondition(() => !is_send_press && !is_group_generating, 1024 * 1024, 100).then(async () => {
+            if (requestId !== this.renderRequestId) {
+                return;
+            }
+
+            const renderProfileId = `prompt-manager-render-${requestId}`;
+            this.profileStart(renderProfileId);
+            const scrollPosition = this.#getScrollPosition();
+            await this.renderPromptManager();
+            if (requestId !== this.renderRequestId) {
+                this.profileEnd(renderProfileId);
+                return;
+            }
+            await this.renderPromptManagerListItems();
+            if (requestId !== this.renderRequestId) {
+                this.profileEnd(renderProfileId);
+                return;
+            }
+            this.makeDraggable();
+            this.#setScrollPosition(scrollPosition);
+            this.profileEnd(renderProfileId);
+
             if (true === afterTryGenerate) {
-                // Executed during dry-run for determining context composition
-                this.profileStart('filling context');
-                this.tryGenerate().finally(async () => {
-                    this.profileEnd('filling context');
-                    this.profileStart('render');
-                    const scrollPosition = this.#getScrollPosition();
-                    await this.renderPromptManager();
-                    await this.renderPromptManagerListItems();
-                    this.makeDraggable();
-                    this.#setScrollPosition(scrollPosition);
-                    this.profileEnd('render');
-                });
-            } else {
-                // Executed during live communication
-                this.profileStart('render');
-                const scrollPosition = this.#getScrollPosition();
-                await this.renderPromptManager();
-                await this.renderPromptManagerListItems();
-                this.makeDraggable();
-                this.#setScrollPosition(scrollPosition);
-                this.profileEnd('render');
+                this.scheduleDeferredTryGenerate(requestId);
             }
         }).catch(() => {
             console.log('Timeout while waiting for send press to be false');
         });
+    }
+
+    async runDeferredTryGenerate(requestId) {
+        if (requestId !== this.renderRequestId) {
+            return;
+        }
+
+        const dryRunRequestId = ++this.deferredTryGenerateRequestId;
+        const fillingProfileId = `prompt-manager-filling-context-${dryRunRequestId}`;
+        this.profileStart(fillingProfileId);
+        try {
+            await this.tryGenerate();
+        } finally {
+            this.profileEnd(fillingProfileId);
+        }
+
+        if (dryRunRequestId !== this.deferredTryGenerateRequestId) {
+            return;
+        }
+        if (requestId !== this.renderRequestId) {
+            return;
+        }
+
+        this.render(false);
     }
 
     /**
@@ -2592,6 +2667,18 @@ class PromptManager {
             delay: this.configuration.sortableDelay,
             handle: '.prompt-manager-marker-handle',
             items: `.${this.configuration.prefix}prompt_manager_prompt_draggable`,
+            helper: (_event, ui) => buildPromptManagerDragHelper(ui, this.configuration.prefix),
+            appendTo: document.body,
+            tolerance: 'pointer',
+            forcePlaceholderSize: true,
+            placeholder: 'prompt-manager-sortable-placeholder',
+            cursor: 'grabbing',
+            scroll: true,
+            scrollSensitivity: 60,
+            scrollSpeed: 18,
+            start: (_event, ui) => {
+                stylePromptManagerDragPlaceholder(ui);
+            },
             update: (event, ui) => {
                 const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter);
                 const promptListElement = $(`#${this.configuration.prefix}prompt_manager_list`).sortable('toArray', { attribute: 'data-pm-identifier' });
