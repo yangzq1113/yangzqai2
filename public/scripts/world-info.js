@@ -4394,6 +4394,7 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
     // Before printing the WI, we check if we should enable/disable search sorting
     verifyWorldInfoSearchSortRule();
+    const isCustomOrder = $('#world_info_sort_order').find(':selected').data('rule') === 'custom';
 
     function getDataArray(callback) {
         // Convert the data.entries object into an array
