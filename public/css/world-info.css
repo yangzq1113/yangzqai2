@@ -12,6 +12,33 @@
     margin-top: 10px;
 }
 
+.world_info_manager_filters {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.world_info_manager_tag_filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.world_info_manager_tag_filter {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    padding: 3px 9px;
+    transition: border-color var(--animation-duration-2x), color var(--animation-duration-2x), background-color var(--animation-duration-2x);
+}
+
+.world_info_manager_tag_filter.is-active {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 14%, transparent);
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 72%, var(--SmartThemeBorderColor));
+    color: var(--SmartThemeQuoteColor);
+}
+
 .world_info_manager_toolbar {
     display: flex;
     flex-direction: column;
@@ -167,12 +194,23 @@
     margin-top: 3px;
 }
 
+.world_info_manager_tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
 .world_info_manager_badge {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 999px;
     font-size: 0.72rem;
     opacity: 0.85;
     padding: 2px 8px;
+}
+
+.world_info_manager_tag_badge {
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 36%, var(--SmartThemeBorderColor));
+    opacity: 0.92;
 }
 
 .world_info_manager_badge.is-active {

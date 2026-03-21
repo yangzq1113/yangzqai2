@@ -86,9 +86,12 @@ let selectedWorldInfoEntryBook = '';
 const WORLD_INFO_MANAGER_PAGE_SIZE_KEY = 'world_info_manager_page_size';
 const WORLD_INFO_MANAGER_PAGE_SIZE_OPTIONS = [6, 12, 24, 48];
 const selectedWorldInfoManagerNames = new Set();
+const worldInfoManagerMetadata = new Map();
 const worldInfoManagerState = {
     page: 1,
     pageSize: 12,
+    search: '',
+    tag: '',
 };
 
 export const world_info_insertion_strategy = {
@@ -1542,6 +1545,7 @@ export function setWorldInfoSettings(settings, data) {
     $('#world_info').trigger('change');
     $('#world_editor_select').trigger('change');
     renderWorldInfoManager();
+    void refreshWorldInfoManagerMetadata();
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
         const hasWorldInfo = !!chat_metadata[METADATA_KEY] && hasWorldInfoName(chat_metadata[METADATA_KEY]);
@@ -1550,10 +1554,15 @@ export function setWorldInfoSettings(settings, data) {
         await getSortedEntries();
     });
 
-    eventSource.on(event_types.WORLDINFO_UPDATED, async (name) => {
+    eventSource.on(event_types.WORLDINFO_UPDATED, async (name, payload) => {
         const updatedName = resolveWorldInfoName(name) || String(name || '').trim();
         if (!updatedName) {
             return;
+        }
+
+        if (isPlainObject(payload?.extensions)) {
+            setWorldInfoManagerMetadata(updatedName, payload.extensions);
+            renderWorldInfoManager();
         }
 
         if (!hasWorldInfoName(updatedName)) {
@@ -2679,7 +2688,7 @@ export async function loadWorldInfo(name) {
 }
 
 export async function updateWorldInfoList() {
-    const result = await fetch('/api/worldinfo/list-lite', {
+    const result = await fetch('/api/worldinfo/list', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({}),
@@ -2688,7 +2697,12 @@ export async function updateWorldInfoList() {
     if (result.ok) {
         const data = await result.json();
         const editorSelected = String($('#world_editor_select').find(':selected').text());
-        world_names = data.names?.length ? data.names : [];
+        worldInfoManagerMetadata.clear();
+        world_names = Array.isArray(data)
+            ? data
+                .map((entry) => String(entry?.file_id || '').trim())
+                .filter(Boolean)
+            : [];
         selected_world_info = selected_world_info
             .map((name) => resolveWorldInfoName(name))
             .filter(Boolean)
@@ -2704,6 +2718,14 @@ export async function updateWorldInfoList() {
             $('#world_info').append(globalListOption);
             $('#world_editor_select').append(editorListOption);
         });
+        if (Array.isArray(data)) {
+            data.forEach((entry) => {
+                const name = String(entry?.file_id || '').trim();
+                if (name) {
+                    setWorldInfoManagerMetadata(name, entry?.extensions);
+                }
+            });
+        }
     }
 
     renderWorldInfoManager();
@@ -3734,6 +3756,101 @@ async function setWorldInfoPinned(name, pinned) {
     return true;
 }
 
+function setWorldInfoManagerMetadata(name, extensions = {}) {
+    const resolvedName = resolveWorldInfoName(name) || String(name || '').trim();
+    if (!resolvedName) {
+        return;
+    }
+
+    worldInfoManagerMetadata.set(resolvedName, isPlainObject(extensions) ? structuredClone(extensions) : {});
+}
+
+function getWorldInfoManagerMetadata(name) {
+    const resolvedName = resolveWorldInfoName(name) || String(name || '').trim();
+    return worldInfoManagerMetadata.get(resolvedName) || {};
+}
+
+function getWorldInfoTags(name) {
+    const metadata = getWorldInfoManagerMetadata(name);
+    const lukerMetadata = isPlainObject(metadata?.luker) ? metadata.luker : {};
+    const rawTags = Array.isArray(lukerMetadata.tags)
+        ? lukerMetadata.tags
+        : parseStringArray(String(lukerMetadata.tags || ''));
+
+    return rawTags
+        .map((tag) => String(tag || '').trim())
+        .filter(Boolean)
+        .filter(onlyUnique);
+}
+
+async function setWorldInfoTags(name, tags) {
+    const resolvedName = resolveWorldInfoName(name);
+    if (!resolvedName) {
+        return false;
+    }
+
+    const data = await loadWorldInfo(resolvedName);
+    if (!data) {
+        return false;
+    }
+
+    const nextTags = (Array.isArray(tags) ? tags : [])
+        .map((tag) => String(tag || '').trim())
+        .filter(Boolean)
+        .filter(onlyUnique);
+    const extensions = isPlainObject(data.extensions) ? structuredClone(data.extensions) : {};
+    const lukerMetadata = isPlainObject(extensions.luker) ? structuredClone(extensions.luker) : {};
+    lukerMetadata.tags = nextTags;
+    extensions.luker = lukerMetadata;
+    data.extensions = extensions;
+
+    await saveWorldInfo(resolvedName, data, true);
+    setWorldInfoManagerMetadata(resolvedName, extensions);
+    renderWorldInfoManager();
+    return true;
+}
+
+async function promptWorldInfoTags(name) {
+    const existingTags = getWorldInfoTags(name).join(', ');
+    const nextValue = await Popup.show.input(
+        t`Edit lorebook tags`,
+        t`Set comma-separated tags for "${name}"`,
+        existingTags,
+    );
+    if (nextValue === null) {
+        return false;
+    }
+
+    return setWorldInfoTags(name, parseStringArray(String(nextValue || '')));
+}
+
+async function refreshWorldInfoManagerMetadata() {
+    const result = await fetch('/api/worldinfo/list', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({}),
+    });
+
+    if (!result.ok) {
+        return false;
+    }
+
+    const data = await result.json();
+    worldInfoManagerMetadata.clear();
+    if (Array.isArray(data)) {
+        data.forEach((entry) => {
+            const name = String(entry?.file_id || entry?.name || '').trim();
+            if (!name) {
+                return;
+            }
+            setWorldInfoManagerMetadata(name, entry?.extensions);
+        });
+    }
+
+    renderWorldInfoManager();
+    return true;
+}
+
 function pruneWorldInfoManagerSelection() {
     for (const name of [...selectedWorldInfoManagerNames]) {
         if (!world_names?.includes(name)) {
@@ -3748,15 +3865,49 @@ function getWorldInfoManagerItems() {
             name,
             active: hasSelectedWorldInfo(name),
             pinned: isWorldInfoPinned(name),
+            tags: getWorldInfoTags(name),
         }))
         : [];
 }
 
-function getVisibleWorldInfoManagerItems() {
-    return getWorldInfoManagerItems().sort((a, b) =>
-        Number(b.pinned) - Number(a.pinned)
+function sortWorldInfoManagerItems(items, { searchActive = false } = {}) {
+    return [...items].sort((a, b) =>
+        (searchActive ? ((a.searchScore ?? 0) - (b.searchScore ?? 0)) : 0)
+        || Number(b.pinned) - Number(a.pinned)
         || Number(b.active) - Number(a.active)
         || a.name.localeCompare(b.name),
+    );
+}
+
+function getVisibleWorldInfoManagerItems() {
+    const tagFilter = String(worldInfoManagerState.tag || '').trim();
+    const searchValue = String(worldInfoManagerState.search || '').trim();
+    let items = getWorldInfoManagerItems();
+
+    if (tagFilter) {
+        items = items.filter((item) => item.tags.includes(tagFilter));
+    }
+
+    if (!searchValue) {
+        return sortWorldInfoManagerItems(items);
+    }
+
+    const fuse = new Fuse(items, {
+        includeScore: true,
+        ignoreLocation: true,
+        threshold: 0.35,
+        keys: [
+            { name: 'name', weight: 0.7 },
+            { name: 'tags', weight: 0.3 },
+        ],
+    });
+
+    return sortWorldInfoManagerItems(
+        fuse.search(searchValue).map((result) => ({
+            ...result.item,
+            searchScore: result.score ?? 0,
+        })),
+        { searchActive: true },
     );
 }
 
@@ -3824,6 +3975,7 @@ function buildWorldInfoManagerItem(item) {
                 <div class="world_info_manager_item_meta"></div>
             </div>
             <div class="world_info_manager_item_actions">
+                <div class="menu_button world_info_manager_tags_button fa-solid fa-tags"></div>
                 <div class="menu_button world_info_manager_pin fa-solid fa-thumbtack"></div>
                 <div class="menu_button world_info_manager_toggle"></div>
                 <div class="menu_button world_info_manager_edit fa-solid fa-pen-to-square" title="${escapeHtmlText(t`Open lorebook in editor`)}"></div>
@@ -3869,7 +4021,24 @@ function buildWorldInfoManagerItem(item) {
             ${escapeHtmlText(item.active ? t`Active` : t`Inactive`)}
         </span>
     `));
+    if (item.tags.length > 0) {
+        const tagContainer = $('<div class="world_info_manager_tags"></div>');
+        item.tags.forEach((tag) => {
+            tagContainer.append($(`
+                <span class="world_info_manager_badge world_info_manager_tag_badge">
+                    ${escapeHtmlText(tag)}
+                </span>
+            `));
+        });
+        meta.append(tagContainer);
+    }
 
+    itemElement.find('.world_info_manager_tags_button')
+        .attr('title', t`Edit lorebook tags`)
+        .on('click', async () => {
+            await promptWorldInfoTags(item.name);
+            renderWorldInfoManager();
+        });
     itemElement.find('.world_info_manager_pin')
         .toggleClass('is-active', item.pinned)
         .attr('title', item.pinned ? t`Unpin lorebook` : t`Pin lorebook`)
@@ -3937,11 +4106,48 @@ function buildActiveWorldInfoChip(item) {
     return chip;
 }
 
+function renderWorldInfoManagerTagFilters(items) {
+    const container = $('#world_info_manager_tag_filters');
+    if (!container.length) {
+        return;
+    }
+
+    const currentTag = String(worldInfoManagerState.tag || '').trim();
+    const availableTags = [...new Set(items.flatMap((item) => item.tags))].sort((a, b) => a.localeCompare(b));
+    if (currentTag && !availableTags.includes(currentTag)) {
+        worldInfoManagerState.tag = '';
+    }
+
+    container.empty();
+
+    const allFilter = $(`<div class="world_info_manager_tag_filter">${escapeHtmlText(t`All Tags`)}</div>`);
+    allFilter.toggleClass('is-active', !worldInfoManagerState.tag);
+    allFilter.on('click', () => {
+        worldInfoManagerState.tag = '';
+        worldInfoManagerState.page = 1;
+        renderWorldInfoManager();
+    });
+    container.append(allFilter);
+
+    availableTags.forEach((tag) => {
+        const tagElement = $(`<div class="world_info_manager_tag_filter"></div>`);
+        tagElement.text(tag);
+        tagElement.toggleClass('is-active', worldInfoManagerState.tag === tag);
+        tagElement.on('click', () => {
+            worldInfoManagerState.tag = worldInfoManagerState.tag === tag ? '' : tag;
+            worldInfoManagerState.page = 1;
+            renderWorldInfoManager();
+        });
+        container.append(tagElement);
+    });
+}
+
 function renderWorldInfoManager() {
     const manager = $('#world_info_manager');
     const activePanel = $('#world_info_manager_active_panel');
     const activeList = $('#world_info_manager_active_list');
     const list = $('#world_info_manager_list');
+    const searchInput = $('#world_info_manager_search');
     const pageStatus = $('#world_info_manager_page_status');
     const selectionStatus = $('#world_info_manager_selection_status');
     const pageSizeSelect = $('#world_info_manager_page_size');
@@ -3960,6 +4166,7 @@ function renderWorldInfoManager() {
     worldInfoManagerState.pageSize = getWorldInfoManagerPageSize();
     pruneWorldInfoManagerSelection();
 
+    const allItems = getWorldInfoManagerItems();
     const items = getVisibleWorldInfoManagerItems();
     const totalItems = items.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / worldInfoManagerState.pageSize));
@@ -3973,8 +4180,10 @@ function renderWorldInfoManager() {
     manager.removeClass('displayNone');
     activeList.empty();
     list.empty();
+    searchInput.val(worldInfoManagerState.search);
+    renderWorldInfoManagerTagFilters(allItems);
 
-    const activeItems = items.filter((item) => item.active);
+    const activeItems = sortWorldInfoManagerItems(allItems.filter((item) => item.active));
     activePanel.toggleClass('displayNone', activeItems.length === 0);
     if (activeItems.length > 0) {
         activeList.append(activeItems.map(buildActiveWorldInfoChip));
@@ -3987,9 +4196,7 @@ function renderWorldInfoManager() {
     }
 
     pageSizeSelect.val(String(worldInfoManagerState.pageSize));
-    pageStatus.text(totalItems > 0
-        ? t`Page ${worldInfoManagerState.page} / ${totalPages}`
-        : t`Page 0 / 0`);
+    pageStatus.text(t`Page ${totalItems > 0 ? worldInfoManagerState.page : 0} / ${totalItems > 0 ? totalPages : 0}`);
     selectionStatus.text(selectedCount > 0
         ? t`${selectedCount} lorebooks selected`
         : t`No lorebooks selected`);
@@ -8666,6 +8873,15 @@ export function initWorldInfo() {
         setWorldInfoManagerPageSize($(this).val());
         worldInfoManagerState.page = 1;
         renderWorldInfoManager();
+    });
+
+    const debouncedWorldInfoManagerSearch = debounce((searchValue) => {
+        worldInfoManagerState.search = String(searchValue || '').trim();
+        worldInfoManagerState.page = 1;
+        renderWorldInfoManager();
+    });
+    $('#world_info_manager_search').on('input', function () {
+        debouncedWorldInfoManagerSearch($(this).val());
     });
 
     $('#world_info_manager_prev').on('click', function () {
