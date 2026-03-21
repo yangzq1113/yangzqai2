@@ -83,6 +83,13 @@ const worldInfoDrawerReserveHeightByWidth = new Map();
 let activeWorldInfoIndicatorDrag = null;
 const selectedWorldInfoEntryUids = new Set();
 let selectedWorldInfoEntryBook = '';
+const WORLD_INFO_MANAGER_PAGE_SIZE_KEY = 'world_info_manager_page_size';
+const WORLD_INFO_MANAGER_PAGE_SIZE_OPTIONS = [6, 12, 24, 48];
+const selectedWorldInfoManagerNames = new Set();
+const worldInfoManagerState = {
+    page: 1,
+    pageSize: 12,
+};
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -1529,9 +1536,12 @@ export function setWorldInfoSettings(settings, data) {
         $('#world_editor_select').append(`<option value='${i}'>${item}</option>`);
     });
 
+    setWorldInfoManagerPageSize(getWorldInfoManagerPageSize());
+    $('#world_info_manager_page_size').val(String(worldInfoManagerState.pageSize));
     $('#world_info_sort_order').val(accountStorage.getItem(SORT_ORDER_KEY) || '0');
     $('#world_info').trigger('change');
     $('#world_editor_select').trigger('change');
+    renderWorldInfoManager();
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
         const hasWorldInfo = !!chat_metadata[METADATA_KEY] && hasWorldInfoName(chat_metadata[METADATA_KEY]);
@@ -2695,6 +2705,8 @@ export async function updateWorldInfoList() {
             $('#world_editor_select').append(editorListOption);
         });
     }
+
+    renderWorldInfoManager();
 }
 
 function cacheWorldInfoData(name, data) {
@@ -2730,6 +2742,7 @@ function syncGlobalWorldInfoSelectionUi() {
 
     selector.val(selectedValues);
     selector.trigger('change.select2');
+    renderWorldInfoManager();
 }
 
 export async function setGlobalWorldInfoSelection(worldInfoName, selected, {
@@ -3675,6 +3688,225 @@ async function promptWorldInfoEntryMoveTarget(sourceWorld, {
         targetName,
         deleteOriginal: popupConfirm === POPUP_RESULT.CUSTOM1,
     };
+}
+
+function getWorldInfoManagerPageSize() {
+    const storedValue = Number(accountStorage.getItem(WORLD_INFO_MANAGER_PAGE_SIZE_KEY));
+    return WORLD_INFO_MANAGER_PAGE_SIZE_OPTIONS.includes(storedValue) ? storedValue : worldInfoManagerState.pageSize;
+}
+
+function setWorldInfoManagerPageSize(value) {
+    const numericValue = Number(value);
+    worldInfoManagerState.pageSize = WORLD_INFO_MANAGER_PAGE_SIZE_OPTIONS.includes(numericValue) ? numericValue : 12;
+    accountStorage.setItem(WORLD_INFO_MANAGER_PAGE_SIZE_KEY, String(worldInfoManagerState.pageSize));
+}
+
+function pruneWorldInfoManagerSelection() {
+    for (const name of [...selectedWorldInfoManagerNames]) {
+        if (!world_names?.includes(name)) {
+            selectedWorldInfoManagerNames.delete(name);
+        }
+    }
+}
+
+function getWorldInfoManagerItems() {
+    return Array.isArray(world_names)
+        ? world_names.map((name) => ({
+            name,
+            active: hasSelectedWorldInfo(name),
+        }))
+        : [];
+}
+
+function getVisibleWorldInfoManagerItems() {
+    return getWorldInfoManagerItems();
+}
+
+async function applyBulkWorldInfoSelection(names, selected) {
+    const normalizedNames = [...new Set((Array.isArray(names) ? names : [])
+        .map((name) => resolveWorldInfoName(name))
+        .filter(Boolean)
+        .filter((name) => world_names.includes(name)))];
+    if (normalizedNames.length === 0) {
+        return false;
+    }
+
+    const nextSelected = selected_world_info
+        .map((name) => resolveWorldInfoName(name))
+        .filter(Boolean)
+        .filter((name) => !normalizedNames.some((candidate) => areLookupNamesEqual(candidate, name)));
+
+    if (selected) {
+        nextSelected.push(...normalizedNames.filter((name) => !nextSelected.some((entry) => areLookupNamesEqual(entry, name))));
+    }
+
+    if (JSON.stringify(nextSelected) === JSON.stringify(selected_world_info)) {
+        return false;
+    }
+
+    selected_world_info = nextSelected;
+    syncGlobalWorldInfoSettingsState();
+    syncGlobalWorldInfoSelectionUi();
+    requestAsyncDiffForNextSettingsSave();
+    saveSettingsDebounced();
+    await eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+    return true;
+}
+
+async function deleteWorldInfoSelection(names) {
+    const normalizedNames = [...new Set((Array.isArray(names) ? names : [])
+        .map((name) => resolveWorldInfoName(name))
+        .filter(Boolean)
+        .filter((name) => world_names.includes(name)))];
+    if (normalizedNames.length === 0) {
+        return false;
+    }
+
+    for (const name of normalizedNames) {
+        selectedWorldInfoManagerNames.delete(name);
+        const deleted = await deleteWorldInfo(name);
+        if (!deleted) {
+            toastr.error(t`Failed to delete '${name}'.`);
+        }
+    }
+
+    return true;
+}
+
+function buildWorldInfoManagerItem(item) {
+    const isSelected = selectedWorldInfoManagerNames.has(item.name);
+    const itemElement = $(`
+        <div class="world_info_manager_item">
+            <label class="checkbox_label world_info_manager_select_label" title="${escapeHtmlText(t`Select this lorebook for bulk actions`)}">
+                <input type="checkbox" class="world_info_manager_select">
+                <span class="fa-solid fa-check"></span>
+            </label>
+            <div class="world_info_manager_item_main">
+                <button type="button" class="world_info_manager_item_title"></button>
+                <div class="world_info_manager_item_meta"></div>
+            </div>
+            <div class="world_info_manager_item_actions">
+                <div class="menu_button world_info_manager_toggle"></div>
+                <div class="menu_button world_info_manager_edit fa-solid fa-pen-to-square" title="${escapeHtmlText(t`Open lorebook in editor`)}"></div>
+                <div class="menu_button world_info_manager_delete fa-solid fa-trash-can" title="${escapeHtmlText(t`Delete lorebook`)}"></div>
+            </div>
+        </div>
+    `);
+
+    itemElement.attr('data-name', item.name);
+    itemElement.toggleClass('is-active', item.active);
+    itemElement.toggleClass('is-selected', isSelected);
+
+    const selectLabel = itemElement.find('.world_info_manager_select_label');
+    const selectInput = itemElement.find('.world_info_manager_select');
+    selectInput.prop('checked', isSelected);
+    selectLabel.on('click', (event) => event.stopPropagation());
+    selectInput.on('click', (event) => event.stopPropagation());
+    selectInput.on('change', function (event) {
+        event.stopPropagation();
+        if ($(this).prop('checked')) {
+            selectedWorldInfoManagerNames.add(item.name);
+        } else {
+            selectedWorldInfoManagerNames.delete(item.name);
+        }
+        renderWorldInfoManager();
+    });
+
+    itemElement.find('.world_info_manager_item_title')
+        .text(item.name)
+        .attr('title', item.name)
+        .on('click', () => openWorldInfoEditor(item.name));
+
+    const meta = itemElement.find('.world_info_manager_item_meta');
+    meta.append($(`
+        <span class="world_info_manager_badge ${item.active ? 'is-active' : ''}">
+            ${escapeHtmlText(item.active ? t`Active` : t`Inactive`)}
+        </span>
+    `));
+
+    const toggleButton = itemElement.find('.world_info_manager_toggle');
+    toggleButton
+        .toggleClass('fa-solid fa-toggle-on', item.active)
+        .toggleClass('fa-solid fa-toggle-off', !item.active)
+        .attr('title', item.active ? t`Disable lorebook` : t`Enable lorebook`)
+        .on('click', async () => {
+            await setGlobalWorldInfoSelection(item.name, !item.active);
+            renderWorldInfoManager();
+        });
+
+    itemElement.find('.world_info_manager_edit').on('click', () => openWorldInfoEditor(item.name));
+    itemElement.find('.world_info_manager_delete').on('click', async () => {
+        const confirmation = await Popup.show.confirm(
+            t`Delete the World/Lorebook: "${item.name}"?`,
+            t`This action is irreversible!`,
+        );
+        if (!confirmation) {
+            return;
+        }
+
+        selectedWorldInfoManagerNames.delete(item.name);
+        await deleteWorldInfo(item.name);
+        renderWorldInfoManager();
+    });
+
+    return itemElement;
+}
+
+function renderWorldInfoManager() {
+    const manager = $('#world_info_manager');
+    const list = $('#world_info_manager_list');
+    const pageStatus = $('#world_info_manager_page_status');
+    const selectionStatus = $('#world_info_manager_selection_status');
+    const pageSizeSelect = $('#world_info_manager_page_size');
+    const selectPageButton = $('#world_info_manager_select_page');
+    const clearSelectionButton = $('#world_info_manager_clear_selection');
+    const enableSelectedButton = $('#world_info_manager_enable_selected');
+    const disableSelectedButton = $('#world_info_manager_disable_selected');
+    const deleteSelectedButton = $('#world_info_manager_delete_selected');
+    const prevButton = $('#world_info_manager_prev');
+    const nextButton = $('#world_info_manager_next');
+
+    if (!manager.length || !list.length) {
+        return;
+    }
+
+    worldInfoManagerState.pageSize = getWorldInfoManagerPageSize();
+    pruneWorldInfoManagerSelection();
+
+    const items = getVisibleWorldInfoManagerItems();
+    const totalItems = items.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / worldInfoManagerState.pageSize));
+    worldInfoManagerState.page = Math.min(Math.max(1, worldInfoManagerState.page), totalPages);
+
+    const startIndex = (worldInfoManagerState.page - 1) * worldInfoManagerState.pageSize;
+    const pageItems = items.slice(startIndex, startIndex + worldInfoManagerState.pageSize);
+    const allPageSelected = pageItems.length > 0 && pageItems.every((item) => selectedWorldInfoManagerNames.has(item.name));
+    const selectedCount = selectedWorldInfoManagerNames.size;
+
+    manager.removeClass('displayNone');
+    list.empty();
+
+    if (totalItems === 0) {
+        list.append(`<div class="world_info_manager_empty">${escapeHtmlText(t`No lorebooks available.`)}</div>`);
+    } else {
+        list.append(pageItems.map(buildWorldInfoManagerItem));
+    }
+
+    pageSizeSelect.val(String(worldInfoManagerState.pageSize));
+    pageStatus.text(totalItems > 0
+        ? t`Page ${worldInfoManagerState.page} / ${totalPages}`
+        : t`Page 0 / 0`);
+    selectionStatus.text(selectedCount > 0
+        ? t`${selectedCount} lorebooks selected`
+        : t`No lorebooks selected`);
+    selectPageButton.find('span').text(allPageSelected ? t`Deselect Page` : t`Select Page`);
+
+    clearSelectionButton.toggleClass('disabled', selectedCount === 0);
+    enableSelectedButton.toggleClass('disabled', selectedCount === 0);
+    disableSelectedButton.toggleClass('disabled', selectedCount === 0);
+    deleteSelectedButton.toggleClass('disabled', selectedCount === 0);
+    prevButton.toggleClass('disabled', worldInfoManagerState.page <= 1);
+    nextButton.toggleClass('disabled', worldInfoManagerState.page >= totalPages);
 }
 
 function destroyWorldEntryBlock($block) {
@@ -8253,6 +8485,97 @@ export function initWorldInfo() {
         }
 
         onWorldInfoChange('__notSlashCommand__');
+    });
+    setWorldInfoManagerPageSize(getWorldInfoManagerPageSize());
+    $('#world_info_manager_page_size').val(String(worldInfoManagerState.pageSize));
+
+    $('#world_info_manager_select_page').on('click', function () {
+        const items = getVisibleWorldInfoManagerItems();
+        const startIndex = (worldInfoManagerState.page - 1) * worldInfoManagerState.pageSize;
+        const pageItems = items.slice(startIndex, startIndex + worldInfoManagerState.pageSize);
+        if (pageItems.length === 0) {
+            return;
+        }
+
+        const allSelected = pageItems.every((item) => selectedWorldInfoManagerNames.has(item.name));
+        for (const item of pageItems) {
+            if (allSelected) {
+                selectedWorldInfoManagerNames.delete(item.name);
+            } else {
+                selectedWorldInfoManagerNames.add(item.name);
+            }
+        }
+
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_clear_selection').on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        selectedWorldInfoManagerNames.clear();
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_enable_selected').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        await applyBulkWorldInfoSelection([...selectedWorldInfoManagerNames], true);
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_disable_selected').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        await applyBulkWorldInfoSelection([...selectedWorldInfoManagerNames], false);
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_delete_selected').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const selectedNames = [...selectedWorldInfoManagerNames];
+        const confirmation = await Popup.show.confirm(
+            t`Delete ${selectedNames.length} selected lorebooks?`,
+            t`This action is irreversible!`,
+        );
+        if (!confirmation) {
+            return;
+        }
+
+        await deleteWorldInfoSelection(selectedNames);
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_page_size').on('change', function () {
+        setWorldInfoManagerPageSize($(this).val());
+        worldInfoManagerState.page = 1;
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_prev').on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        worldInfoManagerState.page = Math.max(1, worldInfoManagerState.page - 1);
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_next').on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        worldInfoManagerState.page += 1;
+        renderWorldInfoManager();
     });
 
     //**************************WORLD INFO IMPORT EXPORT*************************//

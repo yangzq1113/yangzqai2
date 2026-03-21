@@ -5,6 +5,174 @@
     gap: 5px;
 }
 
+.world_info_manager {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.world_info_manager_toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.world_info_manager_action_row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.world_info_manager_action_row_secondary {
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.world_info_manager_pagination {
+    align-items: center;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.world_info_manager_page_size_label {
+    opacity: 0.75;
+}
+
+#world_info_manager_selection_status {
+    min-width: 0;
+}
+
+#world_info_manager_page_status {
+    min-width: 78px;
+    text-align: center;
+}
+
+#world_info_manager_page_size {
+    min-width: 72px;
+}
+
+.world_info_manager_list {
+    display: grid;
+    gap: 8px;
+}
+
+.world_info_manager_empty {
+    align-items: center;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    border-radius: 12px;
+    color: var(--SmartThemeBodyColor);
+    display: flex;
+    justify-content: center;
+    min-height: 96px;
+    opacity: 0.7;
+    padding: 16px;
+}
+
+.world_info_manager_item {
+    align-items: center;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 76%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 12px;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: 10px 12px;
+    transition: border-color var(--animation-duration-2x), box-shadow var(--animation-duration-2x), background-color var(--animation-duration-2x);
+}
+
+.world_info_manager_item.is-selected {
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 72%, var(--SmartThemeBorderColor));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--SmartThemeQuoteColor) 24%, transparent);
+}
+
+.world_info_manager_item.is-active {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, var(--SmartThemeBlurTintColor));
+}
+
+.world_info_manager_item_title {
+    background: transparent;
+    border: 0;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    display: block;
+    font-family: inherit;
+    font-size: 0.98rem;
+    font-weight: 600;
+    margin: 0;
+    overflow: hidden;
+    padding: 0;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.world_info_manager_item_title:hover {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.world_info_manager_item_meta {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 3px;
+}
+
+.world_info_manager_badge {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 999px;
+    font-size: 0.72rem;
+    opacity: 0.85;
+    padding: 2px 8px;
+}
+
+.world_info_manager_badge.is-active {
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 72%, var(--SmartThemeBorderColor));
+    color: var(--SmartThemeQuoteColor);
+}
+
+.world_info_manager_item_actions {
+    align-items: center;
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    justify-content: flex-end;
+}
+
+.world_info_manager_select_label {
+    align-items: center;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    height: 32px;
+    justify-content: center;
+    margin: 0;
+    width: 32px;
+}
+
+.world_info_manager_select_label input {
+    display: none;
+}
+
+.world_info_manager_select_label span {
+    opacity: 0.35;
+    transition: opacity var(--animation-duration-2x), color var(--animation-duration-2x);
+}
+
+.world_info_manager_select_label:has(input:checked) {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 16%, transparent);
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 72%, var(--SmartThemeBorderColor));
+}
+
+.world_info_manager_select_label:has(input:checked) span {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 1;
+}
+
 .budget_cap_note {
     flex-basis: 100%;
     line-height: 0.1;
