@@ -26,44 +26,34 @@ const REGEX_SCRIPT_TYPE_LABELS = Object.freeze({
 
 function buildRegexDragHelper(item) {
     const itemEl = item?.get?.(0) || item?.[0] || item;
-    const nameEl = itemEl instanceof HTMLElement
-        ? itemEl.querySelector('.regex_script_name')
-        : null;
-    const title = String(
-        nameEl?.textContent
-        || itemEl?.getAttribute?.('title')
-        || itemEl?.getAttribute?.('id')
-        || 'Regex Script',
-    ).trim();
+    const helper = item?.clone?.() || $(itemEl).clone();
     const width = Math.round(item?.outerWidth?.() || itemEl?.getBoundingClientRect?.().width || 0);
-    const helper = document.createElement('div');
-    helper.className = 'regex-drag-helper';
-    helper.textContent = title;
-    helper.style.width = width > 0 ? `${width}px` : '';
-    helper.style.padding = '8px 12px';
-    helper.style.border = '1px solid var(--SmartThemeBorderColor)';
-    helper.style.borderRadius = '10px';
-    helper.style.background = 'var(--SmartThemeBlurTintColor)';
-    helper.style.color = 'var(--SmartThemeBodyColor)';
-    helper.style.boxShadow = '0 12px 28px rgba(0, 0, 0, 0.18)';
-    helper.style.pointerEvents = 'none';
-    return $(helper);
+    helper.addClass('regex-drag-helper');
+    helper.css({
+        width: width > 0 ? `${width}px` : '',
+        'pointer-events': 'none',
+        'box-shadow': '0 12px 28px rgba(0, 0, 0, 0.18)',
+        opacity: '0.96',
+        transform: 'rotate(1deg)',
+    });
+    return helper;
 }
 
 function styleRegexDragPlaceholder(ui) {
     const placeholder = ui?.placeholder;
-    const item = ui?.item;
-    if (!placeholder?.length || !item?.length) {
+    if (!placeholder?.length) {
         return;
     }
 
     placeholder.css({
-        height: `${Math.round(item.outerHeight() || 0)}px`,
+        height: '4px',
+        'min-height': '4px',
         visibility: 'visible',
-        border: '1px dashed var(--SmartThemeBorderColor)',
-        'border-radius': '10px',
-        background: 'color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent)',
-        opacity: '0.8',
+        border: '0',
+        'border-radius': '999px',
+        background: 'var(--SmartThemeQuoteColor)',
+        opacity: '0.7',
+        margin: '8px 0',
     });
 }
 
@@ -2493,7 +2483,7 @@ jQuery(async () => {
             helper: (_event, ui) => buildRegexDragHelper(ui),
             appendTo: document.body,
             tolerance: 'pointer',
-            forcePlaceholderSize: true,
+            forcePlaceholderSize: false,
             placeholder: 'regex-sortable-placeholder',
             cursor: 'grabbing',
             scroll: true,
