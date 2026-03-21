@@ -24,6 +24,9 @@ const UI_BLOCK_ID = 'orchestrator_settings';
 const ORCH_CHAT_STATE_NAMESPACE = 'luker_orchestrator_state';
 const ORCH_CHAT_STATE_VERSION = 2;
 const ORCH_CHAT_CONTENT_NAMESPACE_PREFIX = 'luker_orchestrator_anchor_';
+const ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE = 'orchestrator_iteration_history';
+const ORCH_CHARACTER_ITERATION_HISTORY_VERSION = 1;
+const ORCH_CHARACTER_ITERATION_HISTORY_LIMIT = 24;
 const DEFAULT_CAPSULE_CUSTOM_INSTRUCTION = 'Follow the orchestration guidance below and prioritize it when drafting the next in-character reply.';
 const DEFAULT_SINGLE_AGENT_SYSTEM_PROMPT = 'You are a single-agent orchestration planner for roleplay generation. Produce concise, actionable guidance for the next reply while preserving continuity, character consistency, and world constraints. Before function-call output, provide one concise <thought>...</thought> that reflects your role-specific reasoning.';
 const DEFAULT_SINGLE_AGENT_USER_PROMPT_TEMPLATE = [
@@ -696,6 +699,22 @@ function registerLocaleData() {
         'Iteration session reset.': '迭代会话已重置。',
         'Regenerate': '重新生成',
         'Regenerating message...': '正在重新生成消息...',
+        'Session history': '会话历史',
+        'No saved sessions yet.': '还没有已保存会话。',
+        'New session': '新建会话',
+        'Load session': '加载会话',
+        'Delete session': '删除会话',
+        'Session loaded.': '会话已加载。',
+        'New session created.': '已创建新会话。',
+        'Session deleted.': '会话已删除。',
+        'Delete this saved session?': '确认删除这条已保存会话？',
+        'Current session': '当前会话',
+        'Rollback round': '回退此轮',
+        'Rolled back to selected round.': '已回退到所选轮次。',
+        'Rollback failed: ${0}': '回退失败：${0}',
+        'Delete session failed: ${0}': '删除会话失败：${0}',
+        'Applied changes diff': '已应用变更详情',
+        'Rejected changes diff': '已拒绝变更详情',
         'Workflow': '工作流',
         'Add Stage': '新增阶段',
         'Add Node': '新增节点',
@@ -961,6 +980,22 @@ function registerLocaleData() {
         'Iteration session reset.': '迭代會話已重置。',
         'Regenerate': '重新生成',
         'Regenerating message...': '正在重新生成訊息...',
+        'Session history': '會話歷史',
+        'No saved sessions yet.': '還沒有已儲存會話。',
+        'New session': '新增會話',
+        'Load session': '載入會話',
+        'Delete session': '刪除會話',
+        'Session loaded.': '會話已載入。',
+        'New session created.': '已建立新會話。',
+        'Session deleted.': '會話已刪除。',
+        'Delete this saved session?': '確認刪除這條已儲存會話？',
+        'Current session': '目前會話',
+        'Rollback round': '回退此輪',
+        'Rolled back to selected round.': '已回退到所選輪次。',
+        'Rollback failed: ${0}': '回退失敗：${0}',
+        'Delete session failed: ${0}': '刪除會話失敗：${0}',
+        'Applied changes diff': '已套用變更詳情',
+        'Rejected changes diff': '已拒絕變更詳情',
         'Workflow': '工作流',
         'Add Stage': '新增階段',
         'Add Node': '新增節點',
@@ -5857,6 +5892,41 @@ function getCharacterIndexByAvatar(context, avatar) {
     return (context.characters || []).findIndex(char => String(char?.avatar || '') === target);
 }
 
+async function getCharacterStateSidecar(context, avatar, namespace) {
+    const response = await fetch('/api/characters/state/get', {
+        method: 'POST',
+        headers: context.getRequestHeaders(),
+        body: JSON.stringify({
+            avatar_url: avatar,
+            namespace,
+        }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`Character state read failed (${response.status}): ${detail || response.statusText}`);
+    }
+    const payload = await response.json().catch(() => null);
+    return payload && typeof payload === 'object' ? payload.data : null;
+}
+
+async function setCharacterStateSidecar(context, avatar, namespace, data) {
+    const response = await fetch('/api/characters/state/set', {
+        method: 'POST',
+        headers: context.getRequestHeaders(),
+        body: JSON.stringify({
+            avatar_url: avatar,
+            namespace,
+            data: structuredClone(data),
+        }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`Character state write failed (${response.status}): ${detail || response.statusText}`);
+    }
+}
+
 function getCharacterExtensionDataByAvatar(context, avatar) {
     const character = getCharacterByAvatar(context, avatar);
     const payload = character?.data?.extensions?.[MODULE_NAME];
@@ -7594,6 +7664,192 @@ function restoreAiIterationSessionStateFromMessages(session) {
     session.updatedAt = Date.now();
 }
 
+function normalizeAiIterationDiffEntries(entries) {
+    return (Array.isArray(entries) ? entries : [])
+        .filter(item => item && typeof item === 'object')
+        .map(item => ({
+            name: String(item?.name || '').trim(),
+            summary: String(item?.summary || '').trim(),
+            fields: (Array.isArray(item?.fields) ? item.fields : [])
+                .filter(field => field && typeof field === 'object')
+                .map(field => ({
+                    label: String(field?.label || '').trim(),
+                    before: field?.before ?? '',
+                    after: field?.after ?? '',
+                })),
+            rawArgs: item?.rawArgs && typeof item.rawArgs === 'object'
+                ? structuredClone(item.rawArgs)
+                : {},
+        }));
+}
+
+function normalizeAiIterationSessionMessage(mode, rawMessage) {
+    const role = String(rawMessage?.role || 'assistant').trim().toLowerCase();
+    const message = {
+        id: String(rawMessage?.id || '').trim() || makeAiIterationMessageId(),
+        role: role === 'user' ? 'user' : 'assistant',
+        content: String(rawMessage?.content || ''),
+        auto: Boolean(rawMessage?.auto),
+        at: Number(rawMessage?.at || Date.now()),
+    };
+
+    if (message.role === 'assistant') {
+        const toolCalls = normalizePersistentToolCalls(rawMessage);
+        const toolResults = normalizePersistentToolResults(rawMessage, toolCalls);
+        if (toolCalls.length > 0) {
+            message.tool_calls = toolCalls;
+        }
+        if (toolResults.length > 0) {
+            message.tool_results = toolResults;
+        }
+        if (rawMessage?.toolSummary) {
+            message.toolSummary = String(rawMessage.toolSummary || '');
+        }
+        if (rawMessage?.toolState) {
+            message.toolState = String(rawMessage.toolState || '');
+        }
+        if (Array.isArray(rawMessage?.pendingToolCalls)) {
+            message.pendingToolCalls = buildExecutionToolCalls(rawMessage.pendingToolCalls);
+        }
+        if (Array.isArray(rawMessage?.executionToolCalls)) {
+            message.executionToolCalls = buildExecutionToolCalls(rawMessage.executionToolCalls);
+        }
+        if (Array.isArray(rawMessage?.diffEntries)) {
+            message.diffEntries = normalizeAiIterationDiffEntries(rawMessage.diffEntries);
+        }
+        if (rawMessage?.profileSnapshotAfter && typeof rawMessage.profileSnapshotAfter === 'object') {
+            message.profileSnapshotAfter = cloneAiIterationWorkingProfile(mode, rawMessage.profileSnapshotAfter);
+        }
+        if (rawMessage?.lastSimulationAfter && typeof rawMessage.lastSimulationAfter === 'object') {
+            message.lastSimulationAfter = structuredClone(rawMessage.lastSimulationAfter);
+        }
+    }
+
+    return message;
+}
+
+function normalizeAiIterationStoredSession(rawSession) {
+    const mode = normalizeExecutionMode(rawSession?.mode) || ORCH_EXECUTION_MODE_SPEC;
+    const baseWorkingProfile = cloneAiIterationWorkingProfile(
+        mode,
+        rawSession?.baseWorkingProfile || rawSession?.workingProfile,
+    );
+    const session = {
+        id: String(rawSession?.id || '').trim() || `session_${Date.now()}`,
+        mode,
+        chatKey: String(rawSession?.chatKey || '').trim(),
+        sourceScope: String(rawSession?.sourceScope || '').trim() === 'character' ? 'character' : 'global',
+        sourceAvatar: String(rawSession?.sourceAvatar || '').trim(),
+        sourceName: String(rawSession?.sourceName || '').trim(),
+        revision: Math.max(1, Math.floor(Number(rawSession?.revision) || 1)),
+        createdAt: Number(rawSession?.createdAt || Date.now()),
+        updatedAt: Number(rawSession?.updatedAt || rawSession?.createdAt || Date.now()),
+        workingProfile: cloneAiIterationWorkingProfile(mode, rawSession?.workingProfile || baseWorkingProfile),
+        baseWorkingProfile,
+        messages: (Array.isArray(rawSession?.messages) ? rawSession.messages : [])
+            .map(item => normalizeAiIterationSessionMessage(mode, item)),
+        lastSimulation: rawSession?.lastSimulation && typeof rawSession.lastSimulation === 'object'
+            ? structuredClone(rawSession.lastSimulation)
+            : null,
+        pendingApproval: null,
+    };
+    restoreAiIterationSessionStateFromMessages(session);
+    return session;
+}
+
+function createEmptyAiIterationHistoryState() {
+    return {
+        version: ORCH_CHARACTER_ITERATION_HISTORY_VERSION,
+        sessions: [],
+    };
+}
+
+function normalizeAiIterationHistoryState(rawState) {
+    const sessions = (Array.isArray(rawState?.sessions) ? rawState.sessions : [])
+        .map(session => normalizeAiIterationStoredSession(session))
+        .sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
+    return {
+        version: ORCH_CHARACTER_ITERATION_HISTORY_VERSION,
+        sessions: sessions.slice(-ORCH_CHARACTER_ITERATION_HISTORY_LIMIT),
+    };
+}
+
+function replaceAiIterationSession(targetSession, sourceSession) {
+    if (!targetSession || typeof targetSession !== 'object') {
+        return sourceSession;
+    }
+    const normalized = normalizeAiIterationStoredSession(sourceSession);
+    for (const key of Object.keys(targetSession)) {
+        delete targetSession[key];
+    }
+    Object.assign(targetSession, normalized);
+    return targetSession;
+}
+
+function upsertAiIterationHistorySession(historyState, session) {
+    const normalizedState = normalizeAiIterationHistoryState(historyState);
+    const normalizedSession = normalizeAiIterationStoredSession(session);
+    const nextSessions = normalizedState.sessions.filter(item => String(item?.id || '') !== String(normalizedSession.id || ''));
+    nextSessions.push(normalizedSession);
+    nextSessions.sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
+    normalizedState.sessions = nextSessions.slice(-ORCH_CHARACTER_ITERATION_HISTORY_LIMIT);
+    return normalizedState;
+}
+
+function deleteAiIterationHistorySession(historyState, sessionId) {
+    const normalizedState = normalizeAiIterationHistoryState(historyState);
+    const targetId = String(sessionId || '').trim();
+    normalizedState.sessions = normalizedState.sessions.filter(item => String(item?.id || '') !== targetId);
+    return normalizedState;
+}
+
+function findAiIterationHistorySession(historyState, sessionId) {
+    const targetId = String(sessionId || '').trim();
+    if (!targetId) {
+        return null;
+    }
+    return (Array.isArray(historyState?.sessions) ? historyState.sessions : [])
+        .find(item => String(item?.id || '') === targetId) || null;
+}
+
+async function loadAiIterationHistoryState(context, avatar) {
+    const raw = await getCharacterStateSidecar(context, avatar, ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE);
+    return normalizeAiIterationHistoryState(raw || createEmptyAiIterationHistoryState());
+}
+
+async function persistAiIterationHistoryState(context, avatar, historyState) {
+    await setCharacterStateSidecar(
+        context,
+        avatar,
+        ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE,
+        normalizeAiIterationHistoryState(historyState),
+    );
+}
+
+function summarizeAiIterationHistorySession(session, fallback = '') {
+    const firstUserMessage = (Array.isArray(session?.messages) ? session.messages : [])
+        .find(item => String(item?.role || '').trim().toLowerCase() === 'user');
+    const summary = String(firstUserMessage?.content || '').trim() || String(session?.sourceName || '').trim() || String(fallback || '').trim();
+    return summary.length > 72
+        ? `${summary.slice(0, 72).trim()}...`
+        : summary;
+}
+
+function getAiIterationRollbackStartIndex(messages, messageIndex) {
+    const index = asFiniteInteger(messageIndex, -1);
+    const list = Array.isArray(messages) ? messages : [];
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+        return -1;
+    }
+    let removeFrom = index;
+    const previous = removeFrom > 0 ? list[removeFrom - 1] : null;
+    if (String(list[removeFrom]?.role || '').trim().toLowerCase() === 'assistant'
+        && String(previous?.role || '').trim().toLowerCase() === 'user') {
+        removeFrom -= 1;
+    }
+    return removeFrom;
+}
+
 function createAiIterationSession(context, settings) {
     if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
         syncCharacterEditorWithActiveAvatar(context);
@@ -7746,6 +8002,77 @@ function canRefreshAiIterationAssistantMessage(session, messageIndex) {
     return findPreviousAiIterationUserMessageIndex(items, index) >= 0;
 }
 
+function canRollbackAiIterationAssistantMessage(session, messageIndex) {
+    const items = Array.isArray(session?.messages) ? session.messages : [];
+    const index = Math.floor(Number(messageIndex));
+    if (!Number.isInteger(index) || index < 0 || index >= items.length) {
+        return false;
+    }
+    const item = items[index];
+    if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+        return false;
+    }
+    if (String(item?.toolState || '').trim().toLowerCase() !== 'completed') {
+        return false;
+    }
+    const diffEntries = Array.isArray(item?.diffEntries) ? item.diffEntries : [];
+    return diffEntries.length > 0 && Boolean(item?.profileSnapshotAfter && typeof item.profileSnapshotAfter === 'object');
+}
+
+function renderAiIterationMessageDiffHtml(item, messageIndex) {
+    const diffEntries = Array.isArray(item?.diffEntries) ? item.diffEntries : [];
+    if (diffEntries.length === 0) {
+        return '';
+    }
+    const toolState = String(item?.toolState || '').trim().toLowerCase();
+    const summaryLabel = toolState === 'completed'
+        ? i18n('Applied changes diff')
+        : (toolState === 'rejected' ? i18n('Rejected changes diff') : i18n('Pending changes diff'));
+    const rollbackAction = canRollbackAiIterationAssistantMessage({ messages: [item] }, 0)
+        ? `
+    <div class="luker_orch_iter_actions luker_orch_iter_msg_diff_actions">
+        <div class="menu_button menu_button_small" data-luker-orch-action="rollback-message" data-luker-orch-message-index="${messageIndex}">${escapeHtml(i18n('Rollback round'))}</div>
+    </div>`
+        : '';
+    return `
+<details class="luker_orch_iter_pending_diff_inline"${toolState === 'pending' ? ' open' : ''}>
+    <summary>${escapeHtml(summaryLabel)}</summary>
+    <div class="luker_orch_iter_diff_popup">
+        ${renderAiIterationDiffEntriesHtml(diffEntries)}
+    </div>
+    ${rollbackAction}
+</details>`;
+}
+
+function renderAiIterationSessionHistory(historyState, activeSessionId = '') {
+    const sessions = Array.isArray(historyState?.sessions) ? historyState.sessions.slice().reverse() : [];
+    if (sessions.length === 0) {
+        return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No saved sessions yet.'))}</div>`;
+    }
+    return `<div class="luker_orch_iter_history_list">${sessions.map((session) => {
+        const sessionId = String(session?.id || '').trim();
+        const isActive = sessionId && sessionId === String(activeSessionId || '').trim();
+        const modeLabel = String(session?.mode || '').trim() === ORCH_EXECUTION_MODE_AGENDA ? 'Agenda' : 'Spec';
+        const summary = summarizeAiIterationHistorySession(session, session?.sourceName || '');
+        const meta = [
+            modeLabel,
+            `${Array.isArray(session?.messages) ? session.messages.length : 0} msgs`,
+            new Date(Number(session?.updatedAt || session?.createdAt || Date.now())).toLocaleString(),
+        ].join(' · ');
+        return `
+<div class="luker_orch_iter_history_item${isActive ? ' active' : ''}">
+    <div class="luker_orch_iter_history_main">
+        <div class="luker_orch_iter_history_summary">${escapeHtml(summary || '(session)')}</div>
+        <div class="luker_orch_iter_history_meta">${escapeHtml(meta)}</div>
+    </div>
+    <div class="luker_orch_iter_history_actions">
+        ${isActive ? `<div class="menu_button menu_button_small disabled">${escapeHtml(i18n('Current session'))}</div>` : `<div class="menu_button menu_button_small" data-luker-orch-action="load-session" data-luker-orch-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Load session'))}</div>`}
+        <div class="menu_button menu_button_small" data-luker-orch-action="delete-session" data-luker-orch-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Delete session'))}</div>
+    </div>
+</div>`;
+    }).join('')}</div>`;
+}
+
 function renderAiIterationConversation(session, { loading = false, loadingText = '' } = {}) {
     const items = Array.isArray(session?.messages) ? session.messages : [];
     if (items.length === 0 && !loading) {
@@ -7758,13 +8085,21 @@ function renderAiIterationConversation(session, { loading = false, loadingText =
         const bubbleClass = role === 'user' ? 'user' : 'assistant';
         const bodyHtml = renderAiIterationMessageBodyHtml(item?.content || '', { auto });
         const toolSummary = String(item?.toolSummary || '').trim();
-        const actionsHtml = canRefreshAiIterationAssistantMessage(session, index)
-            ? `<div class="luker_orch_iter_msg_actions"><div class="menu_button menu_button_small" data-luker-orch-action="refresh-message" data-luker-orch-message-index="${index}">${escapeHtml(i18n('Regenerate'))}</div></div>`
+        const actionButtons = [];
+        if (canRefreshAiIterationAssistantMessage(session, index)) {
+            actionButtons.push(`<div class="menu_button menu_button_small" data-luker-orch-action="refresh-message" data-luker-orch-message-index="${index}">${escapeHtml(i18n('Regenerate'))}</div>`);
+        }
+        const actionsHtml = actionButtons.length > 0
+            ? `<div class="luker_orch_iter_msg_actions">${actionButtons.join('')}</div>`
+            : '';
+        const diffHtml = role === 'assistant'
+            ? renderAiIterationMessageDiffHtml(item, index)
             : '';
         return `
 <div class="luker_orch_iter_msg ${bubbleClass}">
     <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
     <div class="luker_orch_iter_msg_body">${bodyHtml}</div>
+    ${diffHtml}
     ${toolSummary ? `<div class="luker_orch_iter_msg_meta">${escapeHtml(toolSummary)}</div>` : ''}
     ${actionsHtml}
 </div>`;
@@ -10123,6 +10458,9 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
     const visibleAssistantText = assistantText || buildToolCallSummary(persistentToolCalls);
     if (split.approvalCalls.length > 0) {
         const pendingSummary = i18n('AI suggested changes are waiting for approval.');
+        const pendingDiffState = buildAiIterationPendingDiffState(session, {
+            toolCalls: split.approvalCalls,
+        });
         const assistantMessage = createPersistentToolTurnMessage({
             messageId: makeAiIterationMessageId(),
             assistantText: visibleAssistantText,
@@ -10135,6 +10473,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
             extra: {
                 pendingToolCalls: structuredClone(split.approvalCalls),
                 executionToolCalls: structuredClone(split.allCalls),
+                diffEntries: normalizeAiIterationDiffEntries(pendingDiffState.entries),
             },
         });
         session.messages.push(assistantMessage);
@@ -10150,6 +10489,9 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         return { ok: true, pending: true };
     }
 
+    const completedDiffState = buildAiIterationPendingDiffState(session, {
+        toolCalls: split.allCalls,
+    });
     const executionResult = await executeAiIterationToolCalls(context, session, split.allCalls, abortSignal);
     session.messages.push(createPersistentToolTurnMessage({
         messageId: makeAiIterationMessageId(),
@@ -10161,6 +10503,7 @@ async function runAiIterationTurn(context, settings, session, userText, abortSig
         auto: Boolean(auto),
         at: Date.now(),
         extra: {
+            diffEntries: normalizeAiIterationDiffEntries(completedDiffState.entries),
             profileSnapshotAfter: cloneAiIterationWorkingProfile(session?.mode, session?.workingProfile),
             lastSimulationAfter: session?.lastSimulation ? structuredClone(session.lastSimulation) : null,
         },
@@ -10260,13 +10603,14 @@ async function applyAiIterationSessionToCharacter(context, settings, session, ro
     updateUiStatus(i18nFormat('Iteration session applied to character override: ${0}.', name));
 }
 
-function buildAiIterationPopupHtml(popupId, session, { allowCharacterApply = false } = {}) {
+function buildAiIterationPopupHtml(popupId, session, { allowCharacterApply = false, enableSessionHistory = false } = {}) {
     return `
 <div id="${popupId}" class="luker_orch_iter_popup">
     <div class="luker_orch_iter_head">
         <div class="luker_orch_iter_title">${escapeHtml(i18n('AI Iteration Studio'))}</div>
-        <div class="luker_orch_iter_sub">${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</div>
+        <div id="${popupId}_sub" class="luker_orch_iter_sub">${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</div>
     </div>
+    <div id="${popupId}_status" class="luker_orch_iter_status"></div>
     <div class="luker_orch_iter_grid">
         <div class="luker_orch_iter_col">
             <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Conversation'))}</div>
@@ -10286,6 +10630,12 @@ function buildAiIterationPopupHtml(popupId, session, { allowCharacterApply = fal
                 <div id="${popupId}_apply_global" class="menu_button">${escapeHtml(i18n('Apply to Global'))}</div>
                 ${allowCharacterApply ? `<div id="${popupId}_apply_character" class="menu_button">${escapeHtml(i18n('Apply to Character'))}</div>` : ''}
             </div>
+            ${enableSessionHistory ? `
+            <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Session history'))}</div>
+            <div id="${popupId}_history" class="luker_orch_iter_history"></div>
+            <div class="luker_orch_iter_actions">
+                <div id="${popupId}_new_session" class="menu_button">${escapeHtml(i18n('New session'))}</div>
+            </div>` : ''}
         </div>
     </div>
 </div>`;
@@ -10293,20 +10643,61 @@ function buildAiIterationPopupHtml(popupId, session, { allowCharacterApply = fal
 
 async function openAiIterationStudio(context, settings, root) {
     ensureStyles();
+    const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+    const enableSessionHistory = Boolean(activeAvatar);
+    let historyState = createEmptyAiIterationHistoryState();
+    if (enableSessionHistory) {
+        try {
+            historyState = await loadAiIterationHistoryState(context, activeAvatar);
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to load AI iteration history`, error);
+        }
+    }
     const session = ensureAiIterationSession(context, settings, { forceNew: false });
+    if (enableSessionHistory) {
+        const latestSession = historyState.sessions.length > 0 ? historyState.sessions[historyState.sessions.length - 1] : null;
+        if (latestSession) {
+            replaceAiIterationSession(session, latestSession);
+        } else {
+            session.sourceAvatar = activeAvatar;
+            historyState = upsertAiIterationHistorySession(historyState, session);
+            try {
+                await persistAiIterationHistoryState(context, activeAvatar, historyState);
+            } catch (error) {
+                console.warn(`[${MODULE_NAME}] Failed to initialize AI iteration history`, error);
+            }
+        }
+        uiState.aiIterationSession = session;
+    }
     const popupId = `luker_orch_iter_popup_${Date.now()}`;
     const namespace = `.lukerOrchIter_${popupId}`;
     const selector = `#${popupId}`;
     const popupHtml = buildAiIterationPopupHtml(popupId, session, {
-        allowCharacterApply: Boolean(String(getCurrentAvatar(context) || '').trim()),
+        allowCharacterApply: enableSessionHistory,
+        enableSessionHistory,
     });
     let isRunning = false;
+
+    const persistSessionHistory = async () => {
+        if (!enableSessionHistory) {
+            return;
+        }
+        try {
+            session.sourceAvatar = activeAvatar;
+            session.updatedAt = Date.now();
+            historyState = upsertAiIterationHistorySession(historyState, session);
+            await persistAiIterationHistoryState(context, activeAvatar, historyState);
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to persist AI iteration history`, error);
+        }
+    };
 
     const rerender = () => {
         const popupRoot = jQuery(selector);
         if (!popupRoot.length) {
             return;
         }
+        popupRoot.find(`#${popupId}_sub`).text(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')));
         const pendingState = buildAiIterationPendingDiffState(session, session?.pendingApproval);
         popupRoot.find(`#${popupId}_conversation`).html(renderAiIterationConversation(session, {
             loading: isRunning,
@@ -10317,6 +10708,9 @@ async function openAiIterationStudio(context, settings, root) {
             profileOverride: null,
             previewPending: Boolean(session?.pendingApproval),
         }));
+        if (enableSessionHistory) {
+            popupRoot.find(`#${popupId}_history`).html(renderAiIterationSessionHistory(historyState, session?.id));
+        }
     };
 
     const setStatus = (text) => {
@@ -10325,6 +10719,52 @@ async function openAiIterationStudio(context, settings, root) {
             return;
         }
         popupRoot.find(`#${popupId}_status`).text(String(text || ''));
+    };
+
+    const resetCurrentSession = async () => {
+        const nextSession = createAiIterationSession(context, settings);
+        nextSession.sourceAvatar = activeAvatar;
+        replaceAiIterationSession(session, nextSession);
+        uiState.aiIterationSession = session;
+        await persistSessionHistory();
+        rerender();
+    };
+
+    const loadSessionById = async (sessionId) => {
+        if (!enableSessionHistory) {
+            return false;
+        }
+        const stored = findAiIterationHistorySession(historyState, sessionId);
+        if (!stored) {
+            return false;
+        }
+        replaceAiIterationSession(session, stored);
+        uiState.aiIterationSession = session;
+        await persistSessionHistory();
+        rerender();
+        return true;
+    };
+
+    const deleteSessionById = async (sessionId) => {
+        if (!enableSessionHistory) {
+            return;
+        }
+        historyState = deleteAiIterationHistorySession(historyState, sessionId);
+        try {
+            await persistAiIterationHistoryState(context, activeAvatar, historyState);
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to delete AI iteration session`, error);
+        }
+        if (String(session?.id || '') === String(sessionId || '').trim()) {
+            const fallback = historyState.sessions.length > 0
+                ? historyState.sessions[historyState.sessions.length - 1]
+                : createAiIterationSession(context, settings);
+            fallback.sourceAvatar = activeAvatar;
+            replaceAiIterationSession(session, fallback);
+            uiState.aiIterationSession = session;
+            await persistSessionHistory();
+        }
+        rerender();
     };
 
     const maybeRunAutoContinue = async (executionResult, controller, source = 'approved') => {
@@ -10345,6 +10785,7 @@ async function openAiIterationStudio(context, settings, root) {
                 auto: true,
                 appendUserMessage: false,
             });
+            await persistSessionHistory();
             setStatus(followUp?.pending ? i18n('AI suggested changes are waiting for approval.') : i18n('AI iteration updated.'));
             rerender();
             return true;
@@ -10368,12 +10809,14 @@ async function openAiIterationStudio(context, settings, root) {
             session.messages.push({ role: 'user', content: safeText, auto: false, at: Date.now() });
             trimAiIterationMessages(session);
             input.val('');
+            await persistSessionHistory();
         }
         isRunning = true;
         rerender();
         setStatus(loadingText || i18n('AI iteration is running...'));
         try {
             const result = await runAiIterationTurn(context, settings, session, safeText, controller.signal, { appendUserMessage: false });
+            await persistSessionHistory();
             if (result?.pending) {
                 setStatus(i18n('AI suggested changes are waiting for approval.'));
             } else if (result?.autoApplied) {
@@ -10440,23 +10883,10 @@ async function openAiIterationStudio(context, settings, root) {
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_clear`, function () {
-        uiState.aiIterationSession = createAiIterationSession(context, settings);
-        const nextSession = uiState.aiIterationSession;
-        session.id = nextSession.id;
-        session.chatKey = nextSession.chatKey;
-        session.sourceScope = nextSession.sourceScope;
-        session.sourceAvatar = nextSession.sourceAvatar;
-        session.sourceName = nextSession.sourceName;
-        session.revision = nextSession.revision;
-        session.createdAt = nextSession.createdAt;
-        session.updatedAt = nextSession.updatedAt;
-        session.workingProfile = nextSession.workingProfile;
-        session.baseWorkingProfile = nextSession.baseWorkingProfile;
-        session.messages = [];
-        session.lastSimulation = null;
-        session.pendingApproval = null;
-        setStatus(i18n('Iteration session reset.'));
-        rerender();
+        void (async () => {
+            await resetCurrentSession();
+            setStatus(i18n('Iteration session reset.'));
+        })();
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="expand-line-diff"]`, function (event) {
@@ -10484,12 +10914,32 @@ async function openAiIterationStudio(context, settings, root) {
         const userText = String(session.messages[userIndex]?.content || '').trim();
         session.messages.splice(messageIndex);
         restoreAiIterationSessionStateFromMessages(session);
+        await persistSessionHistory();
         rerender();
         setStatus(i18n('Regenerating message...'));
         await runVisibleIterationTurn(userText, {
             appendUserMessage: false,
             loadingText: i18n('Regenerating message...'),
         });
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="rollback-message"]`, async function () {
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        const messageIndex = asFiniteInteger(this.getAttribute('data-luker-orch-message-index'), -1);
+        if (!canRollbackAiIterationAssistantMessage(session, messageIndex)) {
+            return;
+        }
+        const removeFrom = getAiIterationRollbackStartIndex(session.messages, messageIndex);
+        if (!Number.isInteger(removeFrom) || removeFrom < 0) {
+            return;
+        }
+        session.messages.splice(removeFrom);
+        restoreAiIterationSessionStateFromMessages(session);
+        await persistSessionHistory();
+        rerender();
+        setStatus(i18n('Rolled back to selected round.'));
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="close-line-diff-zoom"], ${selector} .luker_orch_line_diff_zoom_backdrop`, function (event) {
@@ -10553,6 +11003,7 @@ async function openAiIterationStudio(context, settings, root) {
                 targetMessage.lastSimulationAfter = session?.lastSimulation ? structuredClone(session.lastSimulation) : null;
             }
             trimAiIterationMessages(session);
+            await persistSessionHistory();
             const didHandle = await maybeRunAutoContinue(result, controller, 'approved');
             if (!didHandle) {
                 setStatus(i18n('Changes approved and applied. Waiting for your next instruction.'));
@@ -10590,8 +11041,50 @@ async function openAiIterationStudio(context, settings, root) {
             targetMessage.toolState = 'rejected';
         }
         trimAiIterationMessages(session);
+        void persistSessionHistory();
         setStatus(i18n('Changes rejected.'));
         rerender();
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_new_session`, async function () {
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        await resetCurrentSession();
+        setStatus(i18n('New session created.'));
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="load-session"]`, async function () {
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        const sessionId = String(this.getAttribute('data-luker-orch-session-id') || '').trim();
+        if (!sessionId) {
+            return;
+        }
+        const loaded = await loadSessionById(sessionId);
+        if (loaded) {
+            setStatus(i18n('Session loaded.'));
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} [data-luker-orch-action="delete-session"]`, async function () {
+        if (activeAiIterationAbortController && !activeAiIterationAbortController.signal.aborted) {
+            return;
+        }
+        const sessionId = String(this.getAttribute('data-luker-orch-session-id') || '').trim();
+        if (!sessionId) {
+            return;
+        }
+        if (!window.confirm(i18n('Delete this saved session?'))) {
+            return;
+        }
+        try {
+            await deleteSessionById(sessionId);
+            setStatus(i18n('Session deleted.'));
+        } catch (error) {
+            setStatus(i18nFormat('Delete session failed: ${0}', String(error?.message || error)));
+        }
     });
 
     jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_apply_global`, async function () {
@@ -11600,6 +12093,11 @@ function ensureStyles() {
     opacity: 0.82;
     font-size: 0.9rem;
 }
+.luker_orch_iter_status {
+    min-height: 1.2em;
+    opacity: 0.82;
+    font-size: 0.9rem;
+}
 .luker_orch_iter_grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -11682,6 +12180,46 @@ function ensureStyles() {
     font-weight: 600;
     opacity: 0.9;
     margin-bottom: 6px;
+}
+.luker_orch_iter_msg_diff_actions {
+    margin-top: 8px;
+}
+.luker_orch_iter_history {
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_history_list {
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_history_item {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    background: rgba(0,0,0,0.12);
+    padding: 8px;
+    display: grid;
+    gap: 8px;
+}
+.luker_orch_iter_history_item.active {
+    background: rgba(255,255,255,0.04);
+}
+.luker_orch_iter_history_main {
+    min-width: 0;
+}
+.luker_orch_iter_history_summary {
+    font-weight: 600;
+    line-height: 1.35;
+    word-break: break-word;
+}
+.luker_orch_iter_history_meta {
+    margin-top: 4px;
+    opacity: 0.78;
+    font-size: 0.88rem;
+}
+.luker_orch_iter_history_actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 .luker_orch_iter_diff_popup {
     display: grid;
