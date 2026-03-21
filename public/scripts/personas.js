@@ -144,6 +144,26 @@ async function fetchUserAvatarsPayload() {
     return response.json();
 }
 
+function appendCurrentConnectionDedicatedAvatars(avatars) {
+    if (!Array.isArray(avatars)) {
+        return avatars;
+    }
+
+    const currentConnection = getCurrentConnectionObj();
+    if (currentConnection?.type !== 'character' || !currentConnection.id) {
+        return avatars;
+    }
+
+    for (const avatarId of getCharacterDedicatedPersonaAvatarIds(currentConnection.id)) {
+        if (!avatarId || avatars.includes(avatarId)) {
+            continue;
+        }
+        avatars.push(avatarId);
+    }
+
+    return avatars;
+}
+
 /**
  * Sets a user avatar file
  * @param {string} imgfile Link to an image file
@@ -911,13 +931,16 @@ async function ensureDedicatedPersonasFromCharacter(character) {
         const rawEntry = dedicatedEntries[i];
         const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : null;
         const name = String(entry?.name ?? '').trim();
+        const hasStoredAvatar = Boolean(String(entry?.avatar ?? '').trim());
         if (!entry || !name) {
             continue;
         }
 
         const avatarId = resolveDedicatedPersonaAvatarId(character.avatar, entry, existingAvatars, allocatedAvatars);
         if (!power_user.personas?.[avatarId]) {
-            if (!existingAvatars.has(avatarId)) {
+            // Dedicated-only avatars may be omitted from the global avatar payload even when
+            // the file already exists. Only synthesize a default avatar for newly generated ids.
+            if (!existingAvatars.has(avatarId) && !hasStoredAvatar) {
                 try {
                     await uploadUserAvatar(default_user_avatar, avatarId, { render: false });
                     existingAvatars.add(avatarId);
@@ -1026,26 +1049,9 @@ function hasPersonaIdentityForAvatar(avatarId, preferredCharacterAvatar = '') {
  * @returns {Promise<string[]>} List of avatar file names
  */
 export async function getUserAvatars(doRender = true, openPageAt = '') {
-    const allEntities = await fetchUserAvatarsPayload();
+    const allEntities = appendCurrentConnectionDedicatedAvatars(await fetchUserAvatarsPayload());
     if (Array.isArray(allEntities)) {
         const currentConnection = getCurrentConnectionObj();
-
-        if (doRender) {
-            if (currentConnection?.type === 'character' && currentConnection?.id) {
-                const dedicatedAvatarIds = getCharacterDedicatedPersonaAvatarIds(currentConnection.id);
-                for (const avatarId of dedicatedAvatarIds) {
-                    if (!avatarId || allEntities.includes(avatarId)) {
-                        continue;
-                    }
-                    allEntities.push(avatarId);
-                    try {
-                        await uploadUserAvatar(default_user_avatar, avatarId, { render: false });
-                    } catch (error) {
-                        console.warn('Failed to materialize dedicated persona avatar, keep virtual entry only:', avatarId, error);
-                    }
-                }
-            }
-        }
 
         if (!doRender) {
             return allEntities;
