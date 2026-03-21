@@ -1,7 +1,7 @@
 import { Fuse } from '../lib.js';
 
 import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, buildObjectPatchOperations, buildObjectPatchOperationsAsync, requestAsyncDiffForNextSettingsSave } from '../script.js';
-import { areLookupNamesEqual, download, debounce, findCanonicalIndexInList, findCanonicalNameInList, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn } from './utils.js';
+import { areLookupNamesEqual, download, debounce, findCanonicalIndexInList, findCanonicalNameInList, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn } from './utils.js';
 import { extension_settings, getContext } from './extensions.js';
 import { NOTE_MODULE_NAME, metadata_keys, shouldWIAddPrompt } from './authors-note.js';
 import { isMobile } from './RossAscends-mods.js';
@@ -71,6 +71,14 @@ function styleWorldInfoDragPlaceholder(ui) {
         opacity: '0.8',
     });
 }
+
+const WORLD_INFO_INDICATOR_DRAG_Z_INDEX = 2147483647;
+const WORLD_INFO_INDICATOR_SCROLL_EDGE_PX = 72;
+const WORLD_INFO_INDICATOR_SCROLL_MIN_SPEED_PX = 4;
+const WORLD_INFO_INDICATOR_SCROLL_MAX_SPEED_PX = 22;
+
+const worldInfoIndicatorDragHandlers = new WeakMap();
+let activeWorldInfoIndicatorDrag = null;
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -3002,6 +3010,423 @@ function clearEntryList($list) {
     cleanupEntryList($list, { measure: true });
 }
 
+async function persistWorldInfoEntryOrder(worldEntriesList, name, data) {
+    const firstEntryUid = worldEntriesList.children('.world_entry').first().data('uid');
+    const minDisplayIndex = data?.entries[firstEntryUid]?.displayIndex ?? 0;
+    worldEntriesList.children('.world_entry').each(function (index) {
+        const uid = $(this).data('uid');
+        const item = data.entries[uid];
+
+        if (!item) {
+            console.debug(`Could not find entry with uid ${uid}`);
+            return;
+        }
+
+        item.displayIndex = minDisplayIndex + index;
+        setWIOriginalDataValue(data, uid, 'extensions.display_index', item.displayIndex);
+    });
+
+    await saveWorldInfo(name, data);
+}
+
+function stopWorldInfoDragEvent(event) {
+    try { event.preventDefault?.(); } catch { }
+    try { event.stopImmediatePropagation?.(); } catch { }
+    try { event.stopPropagation?.(); } catch { }
+}
+
+function isScrollableYAxis(element) {
+    if (!(element instanceof HTMLElement)) {
+        return false;
+    }
+
+    try {
+        const style = getComputedStyle(element);
+        const overflowY = String(style.overflowY || '');
+        const scrollable = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay';
+        return scrollable && ((element.scrollHeight - element.clientHeight) > 2);
+    } catch {
+        return false;
+    }
+}
+
+function findWorldInfoScrollContainer(startEl) {
+    let element = startEl;
+    while (element instanceof HTMLElement) {
+        if (isScrollableYAxis(element)) {
+            return element;
+        }
+        element = element.parentElement;
+    }
+
+    return startEl instanceof HTMLElement ? startEl : document.documentElement;
+}
+
+function getWorldInfoPointerXY(event) {
+    const touches = event?.touches;
+    if (touches?.length) {
+        return { x: touches[0].clientX, y: touches[0].clientY };
+    }
+
+    const changedTouches = event?.changedTouches;
+    if (changedTouches?.length) {
+        return { x: changedTouches[0].clientX, y: changedTouches[0].clientY };
+    }
+
+    return {
+        x: Number(event?.clientX ?? 0),
+        y: Number(event?.clientY ?? 0),
+    };
+}
+
+function createWorldInfoDragGhost(draggedEl) {
+    const ghost = buildWorldInfoDragHelper($(draggedEl));
+    ghost.addClass('world-info-drag-ghost');
+    ghost.css({
+        position: 'fixed',
+        left: '0',
+        top: '0',
+        margin: '0',
+        'z-index': String(WORLD_INFO_INDICATOR_DRAG_Z_INDEX),
+        'pointer-events': 'none',
+        opacity: '0.96',
+    });
+    return ghost;
+}
+
+function createWorldInfoDropIndicator(listRect, topPx) {
+    const indicator = document.createElement('div');
+    indicator.className = 'world-info-drop-indicator';
+    indicator.style.position = 'fixed';
+    indicator.style.left = `${Math.round(listRect.left)}px`;
+    indicator.style.top = `${Math.round(topPx)}px`;
+    indicator.style.width = `${Math.round(listRect.width)}px`;
+    indicator.style.height = '4px';
+    indicator.style.borderRadius = '999px';
+    indicator.style.background = 'var(--SmartThemeQuoteColor)';
+    indicator.style.opacity = '0.75';
+    indicator.style.pointerEvents = 'none';
+    indicator.style.zIndex = String(WORLD_INFO_INDICATOR_DRAG_Z_INDEX);
+    document.body.appendChild(indicator);
+    return indicator;
+}
+
+function getWorldInfoEntryAtPoint(listEl, draggedEl, x, y) {
+    let hit = null;
+    try {
+        hit = document.elementFromPoint(x, y);
+    } catch {
+        hit = null;
+    }
+
+    if (!(hit instanceof Element)) {
+        return null;
+    }
+
+    const entry = hit.closest('.world_entry');
+    if (!(entry instanceof HTMLElement) || entry === draggedEl) {
+        return null;
+    }
+
+    return entry.closest('#world_popup_entries_list') === listEl ? entry : null;
+}
+
+function getWorldInfoFirstLastEntry(listEl, draggedEl) {
+    const allEntries = Array.from(listEl.querySelectorAll('.world_entry'))
+        .filter(entry => entry instanceof HTMLElement && entry !== draggedEl);
+
+    return {
+        first: allEntries[0] || null,
+        last: allEntries.length ? allEntries[allEntries.length - 1] : null,
+    };
+}
+
+function updateWorldInfoIndicatorTarget(drag) {
+    try {
+        drag.listRect = drag.listEl.getBoundingClientRect();
+        drag.viewportRect = drag.viewportEl.getBoundingClientRect();
+    } catch {
+        // Ignore stale layout reads while the popup is closing.
+    }
+
+    drag.indicatorEl.style.left = `${Math.round(drag.listRect.left)}px`;
+    drag.indicatorEl.style.width = `${Math.round(drag.listRect.width)}px`;
+
+    const hitEntry = getWorldInfoEntryAtPoint(drag.listEl, drag.draggedEl, drag.lastX, drag.lastY);
+    if (hitEntry) {
+        const rect = hitEntry.getBoundingClientRect();
+        drag.insertBefore = drag.lastY < (rect.top + (rect.height / 2));
+        drag.refEl = hitEntry;
+        drag.indicatorEl.style.top = `${Math.round(drag.insertBefore ? rect.top : rect.bottom)}px`;
+        return;
+    }
+
+    const { first, last } = getWorldInfoFirstLastEntry(drag.listEl, drag.draggedEl);
+    if (!first || !last) {
+        drag.refEl = null;
+        drag.insertBefore = true;
+        drag.indicatorEl.style.top = `${Math.round(drag.viewportRect.top)}px`;
+        return;
+    }
+
+    if (drag.lastY < drag.viewportRect.top) {
+        const rect = first.getBoundingClientRect();
+        drag.refEl = first;
+        drag.insertBefore = true;
+        drag.indicatorEl.style.top = `${Math.round(rect.top)}px`;
+        return;
+    }
+
+    if (drag.lastY > drag.viewportRect.bottom) {
+        const rect = last.getBoundingClientRect();
+        drag.refEl = last;
+        drag.insertBefore = false;
+        drag.indicatorEl.style.top = `${Math.round(rect.bottom)}px`;
+        return;
+    }
+
+    if (drag.refEl && drag.refEl !== drag.draggedEl && drag.refEl.isConnected) {
+        const rect = drag.refEl.getBoundingClientRect();
+        drag.indicatorEl.style.top = `${Math.round(drag.insertBefore ? rect.top : rect.bottom)}px`;
+        return;
+    }
+
+    const mid = drag.viewportRect.top + (drag.viewportRect.height / 2);
+    if (drag.lastY < mid) {
+        const rect = first.getBoundingClientRect();
+        drag.refEl = first;
+        drag.insertBefore = true;
+        drag.indicatorEl.style.top = `${Math.round(rect.top)}px`;
+    } else {
+        const rect = last.getBoundingClientRect();
+        drag.refEl = last;
+        drag.insertBefore = false;
+        drag.indicatorEl.style.top = `${Math.round(rect.bottom)}px`;
+    }
+}
+
+function tickWorldInfoIndicatorDrag() {
+    if (!activeWorldInfoIndicatorDrag?.active) {
+        return;
+    }
+
+    const drag = activeWorldInfoIndicatorDrag;
+    drag.rafId = requestAnimationFrame(tickWorldInfoIndicatorDrag);
+
+    const edgePx = WORLD_INFO_INDICATOR_SCROLL_EDGE_PX;
+    if (edgePx > 0) {
+        const distTop = drag.lastY - drag.viewportRect.top;
+        const distBottom = drag.viewportRect.bottom - drag.lastY;
+        let delta = null;
+
+        if (distTop < edgePx) {
+            const ratio = Math.max(0, Math.min(1, (edgePx - distTop) / edgePx));
+            delta = -(WORLD_INFO_INDICATOR_SCROLL_MIN_SPEED_PX + ((WORLD_INFO_INDICATOR_SCROLL_MAX_SPEED_PX - WORLD_INFO_INDICATOR_SCROLL_MIN_SPEED_PX) * ratio));
+        } else if (distBottom < edgePx) {
+            const ratio = Math.max(0, Math.min(1, (edgePx - distBottom) / edgePx));
+            delta = WORLD_INFO_INDICATOR_SCROLL_MIN_SPEED_PX + ((WORLD_INFO_INDICATOR_SCROLL_MAX_SPEED_PX - WORLD_INFO_INDICATOR_SCROLL_MIN_SPEED_PX) * ratio);
+        }
+
+        if (delta !== null && delta !== 0) {
+            const maxScroll = Math.max(0, drag.viewportEl.scrollHeight - drag.viewportEl.clientHeight);
+            drag.viewportEl.scrollTop = Math.max(0, Math.min(maxScroll, drag.viewportEl.scrollTop + delta));
+        }
+    }
+
+    const ghostX = drag.lastX - drag.offsetX;
+    const ghostY = drag.lastY - drag.offsetY;
+    drag.ghostEl.style.transform = `translate3d(${Math.round(ghostX)}px, ${Math.round(ghostY)}px, 0)`;
+
+    updateWorldInfoIndicatorTarget(drag);
+}
+
+async function endWorldInfoIndicatorDrag({ commit }) {
+    if (!activeWorldInfoIndicatorDrag) {
+        return;
+    }
+
+    const drag = activeWorldInfoIndicatorDrag;
+    activeWorldInfoIndicatorDrag = null;
+    drag.active = false;
+
+    if (drag.rafId !== null) {
+        try { cancelAnimationFrame(drag.rafId); } catch { }
+    }
+
+    try { drag.ghostEl.remove(); } catch { }
+    try { drag.indicatorEl.remove(); } catch { }
+
+    drag.draggedEl.style.opacity = drag.originalOpacity;
+
+    window.removeEventListener('mousemove', drag.onMove, true);
+    window.removeEventListener('mouseup', drag.onUp, true);
+    window.removeEventListener('touchmove', drag.onMove, true);
+    window.removeEventListener('touchend', drag.onUp, true);
+    window.removeEventListener('touchcancel', drag.onUp, true);
+
+    if (!commit) {
+        return;
+    }
+
+    const ref = drag.refEl;
+    if (ref && ref !== drag.draggedEl && ref.parentElement === drag.listEl) {
+        if (drag.insertBefore) {
+            drag.listEl.insertBefore(drag.draggedEl, ref);
+        } else {
+            drag.listEl.insertBefore(drag.draggedEl, ref.nextSibling);
+        }
+    } else {
+        drag.listEl.appendChild(drag.draggedEl);
+    }
+
+    await persistWorldInfoEntryOrder($(drag.listEl), drag.name, drag.data);
+}
+
+function startWorldInfoIndicatorDrag(startEvent, listEl, draggedEl, name, data) {
+    if (activeWorldInfoIndicatorDrag) {
+        return;
+    }
+
+    const viewportEl = findWorldInfoScrollContainer(listEl);
+    const listRect = listEl.getBoundingClientRect();
+    const viewportRect = viewportEl.getBoundingClientRect();
+    const dragRect = draggedEl.getBoundingClientRect();
+    const pointer = getWorldInfoPointerXY(startEvent);
+
+    const ghost = createWorldInfoDragGhost(draggedEl);
+    ghost.css({
+        width: dragRect.width > 0 ? `${Math.round(dragRect.width)}px` : '',
+        transform: `translate3d(${Math.round(dragRect.left)}px, ${Math.round(dragRect.top)}px, 0)`,
+    });
+    document.body.appendChild(ghost[0]);
+
+    const indicator = createWorldInfoDropIndicator(listRect, dragRect.top);
+    const offsetX = Math.max(0, Math.min(dragRect.width, pointer.x - dragRect.left));
+    const offsetY = Math.max(0, Math.min(dragRect.height, pointer.y - dragRect.top));
+    const originalOpacity = draggedEl.style.opacity;
+    draggedEl.style.opacity = '0.35';
+
+    const onMove = (event) => {
+        if (!activeWorldInfoIndicatorDrag?.active) {
+            return;
+        }
+
+        if (String(event?.type || '').startsWith('touch')) {
+            try { event.preventDefault?.(); } catch { }
+        }
+
+        const nextPointer = getWorldInfoPointerXY(event);
+        activeWorldInfoIndicatorDrag.lastX = nextPointer.x;
+        activeWorldInfoIndicatorDrag.lastY = nextPointer.y;
+    };
+
+    const onUp = async (event) => {
+        stopWorldInfoDragEvent(event);
+        try {
+            if (activeWorldInfoIndicatorDrag?.active) {
+                updateWorldInfoIndicatorTarget(activeWorldInfoIndicatorDrag);
+            }
+        } catch {
+            // Ignore stale layout reads on drag end.
+        }
+        await endWorldInfoIndicatorDrag({ commit: true });
+    };
+
+    activeWorldInfoIndicatorDrag = {
+        listEl,
+        viewportEl,
+        listRect,
+        viewportRect,
+        draggedEl,
+        offsetX,
+        offsetY,
+        lastX: pointer.x,
+        lastY: pointer.y,
+        refEl: null,
+        insertBefore: true,
+        ghostEl: ghost[0],
+        indicatorEl: indicator,
+        rafId: null,
+        active: true,
+        onMove,
+        onUp,
+        originalOpacity,
+        name,
+        data,
+    };
+
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('mouseup', onUp, true);
+    window.addEventListener('touchmove', onMove, { capture: true, passive: false });
+    window.addEventListener('touchend', onUp, { capture: true, passive: false });
+    window.addEventListener('touchcancel', onUp, { capture: true, passive: false });
+
+    updateWorldInfoIndicatorTarget(activeWorldInfoIndicatorDrag);
+    activeWorldInfoIndicatorDrag.rafId = requestAnimationFrame(tickWorldInfoIndicatorDrag);
+}
+
+function uninstallWorldInfoIndicatorDrag(worldEntriesList) {
+    const listEl = worldEntriesList?.get?.(0);
+    if (!(listEl instanceof HTMLElement)) {
+        return;
+    }
+
+    const handlers = worldInfoIndicatorDragHandlers.get(listEl);
+    if (handlers) {
+        listEl.removeEventListener('mousedown', handlers.onMouseDown, true);
+        listEl.removeEventListener('touchstart', handlers.onTouchStart, true);
+        worldInfoIndicatorDragHandlers.delete(listEl);
+    }
+
+    if (activeWorldInfoIndicatorDrag?.listEl === listEl) {
+        void endWorldInfoIndicatorDrag({ commit: false });
+    }
+}
+
+function installWorldInfoIndicatorDrag(worldEntriesList, name, data) {
+    const listEl = worldEntriesList?.get?.(0);
+    if (!(listEl instanceof HTMLElement)) {
+        return;
+    }
+
+    uninstallWorldInfoIndicatorDrag(worldEntriesList);
+
+    const onStart = (event) => {
+        if (activeWorldInfoIndicatorDrag) {
+            return;
+        }
+
+        const target = event.target;
+        if (!(target instanceof Element)) {
+            return;
+        }
+
+        const handle = target.closest('.drag-handle');
+        if (!(handle instanceof Element) || handle.closest('#world_popup_entries_list') !== listEl) {
+            return;
+        }
+
+        if (event.type === 'mousedown' && typeof event.button === 'number' && event.button !== 0) {
+            return;
+        }
+
+        const draggedEl = handle.closest('.world_entry');
+        if (!(draggedEl instanceof HTMLElement)) {
+            return;
+        }
+
+        stopWorldInfoDragEvent(event);
+        startWorldInfoIndicatorDrag(event, listEl, draggedEl, name, data);
+    };
+
+    listEl.addEventListener('mousedown', onStart, true);
+    listEl.addEventListener('touchstart', onStart, { capture: true, passive: false });
+    worldInfoIndicatorDragHandlers.set(listEl, {
+        onMouseDown: onStart,
+        onTouchStart: onStart,
+    });
+}
+
 function destroyWorldEntryBlock($block) {
     if (!$block?.length) {
         return;
@@ -3368,53 +3793,19 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         }
     });
 
-    // Check if a sortable instance exists
-    if (worldEntriesList.sortable('instance') !== undefined) {
-        // Destroy the instance
-        worldEntriesList.sortable('destroy');
+    try {
+        if (worldEntriesList.sortable('instance') !== undefined) {
+            worldEntriesList.sortable('destroy');
+        }
+    } catch {
+        // The list may not have an active sortable instance.
     }
 
-    worldEntriesList.sortable({
-        items: '.world_entry',
-        delay: getSortableDelay(),
-        handle: '.drag-handle',
-        helper: (_event, ui) => buildWorldInfoDragHelper(ui),
-        appendTo: document.body,
-        tolerance: 'pointer',
-        forcePlaceholderSize: true,
-        placeholder: 'world-info-sortable-placeholder',
-        cursor: 'grabbing',
-        scroll: true,
-        scrollSensitivity: 60,
-        scrollSpeed: 18,
-        start: (_event, ui) => {
-            styleWorldInfoDragPlaceholder(ui);
-        },
-        stop: async function (_event, _ui) {
-            const firstEntryUid = $('#world_popup_entries_list .world_entry').first().data('uid');
-            const minDisplayIndex = data?.entries[firstEntryUid]?.displayIndex ?? 0;
-            $('#world_popup_entries_list .world_entry').each(function (index) {
-                const uid = $(this).data('uid');
-
-                // Update the display index in the data array
-                const item = data.entries[uid];
-
-                if (!item) {
-                    console.debug(`Could not find entry with uid ${uid}`);
-                    return;
-                }
-
-                item.displayIndex = minDisplayIndex + index;
-                setWIOriginalDataValue(data, uid, 'extensions.display_index', item.displayIndex);
-            });
-
-            console.table(Object.keys(data.entries).map(uid => data.entries[uid]).map(x => ({ uid: x.uid, key: x.key.join(','), displayIndex: x.displayIndex })));
-
-            await saveWorldInfo(name, data);
-        },
-    });
-
-    //$("#world_popup_entries_list").disableSelection();
+    if (isCustomOrder) {
+        installWorldInfoIndicatorDrag(worldEntriesList, name, data);
+    } else {
+        uninstallWorldInfoIndicatorDrag(worldEntriesList);
+    }
 }
 
 export const originalWIDataKeyMap = {
