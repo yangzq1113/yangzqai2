@@ -2416,7 +2416,7 @@ function buildSearchAgentUserPrompt(payload, {
         !isFinalStage ? `- You may use ${TOOL_NAMES.AGENT_SEARCH}/${TOOL_NAMES.AGENT_VISIT} follow-ups across the run before you write or finalize.` : null,
         isFinalStage ? `- If any lorebook mutation is still needed, do it in this response and also call ${TOOL_NAMES.AGENT_FINALIZE}.` : null,
         isFinalStage ? `- If no mutation is needed, call ${TOOL_NAMES.AGENT_FINALIZE} immediately.` : null,
-        isFinalStage ? `- Before finalizing, delete any managed search entries that are unnecessary, duplicated, stale for the current chat branch, or not supported by the gathered evidence.` : null,
+        isFinalStage ? '- Before finalizing, delete any managed search entries that are unnecessary, duplicated, stale for the current chat branch, or not supported by the gathered evidence.' : null,
         isFinalStage ? `- End with ${TOOL_NAMES.AGENT_FINALIZE}.` : `- Call ${TOOL_NAMES.AGENT_FINALIZE} only when you are done with this run.`,
         '- Outside the single <thought>...</thought> block and tool calls, do not output plain prose.',
     ].filter(Boolean).join('\n');
@@ -2897,6 +2897,34 @@ async function onMessageDeleted(_chatLength, details) {
     }
 }
 
+async function onMessageEdited(messageId, mutationMeta = null) {
+    const context = getContext();
+    await loadSearchToolsChatState(context, { force: false });
+    const sourceMessages = Array.isArray(context?.chat) ? context.chat : [];
+    const resolvedMessageId = Math.floor(Number(messageId));
+    const meta = mutationMeta && typeof mutationMeta === 'object'
+        ? mutationMeta
+        : null;
+    const message = Number.isInteger(resolvedMessageId) && resolvedMessageId >= 0 && resolvedMessageId < sourceMessages.length
+        ? sourceMessages[resolvedMessageId]
+        : null;
+    const playableSeq = normalizeAnchorPlayableFloor(meta?.playableSeq ?? (
+        message && !message.is_system
+            ? sourceMessages.slice(0, resolvedMessageId + 1).reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0)
+            : 0
+    ));
+    const isUser = meta ? Boolean(meta.isUser) : Boolean(message?.is_user);
+    const isAssistant = meta ? Boolean(meta.isAssistant) : Boolean(message && !message.is_system && !message.is_user);
+    const isSystem = meta ? Boolean(meta.isSystem) : Boolean(message?.is_system);
+
+    if (isSystem || !playableSeq) {
+        await invalidateStoredSearchAgentAnchors(context, 0, { inclusive: true });
+        return;
+    }
+
+    await invalidateStoredSearchAgentAnchors(context, playableSeq, { inclusive: isUser || !isAssistant });
+}
+
 function renderSearchProviderOptions(selectedProvider = '') {
     const selected = normalizeProvider(selectedProvider);
     return getAvailableSearchProviders()
@@ -2998,8 +3026,8 @@ function renderSettingsBlock() {
         <select id="search_tools_lorebook_position" class="text_pole">
             <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>
             <option value="${world_info_position.after}">${escapeHtml(i18n('After Character Definitions'))}</option>
-            <option value="${world_info_position.ANTop}">${escapeHtml(i18n("Before Author's Note"))}</option>
-            <option value="${world_info_position.ANBottom}">${escapeHtml(i18n("After Author's Note"))}</option>
+            <option value="${world_info_position.ANTop}">${escapeHtml(i18n('Before Author\'s Note'))}</option>
+            <option value="${world_info_position.ANBottom}">${escapeHtml(i18n('After Author\'s Note'))}</option>
             <option value="${world_info_position.EMTop}">${escapeHtml(i18n('Before Example Messages'))}</option>
             <option value="${world_info_position.EMBottom}">${escapeHtml(i18n('After Example Messages'))}</option>
             <option value="${world_info_position.atDepth}">${escapeHtml(i18n('At Chat Depth'))}</option>
@@ -3315,8 +3343,8 @@ function registerLocaleData() {
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定义前',
         'After Character Definitions': '角色定义后',
-        "Before Author's Note": '作者注释前',
-        "After Author's Note": '作者注释后',
+        'Before Author\'s Note': '作者注释前',
+        'After Author\'s Note': '作者注释后',
         'Before Example Messages': '示例消息前',
         'After Example Messages': '示例消息后',
         'At Chat Depth': '聊天深度',
@@ -3371,8 +3399,8 @@ function registerLocaleData() {
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定義前',
         'After Character Definitions': '角色定義後',
-        "Before Author's Note": '作者註釋前',
-        "After Author's Note": '作者註釋後',
+        'Before Author\'s Note': '作者註釋前',
+        'After Author\'s Note': '作者註釋後',
         'Before Example Messages': '示例訊息前',
         'After Example Messages': '示例訊息後',
         'At Chat Depth': '聊天深度',
@@ -3422,6 +3450,10 @@ jQuery(() => {
 
     if (context?.eventTypes?.MESSAGE_DELETED) {
         context.eventSource.on(context.eventTypes.MESSAGE_DELETED, onMessageDeleted);
+    }
+
+    if (context?.eventTypes?.MESSAGE_EDITED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_EDITED, onMessageEdited);
     }
 
     if (context?.eventTypes?.CHAT_CHANGED) {
