@@ -81,6 +81,8 @@ const WORLD_INFO_DRAWER_FALLBACK_RESERVE_HEIGHT_PX = 620;
 const worldInfoIndicatorDragHandlers = new WeakMap();
 const worldInfoDrawerReserveHeightByWidth = new Map();
 let activeWorldInfoIndicatorDrag = null;
+const selectedWorldInfoEntryUids = new Set();
+let selectedWorldInfoEntryBook = '';
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -3507,6 +3509,174 @@ function releaseWorldInfoDrawerHeight(editOutlet) {
     });
 }
 
+function resetWorldInfoEntrySelection(name = '') {
+    selectedWorldInfoEntryBook = String(name || '').trim();
+    selectedWorldInfoEntryUids.clear();
+}
+
+function ensureWorldInfoEntrySelectionContext(name = '') {
+    const normalizedName = String(name || '').trim();
+    if (selectedWorldInfoEntryBook !== normalizedName) {
+        resetWorldInfoEntrySelection(normalizedName);
+    }
+    return normalizedName;
+}
+
+function getCurrentWorldInfoEntryPageUids() {
+    const pageUids = $('#world_popup_entries_list').data('worldEntryPageUids');
+    return Array.isArray(pageUids)
+        ? pageUids.map((uid) => String(uid ?? '').trim()).filter(Boolean)
+        : [];
+}
+
+function getSelectedWorldInfoEntryUids(name, data = null) {
+    ensureWorldInfoEntrySelectionContext(name);
+
+    if (data?.entries && typeof data.entries === 'object') {
+        for (const uid of [...selectedWorldInfoEntryUids]) {
+            if (!Object.hasOwn(data.entries, uid)) {
+                selectedWorldInfoEntryUids.delete(uid);
+            }
+        }
+    }
+
+    return [...selectedWorldInfoEntryUids];
+}
+
+function syncWorldInfoEntryBulkToolbar(name = '', data = null) {
+    const toolbar = $('#world_entry_bulk_toolbar');
+    const selectPageButton = $('#world_entries_select_page');
+    const clearSelectionButton = $('#world_entries_clear_selection');
+    const moveSelectedButton = $('#world_entries_move_selected');
+    const status = $('#world_entry_bulk_status');
+    const worldEntriesList = $('#world_popup_entries_list');
+
+    if (!toolbar.length) {
+        return;
+    }
+
+    if (!name || !data?.entries || typeof data.entries !== 'object') {
+        resetWorldInfoEntrySelection('');
+        toolbar.addClass('displayNone');
+        status.text('');
+        worldEntriesList.removeData('worldEntryPageUids');
+        worldEntriesList.children('.world_entry').removeClass('bulk-selected').find('.world_entry_select').prop('checked', false);
+        return;
+    }
+
+    const selectedUids = getSelectedWorldInfoEntryUids(name, data);
+    const pageUids = getCurrentWorldInfoEntryPageUids();
+    const selectedCount = selectedUids.length;
+    const allPageSelected = pageUids.length > 0 && pageUids.every((uid) => selectedWorldInfoEntryUids.has(uid));
+
+    toolbar.removeClass('displayNone');
+    selectPageButton.find('span').text(allPageSelected ? t`Deselect Page` : t`Select Page`);
+    clearSelectionButton.toggleClass('disabled', selectedCount === 0);
+    moveSelectedButton.toggleClass('disabled', selectedCount === 0);
+
+    if (selectedCount > 0) {
+        status.text(t`${selectedCount} entries selected`);
+    } else if (pageUids.length > 0) {
+        status.text(t`No entries selected`);
+    } else {
+        status.text(t`No entries on this page`);
+    }
+
+    worldEntriesList.children('.world_entry').each(function () {
+        const entryBlock = $(this);
+        const uid = String(entryBlock.data('uid') ?? entryBlock.attr('uid') ?? '').trim();
+        const isSelected = uid ? selectedWorldInfoEntryUids.has(uid) : false;
+        entryBlock.toggleClass('bulk-selected', isSelected);
+        entryBlock.find('.world_entry_select').prop('checked', isSelected);
+    });
+}
+
+function setWorldInfoEntrySelected(name, uid, selected, data = null) {
+    const normalizedUid = String(uid ?? '').trim();
+    if (!normalizedUid) {
+        return;
+    }
+
+    ensureWorldInfoEntrySelectionContext(name);
+    if (selected) {
+        selectedWorldInfoEntryUids.add(normalizedUid);
+    } else {
+        selectedWorldInfoEntryUids.delete(normalizedUid);
+    }
+
+    syncWorldInfoEntryBulkToolbar(name, data);
+}
+
+async function promptWorldInfoEntryMoveTarget(sourceWorld, {
+    count = 1,
+    previewName = '',
+} = {}) {
+    let selectableWorldCount = 0;
+    const select = document.createElement('select');
+    select.id = 'move_entry_target_select';
+    select.classList.add('text_pole', 'wide100p', 'marginTop10');
+
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = `-- ${t`Select Target Lorebook`} --`;
+    select.appendChild(defaultOption);
+
+    world_names.forEach((worldName) => {
+        if (worldName === sourceWorld) {
+            return;
+        }
+
+        const option = document.createElement('option');
+        option.value = world_names.indexOf(worldName).toString();
+        option.textContent = worldName;
+        select.appendChild(option);
+        selectableWorldCount++;
+    });
+
+    if (selectableWorldCount === 0) {
+        toastr.warning(t`There are no other lorebooks to move to.`);
+        return null;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.textContent = count > 1
+        ? t`Move/Copy ${count} entries to:`
+        : t`Move/Copy '${previewName}' to:`;
+    const container = document.createElement('div');
+    container.appendChild(wrapper);
+    container.appendChild(select);
+
+    let selectedWorldIndex = -1;
+    select.addEventListener('change', function () {
+        selectedWorldIndex = this.value === '' ? -1 : Number(this.value);
+    });
+
+    const popup = new Popup(container, POPUP_TYPE.CONFIRM, '', {
+        cancelButton: t`Cancel`,
+        customButtons: [
+            { text: t`Move`, result: POPUP_RESULT.CUSTOM1 },
+            { text: t`Copy`, result: POPUP_RESULT.CUSTOM2 },
+        ],
+    });
+    popup.okButton.style.display = 'none';
+
+    const popupConfirm = await popup.show();
+    if (!popupConfirm || selectedWorldIndex === -1) {
+        return null;
+    }
+
+    const targetName = world_names[selectedWorldIndex];
+    if (!targetName) {
+        toastr.warning(t`Please select a target lorebook.`);
+        return null;
+    }
+
+    return {
+        targetName,
+        deleteOriginal: popupConfirm === POPUP_RESULT.CUSTOM1,
+    };
+}
+
 function destroyWorldEntryBlock($block) {
     if (!$block?.length) {
         return;
@@ -3639,6 +3809,8 @@ async function renderWorldEntriesPage(worldEntriesList, name, data, page, render
     worldEntriesList.children().not('.world_entry').remove();
     worldEntriesList.append(keywordHeaders);
     worldEntriesList.append(nextBlocks);
+    worldEntriesList.data('worldEntryPageUids', page.map((entry) => String(entry?.uid ?? '').trim()).filter(Boolean));
+    syncWorldInfoEntryBulkToolbar(name, data);
 }
 
 //MARK: displayWorldEntries
@@ -3665,10 +3837,16 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         $('#world_popup_export').off('click').on('click', nullWorldInfo);
         $('#world_popup_delete').off('click').on('click', nullWorldInfo);
         $('#world_duplicate').off('click').on('click', nullWorldInfo);
+        $('#world_entries_select_page').off('click');
+        $('#world_entries_clear_selection').off('click');
+        $('#world_entries_move_selected').off('click');
         worldEntriesList.hide();
         $('#world_info_pagination').html('');
+        syncWorldInfoEntryBulkToolbar('', null);
         return;
     }
+
+    ensureWorldInfoEntrySelectionContext(name);
 
     // Regardless of whether success is displayed or not. Make sure the delete button is available.
     // Do not put this code behind.
@@ -3776,6 +3954,63 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     $('#world_popup_new').off('click').on('click', () => {
         const entry = createWorldInfoEntry(name, data);
         if (entry) updateEditor(entry.uid);
+    });
+
+    $('#world_entries_select_page').off('click').on('click', function () {
+        const pageUids = getCurrentWorldInfoEntryPageUids();
+        if (pageUids.length === 0) {
+            return;
+        }
+
+        const allSelected = pageUids.every((uid) => selectedWorldInfoEntryUids.has(uid));
+        for (const uid of pageUids) {
+            if (allSelected) {
+                selectedWorldInfoEntryUids.delete(uid);
+            } else {
+                selectedWorldInfoEntryUids.add(uid);
+            }
+        }
+
+        syncWorldInfoEntryBulkToolbar(name, data);
+    });
+
+    $('#world_entries_clear_selection').off('click').on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        resetWorldInfoEntrySelection(name);
+        syncWorldInfoEntryBulkToolbar(name, data);
+    });
+
+    $('#world_entries_move_selected').off('click').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const selectedUids = getSelectedWorldInfoEntryUids(name, data);
+        if (selectedUids.length === 0) {
+            return;
+        }
+
+        const previewName = selectedUids.length === 1
+            ? (data.entries[selectedUids[0]]?.comment || String(selectedUids[0]))
+            : '';
+        const moveOptions = await promptWorldInfoEntryMoveTarget(name, {
+            count: selectedUids.length,
+            previewName,
+        });
+        if (!moveOptions) {
+            return;
+        }
+
+        const moved = await moveWorldInfoEntries(name, moveOptions.targetName, selectedUids, { deleteOriginal: moveOptions.deleteOriginal });
+        if (!moved) {
+            return;
+        }
+
+        resetWorldInfoEntrySelection(name);
+        syncWorldInfoEntryBulkToolbar(name, data);
     });
 
     $('#world_popup_name_button').off('click').on('click', async () => {
@@ -3886,6 +4121,8 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     } else {
         uninstallWorldInfoIndicatorDrag(worldEntriesList);
     }
+
+    syncWorldInfoEntryBulkToolbar(name, data);
 }
 
 export const originalWIDataKeyMap = {
@@ -4660,6 +4897,22 @@ export async function getWorldEntry(name, data, entry) {
     const headerTemplate = WI_ENTRY_HEADER_TEMPLATE.clone();
     headerTemplate.data('uid', entry.uid);
     headerTemplate.attr('uid', entry.uid);
+    ensureWorldInfoEntrySelectionContext(name);
+
+    const entrySelectInput = headerTemplate.find('.world_entry_select');
+    const entrySelectLabel = headerTemplate.find('.world_entry_select_label');
+    const syncEntrySelectionState = () => {
+        const isSelected = selectedWorldInfoEntryUids.has(String(entry.uid));
+        entrySelectInput.prop('checked', isSelected);
+        headerTemplate.toggleClass('bulk-selected', isSelected);
+    };
+    syncEntrySelectionState();
+    entrySelectLabel.on('click', (event) => event.stopPropagation());
+    entrySelectInput.on('click', (event) => event.stopPropagation());
+    entrySelectInput.on('change', function (event) {
+        event.stopPropagation();
+        setWorldInfoEntrySelected(name, entry.uid, $(this).prop('checked'), data);
+    });
 
     if (typeof power_user.wi_key_input_plaintext === 'undefined') power_user.wi_key_input_plaintext = true;
 
@@ -4761,7 +5014,9 @@ export async function getWorldEntry(name, data, entry) {
         const deleted = await deleteWorldInfoEntry(data, uid);
         if (!deleted) return;
         deleteWIOriginalDataValue(data, uid);
+        selectedWorldInfoEntryUids.delete(String(uid));
         await saveWorldInfo(name, data);
+        syncWorldInfoEntryBulkToolbar(name, data);
         updateEditor(navigation_option.previous);
     });
     headerTemplate.find('.move_entry_button').attr('data-uid', entry.uid).attr('data-current-world', name).on('click', async function (e) {
@@ -4772,54 +5027,15 @@ export async function getWorldEntry(name, data, entry) {
         if (!sourceWorldInfo) return;
         const sourceName = sourceWorldInfo.entries[sourceUid]?.comment;
         if (sourceName === undefined) return;
-        const select = document.createElement('select');
-        select.id = 'move_entry_target_select';
-        select.classList.add('text_pole', 'wide100p', 'marginTop10');
-        const defaultOption = document.createElement('option');
-        defaultOption.value = '';
-        defaultOption.textContent = `-- ${t`Select Target Lorebook`} --`;
-        select.appendChild(defaultOption);
-        let selectableWorldCount = 0;
-        world_names.forEach(worldName => {
-            if (worldName !== sourceWorld) {
-                const option = document.createElement('option');
-                option.value = world_names.indexOf(worldName).toString();
-                option.textContent = worldName;
-                select.appendChild(option);
-                selectableWorldCount++;
-            }
-        });
-        if (selectableWorldCount === 0) {
-            toastr.warning(t`There are no other lorebooks to move to.`);
+        const moveOptions = await promptWorldInfoEntryMoveTarget(sourceWorld, { previewName: sourceName });
+        if (!moveOptions) {
             return;
         }
-        const wrapper = document.createElement('div');
-        wrapper.textContent = t`Move/Copy '${sourceName}' to:`;
-        const container = document.createElement('div');
-        container.appendChild(wrapper);
-        container.appendChild(select);
-        let selectedWorldIndex = -1;
-        select.addEventListener('change', function () {
-            selectedWorldIndex = this.value === '' ? -1 : Number(this.value);
-        });
-        const popup = new Popup(container, POPUP_TYPE.CONFIRM, '', {
-            cancelButton: t`Cancel`,
-            customButtons: [
-                { text: t`Move`, result: POPUP_RESULT.CUSTOM1 },
-                { text: t`Copy`, result: POPUP_RESULT.CUSTOM2 },
-            ],
-        });
-        popup.okButton.style.display = 'none'; // Hide the default OK button
-        const popupConfirm = await popup.show();
-        if (!popupConfirm) return;
-        if (selectedWorldIndex === -1) return;
-        const selectedValue = world_names[selectedWorldIndex];
-        if (!selectedValue) {
-            toastr.warning(t`Please select a target lorebook.`);
-            return;
+        const moved = await moveWorldInfoEntry(sourceWorld, moveOptions.targetName, sourceUid, { deleteOriginal: moveOptions.deleteOriginal });
+        if (moved) {
+            selectedWorldInfoEntryUids.delete(String(sourceUid));
+            syncWorldInfoEntryBulkToolbar(name, data);
         }
-        const deleteOriginal = popupConfirm === POPUP_RESULT.CUSTOM1;
-        await moveWorldInfoEntry(sourceWorld, selectedValue, sourceUid, { deleteOriginal });
     });
     const traceButton = $(
         `<i class="menu_button trace_activation_button fa-solid fa-route" title="${escapeHtmlText(t`Trace activation source`)}"></i>`,
@@ -7816,16 +8032,16 @@ export async function assignLorebookToChat(event) {
 }
 
 /**
- * Moves a World Info entry from a source lorebook to a target lorebook.
+ * Moves one or more World Info entries from a source lorebook to a target lorebook.
  *
  * @param {string} sourceName - The name of the source lorebook file.
  * @param {string} targetName - The name of the target lorebook file.
- * @param {string|number} uid - The UID of the entry to move from the source lorebook.
+ * @param {string[]|number[]|string|number} uids - The UID or UIDs of the entries to move from the source lorebook.
  * @param {Object} options - Additional options for the move operation.
  * @param {boolean} [options.deleteOriginal=true] - Whether to delete the original entry from the source lorebook after moving it.
  * @returns {Promise<boolean>} True if the move was successful, false otherwise.
  */
-export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOriginal = true } = {}) {
+export async function moveWorldInfoEntries(sourceName, targetName, uids, { deleteOriginal = true } = {}) {
     if (sourceName === targetName) {
         return false;
     }
@@ -7842,7 +8058,12 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
         return false;
     }
 
-    const entryUidString = String(uid);
+    const entryUidStrings = [...new Set((Array.isArray(uids) ? uids : [uids])
+        .map((uid) => String(uid ?? '').trim())
+        .filter(Boolean))];
+    if (entryUidStrings.length === 0) {
+        return false;
+    }
 
     try {
         const sourceData = await loadWorldInfo(sourceName);
@@ -7859,41 +8080,46 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
             return false;
         }
 
-        if (!sourceData.entries[entryUidString]) {
-            toastr.error(t`Entry not found in source lorebook '${sourceName}'.`);
-            console.error(`[WI Move] Entry UID ${entryUidString} not found in '${sourceName}'.`);
-            return false;
+        let maxDisplayIndex = Object.values(targetData.entries).reduce((max, entry) => Math.max(max, entry.displayIndex ?? -1), -1);
+        const movedEntries = [];
+
+        for (const entryUidString of entryUidStrings) {
+            if (!sourceData.entries[entryUidString]) {
+                console.warn(`[WI Move] Entry UID ${entryUidString} not found in '${sourceName}'. Skipping.`);
+                continue;
+            }
+
+            const entryToMove = structuredClone(sourceData.entries[entryUidString]);
+            const newUid = getFreeWorldEntryUid(targetData);
+            if (newUid === null) {
+                console.error(`[WI Move] Failed to get a free UID in '${targetName}'.`);
+                continue;
+            }
+
+            entryToMove.uid = newUid;
+            entryToMove.displayIndex = ++maxDisplayIndex;
+            targetData.entries[newUid] = entryToMove;
+            movedEntries.push({ sourceUid: entryUidString, label: entryToMove.comment || entryUidString });
+
+            if (deleteOriginal) {
+                delete sourceData.entries[entryUidString];
+                deleteWIOriginalDataValue(sourceData, entryUidString);
+            }
         }
 
-        const entryToMove = structuredClone(sourceData.entries[entryUidString]);
-
-        const newUid = getFreeWorldEntryUid(targetData);
-        if (newUid === null) {
-            console.error(`[WI Move] Failed to get a free UID in '${targetName}'.`);
+        if (movedEntries.length === 0) {
+            toastr.error(t`No entries were moved.`);
             return false;
-        }
-
-        entryToMove.uid = newUid;
-        // Place the entry at the end of the target lorebook
-        const maxDisplayIndex = Object.values(targetData.entries).reduce((max, entry) => Math.max(max, entry.displayIndex ?? -1), -1);
-        entryToMove.displayIndex = maxDisplayIndex + 1;
-
-        targetData.entries[newUid] = entryToMove;
-
-        if (deleteOriginal) {
-            delete sourceData.entries[entryUidString];
-            // Remove from originalData if it exists
-            deleteWIOriginalDataValue(sourceData, entryUidString);
-            // TODO: setWIOriginalDataValue
-            console.debug(`[WI Move] Removed entry UID ${entryUidString} from source '${sourceName}'.`);
         }
 
         await saveWorldInfo(targetName, targetData, true);
         console.debug(`[WI Move] Saved target lorebook '${targetName}'.`);
-        await saveWorldInfo(sourceName, sourceData, true);
-        console.debug(`[WI Move] Saved source lorebook '${sourceName}'.`);
+        if (deleteOriginal) {
+            await saveWorldInfo(sourceName, sourceData, true);
+            console.debug(`[WI Move] Saved source lorebook '${sourceName}'.`);
+        }
 
-        console.log(`[WI Move] ${entryToMove.comment} ${deleteOriginal ? 'moved' : 'copied'} successfully to '${targetName}'.`);
+        console.log(`[WI Move] ${movedEntries.length} entr${movedEntries.length === 1 ? 'y' : 'ies'} ${deleteOriginal ? 'moved' : 'copied'} successfully to '${targetName}'.`);
 
         // Check if the currently viewed book in the editor is the source or target and reload it
         const currentEditorBookIndex = Number($('#world_editor_select').val());
@@ -7905,8 +8131,12 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
         }
 
         toastr.success(deleteOriginal
-            ? t`Entry moved successfully from '${sourceName}' to '${targetName}'.`
-            : t`Entry copied successfully to '${targetName}'.`);
+            ? (movedEntries.length === 1
+                ? t`Entry moved successfully from '${sourceName}' to '${targetName}'.`
+                : t`${movedEntries.length} entries moved from '${sourceName}' to '${targetName}'.`)
+            : (movedEntries.length === 1
+                ? t`Entry copied successfully to '${targetName}'.`
+                : t`${movedEntries.length} entries copied to '${targetName}'.`));
 
         return true;
     } catch (error) {
@@ -7914,6 +8144,20 @@ export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOr
         console.error('[WI Move] Unexpected error:', error);
         return false;
     }
+}
+
+/**
+ * Moves a World Info entry from a source lorebook to a target lorebook.
+ *
+ * @param {string} sourceName - The name of the source lorebook file.
+ * @param {string} targetName - The name of the target lorebook file.
+ * @param {string|number} uid - The UID of the entry to move from the source lorebook.
+ * @param {Object} options - Additional options for the move operation.
+ * @param {boolean} [options.deleteOriginal=true] - Whether to delete the original entry from the source lorebook after moving it.
+ * @returns {Promise<boolean>} True if the move was successful, false otherwise.
+ */
+export async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOriginal = true } = {}) {
+    return moveWorldInfoEntries(sourceName, targetName, [uid], { deleteOriginal });
 }
 
 

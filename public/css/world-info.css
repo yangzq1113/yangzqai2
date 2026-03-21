@@ -56,6 +56,16 @@
     overflow-y: auto;
 }
 
+#world_entry_bulk_toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 0 10px;
+}
+
+#world_entry_bulk_status {
+    margin-left: auto;
+}
+
 #world_popup_entries_list:empty {
     width: 100%;
     height: 100%;
@@ -215,6 +225,11 @@
     transition: opacity var(--animation-duration-3x);
 }
 
+.world_entry.bulk-selected .wi-card-entry {
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 72%, var(--SmartThemeBorderColor));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--SmartThemeQuoteColor) 24%, transparent);
+}
+
 .world_entry_edit {
     display: contents;
 }
@@ -243,6 +258,42 @@
     max-height: 160px;
     overflow-y: auto;
     overflow-x: hidden;
+}
+
+.world_entry_select_label {
+    align-items: center;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    flex: 0 0 auto;
+    justify-content: center;
+    margin: 0;
+    min-height: 28px;
+    min-width: 28px;
+    padding: 0;
+    transition: border-color var(--animation-duration-2x), background-color var(--animation-duration-2x), opacity var(--animation-duration-2x);
+}
+
+.world_entry_select_label input {
+    display: none;
+}
+
+.world_entry_select_label span {
+    color: var(--SmartThemeBodyColor);
+    font-size: 0.8rem;
+    opacity: 0.35;
+    transition: opacity var(--animation-duration-2x), color var(--animation-duration-2x);
+}
+
+.world_entry_select_label:has(input:checked) {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 16%, transparent);
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 72%, var(--SmartThemeBorderColor));
+}
+
+.world_entry_select_label:has(input:checked) span {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 1;
 }
 
 span.select2-container .select2-selection__choice__display:has(> .regex_item),
