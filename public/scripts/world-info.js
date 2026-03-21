@@ -25,6 +25,53 @@ import { accountStorage } from './util/AccountStorage.js';
 import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from './personas.js';
 import { showUndoToast } from './undo-toast.js';
 
+function buildWorldInfoDragHelper(item) {
+    const itemEl = item?.get?.(0) || item?.[0] || item;
+    const commentField = itemEl instanceof HTMLElement
+        ? itemEl.querySelector('textarea[name="comment"]')
+        : null;
+    const fallbackKey = itemEl instanceof HTMLElement
+        ? itemEl.querySelector('.key_info')
+        : null;
+    const title = String(
+        commentField?.value
+        || fallbackKey?.textContent
+        || itemEl?.getAttribute?.('uid')
+        || itemEl?.getAttribute?.('data-uid')
+        || 'World Info',
+    ).trim();
+    const width = Math.round(item?.outerWidth?.() || itemEl?.getBoundingClientRect?.().width || 0);
+    const helper = document.createElement('div');
+    helper.className = 'world-info-drag-helper';
+    helper.textContent = title;
+    helper.style.width = width > 0 ? `${width}px` : '';
+    helper.style.padding = '8px 12px';
+    helper.style.border = '1px solid var(--SmartThemeBorderColor)';
+    helper.style.borderRadius = '10px';
+    helper.style.background = 'var(--SmartThemeBlurTintColor)';
+    helper.style.color = 'var(--SmartThemeBodyColor)';
+    helper.style.boxShadow = '0 12px 28px rgba(0, 0, 0, 0.18)';
+    helper.style.pointerEvents = 'none';
+    return $(helper);
+}
+
+function styleWorldInfoDragPlaceholder(ui) {
+    const placeholder = ui?.placeholder;
+    const item = ui?.item;
+    if (!placeholder?.length || !item?.length) {
+        return;
+    }
+
+    placeholder.css({
+        height: `${Math.round(item.outerHeight() || 0)}px`,
+        visibility: 'visible',
+        border: '1px dashed var(--SmartThemeBorderColor)',
+        'border-radius': '10px',
+        background: 'color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent)',
+        opacity: '0.8',
+    });
+}
+
 export const world_info_insertion_strategy = {
     evenly: 0,
     character_first: 1,
@@ -3310,6 +3357,18 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         items: '.world_entry',
         delay: getSortableDelay(),
         handle: '.drag-handle',
+        helper: (_event, ui) => buildWorldInfoDragHelper(ui),
+        appendTo: document.body,
+        tolerance: 'pointer',
+        forcePlaceholderSize: true,
+        placeholder: 'world-info-sortable-placeholder',
+        cursor: 'grabbing',
+        scroll: true,
+        scrollSensitivity: 60,
+        scrollSpeed: 18,
+        start: (_event, ui) => {
+            styleWorldInfoDragPlaceholder(ui);
+        },
         stop: async function (_event, _ui) {
             const firstEntryUid = $('#world_popup_entries_list .world_entry').first().data('uid');
             const minDisplayIndex = data?.entries[firstEntryUid]?.displayIndex ?? 0;
