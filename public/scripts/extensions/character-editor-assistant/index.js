@@ -56,6 +56,9 @@ const defaultSettings = {
     toolCallRetryMax: 2,
     maxJournalEntries: 120,
 };
+const CHARACTER_EDITOR_SESSION_NAMESPACE = 'character_editor_assistant_sessions';
+const CHARACTER_EDITOR_SESSION_VERSION = 1;
+const CHARACTER_EDITOR_SESSION_LIMIT = 24;
 
 const stateCache = new Map();
 const lorebookSnapshotCache = new Map();
@@ -82,13 +85,25 @@ function registerLocaleData() {
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Refresh': '刷新',
         'History': '修改历史',
+        'Conversation history': '对话历史',
         'Approve': '批准',
         'Reject': '拒绝',
         'View diff': '查看 diff',
         'Rollback': '回滚',
+        'Rolled back': '已回退',
         'Delete': '删除',
         'Clear history': '清空历史',
         'No history yet.': '暂无历史记录。',
+        'No conversation history yet.': '暂无对话历史。',
+        'Load': '加载',
+        'Current': '当前',
+        'New session': '新建会话',
+        'Session loaded.': '会话已加载。',
+        'Delete this conversation session?': '删除这条对话历史？',
+        'Conversation session deleted.': '对话历史已删除。',
+        'Load failed: ${0}': '加载失败：${0}',
+        'Conversation delete failed: ${0}': '删除对话失败：${0}',
+        'Rollback this diff?': '回退这条 diff 吗？',
         'Character editor tools are ready.': '角色编辑工具已就绪。',
         'Current chat has no active character.': '当前聊天没有活动角色卡。',
         'Operation applied: ${0}': '操作已生效：${0}',
@@ -181,13 +196,25 @@ function registerLocaleData() {
         'Tool-call retries on invalid/missing tool call (N)': '工具調用重試次數（無效/缺失時）',
         'Refresh': '刷新',
         'History': '修改歷史',
+        'Conversation history': '對話歷史',
         'Approve': '批准',
         'Reject': '拒絕',
         'View diff': '查看 diff',
         'Rollback': '回滾',
+        'Rolled back': '已回退',
         'Delete': '刪除',
         'Clear history': '清空歷史',
         'No history yet.': '暫無歷史記錄。',
+        'No conversation history yet.': '暫無對話歷史。',
+        'Load': '載入',
+        'Current': '當前',
+        'New session': '新建會話',
+        'Session loaded.': '會話已載入。',
+        'Delete this conversation session?': '刪除這條對話歷史？',
+        'Conversation session deleted.': '對話歷史已刪除。',
+        'Load failed: ${0}': '載入失敗：${0}',
+        'Conversation delete failed: ${0}': '刪除對話失敗：${0}',
+        'Rollback this diff?': '回退這條 diff 嗎？',
         'Character editor tools are ready.': '角色編輯工具已就緒。',
         'Current chat has no active character.': '當前聊天沒有活動角色卡。',
         'Operation applied: ${0}': '操作已生效：${0}',
@@ -558,13 +585,13 @@ function getCharacterOperationStateKey(context, avatar = '') {
     return String(record.avatar || '').trim();
 }
 
-async function getOperationStateSidecar(context, avatar) {
+async function getCharacterStateSidecar(context, avatar, namespace) {
     const response = await fetch('/api/characters/state/get', {
         method: 'POST',
         headers: context.getRequestHeaders(),
         body: JSON.stringify({
             avatar_url: avatar,
-            namespace: MODULE_NAME,
+            namespace,
         }),
         cache: 'no-cache',
     });
@@ -576,14 +603,14 @@ async function getOperationStateSidecar(context, avatar) {
     return payload && typeof payload === 'object' ? payload.data : null;
 }
 
-async function setOperationStateSidecar(context, avatar, state) {
+async function setCharacterStateSidecar(context, avatar, namespace, data) {
     const response = await fetch('/api/characters/state/set', {
         method: 'POST',
         headers: context.getRequestHeaders(),
         body: JSON.stringify({
             avatar_url: avatar,
-            namespace: MODULE_NAME,
-            data: clone(state),
+            namespace,
+            data: clone(data),
         }),
         cache: 'no-cache',
     });
@@ -591,6 +618,14 @@ async function setOperationStateSidecar(context, avatar, state) {
         const detail = await response.text().catch(() => '');
         throw new Error(`Character state write failed (${response.status}): ${detail || response.statusText}`);
     }
+}
+
+async function getOperationStateSidecar(context, avatar) {
+    return await getCharacterStateSidecar(context, avatar, MODULE_NAME);
+}
+
+async function setOperationStateSidecar(context, avatar, state) {
+    await setCharacterStateSidecar(context, avatar, MODULE_NAME, state);
 }
 
 async function loadOperationState(context, { force = false, avatar = '' } = {}) {
@@ -638,6 +673,240 @@ async function clearHistoryRecords(context, { avatar = '' } = {}) {
     state.updatedAt = Date.now();
     await persistOperationState(context, state, { avatar });
     return true;
+}
+
+function makeCharacterEditorSessionId(prefix = 'cea_session') {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeCharacterEditorSessionMessage(rawMessage) {
+    const role = String(rawMessage?.role || 'assistant').trim().toLowerCase();
+    const message = {
+        id: String(rawMessage?.id || '').trim() || makeConversationMessageId(),
+        role: role === 'user' ? 'user' : 'assistant',
+        content: String(rawMessage?.content || ''),
+        auto: Boolean(rawMessage?.auto),
+        at: Number(rawMessage?.at || Date.now()),
+    };
+    if (message.role !== 'assistant') {
+        return message;
+    }
+
+    const toolCalls = normalizePersistentToolCalls(rawMessage);
+    const toolResults = normalizePersistentToolResults(rawMessage, toolCalls);
+    if (toolCalls.length > 0) {
+        message.tool_calls = toolCalls;
+    }
+    if (toolResults.length > 0) {
+        message.tool_results = toolResults;
+    }
+    if (rawMessage?.toolSummary) {
+        message.toolSummary = String(rawMessage.toolSummary || '');
+    }
+    if (rawMessage?.toolState) {
+        message.toolState = String(rawMessage.toolState || '');
+    }
+    if (Array.isArray(rawMessage?.operations)) {
+        message.operations = rawMessage.operations
+            .filter(item => item && typeof item === 'object')
+            .map(item => ({
+                kind: String(item?.kind || '').trim(),
+                args: item?.args && typeof item.args === 'object' ? clone(item.args) : {},
+            }));
+    }
+    if (Array.isArray(rawMessage?.diffPreviews)) {
+        message.diffPreviews = clone(rawMessage.diffPreviews);
+    }
+    if (Array.isArray(rawMessage?.executionResults)) {
+        message.executionResults = clone(rawMessage.executionResults);
+    }
+    return message;
+}
+
+function normalizeCharacterEditorSession(rawSession) {
+    const session = {
+        id: String(rawSession?.id || '').trim() || makeCharacterEditorSessionId(),
+        avatar: String(rawSession?.avatar || '').trim(),
+        createdAt: Number(rawSession?.createdAt || Date.now()),
+        updatedAt: Number(rawSession?.updatedAt || rawSession?.createdAt || Date.now()),
+        messages: (Array.isArray(rawSession?.messages) ? rawSession.messages : []).map(item => normalizeCharacterEditorSessionMessage(item)),
+        rejectedOperationKeys: [],
+        pendingApproval: null,
+    };
+    const rejectedKeys = rebuildCharacterEditorRejectedOperationKeys(session.messages, new Set());
+    session.rejectedOperationKeys = Array.from(rejectedKeys.values());
+    const pendingMessage = [...session.messages].reverse().find(item => String(item?.toolState || '').trim().toLowerCase() === 'pending');
+    session.pendingApproval = pendingMessage
+        ? {
+            messageId: String(pendingMessage?.id || '').trim(),
+            operations: Array.isArray(pendingMessage?.operations) ? clone(pendingMessage.operations) : [],
+            diffPreviews: Array.isArray(pendingMessage?.diffPreviews) ? clone(pendingMessage.diffPreviews) : [],
+            toolCalls: normalizePersistentToolCalls(pendingMessage),
+        }
+        : null;
+    return session;
+}
+
+function createEmptyCharacterEditorSessionStore() {
+    return {
+        version: CHARACTER_EDITOR_SESSION_VERSION,
+        sessions: [],
+    };
+}
+
+function normalizeCharacterEditorSessionStore(rawStore) {
+    const sessions = (Array.isArray(rawStore?.sessions) ? rawStore.sessions : [])
+        .map(item => normalizeCharacterEditorSession(item))
+        .sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
+    return {
+        version: CHARACTER_EDITOR_SESSION_VERSION,
+        sessions: sessions.slice(-CHARACTER_EDITOR_SESSION_LIMIT),
+    };
+}
+
+async function loadCharacterEditorSessionStore(context, avatar) {
+    const raw = await getCharacterStateSidecar(context, avatar, CHARACTER_EDITOR_SESSION_NAMESPACE);
+    return normalizeCharacterEditorSessionStore(raw || createEmptyCharacterEditorSessionStore());
+}
+
+async function persistCharacterEditorSessionStore(context, avatar, store) {
+    await setCharacterStateSidecar(
+        context,
+        avatar,
+        CHARACTER_EDITOR_SESSION_NAMESPACE,
+        normalizeCharacterEditorSessionStore(store),
+    );
+}
+
+function upsertCharacterEditorSession(store, session) {
+    const normalizedStore = normalizeCharacterEditorSessionStore(store);
+    const normalizedSession = normalizeCharacterEditorSession(session);
+    const nextSessions = normalizedStore.sessions.filter(item => String(item?.id || '') !== String(normalizedSession.id || ''));
+    nextSessions.push(normalizedSession);
+    nextSessions.sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
+    normalizedStore.sessions = nextSessions.slice(-CHARACTER_EDITOR_SESSION_LIMIT);
+    return normalizedStore;
+}
+
+function deleteCharacterEditorSession(store, sessionId) {
+    const normalizedStore = normalizeCharacterEditorSessionStore(store);
+    const targetId = String(sessionId || '').trim();
+    normalizedStore.sessions = normalizedStore.sessions.filter(item => String(item?.id || '') !== targetId);
+    return normalizedStore;
+}
+
+function findCharacterEditorSession(store, sessionId) {
+    const targetId = String(sessionId || '').trim();
+    if (!targetId) {
+        return null;
+    }
+    return (Array.isArray(store?.sessions) ? store.sessions : [])
+        .find(item => String(item?.id || '') === targetId) || null;
+}
+
+function summarizeCharacterEditorSession(session, fallback = '') {
+    const firstUserMessage = (Array.isArray(session?.messages) ? session.messages : [])
+        .find(item => String(item?.role || '').trim().toLowerCase() === 'user');
+    const summary = String(firstUserMessage?.content || '').trim() || String(fallback || '').trim();
+    return summary.length > 72
+        ? `${summary.slice(0, 72).trim()}...`
+        : summary;
+}
+
+function canRollbackCharacterEditorAssistantMessage(messages, messageIndex) {
+    const list = Array.isArray(messages) ? messages : [];
+    const index = Math.floor(Number(messageIndex));
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+        return false;
+    }
+    const item = list[index];
+    if (String(item?.role || '').trim().toLowerCase() !== 'assistant') {
+        return false;
+    }
+    if (String(item?.toolState || '').trim().toLowerCase() !== 'completed') {
+        return false;
+    }
+    return Array.isArray(item?.executionResults) && item.executionResults.some(result => result?.ok && String(result?.journalId || result?.journal_id || '').trim());
+}
+
+function getCharacterEditorRollbackStartIndex(messages, messageIndex) {
+    const list = Array.isArray(messages) ? messages : [];
+    const index = asFiniteInteger(messageIndex, -1);
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+        return -1;
+    }
+    let removeFrom = index;
+    const previous = removeFrom > 0 ? list[removeFrom - 1] : null;
+    if (String(list[removeFrom]?.role || '').trim().toLowerCase() === 'assistant'
+        && String(previous?.role || '').trim().toLowerCase() === 'user') {
+        removeFrom -= 1;
+    }
+    return removeFrom;
+}
+
+async function saveCharacterEditorConversationSession(context, session, { avatar = '', setCurrent = true } = {}) {
+    const store = await loadCharacterEditorSessionStore(context, avatar);
+    const saved = normalizeCharacterEditorSession({
+        ...session,
+        avatar,
+        updatedAt: Date.now(),
+    });
+    const nextStore = upsertCharacterEditorSession(store, saved);
+    if (!setCurrent) {
+        const existing = findCharacterEditorSession(store, saved.id);
+        if (!existing) {
+            nextStore.sessions = nextStore.sessions
+                .filter(item => String(item?.id || '') !== String(saved.id || ''))
+                .concat(saved)
+                .sort((left, right) => Number(left?.updatedAt || 0) - Number(right?.updatedAt || 0))
+                .slice(-CHARACTER_EDITOR_SESSION_LIMIT);
+        }
+    }
+    await persistCharacterEditorSessionStore(context, avatar, nextStore);
+    return findCharacterEditorSession(nextStore, saved.id) || saved;
+}
+
+async function setCurrentCharacterEditorConversationSessionId(context, sessionId, { avatar = '' } = {}) {
+    const id = String(sessionId || '').trim();
+    const store = await loadCharacterEditorSessionStore(context, avatar);
+    const session = findCharacterEditorSession(store, id);
+    if (!session) {
+        return null;
+    }
+    return await saveCharacterEditorConversationSession(context, {
+        ...session,
+        updatedAt: Date.now(),
+    }, { avatar, setCurrent: true });
+}
+
+async function deleteCharacterEditorConversationSession(context, sessionId, { avatar = '' } = {}) {
+    const id = String(sessionId || '').trim();
+    if (!id) {
+        return null;
+    }
+    const store = await loadCharacterEditorSessionStore(context, avatar);
+    const existing = findCharacterEditorSession(store, id);
+    if (!existing) {
+        return null;
+    }
+    let nextStore = deleteCharacterEditorSession(store, id);
+    let nextCurrent = nextStore.sessions.length > 0
+        ? nextStore.sessions[nextStore.sessions.length - 1]
+        : null;
+    if (!nextCurrent) {
+        nextCurrent = normalizeCharacterEditorSession({
+            id: makeCharacterEditorSessionId(),
+            avatar,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: [],
+            pendingApproval: null,
+            rejectedOperationKeys: [],
+        });
+        nextStore = upsertCharacterEditorSession(nextStore, nextCurrent);
+    }
+    await persistCharacterEditorSessionStore(context, avatar, nextStore);
+    return nextCurrent;
 }
 
 function nextStateId(state, prefix = 'op') {
@@ -3955,17 +4224,29 @@ async function buildCharacterEditorDiffPreviews(context, operations, { avatar = 
     };
 }
 
-function renderCharacterEditorBatchDiffItems(previews, operations) {
+function renderCharacterEditorBatchDiffItems(previews, operations, { executionResults = [], messageIndex = -1 } = {}) {
     const safePreviews = Array.isArray(previews) ? previews : [];
     const safeOperations = Array.isArray(operations) ? operations : [];
+    const safeExecutionResults = Array.isArray(executionResults) ? executionResults : [];
     return safePreviews.map((preview, index) => {
         const fields = Array.isArray(preview?.fields) ? preview.fields : [];
         const meta = Array.isArray(preview?.meta) ? preview.meta : [];
         const operation = safeOperations[index] || null;
         const rawArgs = operation?.args || preview?.rawArgs || {};
+        const executionResult = safeExecutionResults[index] && typeof safeExecutionResults[index] === 'object'
+            ? safeExecutionResults[index]
+            : null;
+        const journalId = String(executionResult?.journalId || executionResult?.journal_id || '').trim();
+        const rolledBack = Boolean(executionResult?.rolledBackAt);
+        const canRollback = Number.isInteger(messageIndex) && messageIndex >= 0 && journalId && !rolledBack;
         return `
 <div class="cea_sync_turn_diff_item">
     <div class="cea_sync_turn_diff_title">${escapeHtml(i18nFormat('Operation ${0}', index + 1))}: ${escapeHtml(String(preview?.title || ''))}</div>
+    ${(canRollback || rolledBack) ? `
+    <div class="cea_sync_turn_diff_actions">
+        ${rolledBack ? `<div class="cea_sync_turn_diff_status rejected">${escapeHtml(i18n('Rolled back'))}</div>` : ''}
+        ${canRollback ? `<div class="menu_button menu_button_small" data-cea-editor-action="rollback-diff" data-cea-sync-message-index="${messageIndex}" data-cea-sync-op-index="${index}">${escapeHtml(i18n('Rollback'))}</div>` : ''}
+    </div>` : ''}
     ${meta.length > 0 ? `<div class="cea_sync_turn_diff_meta">${meta.map(item => `
         <div class="cea_sync_turn_diff_meta_item"><b>${escapeHtml(String(item?.label || ''))}:</b> ${escapeHtml(String(item?.value || ''))}</div>
     `).join('')}</div>` : ''}
@@ -3984,7 +4265,7 @@ function renderCharacterEditorBatchDiffItems(previews, operations) {
     }).join('');
 }
 
-function renderCharacterEditorRoundDiffHtml(previews, operations, { open = true } = {}) {
+function renderCharacterEditorRoundDiffHtml(previews, operations, { open = true, executionResults = [], messageIndex = -1 } = {}) {
     const safePreviews = Array.isArray(previews) ? previews : [];
     const summary = safePreviews.length > 0
         ? i18nFormat('Round diff (${0} operations)', safePreviews.length)
@@ -4000,7 +4281,7 @@ function renderCharacterEditorRoundDiffHtml(previews, operations, { open = true 
 <details class="cea_sync_turn_diff"${open ? ' open' : ''}>
     <summary>${escapeHtml(summary)}</summary>
     <div class="cea_sync_turn_diff_list">
-        ${renderCharacterEditorBatchDiffItems(safePreviews, operations)}
+        ${renderCharacterEditorBatchDiffItems(safePreviews, operations, { executionResults, messageIndex })}
     </div>
 </details>`;
 }
@@ -4013,6 +4294,7 @@ function renderCharacterEditorChatMessages(messages, { loading = false, loadingT
         const toolSummary = String(item?.toolSummary || '').trim();
         const previews = Array.isArray(item?.diffPreviews) ? item.diffPreviews : [];
         const operations = Array.isArray(item?.operations) ? item.operations : [];
+        const executionResults = Array.isArray(item?.executionResults) ? item.executionResults : [];
         const hasDiffData = previews.length > 0 || operations.length > 0;
         if (!text && !hasDiffData && !toolSummary) {
             return '';
@@ -4026,7 +4308,7 @@ function renderCharacterEditorChatMessages(messages, { loading = false, loadingT
         return `
 <div class="cea_sync_chat_msg cea_sync_chat_msg_assistant">
     ${text ? `<div class="cea_sync_chat_text">${renderLorebookSyncAnalysisMarkdown(text)}</div>` : ''}
-    ${hasDiffData ? renderCharacterEditorRoundDiffHtml(previews, operations, { open: false }) : ''}
+    ${hasDiffData ? renderCharacterEditorRoundDiffHtml(previews, operations, { open: false, executionResults, messageIndex: index }) : ''}
     ${toolSummary ? `<div class="cea_sync_tool_summary">${escapeHtml(toolSummary)}</div>` : ''}
     ${renderConversationMessageRefreshAction('data-cea-editor-action', index, list)}
 </div>`;
@@ -4059,6 +4341,38 @@ function renderCharacterEditorPendingHtml(pending) {
 </div>`;
 }
 
+function renderCharacterEditorConversationHistoryItems(sessionStore, currentSessionId = '') {
+    const currentId = String(currentSessionId || '').trim();
+    const items = (Array.isArray(sessionStore?.sessions) ? sessionStore.sessions : [])
+        .slice()
+        .sort((left, right) => Number(right?.updatedAt || 0) - Number(left?.updatedAt || 0));
+    const toolbar = `
+<div class="cea_sync_history_toolbar">
+    <div class="menu_button menu_button_small" data-cea-editor-history-action="new-session">${escapeHtml(i18n('New session'))}</div>
+</div>`;
+    if (items.length === 0) {
+        return `${toolbar}<div class="cea_sync_history_empty">${escapeHtml(i18n('No conversation history yet.'))}</div>`;
+    }
+    return `${toolbar}${items.map(item => {
+        const sessionId = String(item?.id || '').trim();
+        const summary = summarizeCharacterEditorSession(item, sessionId) || sessionId;
+        const isCurrent = sessionId && sessionId === currentId;
+        const messageCount = Array.isArray(item?.messages) ? item.messages.length : 0;
+        const pending = item?.pendingApproval ? ` · ${escapeHtml(i18n('Pending review'))}` : '';
+        return `
+<div class="cea_sync_history_item${isCurrent ? ' active' : ''}">
+    <div class="cea_sync_history_item_main">
+        <div class="cea_sync_history_item_summary">${escapeHtml(summary)}${isCurrent ? ` <span class="cea_sync_history_item_current">${escapeHtml(i18n('Current'))}</span>` : ''}</div>
+        <div class="cea_sync_history_item_time">${escapeHtml(new Date(Number(item?.updatedAt || Date.now())).toLocaleString())} · ${escapeHtml(String(messageCount))} msgs${pending}</div>
+    </div>
+    <div class="cea_sync_history_item_actions">
+        ${!isCurrent && sessionId ? `<div class="menu_button menu_button_small" data-cea-editor-history-action="load" data-cea-editor-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Load'))}</div>` : ''}
+        ${sessionId ? `<div class="menu_button menu_button_small" data-cea-editor-history-action="delete" data-cea-editor-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Delete'))}</div>` : ''}
+    </div>
+</div>`;
+    }).join('')}`;
+}
+
 function buildCharacterEditorPopupHtml(record) {
     const characterName = String(record?.character?.name || '').trim() || '(unknown)';
     const primaryBook = String(getPrimaryLorebookName(record?.character || {}) || i18n('(empty)'));
@@ -4079,7 +4393,7 @@ function buildCharacterEditorPopupHtml(record) {
     </div>
     <div data-cea-editor-pending></div>
     <details class="cea_sync_history">
-        <summary>${escapeHtml(i18n('History'))}</summary>
+        <summary>${escapeHtml(i18n('Conversation history'))}</summary>
         <div class="cea_sync_history_list" data-cea-editor-history></div>
     </details>
 </div>`;
@@ -4106,10 +4420,44 @@ async function openCharacterEditorPopup(context = getContext()) {
     editorStudioDialogLocks.add(avatar);
 
     const conversationMessages = [];
+    let sessionStore = createEmptyCharacterEditorSessionStore();
+    let currentSessionId = '';
     let pendingApproval = null;
     let isSending = false;
     let activeRequestAbortController = null;
     const rejectedOperationKeys = new Set();
+    try {
+        sessionStore = await loadCharacterEditorSessionStore(context, avatar);
+        const session = sessionStore.sessions.length > 0
+            ? sessionStore.sessions[sessionStore.sessions.length - 1]
+            : normalizeCharacterEditorSession({
+                id: makeCharacterEditorSessionId(),
+                avatar,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                messages: [],
+                pendingApproval: null,
+                rejectedOperationKeys: [],
+            });
+        currentSessionId = String(session?.id || '').trim();
+        conversationMessages.push(...clone(session?.messages || []));
+        pendingApproval = clone(session?.pendingApproval || null);
+        rebuildCharacterEditorRejectedOperationKeys(conversationMessages, rejectedOperationKeys);
+        for (const key of Array.isArray(session?.rejectedOperationKeys) ? session.rejectedOperationKeys : []) {
+            rejectedOperationKeys.add(String(key || '').trim());
+        }
+        const savedSession = await saveCharacterEditorConversationSession(context, {
+            ...session,
+            id: currentSessionId,
+            messages: conversationMessages,
+            pendingApproval,
+            rejectedOperationKeys: Array.from(rejectedOperationKeys.values()),
+        }, { avatar, setCurrent: true });
+        sessionStore = upsertCharacterEditorSession(sessionStore, savedSession);
+        currentSessionId = String(savedSession?.id || currentSessionId).trim();
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to load persisted editor conversation session`, error);
+    }
 
     const popup = new Popup(
         buildCharacterEditorPopupHtml(record),
@@ -4138,13 +4486,22 @@ async function openCharacterEditorPopup(context = getContext()) {
                 const renderPending = () => {
                     pendingSlot.innerHTML = renderCharacterEditorPendingHtml(pendingApproval);
                 };
-                const renderHistory = async () => {
-                    try {
-                        const state = await loadOperationState(context, { force: true, avatar });
-                        history.innerHTML = renderLorebookSyncHistoryItems(state);
-                    } catch {
-                        history.innerHTML = `<div class="cea_sync_history_empty">${escapeHtml(i18n('No history yet.'))}</div>`;
+                const renderHistory = () => {
+                    history.innerHTML = renderCharacterEditorConversationHistoryItems(sessionStore, currentSessionId);
+                };
+                const persistCurrentSession = async ({ setCurrent = true } = {}) => {
+                    if (!currentSessionId) {
+                        return;
                     }
+                    const savedSession = await saveCharacterEditorConversationSession(context, {
+                        id: currentSessionId,
+                        messages: conversationMessages,
+                        pendingApproval,
+                        rejectedOperationKeys: Array.from(rejectedOperationKeys.values()),
+                    }, { avatar, setCurrent });
+                    sessionStore = upsertCharacterEditorSession(sessionStore, savedSession);
+                    currentSessionId = String(savedSession?.id || currentSessionId).trim();
+                    renderHistory();
                 };
                 const syncComposerState = () => {
                     const disabled = Boolean(isSending);
@@ -4221,6 +4578,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                             diffPreviews,
                             toolCalls,
                         } : null;
+                        await persistCurrentSession();
                         renderPending();
                         return true;
                     } catch (error) {
@@ -4233,6 +4591,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                                 role: 'assistant',
                                 content: i18nFormat('Model reply failed: ${0}', String(error?.message || error || '')),
                             });
+                        await persistCurrentSession();
                         return false;
                     } finally {
                         if (activeRequestAbortController === controller) {
@@ -4269,11 +4628,46 @@ async function openCharacterEditorPopup(context = getContext()) {
                         return;
                     }
                     const action = String(target.getAttribute('data-cea-editor-action') || '').trim();
-                    if (action !== 'refresh-message') {
-                        return;
-                    }
                     const messageIndex = asFiniteInteger(target.getAttribute('data-cea-sync-message-index'), -1);
                     if (!Number.isInteger(messageIndex) || messageIndex < 0 || messageIndex >= conversationMessages.length) {
+                        return;
+                    }
+                    if (action === 'rollback-diff') {
+                        const opIndex = asFiniteInteger(target.getAttribute('data-cea-sync-op-index'), -1);
+                        if (!Number.isInteger(opIndex) || opIndex < 0) {
+                            return;
+                        }
+                        const message = conversationMessages[messageIndex];
+                        const executionResults = Array.isArray(message?.executionResults) ? message.executionResults : [];
+                        const result = executionResults[opIndex];
+                        const journalId = String(result?.journalId || result?.journal_id || '').trim();
+                        if (!journalId || result?.rolledBackAt) {
+                            return;
+                        }
+                        try {
+                            await rollbackJournalEntryWithLog(context, journalId, {
+                                avatar,
+                                source: 'message_diff',
+                            });
+                            executionResults[opIndex] = {
+                                ...clone(result || {}),
+                                rolledBackAt: Date.now(),
+                            };
+                            if (message && typeof message === 'object') {
+                                message.executionResults = executionResults;
+                            }
+                            await persistCurrentSession();
+                            await refreshUiState(context);
+                            await primeActiveCharacterLorebookSnapshot(context);
+                            renderHistory();
+                            renderConversation(false);
+                            notifySuccess(i18n('Rollback completed.'));
+                        } catch (error) {
+                            notifyError(i18nFormat('Rollback failed: ${0}', String(error?.message || error || '')));
+                        }
+                        return;
+                    }
+                    if (action !== 'refresh-message') {
                         return;
                     }
                     const userIndex = findPreviousConversationUserMessageIndex(conversationMessages, messageIndex);
@@ -4293,8 +4687,9 @@ async function openCharacterEditorPopup(context = getContext()) {
                         await rollbackCharacterEditorConversationMessages(context, removedMessages, { avatar });
                         conversationMessages.splice(messageIndex);
                         rebuildCharacterEditorRejectedOperationKeys(conversationMessages, rejectedOperationKeys);
+                        await persistCurrentSession();
                         await refreshUiState(context);
-                        await renderHistory();
+                        renderHistory();
                         await primeActiveCharacterLorebookSnapshot(context);
                     } catch (error) {
                         pendingApproval = previousPendingApproval;
@@ -4332,6 +4727,7 @@ async function openCharacterEditorPopup(context = getContext()) {
                             targetMessage.toolState = 'rejected';
                         }
                         pendingApproval = null;
+                        await persistCurrentSession();
                         renderPending();
                         renderConversation(false);
                         return;
@@ -4359,13 +4755,15 @@ async function openCharacterEditorPopup(context = getContext()) {
                                 targetMessage.toolState = result.failed > 0 ? 'partial' : 'completed';
                                 targetMessage.executionResults = clone(result?.results || []);
                             }
+                            await persistCurrentSession();
                             await refreshUiState(context);
-                            await renderHistory();
+                            renderHistory();
                             await primeActiveCharacterLorebookSnapshot(context);
                         } catch (error) {
                             pendingApproval = snapshot;
                             renderPending();
                             conversationMessages.push({ role: 'assistant', content: i18nFormat('Apply failed: ${0}', String(error?.message || error || '')) });
+                            await persistCurrentSession();
                         } finally {
                             isSending = false;
                             syncComposerState();
@@ -4374,68 +4772,94 @@ async function openCharacterEditorPopup(context = getContext()) {
                     }
                 });
                 history.addEventListener('click', async (event) => {
-                    const target = event.target instanceof Element ? event.target.closest('[data-cea-sync-history-action]') : null;
+                    const target = event.target instanceof Element ? event.target.closest('[data-cea-editor-history-action]') : null;
                     if (!(target instanceof HTMLElement)) {
                         return;
                     }
-                    const action = String(target.getAttribute('data-cea-sync-history-action') || '').trim();
-                    const journalId = String(target.getAttribute('data-cea-sync-history-id') || '').trim();
+                    const action = String(target.getAttribute('data-cea-editor-history-action') || '').trim();
+                    const sessionId = String(target.getAttribute('data-cea-editor-session-id') || '').trim();
                     try {
-                        if (action === 'clear') {
-                            if (!window.confirm(i18n('Clear all history records?'))) {
-                                return;
-                            }
-                            await clearHistoryRecords(context, { avatar });
-                            await renderHistory();
-                            await refreshUiState(context);
-                            notifySuccess(i18n('History cleared.'));
+                        if (action === 'new-session') {
+                            const nextSession = normalizeCharacterEditorSession({
+                                id: makeCharacterEditorSessionId(),
+                                avatar,
+                                createdAt: Date.now(),
+                                updatedAt: Date.now(),
+                                messages: [],
+                                pendingApproval: null,
+                                rejectedOperationKeys: [],
+                            });
+                            currentSessionId = String(nextSession?.id || '').trim();
+                            conversationMessages.splice(0, conversationMessages.length);
+                            pendingApproval = null;
+                            rejectedOperationKeys.clear();
+                            const savedSession = await saveCharacterEditorConversationSession(context, nextSession, { avatar, setCurrent: true });
+                            sessionStore = upsertCharacterEditorSession(sessionStore, savedSession);
+                            renderHistory();
+                            renderPending();
+                            renderConversation(false);
+                            notifySuccess(i18n('New session'));
                             return;
                         }
-                        if (!journalId) {
+                        if (!sessionId) {
+                            return;
+                        }
+                        if (action === 'load') {
+                            const loaded = await setCurrentCharacterEditorConversationSessionId(context, sessionId, { avatar });
+                            if (!loaded) {
+                                throw new Error('Session not found.');
+                            }
+                            currentSessionId = String(loaded.id || '').trim();
+                            sessionStore = upsertCharacterEditorSession(sessionStore, loaded);
+                            conversationMessages.splice(0, conversationMessages.length, ...clone(loaded.messages || []));
+                            pendingApproval = clone(loaded.pendingApproval || null);
+                            rejectedOperationKeys.clear();
+                            rebuildCharacterEditorRejectedOperationKeys(conversationMessages, rejectedOperationKeys);
+                            for (const key of Array.isArray(loaded.rejectedOperationKeys) ? loaded.rejectedOperationKeys : []) {
+                                rejectedOperationKeys.add(String(key || '').trim());
+                            }
+                            renderPending();
+                            renderConversation(false);
+                            renderHistory();
+                            notifySuccess(i18n('Session loaded.'));
                             return;
                         }
                         if (action === 'delete') {
-                            if (!window.confirm(i18n('Delete this history record?'))) {
+                            if (!window.confirm(i18n('Delete this conversation session?'))) {
                                 return;
                             }
-                            const deleted = await deleteHistoryRecord(context, journalId, { avatar });
-                            if (!deleted) {
-                                throw new Error('Journal entry not found.');
+                            const nextSession = await deleteCharacterEditorConversationSession(context, sessionId, { avatar });
+                            if (!nextSession) {
+                                throw new Error('Session not found.');
                             }
-                            await renderHistory();
-                            await refreshUiState(context);
-                            notifySuccess(i18n('History record deleted.'));
-                            return;
-                        }
-                        if (action === 'rollback') {
-                            await rollbackJournalEntryWithLog(context, journalId, {
-                                avatar,
-                                source: 'manual',
-                            });
-                            await renderHistory();
-                            await refreshUiState(context);
-                            await primeActiveCharacterLorebookSnapshot(context);
-                            notifySuccess(i18n('Rollback completed.'));
+                            sessionStore = deleteCharacterEditorSession(sessionStore, sessionId);
+                            sessionStore = upsertCharacterEditorSession(sessionStore, nextSession);
+                            currentSessionId = String(nextSession.id || '').trim();
+                            conversationMessages.splice(0, conversationMessages.length, ...clone(nextSession.messages || []));
+                            pendingApproval = clone(nextSession.pendingApproval || null);
+                            rejectedOperationKeys.clear();
+                            rebuildCharacterEditorRejectedOperationKeys(conversationMessages, rejectedOperationKeys);
+                            for (const key of Array.isArray(nextSession.rejectedOperationKeys) ? nextSession.rejectedOperationKeys : []) {
+                                rejectedOperationKeys.add(String(key || '').trim());
+                            }
+                            renderPending();
+                            renderConversation(false);
+                            renderHistory();
+                            notifySuccess(i18n('Conversation session deleted.'));
                         }
                     } catch (error) {
-                        if (action === 'rollback') {
-                            notifyError(i18nFormat('Rollback failed: ${0}', error?.message || error));
-                            return;
-                        }
                         if (action === 'delete') {
-                            notifyError(i18nFormat('Delete failed: ${0}', error?.message || error));
+                            notifyError(i18nFormat('Conversation delete failed: ${0}', error?.message || error));
                             return;
                         }
-                        if (action === 'clear') {
-                            notifyError(i18nFormat('Clear failed: ${0}', error?.message || error));
-                        }
+                        notifyError(i18nFormat('Load failed: ${0}', error?.message || error));
                     }
                 });
 
                 renderConversation(false);
                 renderPending();
                 syncComposerState();
-                void renderHistory();
+                renderHistory();
             },
             onClosing: () => {
                 if (isSending) {
@@ -5555,7 +5979,7 @@ async function rollbackCharacterEditorConversationMessages(context, messages, { 
         const executionResults = Array.isArray(message?.executionResults) ? message.executionResults.slice() : [];
         for (const result of executionResults.reverse()) {
             const journalId = String(result?.journalId || result?.journal_id || '').trim();
-            if (!result?.ok || !journalId) {
+            if (!result?.ok || !journalId || result?.rolledBackAt) {
                 continue;
             }
             await rollbackJournalEntryWithLog(context, journalId, {
@@ -5723,9 +6147,11 @@ function ensureStyles() {
 .popup .cea_sync_history_toolbar { display:flex; justify-content:flex-end; margin:8px 0; }
 .popup .cea_sync_history_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .popup .cea_sync_history_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }
+.popup .cea_sync_history_item.active { border-color: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 40%, transparent); background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 10%, transparent); }
 .popup .cea_sync_history_item_main { min-width:0; flex:1; }
 .popup .cea_sync_history_item_actions { display:flex; gap:6px; flex-wrap:wrap; }
 .popup .cea_sync_history_item_summary { font-weight:600; line-height:1.35; word-break:break-word; }
+.popup .cea_sync_history_item_current { display:inline-flex; align-items:center; margin-left:6px; padding:1px 6px; border-radius:999px; font-size:0.8em; background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 16%, transparent); }
 .popup .cea_sync_history_item_time { opacity:0.75; font-size:0.9em; margin-top:4px; }
 .popup .cea_sync_history_empty { opacity:0.8; }
 @media (max-width: 900px) {
