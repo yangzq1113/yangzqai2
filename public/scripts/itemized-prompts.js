@@ -41,13 +41,17 @@ export async function loadItemizedPrompts(chatId) {
  * Saves the itemized prompts for a chat.
  * @param {string} chatId Chat ID to save itemized prompts for
  */
-export async function saveItemizedPrompts(chatId) {
+export async function saveItemizedPrompts(chatId, prompts = itemizedPrompts) {
     try {
         if (!chatId) {
             return;
         }
 
-        await promptStorage.setItem(chatId, itemizedPrompts);
+        const nextPrompts = Array.isArray(prompts) ? prompts : [];
+        const payload = typeof structuredClone === 'function'
+            ? structuredClone(nextPrompts)
+            : JSON.parse(JSON.stringify(nextPrompts));
+        await promptStorage.setItem(chatId, payload);
     } catch {
         console.log('Error saving itemized prompts for chat', chatId);
     }

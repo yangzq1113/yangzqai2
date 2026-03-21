@@ -68,6 +68,7 @@ import {
     setCharacterSettingsOverrides,
     system_avatar,
     isChatSaving,
+    shouldBlockChatSwitchWhileSaving,
     setExternalAbortController,
     baseChatReplace,
     createLazyFields,
@@ -86,6 +87,9 @@ import {
     getChatMessageSnapshot,
     buildChatMetadataPatchOperationsAsync,
     buildChatMessagePatchOperations,
+    applyIntegrityFromWritePayloadToTarget,
+    refreshChatWriteSnapshotsFromServer,
+    resolveChatWriteConflictForTarget,
     runSerializedChatWrite,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect } from './tags.js';
@@ -634,30 +638,38 @@ function resetSelectedGroup() {
  * @param {boolean} force Force the saving on integrity error
  * @returns {Promise<void>} A promise that resolves when the group chat has been saved.
  */
-async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, retryAttempt = 0) {
-    const group = groups.find(x => x.id == groupId);
+async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, retryAttempt = 0, context = null) {
+    const saveContext = context && typeof context === 'object' ? context : null;
+    const resolvedGroupId = String(saveContext?.groupId || groupId || '').trim();
+    const group = groups.find(x => String(x?.id || '') === resolvedGroupId);
     if (!group) {
-        console.warn('Group not found', groupId);
+        console.warn('Group not found', resolvedGroupId);
         return;
     }
     const chatId = group.chat_id;
     if (!chatId) {
-        console.warn('Group chat id is empty', groupId);
+        console.warn('Group chat id is empty', resolvedGroupId);
         return;
     }
     group['date_last_chat'] = Date.now();
+    const metadataSnapshot = saveContext?.metadataSnapshot && typeof saveContext.metadataSnapshot === 'object'
+        ? saveContext.metadataSnapshot
+        : { ...chat_metadata };
+    const messagesSnapshot = Array.isArray(saveContext?.messagesSnapshot)
+        ? saveContext.messagesSnapshot
+        : chat;
     /** @type {ChatHeader} */
     const chatHeader = {
-        chat_metadata: { ...chat_metadata },
+        chat_metadata: { ...metadataSnapshot },
         user_name: 'unused',
         character_name: 'unused',
     };
-    const target = { is_group: true, id: chatId };
+    const target = saveContext?.target || { is_group: true, id: chatId };
     const previousMessages = getChatMessageSnapshot(target);
     let response = null;
 
     if (!force && Array.isArray(previousMessages)) {
-        const operations = buildChatMessagePatchOperations(previousMessages, chat);
+        const operations = buildChatMessagePatchOperations(previousMessages, messagesSnapshot);
         if (operations.length > 0) {
             response = await fetch('/api/chats/group/patch', {
                 method: 'POST',
@@ -665,14 +677,14 @@ async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, re
                 body: JSON.stringify({
                     id: chatId,
                     operations,
-                    chat_metadata: { ...chat_metadata },
-                    integrity: chat_metadata?.integrity,
+                    chat_metadata: { ...metadataSnapshot },
+                    integrity: metadataSnapshot?.integrity,
                     force: force,
                 }),
             });
         } else {
             const previousMetadata = getChatMetadataSnapshot(target);
-            const metadataOperations = await buildChatMetadataPatchOperationsAsync(previousMetadata, chat_metadata);
+            const metadataOperations = await buildChatMetadataPatchOperationsAsync(previousMetadata, metadataSnapshot);
             if (metadataOperations.length === 0) {
                 response = { ok: true };
             } else {
@@ -682,7 +694,7 @@ async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, re
                     body: JSON.stringify({
                         id: chatId,
                         operations: metadataOperations,
-                        integrity: chat_metadata?.integrity,
+                        integrity: metadataSnapshot?.integrity,
                         force: force,
                     }),
                 });
@@ -694,7 +706,7 @@ async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, re
         response = await fetch('/api/chats/group/save', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ id: chatId, chat: [chatHeader, ...chat], force: force }),
+            body: JSON.stringify({ id: chatId, chat: [chatHeader, ...messagesSnapshot], force: force }),
         });
     }
 
@@ -702,21 +714,28 @@ async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, re
         const payload = typeof response.json === 'function'
             ? await response.json().catch(() => null)
             : null;
-        const nextIntegrity = typeof payload?.integrity === 'string' ? payload.integrity.trim() : '';
-        if (nextIntegrity) {
-            chat_metadata.integrity = nextIntegrity;
-        }
+        applyIntegrityFromWritePayloadToTarget(payload, target, metadataSnapshot);
     }
 
     if (!response.ok) {
-        const isConflict = !force && response.status === 409;
-        if (isConflict && retryAttempt === 0) {
-            await getGroupChat(groupId, false);
-            await saveGroupChatInternal(groupId, shouldSaveGroup, force, retryAttempt + 1);
+        const conflictResolution = !force
+            ? await resolveChatWriteConflictForTarget(response, target, metadataSnapshot, retryAttempt)
+            : 'none';
+        if (conflictResolution !== 'none') {
+            if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
+                await refreshChatWriteSnapshotsFromServer(target);
+            }
+            await saveGroupChatInternal(resolvedGroupId, shouldSaveGroup, force, retryAttempt + 1, {
+                ...(saveContext ?? {}),
+                target,
+                groupId: resolvedGroupId,
+                metadataSnapshot,
+                messagesSnapshot,
+            });
             return;
         }
 
-        if (!isConflict) {
+        if (response.status !== 409) {
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
             console.error('Group chat could not be saved', response);
             return;
@@ -725,16 +744,20 @@ async function saveGroupChatInternal(groupId, shouldSaveGroup, force = false, re
         return;
     }
 
-    seedChatMetadataSnapshot(target, chat_metadata);
-    seedChatMessageSnapshot(target, chat);
+    seedChatMetadataSnapshot(target, metadataSnapshot);
+    seedChatMessageSnapshot(target, messagesSnapshot);
 
     if (shouldSaveGroup) {
-        await editGroup(groupId, false, false);
+        await editGroup(resolvedGroupId, false, false);
     }
 }
 
-async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttempt = 0) {
-    return await runSerializedChatWrite(() => saveGroupChatInternal(groupId, shouldSaveGroup, force, retryAttempt));
+async function saveGroupChat(groupId, shouldSaveGroup, force = false, retryAttempt = 0, context = null) {
+    if (context?.skipSerialization) {
+        return await saveGroupChatInternal(groupId, shouldSaveGroup, force, retryAttempt, context);
+    }
+
+    return await runSerializedChatWrite(() => saveGroupChatInternal(groupId, shouldSaveGroup, force, retryAttempt, context));
 }
 
 /**
@@ -2080,7 +2103,7 @@ function updateFavButtonState(state) {
  * @returns {Promise<boolean>} Whether the group was opened
  */
 export async function openGroupById(groupId) {
-    if (isChatSaving) {
+    if (shouldBlockChatSwitchWhileSaving()) {
         toastr.info(t`Please wait until the chat is saved before switching characters.`, t`Your chat is still saving...`);
         return false;
     }

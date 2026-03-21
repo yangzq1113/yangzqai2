@@ -1780,7 +1780,7 @@ export async function selectCharacterById(id, { switchMenu = true } = {}) {
         return;
     }
 
-    if (isChatSaving) {
+    if (shouldBlockChatSwitchWhileSaving()) {
         toastr.info(t`Please wait until the chat is saved before switching characters.`, t`Your chat is still saving...`);
         return;
     }
@@ -9777,8 +9777,9 @@ function resolveChatStateTarget(target = null) {
         }
         const avatar_url = String(target.avatar_url || '').trim();
         const file_name = String(target.file_name || '').trim();
+        const char_name = String(target.char_name || '').trim();
         return avatar_url && file_name
-            ? { is_group: false, avatar_url, file_name }
+            ? { is_group: false, avatar_url, file_name, ...(char_name ? { char_name } : {}) }
             : null;
     }
 
@@ -9790,8 +9791,9 @@ function resolveChatStateTarget(target = null) {
 
     const avatar_url = String(characters[this_chid]?.avatar || '').trim();
     const file_name = String(characters[this_chid]?.chat || '').trim();
+    const char_name = String(characters[this_chid]?.name || '').trim();
     return avatar_url && file_name
-        ? { is_group: false, avatar_url, file_name }
+        ? { is_group: false, avatar_url, file_name, ...(char_name ? { char_name } : {}) }
         : null;
 }
 
@@ -10270,6 +10272,7 @@ export function getChatMessageSnapshot(target = null) {
 }
 
 let chatWriteQueue = Promise.resolve();
+let activeChatSaveContext = null;
 
 export function runSerializedChatWrite(task) {
     if (typeof task !== 'function') {
@@ -10300,6 +10303,25 @@ function syncCurrentChatIntegrityFromMetadata(metadata = null) {
     }
 }
 
+function isActiveChatStateTarget(target = null) {
+    return getChatStateTargetKey(resolveChatStateTarget(target)) === getChatStateTargetKey(resolveChatStateTarget());
+}
+
+export function applyIntegrityFromWritePayloadToTarget(payload, target = null, metadata = null) {
+    const nextIntegrity = typeof payload?.integrity === 'string' ? payload.integrity.trim() : '';
+    if (!nextIntegrity) {
+        return;
+    }
+
+    if (metadata && typeof metadata === 'object') {
+        metadata.integrity = nextIntegrity;
+    }
+
+    if (isActiveChatStateTarget(target)) {
+        syncCurrentChatIntegrityFromMetadata({ integrity: nextIntegrity });
+    }
+}
+
 async function fetchCurrentServerChatSnapshot(target = resolveChatStateTarget()) {
     const resolvedTarget = resolveChatStateTarget(target);
     if (!resolvedTarget) {
@@ -10319,7 +10341,7 @@ async function fetchCurrentServerChatSnapshot(target = resolveChatStateTarget())
                 }),
             });
         } else {
-            const charName = characters[this_chid]?.name;
+            const charName = String(resolvedTarget.char_name || characters[this_chid]?.name || '').trim();
             if (!charName) {
                 return null;
             }
@@ -10370,7 +10392,7 @@ async function fetchCurrentServerChatSnapshot(target = resolveChatStateTarget())
     }
 }
 
-async function refreshChatWriteSnapshotsFromServer(target = resolveChatStateTarget()) {
+export async function refreshChatWriteSnapshotsFromServer(target = resolveChatStateTarget()) {
     const snapshot = await fetchCurrentServerChatSnapshot(target);
     if (!snapshot) {
         return null;
@@ -10721,20 +10743,21 @@ export async function deleteChatState(namespace, options = {}) {
 }
 
 function applyIntegrityFromWritePayload(payload) {
-    const nextIntegrity = typeof payload?.integrity === 'string' ? payload.integrity.trim() : '';
-    if (!nextIntegrity) {
+    applyIntegrityFromWritePayloadToTarget(payload, resolveChatStateTarget(), chat_metadata);
+}
+
+function invalidateChatWriteSnapshot(target = resolveChatStateTarget()) {
+    const snapshotKey = getChatMessageSnapshotKey(target);
+    if (!snapshotKey) {
         return;
     }
-    chat_metadata.integrity = nextIntegrity;
+
+    chatMessageSnapshotCache.delete(snapshotKey);
+    chatMetadataSnapshotCache.delete(snapshotKey);
 }
 
 function invalidateCurrentChatWriteSnapshot() {
-    const target = resolveChatStateTarget();
-    const snapshotKey = getChatMessageSnapshotKey(target);
-    if (snapshotKey) {
-        chatMessageSnapshotCache.delete(snapshotKey);
-        chatMetadataSnapshotCache.delete(snapshotKey);
-    }
+    invalidateChatWriteSnapshot(resolveChatStateTarget());
     if (chat_metadata && typeof chat_metadata === 'object') {
         delete chat_metadata.integrity;
     }
@@ -10753,6 +10776,10 @@ async function readChatWriteConflictPayload(response) {
 }
 
 async function resolveChatWriteConflict(response, retryCount = 0) {
+    return await resolveChatWriteConflictForTarget(response, resolveChatStateTarget(), chat_metadata, retryCount);
+}
+
+export async function resolveChatWriteConflictForTarget(response, target = null, metadata = null, retryCount = 0) {
     if (!response || response.status !== 409 || retryCount > 0) {
         return 'none';
     }
@@ -10764,12 +10791,15 @@ async function resolveChatWriteConflict(response, retryCount = 0) {
         : '';
 
     if (errorType === 'integrity') {
-        if (chat_metadata && typeof chat_metadata === 'object') {
+        if (metadata && typeof metadata === 'object') {
             if (currentIntegrity) {
-                chat_metadata.integrity = currentIntegrity;
+                metadata.integrity = currentIntegrity;
             } else {
-                delete chat_metadata.integrity;
+                delete metadata.integrity;
             }
+        }
+        if (isActiveChatStateTarget(target)) {
+            syncCurrentChatIntegrityFromMetadata(metadata);
         }
         return 'integrity';
     }
@@ -10777,7 +10807,10 @@ async function resolveChatWriteConflict(response, retryCount = 0) {
     // Keep local in-memory edits/generation state intact. Reloading chat here can
     // overwrite current local mutations (e.g. regenerate/edit-in-progress) and
     // make behavior look like random refresh or duplicate replies.
-    invalidateCurrentChatWriteSnapshot();
+    invalidateChatWriteSnapshot(target);
+    if (isActiveChatStateTarget(target) && chat_metadata && typeof chat_metadata === 'object') {
+        delete chat_metadata.integrity;
+    }
     return 'snapshot';
 }
 
@@ -11007,22 +11040,100 @@ export async function patchChatMessages(operations, retryCount = 0) {
     return await runSerializedChatWrite(() => patchChatMessagesInternal(queuedOperations, retryCount));
 }
 
+function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undefined, mesId = undefined } = {}) {
+    const target = resolveChatStateTarget();
+    if (!target) {
+        return null;
+    }
+
+    const metadataPatch = (withMetadata && typeof withMetadata === 'object')
+        ? (cloneJsonValue(withMetadata) ?? withMetadata)
+        : {};
+    const baseMetadata = isPlainObject(chat_metadata)
+        ? (cloneJsonValue(chat_metadata) ?? chat_metadata)
+        : {};
+    const metadataSnapshot = {
+        ...baseMetadata,
+        ...metadataPatch,
+    };
+    const chatIdSnapshot = String(getCurrentChatId() || '').trim() || null;
+    const endIndex = Number.isInteger(mesId) && Number(mesId) >= 0 && Number(mesId) < chat.length
+        ? Number(mesId) + 1
+        : chat.length;
+    const messagesSnapshot = cloneJsonValue(chat.slice(0, endIndex)) ?? chat.slice(0, endIndex);
+    const itemizedPromptsSnapshot = Array.isArray(itemizedPrompts)
+        ? (cloneJsonValue(itemizedPrompts) ?? itemizedPrompts)
+        : [];
+
+    if (target.is_group) {
+        const groupId = String(selected_group || '').trim();
+        const group = groups.find(x => String(x?.id || '') === groupId);
+        if (!groupId || !group?.chat_id) {
+            return null;
+        }
+
+        return {
+            kind: 'group',
+            target,
+            groupId,
+            chatIdSnapshot,
+            metadataSnapshot,
+            messagesSnapshot,
+            itemizedPromptsSnapshot,
+        };
+    }
+
+    const characterId = this_chid;
+    const avatarUrl = String(target.avatar_url || '').trim();
+    const fileName = String(chatName ?? target.file_name ?? '').trim();
+    const charName = String(target.char_name || characters[characterId]?.name || '').trim();
+    if (characterId === undefined || !avatarUrl || !fileName || !charName) {
+        return null;
+    }
+
+    return {
+        kind: 'character',
+        target: { ...target, char_name: charName },
+        characterId,
+        avatarUrl,
+        fileName,
+        charName,
+        chatIdSnapshot,
+        metadataSnapshot,
+        messagesSnapshot,
+        itemizedPromptsSnapshot,
+    };
+}
+
+function finishActiveChatSaveContext(saveContext) {
+    if (!saveContext) {
+        return;
+    }
+
+    saveTokenCache();
+    saveItemizedPrompts(saveContext.chatIdSnapshot, saveContext.itemizedPromptsSnapshot);
+}
+
+export function shouldBlockChatSwitchWhileSaving() {
+    return Boolean(isChatSaving && !activeChatSaveContext);
+}
+
 /**
  * Updates only chat metadata on server-side chat storage.
  * Falls back to legacy full-save callers when this returns false.
  * @param {object} [withMetadata] Optional metadata patch to merge before save.
  * @returns {Promise<boolean>} True on successful metadata save.
  */
-async function saveChatMetadataInternal(withMetadata = undefined, retryCount = 0) {
+async function saveChatMetadataInternal(withMetadata = undefined, retryCount = 0, context = null) {
     try {
-        const metadata = {
-            ...chat_metadata,
-            ...((withMetadata && typeof withMetadata === 'object') ? withMetadata : {}),
-        };
-        const target = resolveChatStateTarget();
-        if (!target) {
+        const saveContext = context ?? buildActiveChatSaveContext({ withMetadata });
+        if (!saveContext?.target) {
             return false;
         }
+        const metadata = isPlainObject(saveContext.metadataSnapshot)
+            ? saveContext.metadataSnapshot
+            : {};
+        const target = saveContext.target;
 
         const snapshotKey = getChatMetadataSnapshotKey(target);
         const previousMetadata = snapshotKey ? chatMetadataSnapshotCache.get(snapshotKey) : null;
@@ -11042,22 +11153,28 @@ async function saveChatMetadataInternal(withMetadata = undefined, retryCount = 0
                 body: JSON.stringify({
                     id: target.id,
                     operations,
-                    integrity: chat_metadata?.integrity,
+                    integrity: metadata?.integrity,
                 }),
             });
 
             if (response.ok) {
                 const payload = await response.json().catch(() => null);
-                applyIntegrityFromWritePayload(payload);
-                metadata.integrity = chat_metadata.integrity;
+                applyIntegrityFromWritePayloadToTarget(payload, target, metadata);
                 rememberChatMetadataSnapshot(target, metadata);
                 return true;
             }
-            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return await saveChatMetadataInternal(withMetadata, retryCount + 1);
+            const conflictResolution = await resolveChatWriteConflictForTarget(response, target, metadata, retryCount);
+            if (conflictResolution !== 'none') {
+                if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
+                    await refreshChatWriteSnapshotsFromServer(target);
+                }
+                return await saveChatMetadataInternal(withMetadata, retryCount + 1, {
+                    ...(saveContext ?? {}),
+                    metadataSnapshot: cloneJsonValue(metadata) ?? metadata,
+                });
             }
         } else {
-            const charName = characters[this_chid]?.name;
+            const charName = String(saveContext.charName || target.char_name || characters[this_chid]?.name || '').trim();
             if (!charName) {
                 return false;
             }
@@ -11070,19 +11187,25 @@ async function saveChatMetadataInternal(withMetadata = undefined, retryCount = 0
                     file_name: target.file_name,
                     avatar_url: target.avatar_url,
                     operations,
-                    integrity: chat_metadata?.integrity,
+                    integrity: metadata?.integrity,
                 }),
             });
 
             if (response.ok) {
                 const payload = await response.json().catch(() => null);
-                applyIntegrityFromWritePayload(payload);
-                metadata.integrity = chat_metadata.integrity;
+                applyIntegrityFromWritePayloadToTarget(payload, target, metadata);
                 rememberChatMetadataSnapshot(target, metadata);
                 return true;
             }
-            if (await shouldRetryChatWriteOnConflict(response, retryCount)) {
-                return await saveChatMetadataInternal(withMetadata, retryCount + 1);
+            const conflictResolution = await resolveChatWriteConflictForTarget(response, target, metadata, retryCount);
+            if (conflictResolution !== 'none') {
+                if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
+                    await refreshChatWriteSnapshotsFromServer(target);
+                }
+                return await saveChatMetadataInternal(withMetadata, retryCount + 1, {
+                    ...(saveContext ?? {}),
+                    metadataSnapshot: cloneJsonValue(metadata) ?? metadata,
+                });
             }
         }
 
@@ -11109,7 +11232,10 @@ export async function saveChatMetadata(withMetadata = undefined, retryCount = 0)
  * @returns {Promise<void>}
  */
 async function saveChatInternal({ chatName, withMetadata, mesId, force = false, _retryAttempt = 0 } = {}) {
-    if (selected_group) {
+    const saveContext = arguments?.[0]?._context ?? buildActiveChatSaveContext({ withMetadata, chatName, mesId });
+    const target = saveContext?.target ?? resolveChatStateTarget();
+
+    if (target?.is_group) {
         toastr.error(t`Operation was aborted to prevent data corruption.`, t`saveChat called for a group chat`);
         throw new Error('saveChat called for a group chat');
     }
@@ -11119,8 +11245,10 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
         [chatName, withMetadata, mesId, force] = arguments;
     }
 
-    const metadata = { ...chat_metadata, ...(withMetadata || {}) };
-    const fileName = chatName ?? characters[this_chid]?.chat;
+    const metadata = isPlainObject(saveContext?.metadataSnapshot)
+        ? saveContext.metadataSnapshot
+        : { ...chat_metadata, ...(withMetadata || {}) };
+    const fileName = String(saveContext?.fileName ?? chatName ?? characters[this_chid]?.chat ?? '').trim();
 
     if (!fileName && name2 === neutralCharacterName) {
         // TODO: Do something for a temporary chat with no character.
@@ -11132,18 +11260,24 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
         return;
     }
 
-    const charName = characters[this_chid]?.name;
-    const avatar = characters[this_chid]?.avatar;
+    const charName = String(saveContext?.charName || target?.char_name || characters[this_chid]?.name || '').trim();
+    const avatar = String(saveContext?.avatarUrl || target?.avatar_url || characters[this_chid]?.avatar || '').trim();
     if (!charName || !avatar) {
         console.warn('saveChat called without active character identity');
         return;
     }
 
-    characters[this_chid]['date_last_chat'] = Date.now();
+    if (saveContext?.characterId !== undefined && characters[saveContext.characterId]) {
+        characters[saveContext.characterId].date_last_chat = Date.now();
+    } else if (characters[this_chid]) {
+        characters[this_chid].date_last_chat = Date.now();
+    }
 
-    const trimmedChat = (mesId !== undefined && mesId >= 0 && mesId < chat.length)
-        ? chat.slice(0, Number(mesId) + 1)
-        : chat.slice();
+    const trimmedChat = Array.isArray(saveContext?.messagesSnapshot)
+        ? saveContext.messagesSnapshot
+        : ((mesId !== undefined && mesId >= 0 && mesId < chat.length)
+            ? chat.slice(0, Number(mesId) + 1)
+            : chat.slice());
 
     /** @type {ChatHeader} */
     const chatHeader = {
@@ -11153,8 +11287,8 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
     };
 
     try {
-        const target = { is_group: false, avatar_url: avatar, file_name: fileName };
-        const previousMessages = chatMessageSnapshotCache.get(getChatMessageSnapshotKey(target));
+        const writeTarget = target ?? { is_group: false, avatar_url: avatar, file_name: fileName, char_name: charName };
+        const previousMessages = chatMessageSnapshotCache.get(getChatMessageSnapshotKey(writeTarget));
 
         if (!force && Array.isArray(previousMessages)) {
             const operations = buildChatMessagePatchOperations(previousMessages, trimmedChat);
@@ -11170,34 +11304,33 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
                         operations,
                         avatar_url: avatar,
                         chat_metadata: metadata,
-                        integrity: chat_metadata?.integrity,
+                        integrity: metadata?.integrity,
                         force: force,
                     }),
                 });
 
                 if (patchResult.ok) {
                     const payload = await patchResult.json().catch(() => null);
-                    applyIntegrityFromWritePayload(payload);
-                    metadata.integrity = chat_metadata.integrity;
-                    rememberChatMessageSnapshot(target, trimmedChat);
-                    rememberChatMetadataSnapshot(target, metadata);
+                    applyIntegrityFromWritePayloadToTarget(payload, writeTarget, metadata);
+                    rememberChatMessageSnapshot(writeTarget, trimmedChat);
+                    rememberChatMetadataSnapshot(writeTarget, metadata);
                     return;
                 }
 
                 if (!force) {
-                    const conflictResolution = await resolveChatWriteConflict(patchResult, _retryAttempt);
+                    const conflictResolution = await resolveChatWriteConflictForTarget(patchResult, writeTarget, metadata, _retryAttempt);
                     if (conflictResolution !== 'none') {
                         if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
-                            await refreshChatWriteSnapshotsFromServer(target);
+                            await refreshChatWriteSnapshotsFromServer(writeTarget);
                         }
-                        await saveChatInternal({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
+                        await saveChatInternal({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1, _context: { ...(saveContext ?? {}), metadataSnapshot: cloneJsonValue(metadata) ?? metadata, messagesSnapshot: cloneJsonValue(trimmedChat) ?? trimmedChat } });
                         return;
                     }
                 }
             } else {
-                const metadataSaved = await saveChatMetadataInternal(withMetadata);
+                const metadataSaved = await saveChatMetadataInternal(withMetadata, _retryAttempt, { ...(saveContext ?? {}), metadataSnapshot: cloneJsonValue(metadata) ?? metadata, messagesSnapshot: cloneJsonValue(trimmedChat) ?? trimmedChat });
                 if (metadataSaved) {
-                    rememberChatMessageSnapshot(target, trimmedChat);
+                    rememberChatMessageSnapshot(writeTarget, trimmedChat);
                     return;
                 }
             }
@@ -11218,20 +11351,19 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
 
         if (result.ok) {
             const payload = await result.json().catch(() => null);
-            applyIntegrityFromWritePayload(payload);
-            metadata.integrity = chat_metadata.integrity;
-            rememberChatMessageSnapshot(target, trimmedChat);
-            rememberChatMetadataSnapshot(target, metadata);
+            applyIntegrityFromWritePayloadToTarget(payload, writeTarget, metadata);
+            rememberChatMessageSnapshot(writeTarget, trimmedChat);
+            rememberChatMetadataSnapshot(writeTarget, metadata);
             return;
         }
 
         if (!force) {
-            const conflictResolution = await resolveChatWriteConflict(result, _retryAttempt);
+            const conflictResolution = await resolveChatWriteConflictForTarget(result, writeTarget, metadata, _retryAttempt);
             if (conflictResolution !== 'none') {
                 if (conflictResolution === 'integrity' || conflictResolution === 'snapshot') {
-                    await refreshChatWriteSnapshotsFromServer(target);
+                    await refreshChatWriteSnapshotsFromServer(writeTarget);
                 }
-                await saveChatInternal({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1 });
+                await saveChatInternal({ chatName, withMetadata, mesId, force, _retryAttempt: _retryAttempt + 1, _context: { ...(saveContext ?? {}), metadataSnapshot: cloneJsonValue(metadata) ?? metadata, messagesSnapshot: cloneJsonValue(trimmedChat) ?? trimmedChat } });
                 return;
             }
         }
@@ -13604,23 +13736,30 @@ export async function saveMetadata(options = {}) {
 
     try {
         cancelDebouncedChatSave();
-        isChatSaving = true;
-
-        const saved = await saveChatMetadata(withMetadata);
-        if (!saved) {
-            if (selected_group) {
-                await saveGroupChat(selected_group, true);
-            } else {
-                await saveChat({ withMetadata });
-            }
+        const saveContext = buildActiveChatSaveContext({ withMetadata });
+        if (!saveContext) {
+            return;
         }
 
-        // Save token and prompts cache to IndexedDB storage
-        saveTokenCache();
-        saveItemizedPrompts(getCurrentChatId());
+        await runSerializedChatWrite(async () => {
+            activeChatSaveContext = saveContext;
+            isChatSaving = true;
+
+            const saved = await saveChatMetadataInternal(withMetadata, 0, saveContext);
+            if (!saved) {
+                if (saveContext.kind === 'group') {
+                    await saveGroupChat(saveContext.groupId, true, false, 0, { ...saveContext, skipSerialization: true });
+                } else {
+                    await saveChatInternal({ withMetadata, _context: saveContext });
+                }
+            }
+
+            finishActiveChatSaveContext(saveContext);
+        });
     } catch (error) {
         console.error('Error saving chat metadata', error);
     } finally {
+        activeChatSaveContext = null;
         isChatSaving = false;
     }
 }
@@ -13635,22 +13774,28 @@ export async function saveChatConditional() {
 
     try {
         cancelDebouncedChatSave();
-
-        isChatSaving = true;
-
-        if (selected_group) {
-            await saveGroupChat(selected_group, true);
-        }
-        else {
-            await saveChat();
+        const saveContext = buildActiveChatSaveContext();
+        if (!saveContext) {
+            return;
         }
 
-        // Save token and prompts cache to IndexedDB storage
-        saveTokenCache();
-        saveItemizedPrompts(getCurrentChatId());
+        await runSerializedChatWrite(async () => {
+            activeChatSaveContext = saveContext;
+            isChatSaving = true;
+
+            if (saveContext.kind === 'group') {
+                await saveGroupChat(saveContext.groupId, true, false, 0, { ...saveContext, skipSerialization: true });
+            }
+            else {
+                await saveChatInternal({ _context: saveContext });
+            }
+
+            finishActiveChatSaveContext(saveContext);
+        });
     } catch (error) {
         console.error('Error saving chat', error);
     } finally {
+        activeChatSaveContext = null;
         isChatSaving = false;
     }
 }
