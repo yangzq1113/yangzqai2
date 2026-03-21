@@ -2667,7 +2667,7 @@ export async function replaceCurrentChat() {
         if (chats.length && typeof chats[0] === 'object') {
             characters[this_chid].chat = chats[0].file_name.replace('.jsonl', '');
             $('#selected_chat_pole').val(characters[this_chid].chat);
-            saveCharacterDebounced();
+            await updateRemoteChatName(this_chid, characters[this_chid].chat);
             await getChat();
         }
 
@@ -2675,7 +2675,7 @@ export async function replaceCurrentChat() {
         else {
             characters[this_chid].chat = `${name2} - ${humanizedDateTime()}`;
             $('#selected_chat_pole').val(characters[this_chid].chat);
-            saveCharacterDebounced();
+            await updateRemoteChatName(this_chid, characters[this_chid].chat);
             await getChat();
         }
     }
@@ -11688,7 +11688,7 @@ export async function openCharacterChat(file_name) {
     chatServerState.hasMore = false;
     await getChat();
     $('#selected_chat_pole').val(file_name);
-    await createOrEditCharacter(new CustomEvent('newChat'));
+    await updateRemoteChatName(this_chid, file_name);
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////
@@ -12984,7 +12984,7 @@ async function createNewCharacterChatForContext(context) {
         character.chat = newChatName;
         $('#selected_chat_pole').val(character.chat);
         await getChat();
-        await createOrEditCharacter(new CustomEvent('newChat'));
+        await updateRemoteChatName(characterId, newChatName);
         return character.chat;
     }
 
@@ -15220,7 +15220,7 @@ export async function renameGroupOrCharacterChat({ characterId, groupId, oldFile
         else if (characterId !== undefined && String(characterId) === String(this_chid) && characters[characterId]?.chat === oldFileName) {
             characters[characterId].chat = newFileName;
             $('#selected_chat_pole').val(characters[characterId].chat);
-            await createOrEditCharacter();
+            await updateRemoteChatName(characterId, newFileName);
         }
 
         if (currentChatId) {

@@ -1042,6 +1042,23 @@ function hasPersonaIdentityForAvatar(avatarId, preferredCharacterAvatar = '') {
     return !!getDedicatedPersonaEntryByAvatar(targetAvatarId, preferredCharacterAvatar);
 }
 
+function isPersonaUsableForCurrentConnection(avatarId, { preferredCharacterAvatar = '', avatarsList = null } = {}) {
+    const targetAvatarId = String(avatarId || '').trim();
+    if (!targetAvatarId) {
+        return false;
+    }
+
+    if (Array.isArray(avatarsList) && !avatarsList.includes(targetAvatarId)) {
+        return false;
+    }
+
+    if (!hasPersonaIdentityForAvatar(targetAvatarId, preferredCharacterAvatar)) {
+        return false;
+    }
+
+    return isPersonaVisibleForCurrentConnection(targetAvatarId);
+}
+
 /**
  * Gets a list of user avatars.
  * @param {boolean} doRender Whether to render the list
@@ -2420,6 +2437,9 @@ function getPersonaTemporaryLockInfo() {
 async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     const shouldRenderPersonaList = doRender || isPersonaPanelOpen();
     const currentConnection = getCurrentConnectionObj();
+    const activeCharacterAvatar = currentConnection?.type === 'character'
+        ? String(currentConnection.id || '').trim()
+        : '';
     let shouldNotifyTrackedPersonaMismatch = true;
 
     if (!selected_group && Number(this_chid) >= 0 && characters[Number(this_chid)]) {
@@ -2443,20 +2463,20 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     let connectType = null;
     let selectedPersonaNameHint = '';
 
-    const activeCharacterAvatar = currentConnection?.type === 'character'
-        ? String(currentConnection.id || '').trim()
-        : '';
-
     // If persona is locked in chat metadata, select it
     if (chat_metadata['persona']) {
         console.log(`Using locked persona ${chat_metadata['persona']}`);
         chatPersona = chat_metadata['persona'];
 
-        // Verify it exists
-        if (!userAvatars.includes(chatPersona)) {
-            console.warn('Chat-locked persona avatar not found, unlocking persona');
+        // Verify that the lock still points to a persona that exists and is valid
+        // for the currently open chat/character context.
+        if (!isPersonaUsableForCurrentConnection(chatPersona, {
+            preferredCharacterAvatar: activeCharacterAvatar,
+            avatarsList: userAvatars,
+        })) {
+            console.warn('Chat-locked persona is no longer usable in the current connection, unlocking persona');
             delete chat_metadata['persona'];
-            saveSettingsDebounced();
+            saveMetadataDebounced();
             chatPersona = '';
         }
         if (chatPersona) connectType = 'chat';
@@ -2550,16 +2570,24 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
         }
 
         const currentAvatarVisible = user_avatar
-            ? isPersonaVisibleForCurrentConnection(user_avatar)
+            ? isPersonaUsableForCurrentConnection(user_avatar, {
+                preferredCharacterAvatar: activeCharacterAvatar,
+                avatarsList: userAvatars,
+            })
             : false;
         if (!chatPersona && !currentAvatarVisible) {
             if (fallbackAvatar
-                && userAvatars.includes(fallbackAvatar)
-                && isPersonaVisibleForCurrentConnection(fallbackAvatar)) {
+                && isPersonaUsableForCurrentConnection(fallbackAvatar, {
+                    preferredCharacterAvatar: activeCharacterAvatar,
+                    avatarsList: userAvatars,
+                })) {
                 chatPersona = fallbackAvatar;
                 connectType = 'character';
             } else {
-                const firstVisibleAvatar = userAvatars.find(avatarId => isPersonaVisibleForCurrentConnection(avatarId));
+                const firstVisibleAvatar = userAvatars.find(avatarId => isPersonaUsableForCurrentConnection(avatarId, {
+                    preferredCharacterAvatar: activeCharacterAvatar,
+                    avatarsList: userAvatars,
+                }));
                 if (firstVisibleAvatar) {
                     chatPersona = firstVisibleAvatar;
                     connectType = 'character';
@@ -2572,6 +2600,7 @@ async function loadPersonaForCurrentChat({ doRender = false } = {}) {
     if (chat_metadata['persona'] && !userAvatars.includes(chat_metadata['persona'])) {
         console.warn('Persona avatar not found, unlocking persona');
         delete chat_metadata['persona'];
+        saveMetadataDebounced();
     }
 
     // Default persona missing
