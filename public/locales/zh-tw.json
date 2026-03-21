@@ -4608,5 +4608,10 @@
     "Search server logs": "搜尋伺服器日誌",
     "No logs matched the current search.": "目前搜尋沒有符合任何日誌。",
     "Showing ${0} of ${1} matching entries within the ${2} character display budget. ${3} additional matching entries are hidden.": "在 ${2} 字元顯示預算內，目前顯示 ${1} 筆符合條件日誌中的 ${0} 筆。另有 ${3} 筆符合條件的日誌被隱藏。",
-    "Showing ${0} matching entries within the ${1} character display budget.": "在 ${1} 字元顯示預算內，目前顯示 ${0} 筆符合條件的日誌。"
+    "Showing ${0} matching entries within the ${1} character display budget.": "在 ${1} 字元顯示預算內，目前顯示 ${0} 筆符合條件的日誌。",
+    "Keep Global Persona?": "保留全域人設？",
+    "This persona is currently in the global persona list. After binding it to character ${0}, should it stay in the global persona list as well?": "這個人設目前位於全域人設列表中。綁定到角色 ${0} 後，是否仍要保留在全域人設列表中？",
+    "Keep Global": "保留全域",
+    "Character Only": "僅角色專屬",
+    "this character": "目前角色"
 }

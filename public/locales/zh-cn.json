@@ -4655,5 +4655,10 @@
     "No lorebooks selected": "未选择任何世界书",
     "Delete ${0} selected lorebooks?": "要删除已选择的 ${0} 个世界书吗？",
     "Page ${0} / ${1}": "第 ${0} / ${1} 页",
-    "Failed to delete '${0}'.": "删除“${0}”失败。"
+    "Failed to delete '${0}'.": "删除“${0}”失败。",
+    "Keep Global Persona?": "保留全局人设？",
+    "This persona is currently in the global persona list. After binding it to character ${0}, should it stay in the global persona list as well?": "这个人设当前位于全局人设列表中。绑定到角色 ${0} 后，是否仍然保留在全局人设列表中？",
+    "Keep Global": "保留全局",
+    "Character Only": "仅角色专属",
+    "this character": "当前角色"
 }

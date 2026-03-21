@@ -173,6 +173,7 @@ body.no-blur .popup[open]::backdrop {
     display: flex;
     align-self: center;
     gap: 20px;
+    flex-wrap: wrap;
 }
 
 .menu_button.menu_button_default {
@@ -190,6 +191,12 @@ body.no-blur .popup[open]::backdrop {
 .popup-controls .menu_button {
     /* Popup buttons should not scale to smallest size, otherwise they will always break to multiline if multiple words */
     width: unset;
+    min-width: max-content;
+    max-width: 100%;
+    white-space: nowrap;
+    display: inline-flex;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
 
     /* Fix weird animation issue with fonts on brightness filter */
     backface-visibility: hidden;
