@@ -273,6 +273,76 @@ export function getPresetManager(apiId = '') {
 }
 
 /**
+ * Persists preset extension changes back into the active character-bound OpenAI preset snapshot.
+ * This keeps character-bound preset payloads in sync when extensions such as preset regex scripts mutate.
+ *
+ * @param {object} options
+ * @param {string} options.presetName
+ * @param {string} options.path
+ * @param {any} options.value
+ * @returns {Promise<void>}
+ */
+async function syncCharacterBoundOpenAIPresetExtensionField({ presetName, path, value }) {
+    const chid = Number(this_chid);
+    if (!Number.isInteger(chid)) {
+        return;
+    }
+
+    const character = characters?.[chid];
+    if (!character?.avatar) {
+        return;
+    }
+
+    const nextExtensions = structuredClone(character?.data?.extensions ?? {});
+    const lukerExtensions = ensurePlainObject(nextExtensions.luker);
+    const boundPreset = ensurePlainObject(lukerExtensions.chat_completion_preset);
+    const boundName = String(boundPreset.name || '').trim();
+    const resolvedPresetName = String(presetName || '').trim();
+
+    if (!boundName || !resolvedPresetName || !areLookupNamesEqual(boundName, resolvedPresetName)) {
+        return;
+    }
+
+    const boundPresetBody = ensurePlainObject(boundPreset.preset);
+    const boundPresetExtensions = ensurePlainObject(boundPresetBody.extensions);
+    path ? lodash.set(boundPresetExtensions, path, value) : undefined;
+    boundPresetBody.extensions = path ? boundPresetExtensions : value;
+    boundPreset.preset = boundPresetBody;
+    lukerExtensions.chat_completion_preset = boundPreset;
+    nextExtensions.luker = lukerExtensions;
+
+    character.data = character.data || {};
+    character.data.extensions = nextExtensions;
+
+    if (Number(this_chid) === chid && character.json_data) {
+        try {
+            const jsonData = JSON.parse(character.json_data);
+            jsonData.data = jsonData.data || {};
+            jsonData.data.extensions = nextExtensions;
+            character.json_data = JSON.stringify(jsonData);
+            $('#character_json_data').val(character.json_data);
+        } catch {
+            // Ignore malformed json_data snapshots.
+        }
+    }
+
+    const response = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            avatar: character.avatar,
+            data: {
+                extensions: nextExtensions,
+            },
+        }),
+    });
+
+    if (!response.ok) {
+        console.error('Failed to sync character-bound OpenAI preset extensions', response.statusText);
+    }
+}
+
+/**
  * Registers preset managers for all select elements with data-preset-manager-for attribute.
  */
 function registerPresetManagers() {
@@ -1110,6 +1180,10 @@ class PresetManager {
         const { settings } = this.getPresetList();
         const selectedName = this.getSelectedPresetName();
         const presetName = this.resolvePresetName(name || selectedName);
+        const selectedOption = $(this.select).find('option:selected');
+        const isCharacterBoundOpenAIPreset = this.apiId === 'openai'
+            && selectedOption.attr('data-luker-char-bound') === '1'
+            && areLookupNamesEqual(selectedName, presetName);
 
         // Write to settings if the selected preset is the same as the provided name
         if (settings && areLookupNamesEqual(selectedName, presetName)) {
@@ -1122,6 +1196,9 @@ class PresetManager {
         // Also update the preset by name
         const preset = this.getCompletionPresetByName(presetName);
         if (!preset) {
+            if (isCharacterBoundOpenAIPreset) {
+                await syncCharacterBoundOpenAIPresetExtensionField({ presetName, path, value });
+            }
             return;
         }
 
@@ -1131,6 +1208,10 @@ class PresetManager {
 
         // Save the updated preset
         await this.savePreset(presetName, preset, { skipUpdate: true });
+
+        if (isCharacterBoundOpenAIPreset) {
+            await syncCharacterBoundOpenAIPresetExtensionField({ presetName, path, value });
+        }
     }
 }
 

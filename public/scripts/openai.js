@@ -5141,7 +5141,7 @@ function upsertCharacterBoundRuntimeOption(presetName, presetBody) {
 
 function getCurrentPresetBodyForBinding() {
     if (isCharacterBoundPresetOptionSelected() && characterBoundPresetState.runtimePresetBody) {
-        return structuredClone(characterBoundPresetState.runtimePresetBody);
+        return getChatCompletionPreset(oai_settings);
     }
 
     const currentPreset = String(oai_settings.preset_settings_openai ?? '').trim();
