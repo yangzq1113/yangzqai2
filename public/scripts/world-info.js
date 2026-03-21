@@ -4147,6 +4147,7 @@ function renderWorldInfoManager() {
     const activePanel = $('#world_info_manager_active_panel');
     const activeList = $('#world_info_manager_active_list');
     const list = $('#world_info_manager_list');
+    const drawerSummary = $('#world_info_manager_drawer_summary');
     const searchInput = $('#world_info_manager_search');
     const pageStatus = $('#world_info_manager_page_status');
     const selectionStatus = $('#world_info_manager_selection_status');
@@ -4168,6 +4169,7 @@ function renderWorldInfoManager() {
 
     const allItems = getWorldInfoManagerItems();
     const items = getVisibleWorldInfoManagerItems();
+    const activeItemCount = allItems.filter((item) => item.active).length;
     const totalItems = items.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / worldInfoManagerState.pageSize));
     worldInfoManagerState.page = Math.min(Math.max(1, worldInfoManagerState.page), totalPages);
@@ -4178,6 +4180,7 @@ function renderWorldInfoManager() {
     const selectedCount = selectedWorldInfoManagerNames.size;
 
     manager.removeClass('displayNone');
+    drawerSummary.text(allItems.length > 0 ? `${activeItemCount}/${allItems.length}` : t`No lorebooks available.`);
     activeList.empty();
     list.empty();
     searchInput.val(worldInfoManagerState.search);
@@ -9084,26 +9087,6 @@ export function initWorldInfo() {
             closeOnSelect: true,
             multiple: false,
         });
-
-        $('#world_info').select2({
-            width: '100%',
-            placeholder: t`No Worlds active. Click here to select.`,
-            allowClear: true,
-            closeOnSelect: false,
-        });
-
-        // Subscribe world loading to the select2 multiselect items (We need to target the specific select2 control)
-        select2ChoiceClickSubscribe($('#world_info'), target => {
-            const name = $(target).text();
-            const selectedIndex = world_names.indexOf(name);
-            const alreadySelectedInEditor = $('#world_editor_select option:selected').text() === name;
-            if (selectedIndex !== -1 && !alreadySelectedInEditor) {
-                $('#world_editor_select').val(selectedIndex).trigger('change');
-                console.log('Quick selection of world', name);
-            } else {
-                console.warn('lets not reload an already loaded list yes?');
-            }
-        }, { buttonStyle: true, closeDrawer: true });
     }
 
     let worldInfoAutocompleteCloseFrame = 0;

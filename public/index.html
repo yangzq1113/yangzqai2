@@ -4574,62 +4574,73 @@
                                     </small>
                                 </span>
                             </div>
-                            <div class="range-block-range">
-                                <select id="world_info" multiple>
+                            <div class="world_info_legacy_select displayNone" aria-hidden="true">
+                                <select id="world_info" multiple tabindex="-1">
                                     <option value="" data-i18n="-- World Info not found --">-- World Info not found -- </option>
                                 </select>
                             </div>
-                            <div id="world_info_manager" class="world_info_manager">
-                                <div class="world_info_manager_filters">
-                                    <input type="search" id="world_info_manager_search" class="text_pole textarea_compact" data-i18n="[placeholder]Search lorebooks or tags..." placeholder="Search lorebooks or tags...">
-                                    <div id="world_info_manager_tag_filters" class="world_info_manager_tag_filters"></div>
-                                </div>
-                                <div id="world_info_manager_active_panel" class="world_info_manager_active_panel displayNone">
-                                    <div class="world_info_manager_section_label">
-                                        <small data-i18n="Active Lorebooks">Active Lorebooks</small>
+                            <div class="inline-drawer wide100p flexFlowColumn">
+                                <div class="standoutHeader inline-drawer-toggle inline-drawer-header world_info_manager_drawer_header">
+                                    <div class="world_info_manager_drawer_header_text">
+                                        <b><span data-i18n="Click to expand">Click to expand</span></b>
+                                        <small id="world_info_manager_drawer_summary" class="opacity50p"></small>
                                     </div>
-                                    <div id="world_info_manager_active_list" class="world_info_manager_active_list"></div>
+                                    <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
                                 </div>
-                                <div class="world_info_manager_toolbar">
-                                    <div class="world_info_manager_action_row">
-                                        <div id="world_info_manager_select_page" class="menu_button menu_button_icon" title="Select current page lorebooks" data-i18n="[title]Select current page lorebooks">
-                                            <i class="fa-solid fa-check-double"></i>
-                                            <span data-i18n="Select Page">Select Page</span>
+                                <div class="inline-drawer-content" style="display: none;">
+                                    <div id="world_info_manager" class="world_info_manager">
+                                        <div class="world_info_manager_filters">
+                                            <input type="search" id="world_info_manager_search" class="text_pole textarea_compact" data-i18n="[placeholder]Search lorebooks or tags..." placeholder="Search lorebooks or tags...">
+                                            <div id="world_info_manager_tag_filters" class="world_info_manager_tag_filters"></div>
                                         </div>
-                                        <div id="world_info_manager_clear_selection" class="menu_button menu_button_icon" title="Clear selected lorebooks" data-i18n="[title]Clear selected lorebooks">
-                                            <i class="fa-solid fa-xmark"></i>
-                                            <span data-i18n="Clear Selection">Clear Selection</span>
+                                        <div id="world_info_manager_active_panel" class="world_info_manager_active_panel displayNone">
+                                            <div class="world_info_manager_section_label">
+                                                <small data-i18n="Active Lorebooks">Active Lorebooks</small>
+                                            </div>
+                                            <div id="world_info_manager_active_list" class="world_info_manager_active_list"></div>
                                         </div>
-                                        <div id="world_info_manager_enable_selected" class="menu_button menu_button_icon" title="Enable selected lorebooks" data-i18n="[title]Enable selected lorebooks">
-                                            <i class="fa-solid fa-toggle-on"></i>
-                                            <span data-i18n="Enable Selected">Enable Selected</span>
+                                        <div class="world_info_manager_toolbar">
+                                            <div class="world_info_manager_action_row">
+                                                <div id="world_info_manager_select_page" class="menu_button menu_button_icon" title="Select current page lorebooks" data-i18n="[title]Select current page lorebooks">
+                                                    <i class="fa-solid fa-check-double"></i>
+                                                    <span data-i18n="Select Page">Select Page</span>
+                                                </div>
+                                                <div id="world_info_manager_clear_selection" class="menu_button menu_button_icon" title="Clear selected lorebooks" data-i18n="[title]Clear selected lorebooks">
+                                                    <i class="fa-solid fa-xmark"></i>
+                                                    <span data-i18n="Clear Selection">Clear Selection</span>
+                                                </div>
+                                                <div id="world_info_manager_enable_selected" class="menu_button menu_button_icon" title="Enable selected lorebooks" data-i18n="[title]Enable selected lorebooks">
+                                                    <i class="fa-solid fa-toggle-on"></i>
+                                                    <span data-i18n="Enable Selected">Enable Selected</span>
+                                                </div>
+                                                <div id="world_info_manager_disable_selected" class="menu_button menu_button_icon" title="Disable selected lorebooks" data-i18n="[title]Disable selected lorebooks">
+                                                    <i class="fa-solid fa-toggle-off"></i>
+                                                    <span data-i18n="Disable Selected">Disable Selected</span>
+                                                </div>
+                                                <div id="world_info_manager_delete_selected" class="menu_button menu_button_icon" title="Delete selected lorebooks" data-i18n="[title]Delete selected lorebooks">
+                                                    <i class="fa-solid fa-trash-can"></i>
+                                                    <span data-i18n="Delete Selected">Delete Selected</span>
+                                                </div>
+                                            </div>
+                                            <div class="world_info_manager_action_row world_info_manager_action_row_secondary">
+                                                <small id="world_info_manager_selection_status" class="opacity50p"></small>
+                                                <div class="world_info_manager_pagination">
+                                                    <label for="world_info_manager_page_size" class="world_info_manager_page_size_label" data-i18n="Page Size">Page Size</label>
+                                                    <select id="world_info_manager_page_size" class="text_pole textarea_compact">
+                                                        <option value="6">6</option>
+                                                        <option value="12">12</option>
+                                                        <option value="24">24</option>
+                                                        <option value="48">48</option>
+                                                    </select>
+                                                    <div id="world_info_manager_prev" class="menu_button fa-solid fa-chevron-left" title="Previous page" data-i18n="[title]Previous page"></div>
+                                                    <small id="world_info_manager_page_status" class="opacity50p"></small>
+                                                    <div id="world_info_manager_next" class="menu_button fa-solid fa-chevron-right" title="Next page" data-i18n="[title]Next page"></div>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div id="world_info_manager_disable_selected" class="menu_button menu_button_icon" title="Disable selected lorebooks" data-i18n="[title]Disable selected lorebooks">
-                                            <i class="fa-solid fa-toggle-off"></i>
-                                            <span data-i18n="Disable Selected">Disable Selected</span>
-                                        </div>
-                                        <div id="world_info_manager_delete_selected" class="menu_button menu_button_icon" title="Delete selected lorebooks" data-i18n="[title]Delete selected lorebooks">
-                                            <i class="fa-solid fa-trash-can"></i>
-                                            <span data-i18n="Delete Selected">Delete Selected</span>
-                                        </div>
-                                    </div>
-                                    <div class="world_info_manager_action_row world_info_manager_action_row_secondary">
-                                        <small id="world_info_manager_selection_status" class="opacity50p"></small>
-                                        <div class="world_info_manager_pagination">
-                                            <label for="world_info_manager_page_size" class="world_info_manager_page_size_label" data-i18n="Page Size">Page Size</label>
-                                            <select id="world_info_manager_page_size" class="text_pole textarea_compact">
-                                                <option value="6">6</option>
-                                                <option value="12">12</option>
-                                                <option value="24">24</option>
-                                                <option value="48">48</option>
-                                            </select>
-                                            <div id="world_info_manager_prev" class="menu_button fa-solid fa-chevron-left" title="Previous page" data-i18n="[title]Previous page"></div>
-                                            <small id="world_info_manager_page_status" class="opacity50p"></small>
-                                            <div id="world_info_manager_next" class="menu_button fa-solid fa-chevron-right" title="Next page" data-i18n="[title]Next page"></div>
-                                        </div>
+                                        <div id="world_info_manager_list" class="world_info_manager_list"></div>
                                     </div>
                                 </div>
-                                <div id="world_info_manager_list" class="world_info_manager_list"></div>
                             </div>
                         </div>
                         <div class="flex1 flex alignSelfStart range-block">
