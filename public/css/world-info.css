@@ -419,6 +419,67 @@
     color: var(--SmartThemeQuoteColor);
 }
 
+#world_entry_display_settings.is-active {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.world_info_display_settings_popup {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: min(78vw, 920px);
+}
+
+.world_info_display_settings_intro {
+    line-height: 1.45;
+    opacity: 0.82;
+}
+
+.world_info_display_settings_actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.world_info_display_settings_actions .menu_button {
+    align-items: center;
+    display: inline-flex;
+    justify-content: center;
+    min-width: 5.75rem;
+    white-space: nowrap;
+}
+
+.world_info_display_settings_grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.world_info_display_settings_group {
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+}
+
+.world_info_display_settings_group_title {
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.world_info_display_settings_option {
+    align-items: flex-start;
+    display: flex;
+    gap: 8px;
+    line-height: 1.35;
+}
+
+.world_info_display_settings_option input {
+    margin-top: 0.2rem;
+}
+
 .budget_cap_note {
     flex-basis: 100%;
     line-height: 0.1;

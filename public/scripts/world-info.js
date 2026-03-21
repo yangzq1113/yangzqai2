@@ -20,7 +20,7 @@ import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { StructuredCloneMap } from './util/StructuredCloneMap.js';
 import { renderTemplateAsync } from './templates.js';
-import { t } from './i18n.js';
+import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from './personas.js';
 import { showUndoToast } from './undo-toast.js';
@@ -102,6 +102,61 @@ const worldInfoManagerEntrySearchState = {
 };
 let worldInfoManagerSearchRevision = 0;
 
+const WORLD_INFO_EDITOR_DISPLAY_GROUPS = Object.freeze([
+    { key: 'matching', labelKey: 'Matching & Filters' },
+    { key: 'overrides', labelKey: 'Overrides & Routing' },
+    { key: 'activation', labelKey: 'Activation & Recursion' },
+]);
+
+const WORLD_INFO_EDITOR_DISPLAY_OPTIONS = Object.freeze([
+    { key: 'hideAdditionalMatchingSources', group: 'matching', labelKey: 'Hide Additional Matching Sources' },
+    { key: 'hidePrimaryKeywords', group: 'matching', labelKey: 'Hide Primary Keywords' },
+    { key: 'hideEntryLogic', group: 'matching', labelKey: 'Hide Logic' },
+    { key: 'hideOptionalFilter', group: 'matching', labelKey: 'Hide Optional Filter' },
+    { key: 'hideCharacterOrTagFilter', group: 'matching', labelKey: 'Hide Character or Tag Filter' },
+    { key: 'hideGenerationTriggers', group: 'matching', labelKey: 'Hide Generation Triggers' },
+    { key: 'hideScanDepth', group: 'overrides', labelKey: 'Hide Scan Depth' },
+    { key: 'hideCaseSensitive', group: 'overrides', labelKey: 'Hide Case-Sensitive' },
+    { key: 'hideWholeWords', group: 'overrides', labelKey: 'Hide Whole Words' },
+    { key: 'hideGroupScoring', group: 'overrides', labelKey: 'Hide Group Scoring' },
+    { key: 'hideAutomationId', group: 'overrides', labelKey: 'Hide Automation ID' },
+    { key: 'hideRecursionLevel', group: 'overrides', labelKey: 'Hide Recursion Level' },
+    { key: 'hideInclusionGroup', group: 'overrides', labelKey: 'Hide Inclusion Group' },
+    { key: 'hideGroupWeight', group: 'overrides', labelKey: 'Hide Group Weight' },
+    { key: 'hideSticky', group: 'activation', labelKey: 'Hide Sticky' },
+    { key: 'hideCooldown', group: 'activation', labelKey: 'Hide Cooldown' },
+    { key: 'hideDelay', group: 'activation', labelKey: 'Hide Delay' },
+    { key: 'hideExcludeRecursion', group: 'activation', labelKey: 'Hide Non-recursable' },
+    { key: 'hidePreventFurtherRecursion', group: 'activation', labelKey: 'Hide Prevent Further Recursion' },
+    { key: 'hideDelayUntilRecursion', group: 'activation', labelKey: 'Hide Delay Until Recursion' },
+    { key: 'hideIgnoreBudget', group: 'activation', labelKey: 'Hide Ignore Budget' },
+    { key: 'hideBottomLegacyControls', group: 'activation', labelKey: 'Hide Legacy Bottom Controls' },
+]);
+
+const DEFAULT_WORLD_INFO_EDITOR_DISPLAY_SETTINGS = Object.freeze(
+    Object.fromEntries(WORLD_INFO_EDITOR_DISPLAY_OPTIONS.map((option) => [option.key, false])),
+);
+
+function normalizeWorldInfoEditorDisplaySettings(settings = null) {
+    const source = settings && typeof settings === 'object' && !Array.isArray(settings)
+        ? settings
+        : {};
+    return Object.fromEntries(
+        WORLD_INFO_EDITOR_DISPLAY_OPTIONS.map((option) => [option.key, Boolean(source[option.key])]),
+    );
+}
+
+function getWorldInfoEditorDisplaySettings() {
+    const normalized = normalizeWorldInfoEditorDisplaySettings(power_user.world_info_editor_display);
+    if (JSON.stringify(power_user.world_info_editor_display ?? null) !== JSON.stringify(normalized)) {
+        power_user.world_info_editor_display = normalized;
+    }
+    return power_user.world_info_editor_display;
+}
+
+function getWorldInfoEditorDisplaySettingsSignature() {
+    return JSON.stringify(getWorldInfoEditorDisplaySettings());
+}
 
 export const world_info_insertion_strategy = {
     evenly: 0,
@@ -3005,12 +3060,16 @@ export async function updateWorldInfoList() {
         }
     }
 
+    invalidateWorldInfoManagerEntrySearch();
     renderWorldInfoManager();
 }
 
-function cacheWorldInfoData(name, data) {
+function cacheWorldInfoData(name, data, { invalidateSearch = false } = {}) {
     worldInfoCache.set(name, data);
     rememberWorldInfoSnapshot(name, data);
+    if (invalidateSearch) {
+        invalidateWorldInfoManagerEntrySearch();
+    }
 }
 
 function syncGlobalWorldInfoSettingsState() {
@@ -4047,6 +4106,152 @@ function getWorldInfoManagerMetadata(name) {
     return worldInfoManagerMetadata.get(resolvedName) || {};
 }
 
+function updateWorldInfoEditorDisplaySettingsButton() {
+    const hiddenCount = WORLD_INFO_EDITOR_DISPLAY_OPTIONS
+        .filter((option) => getWorldInfoEditorDisplaySettings()[option.key])
+        .length;
+    const baseTitle = translate('Hide or show World Info entry fields');
+    const title = hiddenCount > 0
+        ? `${baseTitle} (${t`${hiddenCount} hidden`})`
+        : baseTitle;
+    $('#world_entry_display_settings')
+        .toggleClass('is-active', hiddenCount > 0)
+        .attr('title', title);
+}
+
+function buildWorldInfoEditorDisplaySettingsPopupContent(settings) {
+    const popupRoot = $('<div class="world_info_display_settings_popup"></div>');
+    const intro = $('<div class="world_info_display_settings_intro"></div>')
+        .text(t`Choose which World Info entry fields stay hidden in the editor. This only changes the editor UI.`);
+    const actions = $('<div class="world_info_display_settings_actions"></div>');
+    const hideAllButton = $('<button type="button" class="menu_button"></button>')
+        .text(t`Hide all`)
+        .attr('title', translate('Hide all World Info editor fields'));
+    const showAllButton = $('<button type="button" class="menu_button"></button>')
+        .text(t`Show all`)
+        .attr('title', translate('Show all World Info editor fields'));
+    const optionsGrid = $('<div class="world_info_display_settings_grid"></div>');
+
+    hideAllButton.on('click', () => {
+        popupRoot.find('[data-wi-display-setting]').prop('checked', true);
+    });
+    showAllButton.on('click', () => {
+        popupRoot.find('[data-wi-display-setting]').prop('checked', false);
+    });
+    actions.append(hideAllButton, showAllButton);
+
+    for (const group of WORLD_INFO_EDITOR_DISPLAY_GROUPS) {
+        const groupOptions = WORLD_INFO_EDITOR_DISPLAY_OPTIONS.filter((option) => option.group === group.key);
+        if (groupOptions.length === 0) {
+            continue;
+        }
+
+        const groupContainer = $('<div class="world_info_display_settings_group"></div>');
+        groupContainer.append($('<div class="world_info_display_settings_group_title"></div>').text(translate(String(group.labelKey || ''))));
+
+        for (const option of groupOptions) {
+            const checkboxId = `world_info_editor_display_${option.key}`;
+            const checkbox = $('<input type="checkbox">')
+                .attr('id', checkboxId)
+                .attr('data-wi-display-setting', option.key)
+                .prop('checked', Boolean(settings[option.key]));
+            const label = $('<label class="checkbox world_info_display_settings_option"></label>')
+                .attr('for', checkboxId)
+                .append(checkbox, $('<span></span>').text(translate(String(option.labelKey || ''))));
+            groupContainer.append(label);
+        }
+
+        optionsGrid.append(groupContainer);
+    }
+
+    popupRoot.append(intro, actions, optionsGrid);
+    return popupRoot;
+}
+
+function readWorldInfoEditorDisplaySettingsFromPopup(popupRoot) {
+    const nextSettings = { ...DEFAULT_WORLD_INFO_EDITOR_DISPLAY_SETTINGS };
+    for (const option of WORLD_INFO_EDITOR_DISPLAY_OPTIONS) {
+        nextSettings[option.key] = Boolean(
+            popupRoot.find(`[data-wi-display-setting="${option.key}"]`).prop('checked'),
+        );
+    }
+    return nextSettings;
+}
+
+async function showWorldInfoEditorDisplaySettingsPopup() {
+    const currentSettings = getWorldInfoEditorDisplaySettings();
+    const popupContent = buildWorldInfoEditorDisplaySettingsPopupContent(currentSettings);
+    const result = await callGenericPopup(
+        popupContent,
+        POPUP_TYPE.CONFIRM,
+        '',
+        {
+            okButton: t`Apply`,
+            cancelButton: t`Cancel`,
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+            leftAlign: true,
+        },
+    );
+
+    if (result !== POPUP_RESULT.AFFIRMATIVE) {
+        return;
+    }
+
+    const nextSettings = readWorldInfoEditorDisplaySettingsFromPopup(popupContent);
+    if (JSON.stringify(currentSettings) === JSON.stringify(nextSettings)) {
+        return;
+    }
+
+    power_user.world_info_editor_display = nextSettings;
+    saveSettingsDebounced();
+    updateWorldInfoEditorDisplaySettingsButton();
+
+    if ($('#world_editor_select').val() !== '') {
+        await updateEditor(navigation_option.previous, false);
+    }
+}
+
+function applyWorldInfoEditorDisplaySettings(editTemplate) {
+    if (!editTemplate?.length) {
+        return;
+    }
+
+    const settings = getWorldInfoEditorDisplaySettings();
+    const selectorMap = {
+        hideAdditionalMatchingSources: ($root) => $root.find('.inline-drawer:has(input[name="matchCharacterDescription"])').first(),
+        hidePrimaryKeywords: ($root) => $root.find('.keyprimary'),
+        hideEntryLogic: ($root) => $root.find('select[name="entryLogicType"]').closest('.world_entry_form_control'),
+        hideOptionalFilter: ($root) => $root.find('.keysecondary'),
+        hideCharacterOrTagFilter: ($root) => $root.find('select[name="characterFilter"]').closest('.flex4'),
+        hideGenerationTriggers: ($root) => $root.find('select[name="triggers"]').closest('.flex4'),
+        hideScanDepth: ($root) => $root.find('input[name="scanDepth"]').closest('.world_entry_form_control'),
+        hideCaseSensitive: ($root) => $root.find('select[name="caseSensitive"]').closest('.world_entry_form_control'),
+        hideWholeWords: ($root) => $root.find('select[name="matchWholeWords"]').closest('.world_entry_form_control'),
+        hideGroupScoring: ($root) => $root.find('select[name="useGroupScoring"]').closest('.world_entry_form_control'),
+        hideAutomationId: ($root) => $root.find('input[name="automationId"]').closest('.world_entry_form_control'),
+        hideRecursionLevel: ($root) => $root.find('input[name="delayUntilRecursionLevel"]').closest('.world_entry_form_control'),
+        hideInclusionGroup: ($root) => $root.find('input[name="group"]').closest('.flex4'),
+        hideGroupWeight: ($root) => $root.find('input[name="groupWeight"]').closest('.flex2'),
+        hideSticky: ($root) => $root.find('input[name="sticky"]').closest('.flex2'),
+        hideCooldown: ($root) => $root.find('input[name="cooldown"]').closest('.flex2'),
+        hideDelay: ($root) => $root.find('input[name="delay"]').closest('.flex2'),
+        hideExcludeRecursion: ($root) => $root.find('input[name="excludeRecursion"]').closest('label.checkbox'),
+        hidePreventFurtherRecursion: ($root) => $root.find('input[name="preventRecursion"]').closest('label.checkbox'),
+        hideDelayUntilRecursion: ($root) => $root.find('input[name="delay_until_recursion"]').closest('label.checkbox'),
+        hideIgnoreBudget: ($root) => $root.find('input[name="ignoreBudget"]').closest('label.checkbox'),
+        hideBottomLegacyControls: ($root) => $root.find('[name="WIEntryBottomControls"]'),
+    };
+
+    for (const option of WORLD_INFO_EDITOR_DISPLAY_OPTIONS) {
+        if (!settings[option.key]) {
+            continue;
+        }
+
+        selectorMap[option.key]?.(editTemplate)?.hide();
+    }
+}
 
 function getWorldInfoTags(name) {
     const metadata = getWorldInfoManagerMetadata(name);
@@ -4567,6 +4772,7 @@ function getWorldEntryRenderContextKey({ isCustomOrder }) {
         isCustomOrder: Boolean(isCustomOrder),
         isMobile: Boolean(isMobile()),
         keyInputPlaintext: Boolean(power_user.wi_key_input_plaintext),
+        displaySettings: getWorldInfoEditorDisplaySettingsSignature(),
     });
 }
 
@@ -6311,6 +6517,7 @@ export async function getWorldEntry(name, data, entry) {
 
         countTokensDebounced(counter, contentInput.val());
 
+        applyWorldInfoEditorDisplaySettings(editTemplate);
         editTemplate.find('.inline-drawer-content').css('display', 'none');
         editOutlet.append(editTemplate);
     }
@@ -9125,6 +9332,7 @@ export function initWorldInfo() {
     });
     setWorldInfoManagerPageSize(getWorldInfoManagerPageSize());
     $('#world_info_manager_page_size').val(String(worldInfoManagerState.pageSize));
+    updateWorldInfoEditorDisplaySettingsButton();
 
     $('#world_info_manager_select_page').on('click', function () {
         const items = getVisibleWorldInfoManagerItems();
@@ -9403,21 +9611,48 @@ export function initWorldInfo() {
     });
 
     const debouncedWorldInfoSearch = debounce((searchQuery) => {
-        worldInfoFilter.setFilterData(FILTER_TYPES.WORLD_INFO_SEARCH, searchQuery);
+        setWorldInfoSearchFilter(searchQuery);
     });
     $('#world_info_search').on('input', function () {
         const searchQuery = $(this).val();
         debouncedWorldInfoSearch(searchQuery);
     });
+    $('#world_info_search_help').on('click', async function () {
+        await showWorldInfoSearchSyntaxHelp();
+    });
+    $('#world_info_search_advanced').on('change', function () {
+        const enabled = Boolean($(this).prop('checked'));
+        setWorldInfoSearchAdvancedSyntaxEnabled(enabled);
+        worldInfoManagerState.page = 1;
+        invalidateWorldInfoManagerEntrySearch();
+        cancelDebounce(debouncedWorldInfoManagerSearch);
+        cancelDebounce(debouncedWorldInfoSearch);
+        setWorldInfoSearchFilter($('#world_info_search').val());
+        if (worldInfoManagerState.searchEntries) {
+            void refreshWorldInfoManagerSearchResults();
+        } else {
+            renderWorldInfoManager();
+        }
+    });
+    $('#world_info_search_mode').on('change', function () {
+        accountStorage.setItem(SEARCH_MODE_KEY, getWorldInfoSearchMode());
+        cancelDebounce(debouncedWorldInfoSearch);
+        updateWorldInfoSearchInputState();
+        setWorldInfoSearchFilter($('#world_info_search').val());
+    });
 
     $('#world_refresh').on('click', () => {
         updateEditor(navigation_option.previous);
     });
+    $('#world_entry_display_settings').on('click', async () => {
+        await showWorldInfoEditorDisplaySettingsPopup();
+    });
 
     $('#world_info_sort_order').on('change', function () {
         const value = String($(this).find(':selected').val());
+        const selectedOption = $(this).find(':selected');
         // Save sort order, but do not save search sorting, as this is a temporary sorting option
-        if (value !== 'search') accountStorage.setItem(SORT_ORDER_KEY, value);
+        if (selectedOption.data('rule') !== 'search') accountStorage.setItem(SORT_ORDER_KEY, value);
         updateEditor(navigation_option.none);
     });
 
