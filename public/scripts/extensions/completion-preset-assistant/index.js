@@ -35,6 +35,7 @@ const JOURNAL_NAMESPACE = 'completion_preset_assistant_journal';
 const SESSION_VERSION = 3;
 const JOURNAL_VERSION = 1;
 const TOOL_CALL_RETRY_MAX = 10;
+const HELPER_TOOL_CHAIN_HARD_LIMIT = 4;
 const SESSION_MESSAGE_LIMIT_MIN = 8;
 const SESSION_MESSAGE_LIMIT_MAX = 48;
 const JSON_TEXTDIFF_MIN_LENGTH = 80;
@@ -42,21 +43,9 @@ const MODEL_TOOLS = Object.freeze({
     SET_FIELD: 'preset_set_field',
     REMOVE_FIELD: 'preset_remove_field',
     COPY_FROM_REFERENCE: 'preset_copy_from_reference',
+    DIFF_REFERENCE: 'preset_diff_reference',
+    SIMULATE: 'preset_simulate',
 });
-const PROMPT_PREVIEW_FIELDS = Object.freeze([
-    'new_chat_prompt',
-    'new_group_chat_prompt',
-    'new_example_chat_prompt',
-    'continue_nudge_prompt',
-    'impersonation_prompt',
-    'assistant_prefill',
-    'continue_prefill',
-    'continue_postfix',
-    'scenario_format',
-    'personality_format',
-    'wi_format',
-    'group_nudge_prompt',
-]);
 const defaultSettings = {
     requestLlmPresetName: '',
     requestApiProfileName: '',
@@ -82,14 +71,6 @@ function i18n(text) {
 
 function i18nFormat(text, ...values) {
     return i18n(text).replace(/\$\{(\d+)\}/g, (_, idx) => String(values[Number(idx)] ?? ''));
-}
-
-function limitText(value, max = 240) {
-    const text = String(value ?? '').trim();
-    if (!text) {
-        return '';
-    }
-    return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
 function toInteger(value, fallback = 0) {
@@ -671,59 +652,11 @@ function buildTailRollbackPlan(session, journal, messageId) {
     };
 }
 
-function buildPromptPreview(body = {}) {
-    const safeBody = isPlainObject(body) ? body : {};
-    const preview = {
-        keys: Object.keys(safeBody),
-    };
-
-    for (const key of PROMPT_PREVIEW_FIELDS) {
-        if (typeof safeBody[key] === 'string' && safeBody[key].trim()) {
-            preview[key] = limitText(safeBody[key], 240);
-        }
-    }
-
-    if (Array.isArray(safeBody.prompts) && safeBody.prompts.length > 0) {
-        preview.prompts = safeBody.prompts.slice(0, 10).map((item) => ({
-            identifier: String(item?.identifier || item?.id || item?.name || '').trim(),
-            role: String(item?.role || '').trim(),
-            content: limitText(item?.content, 220),
-        }));
-    }
-
-    if (Array.isArray(safeBody.prompt_order) && safeBody.prompt_order.length > 0) {
-        preview.prompt_order = safeBody.prompt_order.slice(0, 16);
-    }
-
-    for (const key of ['temperature', 'top_p', 'top_k', 'frequency_penalty', 'presence_penalty', 'max_tokens']) {
-        if (Object.hasOwn(safeBody, key)) {
-            preview[key] = safeBody[key];
-        }
-    }
-
-    return preview;
-}
-
 function getChangedTopLevelKeys(before, after) {
     const safeBefore = isPlainObject(before) ? before : {};
     const safeAfter = isPlainObject(after) ? after : {};
     const keys = [...new Set([...Object.keys(safeBefore), ...Object.keys(safeAfter)])];
     return keys.filter((key) => !areJsonEqual(safeBefore[key], safeAfter[key])).slice(0, 40);
-}
-
-function buildReferencePromptPayload(referenceSnapshot, liveSnapshot) {
-    if (!referenceSnapshot || !isPlainObject(referenceSnapshot.body)) {
-        return {
-            selected: false,
-        };
-    }
-
-    return {
-        selected: true,
-        name: String(referenceSnapshot?.ref?.name || '').trim(),
-        changedTopLevelKeys: getChangedTopLevelKeys(liveSnapshot?.body, referenceSnapshot.body),
-        preview: buildPromptPreview(referenceSnapshot.body),
-    };
 }
 
 function buildDialogMetaItems(dialogState) {
@@ -738,16 +671,24 @@ function buildDialogMetaItems(dialogState) {
     ];
 }
 
-function buildModelSystemPrompt() {
+function buildModelSystemPrompt({
+    hasReference = false,
+} = {}) {
     return [
         'You are editing one Luker chat completion preset.',
         'Edit preset content only.',
         'Do not modify API connection, provider routing, endpoint selection, proxy settings, transport settings, or credential fields.',
         'Chat completion presets and API profiles are decoupled.',
         'Use tool calls when proposing actual preset changes.',
+        'If you call any helper inspection tool in a round, do not emit edit tool calls in that same round.',
         'Prefer minimal edits over broad rewrites unless the user explicitly asks for a rewrite.',
         'Use lodash-style paths like new_chat_prompt or prompts[0].content.',
         'For preset_set_field, value_json must be valid JSON text.',
+        hasReference
+            ? 'Use preset_diff_reference when you need to inspect the selected reference preset before copying from it.'
+            : 'No reference preset is selected. Do not call reference-inspection tools.',
+        'Use preset_simulate when you need to inspect how the current preset assembles prompt messages.',
+        'For preset_simulate, prefer the text argument so the tool appends that user text to the current chat. Use the messages array only when the user explicitly supplied a structured message list/record list.',
         'Use preset_copy_from_reference only when a selected reference preset exists and already contains the desired content.',
         'If no changes are needed, reply briefly without tool calls.',
     ].join('\n');
@@ -766,14 +707,12 @@ function buildConversationHistoryMessages(session) {
 }
 
 function buildUserPrompt(dialogState, userText) {
-    const referencePayload = buildReferencePromptPayload(dialogState.referenceSnapshot, dialogState.liveSnapshot);
-    const referenceSection = referencePayload.selected
+    const referenceName = String(dialogState.referenceSnapshot?.ref?.name || '').trim();
+    const referenceSection = referenceName
         ? [
-            `Selected reference preset: ${referencePayload.name}`,
-            'Reference summary JSON:',
-            '```json',
-            buildJson(referencePayload),
-            '```',
+            `Selected reference preset: ${referenceName}`,
+            'The selected reference preset is available to preset_copy_from_reference.',
+            'Use preset_diff_reference if you need to inspect how it differs from the current live preset.',
         ].join('\n')
         : 'Selected reference preset: none.';
 
@@ -791,6 +730,33 @@ function buildUserPrompt(dialogState, userText) {
         'User request:',
         String(userText || '').trim(),
     ].join('\n');
+}
+
+function normalizeWorldInfoResolverMessages(messages = []) {
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+
+    return messages.map((message) => {
+        if (!message || typeof message !== 'object') {
+            return message;
+        }
+        const next = { ...message };
+        const rawRole = String(next.role || '').trim().toLowerCase();
+        if (rawRole === 'system' || rawRole === 'user' || rawRole === 'assistant') {
+            next.role = rawRole;
+        } else if (next.is_system) {
+            next.role = 'system';
+        } else if (next.is_user) {
+            next.role = 'user';
+        } else {
+            next.role = 'assistant';
+        }
+        if (next.content === undefined && Object.hasOwn(next, 'mes')) {
+            next.content = String(next.mes ?? '');
+        }
+        return next;
+    });
 }
 
 function appendUniqueWorldInfoBlock(payload, key, block) {
@@ -886,6 +852,242 @@ async function buildPresetAwareMessages(context, systemPrompt, userPrompt, {
     return messages;
 }
 
+function makeRuntimeToolCallId() {
+    return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function serializeToolResultContent(result) {
+    if (typeof result === 'string') {
+        return result;
+    }
+    if (result === null || result === undefined) {
+        return '';
+    }
+    try {
+        return JSON.stringify(result, null, 2);
+    } catch {
+        return String(result);
+    }
+}
+
+function appendStandardToolRoundMessages(targetMessages, executedCalls, assistantText = '') {
+    if (!Array.isArray(targetMessages) || !Array.isArray(executedCalls) || executedCalls.length === 0) {
+        return;
+    }
+
+    const toolCalls = executedCalls.map((call) => {
+        const id = String(call?.id || '').trim() || makeRuntimeToolCallId();
+        const name = String(call?.name || '').trim();
+        const args = call?.args && typeof call.args === 'object' ? call.args : {};
+        return {
+            id,
+            type: 'function',
+            function: {
+                name,
+                arguments: JSON.stringify(args),
+            },
+            _result: call?.result,
+        };
+    }).filter(call => call.function.name);
+
+    if (toolCalls.length === 0) {
+        return;
+    }
+
+    targetMessages.push({
+        role: 'assistant',
+        content: String(assistantText || ''),
+        tool_calls: toolCalls.map(({ _result, ...toolCall }) => toolCall),
+    });
+
+    for (const toolCall of toolCalls) {
+        targetMessages.push({
+            role: 'tool',
+            tool_call_id: toolCall.id,
+            content: serializeToolResultContent(toolCall._result),
+        });
+    }
+}
+
+function buildSimulationSourceMessages(context, {
+    text = '',
+    messages = null,
+} = {}) {
+    const explicitMessages = normalizeWorldInfoResolverMessages(messages)
+        .filter(message => message && typeof message === 'object' && String(message.content ?? '').trim());
+    if (explicitMessages.length > 0) {
+        return {
+            mode: 'messages',
+            messages: explicitMessages,
+        };
+    }
+
+    const safeText = String(text || '').trim();
+    if (!safeText) {
+        return {
+            mode: '',
+            messages: [],
+        };
+    }
+
+    const currentChatMessages = normalizeWorldInfoResolverMessages(Array.isArray(context?.chat) ? context.chat : [])
+        .filter(message => message && typeof message === 'object' && String(message.content ?? '').trim());
+    return {
+        mode: 'text',
+        messages: [
+            ...currentChatMessages,
+            { role: 'user', content: safeText },
+        ],
+    };
+}
+
+function createPresetAssistantReferenceDiffToolApi(dialogState) {
+    return {
+        toolNames: {
+            DIFF_REFERENCE: MODEL_TOOLS.DIFF_REFERENCE,
+        },
+        getToolDefs() {
+            return [{
+                type: 'function',
+                function: {
+                    name: MODEL_TOOLS.DIFF_REFERENCE,
+                    description: 'Inspect how the current live preset differs from the selected reference preset. Use optional lodash-style paths to narrow the output.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            paths: {
+                                type: 'array',
+                                items: { type: 'string' },
+                            },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            }];
+        },
+        isToolName(name) {
+            return String(name || '').trim() === MODEL_TOOLS.DIFF_REFERENCE;
+        },
+        async invoke(call) {
+            const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            const referenceSnapshot = dialogState.referenceSnapshot;
+            if (!referenceSnapshot || !isPlainObject(referenceSnapshot.body)) {
+                throw new Error('No reference preset selected.');
+            }
+
+            const liveBody = isPlainObject(dialogState.liveSnapshot?.body) ? dialogState.liveSnapshot.body : {};
+            const referenceBody = referenceSnapshot.body;
+            const paths = Array.isArray(args.paths)
+                ? [...new Set(args.paths.map(item => String(item || '').trim()).filter(Boolean))]
+                : [];
+            if (paths.length > 0) {
+                return {
+                    ok: true,
+                    referencePresetName: String(referenceSnapshot?.ref?.name || '').trim(),
+                    comparisons: paths.map((path) => {
+                        const currentValue = clone(lodash.get(liveBody, path), null);
+                        const referenceValue = clone(lodash.get(referenceBody, path), null);
+                        return {
+                            path,
+                            current: currentValue,
+                            reference: referenceValue,
+                            equal: areJsonEqual(currentValue, referenceValue),
+                        };
+                    }),
+                };
+            }
+
+            return {
+                ok: true,
+                referencePresetName: String(referenceSnapshot?.ref?.name || '').trim(),
+                changedTopLevelKeys: getChangedTopLevelKeys(liveBody, referenceBody),
+                delta: buildJsonStateDelta(diffPatcher, liveBody, referenceBody) || {},
+            };
+        },
+    };
+}
+
+function createPresetAssistantSimulateToolApi(dialogState) {
+    return {
+        toolNames: {
+            SIMULATE: MODEL_TOOLS.SIMULATE,
+        },
+        getToolDefs() {
+            return [{
+                type: 'function',
+                function: {
+                    name: MODEL_TOOLS.SIMULATE,
+                    description: 'Simulate prompt assembly for the current preset. Prefer text to append one user turn to the current chat. Use messages only when the user already supplied a full message array.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            text: {
+                                type: 'string',
+                                description: 'Preferred. Append this user text to the current chat and simulate with world info activation.',
+                            },
+                            messages: {
+                                type: 'array',
+                                description: 'Explicit message array. Use only when the user already gave structured records/messages.',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        role: { type: 'string' },
+                                        content: { type: 'string' },
+                                        mes: { type: 'string' },
+                                        is_user: { type: 'boolean' },
+                                        is_system: { type: 'boolean' },
+                                    },
+                                    additionalProperties: true,
+                                },
+                            },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            }];
+        },
+        isToolName(name) {
+            return String(name || '').trim() === MODEL_TOOLS.SIMULATE;
+        },
+        async invoke(call) {
+            const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            const source = buildSimulationSourceMessages(dialogState.context, {
+                text: String(args.text || '').trim(),
+                messages: Array.isArray(args.messages) ? args.messages : null,
+            });
+            if (source.messages.length === 0) {
+                throw new Error('preset_simulate requires either text or messages.');
+            }
+            if (typeof dialogState.context?.buildPresetAwarePromptMessages !== 'function') {
+                throw new Error('Prompt preset assembly is unavailable.');
+            }
+
+            const runtimeWorldInfo = typeof dialogState.context?.resolveWorldInfoForMessages === 'function'
+                ? await dialogState.context.resolveWorldInfoForMessages(source.messages, {
+                    type: 'quiet',
+                    fallbackToCurrentChat: false,
+                    postActivationHook: rewriteDepthWorldInfoToAfter,
+                })
+                : {};
+            const promptMessages = dialogState.context.buildPresetAwarePromptMessages({
+                messages: source.messages,
+                envelopeOptions: {
+                    includeCharacterCard: true,
+                    api: 'openai',
+                },
+                runtimeWorldInfo,
+            });
+            return {
+                ok: true,
+                mode: source.mode,
+                sourceMessages: source.messages,
+                runtimeWorldInfo,
+                promptMessages,
+            };
+        },
+    };
+}
+
 function getRequestPresetOptions(context = getContext()) {
     const settings = getSettings();
     const profileResolution = resolveChatCompletionRequestProfile({
@@ -902,7 +1104,10 @@ function getRequestPresetOptions(context = getContext()) {
     };
 }
 
-function buildAssistantTools(hasReference = false) {
+function buildAssistantTools({
+    hasReference = false,
+    helperToolApis = [],
+} = {}) {
     const tools = [
         {
             type: 'function',
@@ -939,6 +1144,13 @@ function buildAssistantTools(hasReference = false) {
         },
     ];
 
+    for (const api of Array.isArray(helperToolApis) ? helperToolApis : []) {
+        if (typeof api?.getToolDefs !== 'function') {
+            continue;
+        }
+        tools.push(...api.getToolDefs());
+    }
+
     if (hasReference) {
         tools.push({
             type: 'function',
@@ -960,6 +1172,119 @@ function buildAssistantTools(hasReference = false) {
     }
 
     return tools;
+}
+
+function splitPresetAssistantToolCalls(rawCalls, helperToolApis = []) {
+    const editCalls = [];
+    const helperCalls = [];
+    const apis = Array.isArray(helperToolApis) ? helperToolApis : [];
+    for (const call of Array.isArray(rawCalls) ? rawCalls : []) {
+        const name = String(call?.name || '').trim();
+        if (!name) {
+            continue;
+        }
+        if (apis.some(api => typeof api?.isToolName === 'function' && api.isToolName(name))) {
+            helperCalls.push(call);
+            continue;
+        }
+        editCalls.push(call);
+    }
+    return { editCalls, helperCalls };
+}
+
+async function runPresetAssistantHelperToolCall(call, helperToolApis = []) {
+    const name = String(call?.name || '').trim();
+    const api = (Array.isArray(helperToolApis) ? helperToolApis : [])
+        .find(item => typeof item?.isToolName === 'function' && item.isToolName(name));
+    if (!api) {
+        throw new Error(`Unsupported helper tool: ${name}`);
+    }
+    return await api.invoke(call);
+}
+
+async function requestPresetAssistantReply(dialogState, userText, {
+    requestOptions = null,
+    historyMessages = [],
+    abortSignal = null,
+} = {}) {
+    const options = requestOptions && typeof requestOptions === 'object' ? requestOptions : {};
+    const helperToolApis = [
+        createPresetAssistantSimulateToolApi(dialogState),
+        ...(dialogState.referenceSnapshot ? [createPresetAssistantReferenceDiffToolApi(dialogState)] : []),
+    ];
+    const modelTools = buildAssistantTools({
+        hasReference: Boolean(dialogState.referenceSnapshot),
+        helperToolApis,
+    });
+    const runtimeToolMessages = [];
+    let lastAssistantText = '';
+
+    for (let round = 1; round <= HELPER_TOOL_CHAIN_HARD_LIMIT; round += 1) {
+        throwIfAborted(abortSignal, 'Preset assistant request aborted.');
+        const promptMessages = await buildPresetAwareMessages(
+            dialogState.context,
+            buildModelSystemPrompt({
+                hasReference: Boolean(dialogState.referenceSnapshot),
+            }),
+            buildUserPrompt(dialogState, userText),
+            {
+                llmPresetName: options.llmPresetName,
+                requestApi: options.requestApi,
+                historyMessages: [
+                    ...(Array.isArray(historyMessages) ? historyMessages.map(item => ({ ...item })) : []),
+                    ...runtimeToolMessages,
+                ],
+            },
+        );
+        const response = await requestToolCallsWithRetry(getSettings(), promptMessages, {
+            tools: modelTools,
+            abortSignal,
+            llmPresetName: options.llmPresetName,
+            apiSettingsOverride: options.apiSettingsOverride,
+        });
+        lastAssistantText = String(response?.assistantText || '').trim();
+        const { editCalls, helperCalls } = splitPresetAssistantToolCalls(response?.toolCalls, helperToolApis);
+        if (helperCalls.length === 0) {
+            return {
+                assistantText: lastAssistantText,
+                toolCalls: editCalls,
+            };
+        }
+
+        const executedHelperCalls = [];
+        for (const call of helperCalls) {
+            throwIfAborted(abortSignal, 'Preset assistant request aborted.');
+            const name = String(call?.name || '').trim();
+            const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            const callId = String(call?.id || '').trim() || makeRuntimeToolCallId();
+            try {
+                const result = await runPresetAssistantHelperToolCall(call, helperToolApis);
+                executedHelperCalls.push({
+                    id: callId,
+                    name,
+                    args,
+                    result: {
+                        ok: true,
+                        result,
+                    },
+                });
+            } catch (error) {
+                executedHelperCalls.push({
+                    id: callId,
+                    name,
+                    args,
+                    result: {
+                        ok: false,
+                        error: String(error?.message || error || 'helper tool failed'),
+                    },
+                });
+            }
+        }
+
+        appendStandardToolRoundMessages(runtimeToolMessages, executedHelperCalls, lastAssistantText);
+    }
+
+    throw new Error(`Preset assistant helper chain exceeded internal safety limit (${HELPER_TOOL_CHAIN_HARD_LIMIT}).`);
 }
 
 async function requestToolCallsWithRetry(settings, promptMessages, {
@@ -1507,7 +1832,7 @@ async function handleRollbackToMessage(dialogState, messageId) {
     const rollbackMessage = sanitizeMessage((dialogState.session?.messages || []).find(item => String(item?.id || '') === String(messageId || '')));
     const confirmed = await Popup.show.confirm(
         i18n('Rollback this message and every later applied change in the current session?'),
-        limitText(rollbackMessage?.summary || rollbackMessage?.text || '', 180),
+        String(rollbackMessage?.summary || rollbackMessage?.text || '').trim(),
     );
     if (!confirmed) {
         return;
@@ -1602,22 +1927,10 @@ async function handleSend(dialogState) {
 
     try {
         const requestOptions = getRequestPresetOptions(dialogState.context);
-        const tools = buildAssistantTools(Boolean(dialogState.referenceSnapshot));
-        const promptMessages = await buildPresetAwareMessages(
-            dialogState.context,
-            buildModelSystemPrompt(),
-            buildUserPrompt(dialogState, inputText),
-            {
-                llmPresetName: requestOptions.llmPresetName,
-                requestApi: requestOptions.requestApi,
-                historyMessages,
-            },
-        );
-        const response = await requestToolCallsWithRetry(getSettings(), promptMessages, {
-            tools,
+        const response = await requestPresetAssistantReply(dialogState, inputText, {
+            requestOptions,
+            historyMessages,
             abortSignal: dialogState.abortController.signal,
-            llmPresetName: requestOptions.llmPresetName,
-            apiSettingsOverride: requestOptions.apiSettingsOverride,
         });
         const assistantMessageId = uuidv4();
         const draft = buildDraftFromResponse(dialogState, response.assistantText, response.toolCalls, assistantMessageId);

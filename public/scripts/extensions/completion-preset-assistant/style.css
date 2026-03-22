@@ -15,15 +15,29 @@
 #completion_preset_assistant_settings .menu_button_small,
 .popup .cpa_dialog .menu_button,
 .popup .cpa_dialog .menu_button_small {
+    display: inline-flex;
+    width: auto;
     min-height: 2.2em;
     min-width: max-content;
     white-space: nowrap;
+    word-break: keep-all;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.2;
 }
 
 .completion-preset-assistant-open {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: auto;
+    min-width: 2.2em;
+    white-space: nowrap;
+    word-break: keep-all;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
 }
 
 .popup .cpa_dialog {
@@ -258,6 +272,7 @@
     gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
+    align-items: center;
 }
 
 @media (max-width: 1000px) {
