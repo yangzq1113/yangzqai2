@@ -4661,8 +4661,10 @@ function renderWorldInfoManager() {
     const enableSelectedButton = $('#world_info_manager_enable_selected');
     const disableSelectedButton = $('#world_info_manager_disable_selected');
     const deleteSelectedButton = $('#world_info_manager_delete_selected');
+    const firstButton = $('#world_info_manager_first');
     const prevButton = $('#world_info_manager_prev');
     const nextButton = $('#world_info_manager_next');
+    const lastButton = $('#world_info_manager_last');
 
     if (!manager.length || !list.length) {
         return;
@@ -4731,8 +4733,10 @@ function renderWorldInfoManager() {
     enableSelectedButton.toggleClass('disabled', selectedCount === 0);
     disableSelectedButton.toggleClass('disabled', selectedCount === 0);
     deleteSelectedButton.toggleClass('disabled', selectedCount === 0);
+    firstButton.toggleClass('disabled', worldInfoManagerState.page <= 1);
     prevButton.toggleClass('disabled', worldInfoManagerState.page <= 1);
     nextButton.toggleClass('disabled', worldInfoManagerState.page >= totalPages);
+    lastButton.toggleClass('disabled', worldInfoManagerState.page >= totalPages);
 }
 
 function destroyWorldEntryBlock($block) {
@@ -9449,12 +9453,32 @@ export function initWorldInfo() {
         renderWorldInfoManager();
     });
 
+    $('#world_info_manager_first').on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        worldInfoManagerState.page = 1;
+        renderWorldInfoManager();
+    });
+
     $('#world_info_manager_next').on('click', function () {
         if ($(this).hasClass('disabled')) {
             return;
         }
 
         worldInfoManagerState.page += 1;
+        renderWorldInfoManager();
+    });
+
+    $('#world_info_manager_last').on('click', function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const totalItems = getVisibleWorldInfoManagerItems().length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / worldInfoManagerState.pageSize));
+        worldInfoManagerState.page = totalPages;
         renderWorldInfoManager();
     });
 
