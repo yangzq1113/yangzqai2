@@ -23,6 +23,7 @@ import {
     hasJsonStatePathConflict,
     isPlainObject,
     replayJsonStateJournal,
+    tokenizeJsonPath,
 } from '../json-state-journal.js';
 import { renderObjectDiffHtml } from '../object-diff-view.js';
 
@@ -1142,6 +1143,89 @@ function buildPresetPromptProjection(body) {
         ordered_prompts: orderedGroups,
         unordered_prompts: unorderedEntries,
     };
+}
+
+function buildPromptDiffEntryText(item = {}) {
+    const safeItem = item && typeof item === 'object' ? item : {};
+    const lines = [
+        `identifier: ${String(safeItem.identifier || '').trim() || '(missing)'}`,
+        `enabled: ${safeItem.enabled === false ? 'false' : 'true'}`,
+        `role: ${String(safeItem.role || '').trim() || 'n/a'}`,
+    ];
+    if (String(safeItem.name || '').trim()) {
+        lines.push(`name: ${String(safeItem.name || '').trim()}`);
+    }
+    lines.push(`marker: ${safeItem.marker === true ? 'true' : 'false'}`);
+    lines.push(`injection_position: ${safeItem.injection_position ?? 'n/a'}`);
+    lines.push(`injection_depth: ${safeItem.injection_depth ?? 'n/a'}`);
+    lines.push(`injection_order: ${safeItem.injection_order ?? 'n/a'}`);
+    lines.push('content:');
+    lines.push(String(safeItem.content || ''));
+    return lines.join('\n');
+}
+
+function buildOrderedPromptDiffKey(item = {}) {
+    const position = Math.max(1, Number(item?.position) || 1);
+    const identifier = String(item?.identifier || '').trim() || 'unnamed';
+    return `${String(position).padStart(3, '0')}__${identifier}`;
+}
+
+function parseOrderedPromptDiffKey(key = '') {
+    const text = String(key || '').trim();
+    const match = text.match(/^(\d+)__(.*)$/);
+    if (!match) {
+        return {
+            position: 0,
+            identifier: text,
+        };
+    }
+    return {
+        position: Number(match[1] || 0),
+        identifier: String(match[2] || '').trim(),
+    };
+}
+
+function buildPresetDiffProjection(body) {
+    const projection = buildPresetPromptProjection(body);
+    const orderedGroups = {};
+    for (const group of Array.isArray(projection.ordered_prompts) ? projection.ordered_prompts : []) {
+        const groupKey = String(group?.character_id || '').trim() || '(missing)';
+        orderedGroups[groupKey] = {};
+        for (const item of Array.isArray(group?.items) ? group.items : []) {
+            orderedGroups[groupKey][buildOrderedPromptDiffKey(item)] = buildPromptDiffEntryText(item);
+        }
+    }
+
+    const unorderedPrompts = {};
+    for (const item of Array.isArray(projection.unordered_prompts) ? projection.unordered_prompts : []) {
+        const key = String(item?.identifier || '').trim() || `unnamed_${Object.keys(unorderedPrompts).length + 1}`;
+        unorderedPrompts[key] = buildPromptDiffEntryText(item);
+    }
+
+    return {
+        base_prompts: {
+            new_chat_prompt: String(projection.new_chat_prompt || ''),
+            new_group_chat_prompt: String(projection.new_group_chat_prompt || ''),
+        },
+        ordered_groups: orderedGroups,
+        unordered_prompts: unorderedPrompts,
+    };
+}
+
+function formatPresetDiffPath(path) {
+    const tokens = tokenizeJsonPath(path);
+    if (tokens.length === 2 && tokens[0] === 'base_prompts') {
+        return String(tokens[1] || '');
+    }
+    if (tokens.length === 3 && tokens[0] === 'ordered_groups') {
+        const groupId = String(tokens[1] || '').trim() || '(missing)';
+        const parsed = parseOrderedPromptDiffKey(tokens[2]);
+        return `ordered prompt · character_id=${groupId} · ${parsed.position || '?'}. ${parsed.identifier || '(missing)'}`;
+    }
+    if (tokens.length === 2 && tokens[0] === 'unordered_prompts') {
+        return `unordered prompt · ${String(tokens[1] || '').trim() || '(missing)'}`;
+    }
+    return String(path || '(root)');
 }
 
 function formatPromptPreview(content) {
@@ -2423,8 +2507,8 @@ function applyEditsToPreset(baseBody, edits, referenceBody = null) {
 }
 
 function renderDeltaHtml(before, after) {
-    const beforeProjection = buildPresetPromptProjection(before);
-    const afterProjection = buildPresetPromptProjection(after);
+    const beforeProjection = buildPresetDiffProjection(before);
+    const afterProjection = buildPresetDiffProjection(after);
     const delta = diffPatcher.diff(clone(beforeProjection, {}), clone(afterProjection, {}));
     if (!delta) {
         return '';
@@ -2437,6 +2521,7 @@ function renderDeltaHtml(before, after) {
         beforeLabel: i18n('Before'),
         afterLabel: i18n('After'),
         missingLabel: i18n('(missing)'),
+        pathLabelFormatter: formatPresetDiffPath,
     }));
 }
 
@@ -2635,7 +2720,6 @@ function renderDialogHtml(dialogState) {
     const referenceNames = getOpenAIPresetNames(dialogState.context)
         .filter(name => name && name !== dialogState.targetRef?.name);
     const metaItems = buildDialogMetaItems(dialogState);
-    const settings = getSettings();
     const isBusy = Boolean(dialogState.busy);
     const statusHtml = dialogState.status
         ? `${isBusy ? '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> ' : ''}${escapeHtml(dialogState.status || '')}`
@@ -2677,9 +2761,11 @@ function renderDialogHtml(dialogState) {
         <div class="cpa_dialog_footer_actions">
             <div class="cpa_dialog_footer_meta">
                 <div class="cpa_hint cpa_status_line">${statusHtml}</div>
-                <div class="cpa_hint">${escapeHtml(`LLM: ${settings.requestLlmPresetName || i18n('(current)')}`)}</div>
             </div>
-            <div class="menu_button" data-cpa-action="send-or-stop">${escapeHtml(isBusy ? i18n('Stop') : i18n('Send'))}</div>
+            <div class="cpa_dialog_footer_buttons">
+                <div class="menu_button" data-cpa-action="send-or-stop">${escapeHtml(isBusy ? i18n('Stop') : i18n('Send'))}</div>
+                <div class="menu_button" data-cpa-action="close">${escapeHtml(i18n('Close'))}</div>
+            </div>
         </div>
     </div>
 </div>`;
@@ -3232,6 +3318,9 @@ function bindDialogEvents(dialogState) {
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="clear-history"]', async function () {
         await handleClearHistory(dialogState);
     });
+    dialogState.root.on('click.cpaDialog', '[data-cpa-action="close"]', async function () {
+        await dialogState.popup?.completeCancelled?.();
+    });
     dialogState.root.on('click.cpaDialog', '[data-cpa-history-action]', async function () {
         const action = String(jQuery(this).attr('data-cpa-history-action') || '').trim();
         const sessionId = String(jQuery(this).attr('data-cpa-session-id') || '').trim();
@@ -3312,7 +3401,7 @@ async function openAssistantPopup() {
 
     const popup = new Popup('<div id="completion_preset_assistant_dialog_root"></div>', POPUP_TYPE.TEXT, '', {
         okButton: false,
-        cancelButton: 'Close',
+        cancelButton: false,
         wider: true,
         large: true,
         allowVerticalScrolling: true,

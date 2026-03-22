@@ -102,6 +102,7 @@ export function renderObjectDiffHtml({
     missingLabel = '(missing)',
     emptyLabel = '',
     renderTextDiff = null,
+    pathLabelFormatter = null,
 } = {}) {
     if (!delta || typeof delta !== 'object') {
         return '';
@@ -120,7 +121,10 @@ export function renderObjectDiffHtml({
     return `
 <div class="luker_object_diff">
     ${items.map((item) => {
-        const pathLabel = escapeHtml(String(item?.path || '(root)'));
+        const formattedPathLabel = typeof pathLabelFormatter === 'function'
+            ? pathLabelFormatter(String(item?.path || '(root)'), item)
+            : String(item?.path || '(root)');
+        const pathLabel = escapeHtml(String(formattedPathLabel || item?.path || '(root)'));
         const beforeValue = item?.beforeValue;
         const afterValue = item?.afterValue;
         const beforePayload = formatDiffValue(beforeValue, safeMissingLabel);

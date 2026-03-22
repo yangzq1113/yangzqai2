@@ -409,6 +409,13 @@
     flex: 1 1 220px;
 }
 
+.popup .cpa_dialog_footer_buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .popup .cpa_status_line i {
     margin-right: 6px;
 }
@@ -453,7 +460,12 @@
         align-items: stretch;
     }
 
-    .popup .cpa_dialog_footer_actions .menu_button {
+    .popup .cpa_dialog_footer_buttons {
+        width: 100%;
+    }
+
+    .popup .cpa_dialog_footer_buttons .menu_button {
         align-self: stretch;
+        flex: 1 1 0;
     }
 }
