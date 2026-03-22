@@ -4435,8 +4435,9 @@ function renderCharacterEditorRoundDiffHtml(previews, operations, { open = true,
 </details>`;
 }
 
-function renderCharacterEditorChatMessages(messages, { loading = false, loadingText = '' } = {}) {
+function renderCharacterEditorChatMessages(messages, { loading = false, loadingText = '', pendingMessageId = '' } = {}) {
     const list = Array.isArray(messages) ? messages : [];
+    const currentPendingMessageId = String(pendingMessageId || '').trim();
     const html = list.map((item, index) => {
         const role = String(item?.role || 'assistant');
         const text = String(item?.content || '').trim();
@@ -4444,7 +4445,7 @@ function renderCharacterEditorChatMessages(messages, { loading = false, loadingT
         const previews = Array.isArray(item?.diffPreviews) ? item.diffPreviews : [];
         const operations = Array.isArray(item?.operations) ? item.operations : [];
         const executionResults = Array.isArray(item?.executionResults) ? item.executionResults : [];
-        const hasDiffData = previews.length > 0 || operations.length > 0;
+        const hasDiffData = (previews.length > 0 || operations.length > 0) && String(item?.id || '').trim() !== currentPendingMessageId;
         if (!text && !hasDiffData && !toolSummary) {
             return '';
         }
@@ -4629,7 +4630,11 @@ async function openCharacterEditorPopup(context = getContext()) {
                     return;
                 }
                 const renderConversation = (loading = false, loadingText = '') => {
-                    chat.innerHTML = renderCharacterEditorChatMessages(conversationMessages, { loading, loadingText });
+                    chat.innerHTML = renderCharacterEditorChatMessages(conversationMessages, {
+                        loading,
+                        loadingText,
+                        pendingMessageId: String(pendingApproval?.messageId || '').trim(),
+                    });
                     chat.scrollTop = chat.scrollHeight;
                 };
                 const renderPending = () => {
