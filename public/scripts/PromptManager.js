@@ -6,7 +6,7 @@ import { event_types, eventSource, is_send_press, main_api, substituteParams } f
 import { is_group_generating } from './group-chats.js';
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
-import { debounce, waitUntilCondition, escapeHtml, includesIgnoreCaseAndAccents, toggleDrawer, uuidv4 } from './utils.js';
+import { debounce, waitUntilCondition, escapeHtml, includesIgnoreCaseAndAccents, resetScrollHeight, toggleDrawer, uuidv4 } from './utils.js';
 import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
@@ -661,7 +661,7 @@ class PromptManager {
                     break;
             }
 
-            const nameField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
+            const nameField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
             const roleField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_role'));
             const promptField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
             const injectionPositionField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_position'));
@@ -677,6 +677,9 @@ class PromptManager {
             const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
 
             nameField.value = prompt.name;
+            if (!CSS.supports('field-sizing', 'content')) {
+                void resetScrollHeight(nameField);
+            }
             roleField.value = 'system';
             promptField.value = prompt.content ?? '';
             injectionPositionField.value = (prompt.injection_position ?? 0).toString();
@@ -1341,7 +1344,7 @@ class PromptManager {
      * @returns {void}
      */
     updatePromptWithPromptEditForm(prompt) {
-        const nameField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
+        const nameField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
         const roleField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_role'));
         const promptField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
         const injectionPositionField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_position'));
@@ -1351,7 +1354,7 @@ class PromptManager {
         const forbidOverridesField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_forbid_overrides'));
         const pluginExtraField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_plugin_extra'));
 
-        prompt.name = nameField.value;
+        prompt.name = nameField.value.replace(/\s*\r?\n+\s*/g, ' ').trim();
         prompt.role = roleField.value;
         prompt.content = promptField.value;
         prompt.injection_position = Number(injectionPositionField.value);
@@ -2358,7 +2361,7 @@ class PromptManager {
      * @param {Partial<Prompt>} prompt - Prompt object with properties 'name', 'role', 'content', and 'system_prompt'
      */
     loadPromptIntoEditForm(prompt) {
-        const nameField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
+        const nameField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
         const roleField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_role'));
         const promptField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
         const injectionPositionField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_position'));
@@ -2375,6 +2378,9 @@ class PromptManager {
         const isPulledPrompt = Object.keys(this.promptSources).includes(prompt.identifier);
 
         nameField.value = prompt.name ?? '';
+        if (!CSS.supports('field-sizing', 'content')) {
+            void resetScrollHeight(nameField);
+        }
         roleField.value = prompt.role || 'system';
         promptField.value = prompt.content ?? '';
         promptField.disabled = prompt.marker ?? false;
@@ -2487,7 +2493,7 @@ class PromptManager {
         const editArea = document.getElementById(this.configuration.prefix + 'prompt_manager_popup_edit');
         editArea.style.display = 'none';
 
-        const nameField = /** @type {HTMLInputElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
+        const nameField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_name'));
         const roleField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_role'));
         const promptField = /** @type {HTMLTextAreaElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_prompt'));
         const injectionPositionField = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_form_injection_position'));
@@ -2503,6 +2509,9 @@ class PromptManager {
         const entrySource = /** @type {HTMLSpanElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_popup_entry_source'));
 
         nameField.value = '';
+        if (!CSS.supports('field-sizing', 'content')) {
+            void resetScrollHeight(nameField);
+        }
         roleField.selectedIndex = 0;
         promptField.value = '';
         promptField.disabled = false;
@@ -2811,20 +2820,35 @@ class PromptManager {
             const roleIcon = promptRoles[iconLookup]?.roleIcon || '';
             const roleTitle = promptRoles[iconLookup]?.roleTitle || '';
             const markerHandleClass = 'prompt-manager-marker-handle';
+            const leadingIconHtml = isMarkerPrompt
+                ? `<span class="fa-fw fa-solid fa-thumb-tack ${markerHandleClass}" title="Marker"></span>`
+                : isSystemPrompt
+                    ? `<span class="fa-fw fa-solid fa-square-poll-horizontal ${markerHandleClass}" title="Global Prompt"></span>`
+                    : isImportantPrompt
+                        ? `<span class="fa-fw fa-solid fa-star ${markerHandleClass}" title="Important Prompt"></span>`
+                        : isUserPrompt
+                            ? `<span class="fa-fw fa-solid fa-asterisk ${markerHandleClass}" title="Preset Prompt"></span>`
+                            : isInjectionPrompt
+                                ? `<span class="fa-fw fa-solid fa-syringe ${markerHandleClass}" title="In-Chat Injection"></span>`
+                                : '<span class="fa-fw fa-solid prompt-manager-name-leading-placeholder" aria-hidden="true"></span>';
+            const nameTextHtml = this.isPromptInspectionAllowed(prompt)
+                ? `<a title="${encodedName}" class="prompt-manager-inspect-action prompt-manager-name-text">${encodedName}</a>`
+                : `<span title="${encodedName}" class="prompt-manager-name-text">${encodedName}</span>`;
+            const nameMetaHtml = [
+                pluginExtraBadgeHtml,
+                roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : '',
+                isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : '',
+                isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : '',
+            ].filter(Boolean).join('');
 
             listItemHtml += `
                 <li class="${prefix}prompt_manager_prompt ${draggableClass} ${enabledClass} ${markerClass} ${importantClass}" data-pm-identifier="${escapeHtml(prompt.identifier)}">
                     <span class="${prefix}prompt_manager_prompt_name" data-pm-name="${encodedName}">
-                        ${isMarkerPrompt ? `<span class="fa-fw fa-solid fa-thumb-tack ${markerHandleClass}" title="Marker"></span>` : ''}
-                        ${isSystemPrompt ? `<span class="fa-fw fa-solid fa-square-poll-horizontal ${markerHandleClass}" title="Global Prompt"></span>` : ''}
-                        ${isImportantPrompt ? `<span class="fa-fw fa-solid fa-star ${markerHandleClass}" title="Important Prompt"></span>` : ''}
-                        ${isUserPrompt ? `<span class="fa-fw fa-solid fa-asterisk ${markerHandleClass}" title="Preset Prompt"></span>` : ''}
-                        ${isInjectionPrompt ? `<span class="fa-fw fa-solid fa-syringe ${markerHandleClass}" title="In-Chat Injection"></span>` : ''}
-                        ${this.isPromptInspectionAllowed(prompt) ? `<a title="${encodedName}" class="prompt-manager-inspect-action">${encodedName}</a>` : `<span title="${encodedName}">${encodedName}</span>`}
-                        ${pluginExtraBadgeHtml}
-                        ${roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : ''}
-                        ${isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : ''}
-                        ${isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : ''}
+                        <span class="prompt-manager-name-leading">${leadingIconHtml}</span>
+                        <span class="prompt-manager-name-body">
+                            ${nameTextHtml}
+                            ${nameMetaHtml ? `<span class="prompt-manager-name-meta">${nameMetaHtml}</span>` : ''}
+                        </span>
                     </span>
                     <span>
                             <span class="prompt_manager_prompt_controls">

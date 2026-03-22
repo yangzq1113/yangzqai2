@@ -238,12 +238,13 @@
     flex: 1 1 auto;
     font: inherit;
     font-weight: 600;
-    max-width: 220px;
+    max-width: 24rem;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
+    overflow-wrap: anywhere;
     padding: 0;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    text-overflow: unset;
+    white-space: normal;
 }
 
 .world_info_manager_action_row {
@@ -335,12 +336,13 @@
     font-weight: 600;
     margin: 0;
     min-width: 0;
-    overflow: hidden;
+    overflow: visible;
+    overflow-wrap: anywhere;
     padding: 0;
     text-align: left;
-    text-overflow: ellipsis;
+    text-overflow: unset;
     width: 100%;
-    white-space: nowrap;
+    white-space: normal;
 }
 
 .world_info_manager_item_title:hover {
@@ -692,8 +694,17 @@
     overflow: hidden;
 }
 
+#world_editor_select~.select2-container .select2-selection--single {
+    height: auto;
+    min-height: 32px;
+}
+
 #world_editor_select~.select2-container .select2-selection--single .select2-selection__rendered {
+    overflow: visible;
     padding-right: 30px;
+    text-overflow: unset;
+    white-space: normal;
+    word-break: break-word;
 }
 
 #world_editor_select~.select2-container .select2-selection .select2-selection__clear {
@@ -716,6 +727,13 @@
 
 .world_entry {
     transition: opacity var(--animation-duration-3x);
+}
+
+.world_entry textarea[name="comment"] {
+    field-sizing: content;
+    min-height: 4.5em;
+    overflow-y: hidden;
+    resize: vertical;
 }
 
 .world_entry.bulk-selected .wi-card-entry {

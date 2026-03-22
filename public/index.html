@@ -7118,7 +7118,7 @@
                                 <div class="flex-container alignitemscenter wide100p">
                                     <div class="WIEntryTitleAndStatus flex-container flex1 alignitemscenter">
                                         <div class="flex-container flex1">
-                                            <textarea class="text_pole" rows="1" name="comment" data-i18n="[placeholder]Entry Title/Memo" placeholder="Entry Title/Memo"></textarea>
+                                            <textarea class="text_pole autoSetHeight" rows="2" name="comment" data-i18n="[placeholder]Entry Title/Memo" placeholder="Entry Title/Memo"></textarea>
                                         </div>
                                         <!-- <span class="world_entry_form_position_value"></span> -->
                                         <select data-i18n="[title]WI Entry Status:🔵 Constant🟢 Normal🔗 Vectorized" title="WI Entry Status:&#13;🔵 Constant&#13;🟢 Normal&#13;🔗 Vectorized" name="entryStateSelector" class="text_pole widthNatural margin0">
@@ -7255,12 +7255,12 @@
                 <h3 data-i18n="prompt_manager_edit">Edit</h3>
                 <div class="completion_prompt_manager_popup_entry">
                     <form class="completion_prompt_manager_popup_entry_form">
-                        <div class="flex-container gap10px">
+                        <div class="flex-container gap10px completion_prompt_manager_popup_entry_form_row">
                             <div class="completion_prompt_manager_popup_entry_form_control flex1">
                                 <label for="completion_prompt_manager_popup_entry_form_name">
                                     <span data-i18n="prompt_manager_name">Name</span>
                                 </label>
-                                <input id="completion_prompt_manager_popup_entry_form_name" class="text_pole" type="text" name="name" />
+                                <textarea id="completion_prompt_manager_popup_entry_form_name" class="text_pole autoSetHeight" name="name" rows="2"></textarea>
                                 <div class="text_muted" data-i18n="A name for this prompt.">A name for this prompt.</div>
                             </div>
                             <div class="completion_prompt_manager_popup_entry_form_control flex1">
@@ -7291,7 +7291,7 @@
                                 </div>
                             </div>
                         </div>
-                        <div class="flex-container gap10px">
+                        <div class="flex-container gap10px completion_prompt_manager_popup_entry_form_row">
                             <div class="completion_prompt_manager_popup_entry_form_control flex1">
                                 <label for="completion_prompt_manager_popup_entry_form_injection_position">
                                     <span data-i18n="prompt_manager_position">Position</span>
