@@ -1007,6 +1007,41 @@ export function formatWorldInfo(value, { wiFormat = null } = {}) {
     return stringFormat(format, value);
 }
 
+function normalizeWorldInfoEntries(entries) {
+    return Array.isArray(entries)
+        ? entries
+            .map(entry => typeof entry === 'string' ? entry : String(entry ?? ''))
+            .filter(entry => entry.length > 0)
+        : [];
+}
+
+function formatSplitWorldInfoEntries(entries, { wiFormat = null } = {}) {
+    const format = String(wiFormat ?? oai_settings.wi_format ?? '');
+
+    if (!format.trim() || format === default_wi_format) {
+        return [...entries];
+    }
+
+    const placeholderCount = (format.match(/\{0\}/g) || []).length;
+    if (placeholderCount !== 1) {
+        return [formatWorldInfo(entries.join('\n'), { wiFormat: format })];
+    }
+
+    const [prefix, suffix] = format.split('{0}');
+    const lastIndex = entries.length - 1;
+
+    return entries.map((entry, index) => `${index === 0 ? prefix : ''}${entry}${index === lastIndex ? suffix : ''}`);
+}
+
+function getWorldInfoMessageContents(entries, { wiFormat = null } = {}) {
+    const normalizedEntries = normalizeWorldInfoEntries(entries);
+    if (normalizedEntries.length === 0) {
+        return [];
+    }
+
+    return formatSplitWorldInfoEntries(normalizedEntries, { wiFormat });
+}
+
 /**
  * This function populates the injections in the conversation.
  *
@@ -1329,11 +1364,13 @@ export function getPromptRole(role) {
  * @param {string} options.quietImage - Image prompt for extras
  * @param {string} options.type - The type of the chat, can be 'impersonate'.
  * @param {string} options.cyclePrompt - The last prompt in the conversation.
+ * @param {string[]} [options.worldInfoBeforeEntries] - Raw world info entries before the main conversation.
+ * @param {string[]} [options.worldInfoAfterEntries] - Raw world info entries after the main conversation.
  * @param {object[]} options.messages - Array containing all messages.
  * @param {object[]} options.messageExamples - Array containing all message examples.
  * @returns {Promise<void>}
  */
-async function populateChatCompletion(prompts, chatCompletion, { bias, quietPrompt, quietImage, type, cyclePrompt, messages, messageExamples }) {
+async function populateChatCompletion(prompts, chatCompletion, { bias, quietPrompt, quietImage, type, cyclePrompt, worldInfoBeforeEntries, worldInfoAfterEntries, messages, messageExamples }) {
     // Helper function for preparing a prompt, that already exists within the prompt collection, for completion
     const addToChatCompletion = async (source, target = null) => {
         // We need the prompts array to determine a position for the source.
@@ -1353,8 +1390,24 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
 
         const index = target ? prompts.index(target) : prompts.index(source);
         const collection = new MessageCollection(source);
-        const message = await Message.fromPromptAsync(prompt);
-        collection.add(message);
+        if (source === 'worldInfoBefore' || source === 'worldInfoAfter') {
+            const messageContents = getWorldInfoMessageContents(
+                source === 'worldInfoBefore' ? worldInfoBeforeEntries : worldInfoAfterEntries,
+            );
+
+            if (messageContents.length === 0) {
+                return;
+            }
+
+            for (const [entryIndex, content] of messageContents.entries()) {
+                const message = await Message.createAsync(prompt.role, content, `${source}-${entryIndex + 1}`);
+                collection.add(message);
+            }
+        } else {
+            const message = await Message.fromPromptAsync(prompt);
+            collection.add(message);
+        }
+
         chatCompletion.add(collection, index);
     };
 
@@ -1504,8 +1557,6 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
  * @param {string} options.scenario - The scenario or context of the dialogue.
  * @param {string} options.charPersonality - Description of the character's personality.
  * @param {string} options.name2 - The second name to be used in the messages.
- * @param {string} options.worldInfoBefore - The world info to be added before the main conversation.
- * @param {string} options.worldInfoAfter - The world info to be added after the main conversation.
  * @param {string} options.charDescription - Description of the character.
  * @param {string} options.quietPrompt - The quiet prompt to be used in the conversation.
  * @param {string} options.bias - The bias to be added in the conversation.
@@ -1515,7 +1566,7 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
  * @param {string} options.type - The type of generation that triggered the prompt
  * @returns {Promise<Object>} prompts - The prepared and merged system and user-defined prompts.
  */
-async function preparePromptsForChatCompletion({ scenario, charPersonality, name2, worldInfoBefore, worldInfoAfter, charDescription, quietPrompt, bias, extensionPrompts, systemPromptOverride, jailbreakPromptOverride, type }) {
+async function preparePromptsForChatCompletion({ scenario, charPersonality, name2, charDescription, quietPrompt, bias, extensionPrompts, systemPromptOverride, jailbreakPromptOverride, type }) {
     const scenarioText = scenario && oai_settings.scenario_format ? substituteParams(oai_settings.scenario_format) : (scenario || '');
     const charPersonalityText = charPersonality && oai_settings.personality_format ? substituteParams(oai_settings.personality_format) : (charPersonality || '');
     const groupNudge = substituteParams(oai_settings.group_nudge_prompt);
@@ -1524,8 +1575,8 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
     // Create entries for system prompts
     const systemPrompts = [
         // Ordered prompts for which a marker should exist
-        { role: 'system', content: formatWorldInfo(worldInfoBefore), identifier: 'worldInfoBefore' },
-        { role: 'system', content: formatWorldInfo(worldInfoAfter), identifier: 'worldInfoAfter' },
+        { role: 'system', content: '', identifier: 'worldInfoBefore' },
+        { role: 'system', content: '', identifier: 'worldInfoAfter' },
         { role: 'system', content: charDescription, identifier: 'charDescription' },
         { role: 'system', content: charPersonalityText, identifier: 'charPersonality' },
         { role: 'system', content: scenarioText, identifier: 'scenario' },
@@ -1675,8 +1726,8 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
  * @param {string} content.charDescription - Description of the character.
  * @param {string} content.charPersonality - Description of the character's personality.
  * @param {string} content.scenario - The scenario or context of the dialogue.
- * @param {string} content.worldInfoBefore - The world info to be added before the main conversation.
- * @param {string} content.worldInfoAfter - The world info to be added after the main conversation.
+ * @param {string[]} [content.worldInfoBeforeEntries] - Raw world info entries before the main conversation.
+ * @param {string[]} [content.worldInfoAfterEntries] - Raw world info entries after the main conversation.
  * @param {string} content.bias - The bias to be added in the conversation.
  * @param {string} content.type - The type of the chat, can be 'impersonate'.
  * @param {string} content.quietPrompt - The quiet prompt to be used in the conversation.
@@ -1695,8 +1746,8 @@ export async function prepareOpenAIMessages({
     charDescription,
     charPersonality,
     scenario,
-    worldInfoBefore,
-    worldInfoAfter,
+    worldInfoBeforeEntries,
+    worldInfoAfterEntries,
     bias,
     type,
     quietPrompt,
@@ -1723,8 +1774,6 @@ export async function prepareOpenAIMessages({
             scenario,
             charPersonality,
             name2,
-            worldInfoBefore,
-            worldInfoAfter,
             charDescription,
             quietPrompt,
             bias,
@@ -1735,7 +1784,17 @@ export async function prepareOpenAIMessages({
         });
 
         // Fill the chat completion with as much context as the budget allows
-        await populateChatCompletion(prompts, chatCompletion, { bias, quietPrompt, quietImage, type, cyclePrompt, messages, messageExamples });
+        await populateChatCompletion(prompts, chatCompletion, {
+            bias,
+            quietPrompt,
+            quietImage,
+            type,
+            cyclePrompt,
+            worldInfoBeforeEntries,
+            worldInfoAfterEntries,
+            messages,
+            messageExamples,
+        });
     } catch (error) {
         if (error instanceof TokenBudgetExceededError) {
             toastr.error(t`Mandatory prompts exceed the context size.`);

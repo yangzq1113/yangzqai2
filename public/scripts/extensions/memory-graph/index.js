@@ -3429,12 +3429,39 @@ function rewriteDepthWorldInfoToAfter(payload = {}) {
         return payload;
     }
 
-    const mergedDepthText = blocks.join('\n\n').trim();
-    payload.worldInfoAfter = [String(payload.worldInfoAfter || '').trim(), mergedDepthText]
-        .filter(Boolean)
-        .join('\n\n')
-        .trim();
+    appendUniqueWorldInfoEntries(payload, 'worldInfoAfter', blocks);
     return payload;
+}
+
+function normalizeWorldInfoEntries(rawEntries) {
+    return Array.isArray(rawEntries)
+        ? rawEntries.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+}
+
+function ensureWorldInfoEntries(payload, field) {
+    const entryField = `${field}Entries`;
+    const entries = normalizeWorldInfoEntries(payload?.[entryField]);
+    payload[entryField] = entries;
+    return entries;
+}
+
+function appendUniqueWorldInfoEntries(payload, field, incomingEntries = []) {
+    if (!payload || typeof payload !== 'object') {
+        return false;
+    }
+
+    const entries = ensureWorldInfoEntries(payload, field);
+    let changed = false;
+    for (const value of incomingEntries) {
+        const incoming = String(value ?? '').trim();
+        if (!incoming || entries.includes(incoming)) {
+            continue;
+        }
+        entries.push(incoming);
+        changed = true;
+    }
+    return changed;
 }
 
 async function buildPresetAwareLLMMessages(
@@ -3494,8 +3521,8 @@ async function buildPresetAwareLLMMessages(
 function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
     const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
     return {
-        worldInfoBefore: String(source.worldInfoBefore || ''),
-        worldInfoAfter: String(source.worldInfoAfter || ''),
+        worldInfoBeforeEntries: normalizeWorldInfoEntries(source.worldInfoBeforeEntries),
+        worldInfoAfterEntries: normalizeWorldInfoEntries(source.worldInfoAfterEntries),
         worldInfoDepth: Array.isArray(source.worldInfoDepth) ? source.worldInfoDepth : [],
         outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
         worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
@@ -3506,7 +3533,7 @@ function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
 
 function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
     const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
-    if (normalized.worldInfoBefore || normalized.worldInfoAfter) {
+    if (normalized.worldInfoBeforeEntries.length > 0 || normalized.worldInfoAfterEntries.length > 0) {
         return true;
     }
     if (normalized.worldInfoDepth.length > 0 || normalized.worldInfoExamples.length > 0) {
@@ -3520,8 +3547,8 @@ function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
 
 function buildRuntimeWorldInfoFromPayload(payload = null) {
     const candidate = normalizeRuntimeWorldInfo({
-        worldInfoBefore: String(payload?.worldInfoBefore || ''),
-        worldInfoAfter: String(payload?.worldInfoAfter || ''),
+        worldInfoBeforeEntries: Array.isArray(payload?.worldInfoBeforeEntries) ? payload.worldInfoBeforeEntries : [],
+        worldInfoAfterEntries: Array.isArray(payload?.worldInfoAfterEntries) ? payload.worldInfoAfterEntries : [],
         worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
         outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
         worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
@@ -6112,10 +6139,8 @@ function formatNodeDetail(node, settings = null, context = null, extra = {}) {
 
 function extractWorldInfoHints(payload) {
     const hints = [];
-    const before = normalizeText(payload?.worldInfoBefore || '');
-    const after = normalizeText(payload?.worldInfoAfter || '');
-    if (before) hints.push(before);
-    if (after) hints.push(after);
+    hints.push(...normalizeWorldInfoEntries(payload?.worldInfoBeforeEntries));
+    hints.push(...normalizeWorldInfoEntries(payload?.worldInfoAfterEntries));
 
     const allActivated = payload?.worldInfoResolution?.allActivatedEntries;
     if (allActivated && typeof allActivated[Symbol.iterator] === 'function') {
@@ -7206,8 +7231,8 @@ function syncMutableGenerationPayloadState(target, source) {
         '__lukerRpgMemoryInjected',
         'worldInfoResolution',
         'worldInfoResolutionOverride',
-        'worldInfoBefore',
-        'worldInfoAfter',
+        'worldInfoBeforeEntries',
+        'worldInfoAfterEntries',
         'worldInfoDepth',
         'worldInfoExamples',
         'anBefore',

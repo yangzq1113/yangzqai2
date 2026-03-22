@@ -836,8 +836,8 @@ function renderTraceDetailLines(details = {}) {
 /**
  * @typedef {object} WIPromptResult
  * @property {string} worldInfoString - Complete world info string
- * @property {string} worldInfoBefore - World info that goes before the prompt
- * @property {string} worldInfoAfter - World info that goes after the prompt
+ * @property {string[]} worldInfoBeforeEntries - Raw world info entries that go before the prompt
+ * @property {string[]} worldInfoAfterEntries - Raw world info entries that go after the prompt
  * @property {Array} worldInfoExamples - Array of example entries
  * @property {Array} worldInfoDepth - Array of depth entries
  * @property {Array} anBefore - Array of entries before Author's Note
@@ -847,8 +847,8 @@ function renderTraceDetailLines(details = {}) {
 
 /**
  * @typedef {object} WIActivated
- * @property {string} worldInfoBefore The world info before the chat.
- * @property {string} worldInfoAfter The world info after the chat.
+ * @property {string[]} worldInfoBeforeEntries The raw world info entries before the chat.
+ * @property {string[]} worldInfoAfterEntries The raw world info entries after the chat.
  * @property {any[]} EMEntries The entries for examples.
  * @property {any[]} WIDepthEntries The depth entries.
  * @property {any[]} ANBeforeEntries The entries before Author's Note.
@@ -1739,12 +1739,12 @@ function invalidateWorldInfoRequestCache(names = []) {
  * @returns {Promise<WIPromptResult>} The world info string and depth.
  */
 export async function getWorldInfoPrompt(chat, maxContext, isDryRun, globalScanData) {
-    let worldInfoString = '', worldInfoBefore = '', worldInfoAfter = '';
+    let worldInfoBeforeEntries = [], worldInfoAfterEntries = [];
 
     const activatedWorldInfo = await checkWorldInfo(chat, maxContext, isDryRun, globalScanData);
-    worldInfoBefore = activatedWorldInfo.worldInfoBefore;
-    worldInfoAfter = activatedWorldInfo.worldInfoAfter;
-    worldInfoString = worldInfoBefore + worldInfoAfter;
+    worldInfoBeforeEntries = Array.isArray(activatedWorldInfo.worldInfoBeforeEntries) ? activatedWorldInfo.worldInfoBeforeEntries : [];
+    worldInfoAfterEntries = Array.isArray(activatedWorldInfo.worldInfoAfterEntries) ? activatedWorldInfo.worldInfoAfterEntries : [];
+    const worldInfoString = [...worldInfoBeforeEntries, ...worldInfoAfterEntries].join('\n');
 
     if (!isDryRun && activatedWorldInfo.allActivatedEntries && activatedWorldInfo.allActivatedEntries.size > 0) {
         const arg = Array.from(activatedWorldInfo.allActivatedEntries.values());
@@ -1753,8 +1753,8 @@ export async function getWorldInfoPrompt(chat, maxContext, isDryRun, globalScanD
 
     return {
         worldInfoString,
-        worldInfoBefore,
-        worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
         worldInfoExamples: activatedWorldInfo.EMEntries ?? [],
         worldInfoDepth: activatedWorldInfo.WIDepthEntries ?? [],
         anBefore: activatedWorldInfo.ANBeforeEntries ?? [],
@@ -7469,7 +7469,16 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     timedEffects.checkTimedEffects();
 
     if (sortedEntries.length === 0) {
-        return { worldInfoBefore: '', worldInfoAfter: '', WIDepthEntries: [], EMEntries: [], ANBeforeEntries: [], ANAfterEntries: [], outletEntries: {}, allActivatedEntries: new Set() };
+        return {
+            worldInfoBeforeEntries: [],
+            worldInfoAfterEntries: [],
+            WIDepthEntries: [],
+            EMEntries: [],
+            ANBeforeEntries: [],
+            ANAfterEntries: [],
+            outletEntries: {},
+            allActivatedEntries: new Set(),
+        };
     }
 
     /** @type {number[]} Represents the delay levels for entries that are delayed until recursion */
@@ -8223,9 +8232,6 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         }
     });
 
-    const worldInfoBefore = WIBeforeEntries.length ? WIBeforeEntries.join('\n') : '';
-    const worldInfoAfter = WIAfterEntries.length ? WIAfterEntries.join('\n') : '';
-
     if (shouldWIAddPrompt) {
         const originalAN = context.extensionPrompts[NOTE_MODULE_NAME].value;
         const ANWithWI = `${ANTopEntries.join('\n')}\n${originalAN}\n${ANBottomEntries.join('\n')}`.replace(/(^\n)|(\n$)/g, '');
@@ -8239,7 +8245,16 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     console.log(`[WI] ${isDryRun ? 'Hypothetically adding' : 'Adding'} ${allActivatedEntries.size} entries to prompt`, Array.from(allActivatedEntries.values()));
     console.debug(`[WI] --- DONE${isDryRun ? ' (DRY RUN)' : ''} ---`);
 
-    return { worldInfoBefore, worldInfoAfter, EMEntries, WIDepthEntries, ANBeforeEntries: ANTopEntries, ANAfterEntries: ANBottomEntries, outletEntries: WIOutletEntries, allActivatedEntries: new Set(allActivatedEntries.values()) };
+    return {
+        worldInfoBeforeEntries: [...WIBeforeEntries],
+        worldInfoAfterEntries: [...WIAfterEntries],
+        EMEntries,
+        WIDepthEntries,
+        ANBeforeEntries: ANTopEntries,
+        ANAfterEntries: ANBottomEntries,
+        outletEntries: WIOutletEntries,
+        allActivatedEntries: new Set(allActivatedEntries.values()),
+    };
 }
 
 /**

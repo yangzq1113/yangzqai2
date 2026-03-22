@@ -28,6 +28,7 @@ Use `getContext()` as the primary integration surface.
 - Prompt/world-info helpers:
   - `buildPresetAwarePromptMessages(options)`
   - `simulateWorldInfoActivation(options?)`
+  - WI helper payloads are entries-first: use `worldInfoBeforeEntries` / `worldInfoAfterEntries`
   - For preset/world-info assembly semantics (including popup/plugin flows), see `docs/luker-api-migration.md`.
 - Generation lifecycle hooks (`context.eventSource.on(context.eventTypes.*)`):
   - `GENERATION_BEFORE_WORLD_INFO_SCAN`

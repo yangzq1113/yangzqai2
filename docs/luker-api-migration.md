@@ -383,12 +383,14 @@ buildPresetAwarePromptMessages({
   - assistant messages may carry `tool_calls`
   - tool messages may carry `tool_call_id`
 - `taskSystem` / `taskUser` are legacy compatibility fields and are only used when `messages` is empty.
-- `runtimeWorldInfo` supports:
-  - `worldInfoBefore: string`
-  - `worldInfoAfter: string`
+- `runtimeWorldInfo` is entries-first and supports:
+  - `worldInfoBeforeEntries: string[]`
+  - `worldInfoAfterEntries: string[]`
   - `worldInfoDepth: Array<{ depth: number, role: 'system'|'user'|'assistant'|number, entries: string[] }>`
   - `outletEntries: object`
   - `worldInfoExamples: any[]`
+  - `anBefore: string[]`
+  - `anAfter: string[]`
 - If `runtimeWorldInfo` is omitted or `null`, Luker falls back to the currently active world-info prompt fields when composing preset-aware plugin messages.
 - Pass `runtimeWorldInfo: {}` to explicitly suppress that fallback and build a preset-aware request with no world-info content.
 - Throws when prompt layout cannot produce a valid plugin message sequence.
@@ -406,10 +408,24 @@ simulateWorldInfoActivation({
 ```
 
 - Returns WI resolution + normalized request inputs:
-  - `worldInfoString/worldInfoBefore/worldInfoAfter/worldInfoDepth/...`
+  - `worldInfoString`
+  - `worldInfoBeforeEntries`
+  - `worldInfoAfterEntries`
+  - `worldInfoExamples`
+  - `worldInfoDepth`
+  - `outletEntries`
+  - `anBefore`
+  - `anAfter`
   - `chatForWI`
   - `maxContext`
   - `globalScanData`
+
+#### World-info runtime contract
+
+- Treat world-info as structured entry arrays, not as pre-flattened text blocks.
+- Use `worldInfoBeforeEntries` / `worldInfoAfterEntries` in plugin code, helper payloads, and generation hook payloads.
+- If your plugin needs a flat string for display or a custom downstream payload, join the entry arrays explicitly at the edge of your integration.
+- `GENERATION_AFTER_WORLD_INFO_SCAN` and `GENERATION_WORLD_INFO_FINALIZED` expose the same entries-first WI fields listed above.
 
 ```ts
 buildWorldInfoChatInput(messages, includeNames = true)
@@ -464,11 +480,13 @@ const requestMessages = context.buildPresetAwarePromptMessages({
     content: m.mes,
   })),
   runtimeWorldInfo: {
-    worldInfoBefore: wi.worldInfoBefore,
-    worldInfoAfter: wi.worldInfoAfter,
+    worldInfoBeforeEntries: wi.worldInfoBeforeEntries,
+    worldInfoAfterEntries: wi.worldInfoAfterEntries,
     worldInfoDepth: wi.worldInfoDepth,
     outletEntries: wi.outletEntries,
     worldInfoExamples: wi.worldInfoExamples,
+    anBefore: wi.anBefore,
+    anAfter: wi.anAfter,
   },
 });
 ```

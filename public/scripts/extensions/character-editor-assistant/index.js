@@ -490,11 +490,14 @@ function rewriteDepthWorldInfoToAfterWithNotes(payload = {}) {
         return payload;
     }
 
-    const mergedDepthText = blocks.join('\n\n').trim();
-    payload.worldInfoAfter = [String(payload.worldInfoAfter || '').trim(), mergedDepthText]
-        .filter(Boolean)
-        .join('\n\n')
-        .trim();
+    if (!Array.isArray(payload.worldInfoAfterEntries)) {
+        payload.worldInfoAfterEntries = [];
+    }
+    for (const block of blocks) {
+        if (!payload.worldInfoAfterEntries.includes(block)) {
+            payload.worldInfoAfterEntries.push(block);
+        }
+    }
     return payload;
 }
 

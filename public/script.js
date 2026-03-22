@@ -1462,8 +1462,8 @@ let isSendTextareaComposing = false;
 let pendingUserInputText = null;
 let activeWorldInfoPromptSnapshot = {
     chatId: '',
-    worldInfoBefore: '',
-    worldInfoAfter: '',
+    worldInfoBeforeEntries: [],
+    worldInfoAfterEntries: [],
 };
 
 let this_del_mes = -1;
@@ -6142,27 +6142,27 @@ export function buildWorldInfoChatInput(messages, includeNames = world_info_incl
         .reverse();
 }
 
-function setActiveWorldInfoPromptSnapshot({ worldInfoBefore = '', worldInfoAfter = '' } = {}) {
+function setActiveWorldInfoPromptSnapshot({ worldInfoBeforeEntries = [], worldInfoAfterEntries = [] } = {}) {
     activeWorldInfoPromptSnapshot = {
         chatId: String(getCurrentChatId() || ''),
-        worldInfoBefore: String(worldInfoBefore || ''),
-        worldInfoAfter: String(worldInfoAfter || ''),
+        worldInfoBeforeEntries: Array.isArray(worldInfoBeforeEntries) ? worldInfoBeforeEntries : [],
+        worldInfoAfterEntries: Array.isArray(worldInfoAfterEntries) ? worldInfoAfterEntries : [],
     };
 }
 
 /**
  * Returns cached WI prompt fields for plugin preset assembly.
  * Snapshot is scoped by chat and refreshed during generation WI pipeline.
- * @returns {{ worldInfoBefore: string, worldInfoAfter: string }}
+ * @returns {{ worldInfoBeforeEntries: string[], worldInfoAfterEntries: string[] }}
  */
 export function getActiveWorldInfoPromptFields() {
     const currentChatId = String(getCurrentChatId() || '');
     if (!currentChatId || activeWorldInfoPromptSnapshot.chatId !== currentChatId) {
-        return { worldInfoBefore: '', worldInfoAfter: '' };
+        return { worldInfoBeforeEntries: [], worldInfoAfterEntries: [] };
     }
     return {
-        worldInfoBefore: String(activeWorldInfoPromptSnapshot.worldInfoBefore || ''),
-        worldInfoAfter: String(activeWorldInfoPromptSnapshot.worldInfoAfter || ''),
+        worldInfoBeforeEntries: Array.isArray(activeWorldInfoPromptSnapshot.worldInfoBeforeEntries) ? activeWorldInfoPromptSnapshot.worldInfoBeforeEntries : [],
+        worldInfoAfterEntries: Array.isArray(activeWorldInfoPromptSnapshot.worldInfoAfterEntries) ? activeWorldInfoPromptSnapshot.worldInfoAfterEntries : [],
     };
 }
 
@@ -6236,12 +6236,24 @@ export async function simulateWorldInfoActivation({
     };
 }
 
+function normalizeWorldInfoEntries(entries) {
+    return Array.isArray(entries)
+        ? entries.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+}
+
+function joinWorldInfoEntries(entries) {
+    return normalizeWorldInfoEntries(entries).join('\n');
+}
+
 function normalizeWorldInfoResolutionData(worldInfoResolution) {
     const safeResolution = worldInfoResolution && typeof worldInfoResolution === 'object' ? worldInfoResolution : {};
+    const worldInfoBeforeEntries = normalizeWorldInfoEntries(safeResolution.worldInfoBeforeEntries);
+    const worldInfoAfterEntries = normalizeWorldInfoEntries(safeResolution.worldInfoAfterEntries);
     return {
-        worldInfoString: safeResolution.worldInfoString || '',
-        worldInfoBefore: safeResolution.worldInfoBefore || '',
-        worldInfoAfter: safeResolution.worldInfoAfter || '',
+        worldInfoString: String(safeResolution.worldInfoString || '') || [...worldInfoBeforeEntries, ...worldInfoAfterEntries].join('\n'),
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
         worldInfoExamples: Array.isArray(safeResolution.worldInfoExamples) ? safeResolution.worldInfoExamples : [],
         worldInfoDepth: Array.isArray(safeResolution.worldInfoDepth) ? safeResolution.worldInfoDepth : [],
         outletEntries: safeResolution.outletEntries && typeof safeResolution.outletEntries === 'object' ? safeResolution.outletEntries : {},
@@ -6295,7 +6307,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
-    setActiveWorldInfoPromptSnapshot({ worldInfoBefore: '', worldInfoAfter: '' });
+    setActiveWorldInfoPromptSnapshot();
     const generationEventParams = { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage };
 
     // Prevent generation from shallow characters
@@ -6809,8 +6821,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     };
     // Expose latest WI prompt snapshot before AFTER_WORLD_INFO_SCAN hooks run.
     setActiveWorldInfoPromptSnapshot({
-        worldInfoBefore: String(wiAfterPayload.worldInfoBefore || ''),
-        worldInfoAfter: String(wiAfterPayload.worldInfoAfter || ''),
+        worldInfoBeforeEntries: Array.isArray(wiAfterPayload.worldInfoBeforeEntries) ? wiAfterPayload.worldInfoBeforeEntries : [],
+        worldInfoAfterEntries: Array.isArray(wiAfterPayload.worldInfoAfterEntries) ? wiAfterPayload.worldInfoAfterEntries : [],
     });
     await eventSource.emit(event_types.GENERATION_AFTER_WORLD_INFO_SCAN, wiAfterPayload);
     if (exitAbortedGenerationIfNeeded()) {
@@ -6850,8 +6862,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     let {
         worldInfoString,
-        worldInfoBefore,
-        worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
         worldInfoExamples,
         worldInfoDepth,
         outletEntries,
@@ -6860,8 +6872,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     } = normalizeWorldInfoResolutionData(worldInfoResolution);
 
     setActiveWorldInfoPromptSnapshot({
-        worldInfoBefore,
-        worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
     });
 
     const wiFinalizedPayload = {
@@ -6871,8 +6883,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         maxContext: this_max_context,
         globalScanData,
         worldInfoString,
-        worldInfoBefore,
-        worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
         worldInfoExamples,
         worldInfoDepth,
         anBefore,
@@ -6904,8 +6916,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     ({
         worldInfoString,
-        worldInfoBefore,
-        worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
         worldInfoExamples,
         worldInfoDepth,
         outletEntries,
@@ -6917,12 +6929,14 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     }));
 
     setActiveWorldInfoPromptSnapshot({
-        worldInfoBefore,
-        worldInfoAfter,
+        worldInfoBeforeEntries,
+        worldInfoAfterEntries,
     });
 
     applyFinalizedAuthorsNoteInjections(anBefore, anAfter);
     setExtensionPrompt(inject_ids.QUIET_PROMPT, '', extension_prompt_types.IN_PROMPT, 0, true);
+    const worldInfoBefore = joinWorldInfoEntries(worldInfoBeforeEntries);
+    const worldInfoAfter = joinWorldInfoEntries(worldInfoAfterEntries);
 
     // Add message example WI
     for (const example of worldInfoExamples) {
@@ -7578,8 +7592,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
                 charDescription: description,
                 charPersonality: personality,
                 scenario: scenario,
-                worldInfoBefore: worldInfoBefore,
-                worldInfoAfter: worldInfoAfter,
+                worldInfoBeforeEntries: worldInfoBeforeEntries,
+                worldInfoAfterEntries: worldInfoAfterEntries,
                 extensionPrompts: extension_prompts,
                 bias: promptBias,
                 type: type,

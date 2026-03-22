@@ -788,8 +788,12 @@ function applyPluginRegexToRuntimeWorldInfo(runtimeWorldInfo = null) {
 
     return normalizeRuntimeWorldInfo({
         ...normalized,
-        worldInfoBefore: applyWorldInfoRegex(normalized.worldInfoBefore),
-        worldInfoAfter: applyWorldInfoRegex(normalized.worldInfoAfter),
+        worldInfoBeforeEntries: normalizeRuntimeWorldInfoEntries(normalized.worldInfoBeforeEntries)
+            .map(item => applyWorldInfoRegex(item))
+            .filter(Boolean),
+        worldInfoAfterEntries: normalizeRuntimeWorldInfoEntries(normalized.worldInfoAfterEntries)
+            .map(item => applyWorldInfoRegex(item))
+            .filter(Boolean),
         worldInfoDepth: normalized.worldInfoDepth.map(entry => ({
             ...entry,
             entries: Array.isArray(entry?.entries)
@@ -1007,22 +1011,40 @@ function resolvePluginMarkerPromptContent(promptIdentifier, envelope, runtimeWor
     }
 }
 
-function formatPluginWorldInfoContent(value, completionCore) {
-    const content = cleanText(value || '');
-    if (!content) {
-        return '';
-    }
+function normalizeRuntimeWorldInfoEntries(rawEntries) {
+    return Array.isArray(rawEntries)
+        ? rawEntries.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+}
+
+function formatSplitPluginWorldInfoEntries(entries, completionCore) {
     const wiFormat = cleanText(completionCore?.wi_format || '');
     if (!wiFormat) {
-        return content;
+        return [...entries];
     }
-    if (wiFormat.includes('{{0}}')) {
-        return wiFormat.replaceAll('{{0}}', content);
+
+    const placeholder = wiFormat.includes('{{0}}') ? '{{0}}' : (wiFormat.includes('{0}') ? '{0}' : '');
+    if (!placeholder) {
+        return [wiFormat];
     }
-    if (wiFormat.includes('{0}')) {
-        return wiFormat.replaceAll('{0}', content);
+
+    const placeholderCount = wiFormat.split(placeholder).length - 1;
+    if (placeholderCount !== 1) {
+        return [wiFormat.replaceAll(placeholder, entries.join('\n'))];
     }
-    return wiFormat;
+
+    const [prefix, suffix] = wiFormat.split(placeholder);
+    const lastIndex = entries.length - 1;
+    return entries.map((entry, index) => `${index === 0 ? prefix : ''}${entry}${index === lastIndex ? suffix : ''}`);
+}
+
+function getPluginWorldInfoMessageContents(entries, completionCore) {
+    const normalizedEntries = normalizeRuntimeWorldInfoEntries(entries);
+    if (normalizedEntries.length === 0) {
+        return [];
+    }
+
+    return formatSplitPluginWorldInfoEntries(normalizedEntries, completionCore).filter(Boolean);
 }
 
 function getWorldInfoRoleOrder(role) {
@@ -1085,8 +1107,8 @@ function normalizeRuntimeWorldInfoDepth(rawDepthEntries) {
 function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
     const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
     return {
-        worldInfoBefore: String(source.worldInfoBefore || ''),
-        worldInfoAfter: String(source.worldInfoAfter || ''),
+        worldInfoBeforeEntries: normalizeRuntimeWorldInfoEntries(source.worldInfoBeforeEntries),
+        worldInfoAfterEntries: normalizeRuntimeWorldInfoEntries(source.worldInfoAfterEntries),
         worldInfoDepth: normalizeRuntimeWorldInfoDepth(source.worldInfoDepth),
         outletEntries: normalizeRuntimeWorldInfoOutlets(source.outletEntries),
         worldInfoExamples: normalizeRuntimeWorldInfoExamples(source.worldInfoExamples),
@@ -1102,8 +1124,8 @@ function applyWorldInfoPostActivationHook(runtimeWorldInfo = null, postActivatio
     }
 
     const payload = {
-        worldInfoBefore: normalized.worldInfoBefore,
-        worldInfoAfter: normalized.worldInfoAfter,
+        worldInfoBeforeEntries: [...normalized.worldInfoBeforeEntries],
+        worldInfoAfterEntries: [...normalized.worldInfoAfterEntries],
         worldInfoDepth: normalized.worldInfoDepth.map(entry => ({
             depth: Math.max(0, Math.floor(Number(entry?.depth) || 0)),
             role: normalizeLayoutRole(entry?.role),
@@ -1354,8 +1376,8 @@ async function resolveWorldInfoForMessages(messages = [], {
     try {
         const resolution = await simulateWorldInfoActivation(request);
         return applyWorldInfoPostActivationHook({
-            worldInfoBefore: resolution?.worldInfoBefore || '',
-            worldInfoAfter: resolution?.worldInfoAfter || '',
+            worldInfoBeforeEntries: Array.isArray(resolution?.worldInfoBeforeEntries) ? resolution.worldInfoBeforeEntries : [],
+            worldInfoAfterEntries: Array.isArray(resolution?.worldInfoAfterEntries) ? resolution.worldInfoAfterEntries : [],
             worldInfoDepth: Array.isArray(resolution?.worldInfoDepth) ? resolution.worldInfoDepth : [],
             outletEntries: resolution?.outletEntries && typeof resolution.outletEntries === 'object' ? resolution.outletEntries : {},
             worldInfoExamples: Array.isArray(resolution?.worldInfoExamples) ? resolution.worldInfoExamples : [],
@@ -1389,14 +1411,14 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
         ...scriptInjectFields.depthEntries,
     ];
     const historyMessages = mergeWorldInfoDepthIntoMessages(normalizedMessages, mergedWorldInfoDepth);
-    const worldInfoBeforeText = [scriptInjectFields.before, runtimePromptFields.worldInfoBefore]
-        .filter(Boolean)
-        .join('\n')
-        .trim();
-    const worldInfoAfterText = [runtimePromptFields.worldInfoAfter, scriptInjectFields.after]
-        .filter(Boolean)
-        .join('\n')
-        .trim();
+    const worldInfoBeforeEntries = [
+        ...normalizeRuntimeWorldInfoEntries(scriptInjectFields.before ? [scriptInjectFields.before] : []),
+        ...normalizeRuntimeWorldInfoEntries(runtimePromptFields.worldInfoBeforeEntries),
+    ];
+    const worldInfoAfterEntries = [
+        ...normalizeRuntimeWorldInfoEntries(runtimePromptFields.worldInfoAfterEntries),
+        ...normalizeRuntimeWorldInfoEntries(scriptInjectFields.after ? [scriptInjectFields.after] : []),
+    ];
 
     for (const entry of orderEntries) {
         if (!entry || entry.enabled === false) {
@@ -1414,13 +1436,14 @@ function buildPluginMessagesFromPromptOrder(completionCore, envelope, normalized
         }
 
         if (identifier === 'worldInfoBefore' || identifier === 'worldInfoAfter') {
-            const fieldKey = identifier === 'worldInfoBefore' ? 'worldInfoBefore' : 'worldInfoAfter';
-            const sourceContent = fieldKey === 'worldInfoBefore' ? worldInfoBeforeText : worldInfoAfterText;
-            const content = formatPluginWorldInfoContent(sourceContent || '', completionCore);
-            if (content) {
-                result.push({ role: 'system', content });
-                continue;
+            const messageContents = getPluginWorldInfoMessageContents(
+                identifier === 'worldInfoBefore' ? worldInfoBeforeEntries : worldInfoAfterEntries,
+                completionCore,
+            );
+            if (messageContents.length > 0) {
+                result.push(...messageContents.map(content => ({ role: 'system', content })));
             }
+            continue;
         }
 
         if (identifier === 'chatHistory') {

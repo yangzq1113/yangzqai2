@@ -406,19 +406,32 @@ function migrateLegacyCapsuleInjectPosition(value) {
     }
 }
 
-function appendUniqueWorldInfoBlock(text, block) {
-    const existing = String(text || '').trim();
+function normalizeWorldInfoEntries(rawEntries) {
+    return Array.isArray(rawEntries)
+        ? rawEntries.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+}
+
+function ensureWorldInfoEntries(payload, field) {
+    const entryField = `${field}Entries`;
+    const entries = normalizeWorldInfoEntries(payload?.[entryField]);
+    payload[entryField] = entries;
+    return entries;
+}
+
+function appendUniqueWorldInfoBlock(payload, field, block) {
     const incoming = String(block || '').trim();
     if (!incoming) {
-        return { text: existing, changed: false };
+        return false;
     }
-    if (existing.includes(incoming)) {
-        return { text: existing, changed: false };
+
+    const entries = ensureWorldInfoEntries(payload, field);
+    if (entries.includes(incoming)) {
+        return false;
     }
-    return {
-        text: [existing, incoming].filter(Boolean).join('\n\n').trim(),
-        changed: true,
-    };
+
+    entries.push(incoming);
+    return true;
 }
 
 function appendUniqueNoteEntry(targetList, block) {
@@ -467,14 +480,10 @@ function injectCapsuleToPayload(payload, text, settings = extension_settings[MOD
     }
     const position = normalizeCapsuleInjectPosition(settings?.capsuleInjectPosition);
     if (position === world_info_position.before) {
-        const next = appendUniqueWorldInfoBlock(payload.worldInfoBefore, packet);
-        payload.worldInfoBefore = next.text;
-        return next.changed;
+        return appendUniqueWorldInfoBlock(payload, 'worldInfoBefore', packet);
     }
     if (position === world_info_position.after) {
-        const next = appendUniqueWorldInfoBlock(payload.worldInfoAfter, packet);
-        payload.worldInfoAfter = next.text;
-        return next.changed;
+        return appendUniqueWorldInfoBlock(payload, 'worldInfoAfter', packet);
     }
     if (position === world_info_position.ANTop) {
         if (!Array.isArray(payload.anBefore)) {
@@ -3372,11 +3381,9 @@ function rewriteDepthWorldInfoToAfter(payload = {}) {
         return payload;
     }
 
-    const mergedDepthText = blocks.join('\n\n').trim();
-    payload.worldInfoAfter = [String(payload.worldInfoAfter || '').trim(), mergedDepthText]
-        .filter(Boolean)
-        .join('\n\n')
-        .trim();
+    for (const block of blocks) {
+        appendUniqueWorldInfoBlock(payload, 'worldInfoAfter', block);
+    }
     return payload;
 }
 
@@ -3443,8 +3450,8 @@ function resolveOrchestrationAgentProfileResolution(context, settings, preset = 
 function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
     const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
     return {
-        worldInfoBefore: String(source.worldInfoBefore || ''),
-        worldInfoAfter: String(source.worldInfoAfter || ''),
+        worldInfoBeforeEntries: normalizeWorldInfoEntries(source.worldInfoBeforeEntries),
+        worldInfoAfterEntries: normalizeWorldInfoEntries(source.worldInfoAfterEntries),
         worldInfoDepth: Array.isArray(source.worldInfoDepth) ? source.worldInfoDepth : [],
         outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
         worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
@@ -3455,7 +3462,7 @@ function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
 
 function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
     const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
-    if (normalized.worldInfoBefore || normalized.worldInfoAfter) {
+    if (normalized.worldInfoBeforeEntries.length > 0 || normalized.worldInfoAfterEntries.length > 0) {
         return true;
     }
     if (normalized.worldInfoDepth.length > 0 || normalized.worldInfoExamples.length > 0) {
@@ -3469,8 +3476,8 @@ function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
 
 function buildRuntimeWorldInfoFromPayload(payload = null) {
     const candidate = normalizeRuntimeWorldInfo({
-        worldInfoBefore: String(payload?.worldInfoBefore || ''),
-        worldInfoAfter: String(payload?.worldInfoAfter || ''),
+        worldInfoBeforeEntries: Array.isArray(payload?.worldInfoBeforeEntries) ? payload.worldInfoBeforeEntries : [],
+        worldInfoAfterEntries: Array.isArray(payload?.worldInfoAfterEntries) ? payload.worldInfoAfterEntries : [],
         worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
         outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
         worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
