@@ -9812,7 +9812,7 @@ function normalizePresetStateApiId(apiId = '') {
 
 function resolvePresetStateTarget(target = null) {
     if (target && typeof target === 'object') {
-        const apiId = normalizePresetStateApiId(target.apiId || target.type || '');
+        const apiId = normalizePresetStateApiId(target.collection || target.apiId || target.type || '');
         const requestedName = String(target.name || '').trim();
         if (!apiId || !requestedName) {
             return null;
@@ -9836,7 +9836,7 @@ function getPresetStateTargetKey(target) {
     if (!target || typeof target !== 'object') {
         return '';
     }
-    const apiId = normalizePresetStateApiId(target.apiId);
+    const apiId = normalizePresetStateApiId(target.collection || target.apiId || target.type || '');
     const name = String(target.name || '').trim();
     return apiId && name
         ? `preset:${apiId}:${name.toLowerCase()}`

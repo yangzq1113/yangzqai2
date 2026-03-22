@@ -198,9 +198,9 @@ function isPlainObject(value) {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-function getStoredPresetNames(apiId = '') {
-    const normalizedApiId = normalizePresetApi(apiId);
-    const manager = getPresetManager(normalizedApiId);
+function getStoredPresetNames(collection = '') {
+    const normalizedCollection = normalizePresetApi(collection);
+    const manager = getPresetManager(normalizedCollection);
     const presetNames = manager?.getPresetList?.()?.preset_names;
 
     if (Array.isArray(presetNames)) {
@@ -211,13 +211,13 @@ function getStoredPresetNames(apiId = '') {
 }
 
 function normalizePresetRef(target = null, options = {}) {
-    const fallbackApiId = options?.apiId || options?.defaultApiId || '';
+    const fallbackCollection = options?.collection || options?.defaultCollection || '';
     const allowMissingName = options?.allowMissingName === true;
 
     if (target && typeof target === 'object') {
-        const apiId = normalizePresetApi(target.apiId || target.type || target.collection || fallbackApiId);
-        const manager = getPresetManager(apiId);
-        const presetNames = getStoredPresetNames(apiId);
+        const collection = normalizePresetApi(target.collection || fallbackCollection);
+        const manager = getPresetManager(collection);
+        const presetNames = getStoredPresetNames(collection);
         const selectedName = cleanText(manager?.getSelectedPresetName?.());
         const selectedStoredName = findCanonicalNameInList(presetNames, selectedName) || '';
         const requestedName = cleanText(target.name);
@@ -225,32 +225,32 @@ function normalizePresetRef(target = null, options = {}) {
             ? (findCanonicalNameInList(presetNames, requestedName) || (allowMissingName ? requestedName : ''))
             : selectedStoredName;
 
-        return apiId && resolvedName
-            ? { apiId, name: resolvedName }
+        return collection && resolvedName
+            ? { collection, name: resolvedName }
             : null;
     }
 
     if (typeof target === 'string') {
-        const apiId = normalizePresetApi(target || fallbackApiId);
-        const manager = getPresetManager(apiId);
+        const collection = normalizePresetApi(target || fallbackCollection);
+        const manager = getPresetManager(collection);
         const selectedName = cleanText(manager?.getSelectedPresetName?.());
-        const selectedStoredName = findCanonicalNameInList(getStoredPresetNames(apiId), selectedName) || '';
-        return apiId && selectedStoredName
-            ? { apiId, name: selectedStoredName }
+        const selectedStoredName = findCanonicalNameInList(getStoredPresetNames(collection), selectedName) || '';
+        return collection && selectedStoredName
+            ? { collection, name: selectedStoredName }
             : null;
     }
 
-    const apiId = normalizePresetApi(fallbackApiId);
-    const manager = getPresetManager(apiId);
+    const collection = normalizePresetApi(fallbackCollection);
+    const manager = getPresetManager(collection);
     const selectedName = cleanText(manager?.getSelectedPresetName?.());
-    const selectedStoredName = findCanonicalNameInList(getStoredPresetNames(apiId), selectedName) || '';
-    return apiId && selectedStoredName
-        ? { apiId, name: selectedStoredName }
+    const selectedStoredName = findCanonicalNameInList(getStoredPresetNames(collection), selectedName) || '';
+    return collection && selectedStoredName
+        ? { collection, name: selectedStoredName }
         : null;
 }
 
-function buildPresetBodySnapshot(apiId, name, body, source, { stored = true, selected = false } = {}) {
-    const ref = { apiId, name: cleanText(name) };
+function buildPresetBodySnapshot(collection, name, body, source, { stored = true, selected = false } = {}) {
+    const ref = { collection, name: cleanText(name) };
     return {
         ref,
         body: safeClone(isPlainObject(body) ? body : {}, {}),
@@ -260,29 +260,29 @@ function buildPresetBodySnapshot(apiId, name, body, source, { stored = true, sel
     };
 }
 
-function listPresetRefs(apiId = '') {
-    const normalizedApiId = normalizePresetApi(apiId);
-    const names = getStoredPresetNames(normalizedApiId);
-    return names.map((name) => ({ apiId: normalizedApiId, name }));
+function listPresetRefs(collection = '') {
+    const normalizedCollection = normalizePresetApi(collection);
+    const names = getStoredPresetNames(normalizedCollection);
+    return names.map((name) => ({ collection: normalizedCollection, name }));
 }
 
-function getSelectedPresetRef(apiId = '') {
-    return normalizePresetRef(apiId || null);
+function getSelectedPresetRef(collection = '') {
+    return normalizePresetRef(collection || null);
 }
 
-function getLivePresetBody(apiId = '') {
-    const normalizedApiId = normalizePresetApi(apiId);
-    const manager = getPresetManager(normalizedApiId);
+function getLivePresetBody(collection = '') {
+    const normalizedCollection = normalizePresetApi(collection);
+    const manager = getPresetManager(normalizedCollection);
     const selectedName = cleanText(manager?.getSelectedPresetName?.());
     const body = safeClone(manager?.getPresetSettings?.(selectedName) || {}, {});
-    const storedRef = normalizePresetRef(normalizedApiId);
+    const storedRef = normalizePresetRef(normalizedCollection);
     const snapshotName = storedRef?.name || selectedName;
 
     if (!snapshotName && !Object.keys(body).length) {
         return null;
     }
 
-    return buildPresetBodySnapshot(normalizedApiId, snapshotName, body, 'live', {
+    return buildPresetBodySnapshot(normalizedCollection, snapshotName, body, 'live', {
         stored: Boolean(storedRef),
         selected: true,
     });
@@ -294,34 +294,34 @@ function getStoredPresetBody(target = null) {
         return null;
     }
 
-    const manager = getPresetManager(ref.apiId);
+    const manager = getPresetManager(ref.collection);
     const body = manager?.getStoredPreset?.(ref.name);
     if (!isPlainObject(body)) {
         return null;
     }
 
-    const selectedRef = normalizePresetRef(ref.apiId);
-    return buildPresetBodySnapshot(ref.apiId, ref.name, body, 'stored', {
+    const selectedRef = normalizePresetRef(ref.collection);
+    return buildPresetBodySnapshot(ref.collection, ref.name, body, 'stored', {
         stored: true,
         selected: Boolean(selectedRef && areLookupNamesEqual(selectedRef.name, ref.name)),
     });
 }
 
 async function savePresetBody(target, body, options = {}) {
-    const ref = normalizePresetRef(target, { apiId: options?.apiId, allowMissingName: true });
+    const ref = normalizePresetRef(target, { collection: options?.collection, allowMissingName: true });
     const presetBody = safeClone(isPlainObject(body) ? body : {}, {});
     if (!ref) {
         return { ok: false, ref: null, mode: 'noop', operations: [] };
     }
 
-    const manager = getPresetManager(ref.apiId);
+    const manager = getPresetManager(ref.collection);
     const existingPreset = manager?.getStoredPreset?.(ref.name) || null;
-    const selectedRef = normalizePresetRef(ref.apiId);
+    const selectedRef = normalizePresetRef(ref.collection);
     const shouldSelect = typeof options?.select === 'boolean'
         ? options.select
         : Boolean(selectedRef && areLookupNamesEqual(selectedRef.name, ref.name));
     const saveResult = await persistPreset({
-        apiId: ref.apiId,
+        apiId: ref.collection,
         name: ref.name,
         preset: presetBody,
         existingPreset,
@@ -343,12 +343,12 @@ async function savePresetBody(target, body, options = {}) {
     manager?.updateList?.(savedName, presetBody, { select: shouldSelect });
     return {
         ok: true,
-        ref: { apiId: ref.apiId, name: savedName },
+        ref: { collection: ref.collection, name: savedName },
         mode: saveResult.mode,
         operations: safeClone(saveResult.operations || [], []),
         response: saveResult.response || null,
         body: safeClone(presetBody, {}),
-        snapshot: getStoredPresetBody({ apiId: ref.apiId, name: savedName }),
+        snapshot: getStoredPresetBody({ collection: ref.collection, name: savedName }),
     };
 }
 
@@ -358,7 +358,7 @@ function readPresetExtensions(target = null, path = '') {
         return null;
     }
 
-    const manager = getPresetManager(ref.apiId);
+    const manager = getPresetManager(ref.collection);
     const value = manager?.readPresetExtensionField?.({ name: ref.name, path: cleanText(path) });
     return value === null || value === undefined
         ? null
@@ -371,7 +371,7 @@ async function writePresetExtensions(target = null, path = '', value = null) {
         return false;
     }
 
-    const manager = getPresetManager(ref.apiId);
+    const manager = getPresetManager(ref.collection);
     if (!manager?.writePresetExtensionField) {
         return false;
     }
@@ -1584,23 +1584,23 @@ export function getContext() {
             state: {
                 get: (namespace, options = {}) => getPresetState(namespace, {
                     ...options,
-                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                    target: normalizePresetRef(options?.target, { collection: options?.collection }),
                 }),
                 getBatch: (namespaces, options = {}) => getPresetStateBatch(namespaces, {
                     ...options,
-                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                    target: normalizePresetRef(options?.target, { collection: options?.collection }),
                 }),
                 patch: (namespace, operations, options = {}) => patchPresetState(namespace, operations, {
                     ...options,
-                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                    target: normalizePresetRef(options?.target, { collection: options?.collection }),
                 }),
                 update: (namespace, updater, options = {}) => updatePresetState(namespace, updater, {
                     ...options,
-                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                    target: normalizePresetRef(options?.target, { collection: options?.collection }),
                 }),
                 delete: (namespace, options = {}) => deletePresetState(namespace, {
                     ...options,
-                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                    target: normalizePresetRef(options?.target, { collection: options?.collection }),
                 }),
                 deleteAll: (target = null) => deleteAllPresetState(normalizePresetRef(target)),
             },

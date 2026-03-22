@@ -31,10 +31,10 @@ Global object recommendation:
 
 ### Preset helpers
 
-- `presets.list(apiId?)`
+- `presets.list(collection?)`
 - `presets.resolve(target?, options?)`
-- `presets.getSelected(apiId?)`
-- `presets.getLive(apiId?)`
+- `presets.getSelected(collection?)`
+- `presets.getLive(collection?)`
 - `presets.getStored(target?)`
 - `presets.save(target, body, options?)`
 - `presets.readExtensions(target?, path?)`
@@ -175,7 +175,7 @@ Practical rules:
 
 ```ts
 type PresetRef = {
-  apiId: string,
+  collection: string,
   name: string,
 }
 
@@ -190,12 +190,12 @@ type PresetSnapshot = {
 
 Important scope rules:
 
-- `apiId` here means preset collection (`openai`, `context`, `instruct`, `sysprompt`, `reasoning`, `kobold`, `novel`, `textgenerationwebui`), not API endpoint/proxy presets.
+- `collection` here means preset collection (`openai`, `context`, `instruct`, `sysprompt`, `reasoning`, `kobold`, `novel`, `textgenerationwebui`), not API endpoint/proxy presets.
 - `presets.list(...)` and `presets.getSelected(...)` only work with stored presets.
 - OpenAI character-bound runtime presets are intentionally excluded from stored refs. When such a runtime preset is active, `presets.getSelected('openai')` returns `null`, while `presets.getLive('openai')` still returns the current live body with `stored: false`.
 
 ```ts
-presets.list(apiId?: string): Array<PresetRef>
+presets.list(collection?: string): Array<PresetRef>
 ```
 
 - Lists stored preset refs for the collection.
@@ -204,8 +204,8 @@ presets.list(apiId?: string): Array<PresetRef>
 
 ```ts
 presets.resolve(
-  target?: PresetRef | { apiId?: string, type?: string, collection?: string, name?: string } | string | null,
-  options?: { apiId?: string, defaultApiId?: string }
+  target?: PresetRef | { collection?: string, name?: string } | string | null,
+  options?: { collection?: string, defaultCollection?: string }
 ): PresetRef | null
 ```
 
@@ -215,14 +215,14 @@ presets.resolve(
 - `save(...)` is the only helper that accepts a new preset name not already in the stored list.
 
 ```ts
-presets.getSelected(apiId?: string): PresetRef | null
+presets.getSelected(collection?: string): PresetRef | null
 ```
 
 - Returns the currently selected stored preset ref for the collection.
 - Returns `null` when the active selection is runtime-only or invalid.
 
 ```ts
-presets.getLive(apiId?: string): PresetSnapshot | null
+presets.getLive(collection?: string): PresetSnapshot | null
 ```
 
 - Returns the current live preset body from the UI/settings layer.
@@ -239,10 +239,10 @@ presets.getStored(target?: PresetRef | object | string | null): PresetSnapshot |
 
 ```ts
 presets.save(
-  target: PresetRef | { apiId?: string, type?: string, name?: string },
+  target: PresetRef | { collection?: string, name?: string },
   body: object,
   options?: {
-    apiId?: string,
+    collection?: string,
     select?: boolean,
     maxOperations?: number,
   }
@@ -281,18 +281,18 @@ presets.writeExtensions(
 ```ts
 presets.state.get(
   namespace: string,
-  options?: { apiId?: string, target?: PresetRef | object | string | null }
+  options?: { collection?: string, target?: PresetRef | object | string | null }
 ): Promise<object | null>
 
 presets.state.getBatch(
   namespaces: string[],
-  options?: { apiId?: string, target?: PresetRef | object | string | null }
+  options?: { collection?: string, target?: PresetRef | object | string | null }
 ): Promise<Map<string, object | null>>
 
 presets.state.patch(
   namespace: string,
   operations: object[],
-  options?: { apiId?: string, target?: PresetRef | object | string | null }
+  options?: { collection?: string, target?: PresetRef | object | string | null }
 ): Promise<boolean>
 
 presets.state.update(
@@ -303,7 +303,7 @@ presets.state.update(
     namespace: string,
   }) => object | null | undefined | Promise<object | null | undefined>,
   options?: {
-    apiId?: string,
+    collection?: string,
     target?: PresetRef | object | string | null,
     maxOperations?: number,
     maxRetries?: number,
@@ -313,7 +313,7 @@ presets.state.update(
 
 presets.state.delete(
   namespace: string,
-  options?: { apiId?: string, target?: PresetRef | object | string | null }
+  options?: { collection?: string, target?: PresetRef | object | string | null }
 ): Promise<boolean>
 
 presets.state.deleteAll(

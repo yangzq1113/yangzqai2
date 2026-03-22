@@ -255,13 +255,13 @@ Typical helpers:
 - `context.presets.list('openai')`
 - `context.presets.getSelected('openai')`
 - `context.presets.getLive('openai')`
-- `context.presets.getStored({ apiId: 'openai', name: 'My Preset' })`
-- `context.presets.save({ apiId: 'openai', name: 'My Preset' }, nextBody)`
+- `context.presets.getStored({ collection: 'openai', name: 'My Preset' })`
+- `context.presets.save({ collection: 'openai', name: 'My Preset' }, nextBody)`
 - `context.presets.state.update(MODULE_NAME, updater, { target: presetRef })`
 
 Practical rules:
 
-- `apiId` here means preset collection, not endpoint/proxy presets.
+- `collection` here means preset collection, not endpoint/proxy presets.
 - Prefer `getLive(...)` when editing the preset currently open in UI.
 - Prefer `getStored(...)` when comparing against other saved presets or copying content across presets.
 - Use `context.presets.state.*` for plugin runtime/session data bound to a preset. Do not stuff that data into the preset body unless it is meant to ship with the preset itself.
