@@ -2850,7 +2850,7 @@ class PromptManager {
                             ${nameMetaHtml ? `<span class="prompt-manager-name-meta">${nameMetaHtml}</span>` : ''}
                         </span>
                     </span>
-                    <span>
+                    <span class="prompt-manager-actions-cell">
                             <span class="prompt_manager_prompt_controls">
                                 ${detachSpanHtml}
                                 ${editSpanHtml}
@@ -2859,7 +2859,7 @@ class PromptManager {
                             </span>
                     </span>
 
-                    <span class="prompt_manager_prompt_tokens" data-pm-tokens="${calculatedTokens}"><span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}</span>
+                    <span class="prompt_manager_prompt_tokens prompt-manager-tokens-cell" data-pm-tokens="${calculatedTokens}"><span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}</span>
                 </li>
             `;
         });
