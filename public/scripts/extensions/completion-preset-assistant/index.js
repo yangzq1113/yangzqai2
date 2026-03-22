@@ -43,6 +43,10 @@ const MODEL_TOOLS = Object.freeze({
     SET_FIELD: 'preset_set_field',
     REMOVE_FIELD: 'preset_remove_field',
     COPY_FROM_REFERENCE: 'preset_copy_from_reference',
+    UPSERT_PROMPT_ENTRY: 'preset_upsert_prompt_entry',
+    REMOVE_PROMPT_ENTRY: 'preset_remove_prompt_entry',
+    UPSERT_ORDER_ITEM: 'preset_upsert_prompt_order_item',
+    REMOVE_ORDER_ITEM: 'preset_remove_prompt_order_item',
     DIFF_REFERENCE: 'preset_diff_reference',
     SIMULATE: 'preset_simulate',
 });
@@ -664,6 +668,178 @@ function getChangedTopLevelKeys(before, after) {
     return keys.filter((key) => !areJsonEqual(safeBefore[key], safeAfter[key])).slice(0, 40);
 }
 
+function normalizePromptIdentifier(value, fallback = '') {
+    return String(value ?? fallback ?? '').trim();
+}
+
+function getPresetPromptEntries(body) {
+    if (!Array.isArray(body?.prompts)) {
+        return [];
+    }
+    return body.prompts
+        .map((entry, index) => {
+            const source = entry && typeof entry === 'object' ? entry : {};
+            const identifier = normalizePromptIdentifier(source.identifier, source.id);
+            if (!identifier) {
+                return null;
+            }
+            return {
+                identifier,
+                index,
+                content: String(source.content ?? ''),
+                role: String(source.role ?? '').trim(),
+                enabled: source.enabled !== false,
+                name: String(source.name ?? '').trim(),
+                marker: Boolean(source.marker),
+                injection_position: source.injection_position ?? null,
+                injection_depth: source.injection_depth ?? null,
+                injection_order: source.injection_order ?? null,
+            };
+        })
+        .filter(Boolean);
+}
+
+function getPresetPromptOrderGroups(body) {
+    if (!Array.isArray(body?.prompt_order)) {
+        return [];
+    }
+    return body.prompt_order
+        .map((group) => {
+            const source = group && typeof group === 'object' ? group : {};
+            const characterId = String(source.character_id ?? '').trim();
+            const order = Array.isArray(source.order)
+                ? source.order
+                    .map((item) => {
+                        const orderSource = item && typeof item === 'object' ? item : {};
+                        const identifier = normalizePromptIdentifier(orderSource.identifier);
+                        if (!identifier) {
+                            return null;
+                        }
+                        return {
+                            identifier,
+                            enabled: orderSource.enabled !== false,
+                        };
+                    })
+                    .filter(Boolean)
+                : [];
+            if (!characterId) {
+                return null;
+            }
+            return {
+                character_id: characterId,
+                order,
+            };
+        })
+        .filter(Boolean);
+}
+
+function buildPromptProjectionEntry(promptEntry, {
+    index = 0,
+    enabled = true,
+} = {}) {
+    const prompt = promptEntry && typeof promptEntry === 'object' ? promptEntry : {};
+    return {
+        position: index + 1,
+        identifier: String(prompt.identifier || '').trim(),
+        enabled: Boolean(enabled),
+        role: String(prompt.role || '').trim(),
+        injection_position: prompt.injection_position,
+        injection_depth: prompt.injection_depth,
+        injection_order: prompt.injection_order,
+        name: String(prompt.name || '').trim(),
+        marker: Boolean(prompt.marker),
+        content: String(prompt.content || ''),
+    };
+}
+
+function buildPresetPromptProjection(body) {
+    const promptEntries = getPresetPromptEntries(body);
+    const promptMap = new Map(promptEntries.map((entry) => [entry.identifier, entry]));
+    const orderedIdentifiers = new Set();
+    const orderedGroups = getPresetPromptOrderGroups(body).map((group) => ({
+        character_id: group.character_id,
+        items: group.order.map((item, index) => {
+            orderedIdentifiers.add(item.identifier);
+            const promptEntry = promptMap.get(item.identifier) || {
+                identifier: item.identifier,
+                content: '',
+                role: '',
+                enabled: item.enabled,
+                name: '',
+                marker: false,
+                injection_position: null,
+                injection_depth: null,
+                injection_order: null,
+            };
+            return buildPromptProjectionEntry(promptEntry, {
+                index,
+                enabled: item.enabled,
+            });
+        }),
+    }));
+    const unorderedEntries = promptEntries
+        .filter((entry) => !orderedIdentifiers.has(entry.identifier))
+        .map((entry, index) => buildPromptProjectionEntry(entry, {
+            index,
+            enabled: entry.enabled,
+        }));
+
+    return {
+        new_chat_prompt: String(body?.new_chat_prompt ?? ''),
+        new_group_chat_prompt: String(body?.new_group_chat_prompt ?? ''),
+        ordered_prompts: orderedGroups,
+        unordered_prompts: unorderedEntries,
+    };
+}
+
+function formatPromptPreview(content) {
+    const normalized = String(content ?? '').replace(/\r\n/g, '\n').trim();
+    if (!normalized) {
+        return '(empty)';
+    }
+    const lines = normalized.split('\n').slice(0, 3).map((line) => line.trim()).filter(Boolean);
+    const preview = lines.join(' / ');
+    return preview.length > 180 ? `${preview.slice(0, 177)}...` : preview;
+}
+
+function buildPresetPromptOutlineText(body) {
+    const projection = buildPresetPromptProjection(body);
+    const sections = [
+        'Prompt layout overview:',
+        `- new_chat_prompt: ${formatPromptPreview(projection.new_chat_prompt)}`,
+        `- new_group_chat_prompt: ${formatPromptPreview(projection.new_group_chat_prompt)}`,
+    ];
+
+    if (projection.ordered_prompts.length === 0) {
+        sections.push('- ordered prompt groups: none');
+    } else {
+        sections.push('- ordered prompt groups:');
+        for (const group of projection.ordered_prompts) {
+            sections.push(`  character_id=${group.character_id}`);
+            if (group.items.length === 0) {
+                sections.push('  (empty)');
+                continue;
+            }
+            for (const item of group.items) {
+                sections.push(
+                    `  ${item.position}. ${item.identifier} [${item.enabled ? 'enabled' : 'disabled'}] role=${item.role || 'n/a'} position=${item.injection_position ?? 'n/a'} depth=${item.injection_depth ?? 'n/a'} order=${item.injection_order ?? 'n/a'}`,
+                );
+                sections.push(`     ${formatPromptPreview(item.content)}`);
+            }
+        }
+    }
+
+    if (projection.unordered_prompts.length > 0) {
+        sections.push('- prompts not present in prompt_order:');
+        for (const item of projection.unordered_prompts) {
+            sections.push(`  - ${item.identifier} [${item.enabled ? 'enabled' : 'disabled'}] role=${item.role || 'n/a'}`);
+            sections.push(`    ${formatPromptPreview(item.content)}`);
+        }
+    }
+
+    return sections.join('\n');
+}
+
 function buildDialogMetaItems(dialogState) {
     const settings = getSettings();
     const requestProfileLabel = settings.requestApiProfileName || i18n('(current)');
@@ -681,13 +857,15 @@ function buildModelSystemPrompt({
 } = {}) {
     return [
         'You are editing one Luker chat completion preset.',
-        'Edit preset content only.',
+        'Edit prompt-related preset content only.',
         'Do not modify API connection, provider routing, endpoint selection, proxy settings, transport settings, or credential fields.',
         'Chat completion presets and API profiles are decoupled.',
         'Use tool calls when proposing actual preset changes.',
         'If you call any helper inspection tool in a round, do not emit edit tool calls in that same round.',
         'Prefer minimal edits over broad rewrites unless the user explicitly asks for a rewrite.',
-        'Use lodash-style paths like new_chat_prompt or prompts[0].content.',
+        'Prefer the prompt-specific tools when adding, removing, or reordering prompt entries.',
+        'Use 1-based positions for preset_upsert_prompt_order_item.',
+        'Use lodash-style paths like new_chat_prompt or prompts[0].content only when the prompt-specific tools are not enough.',
         'For preset_set_field, value_json must be valid JSON text.',
         hasReference
             ? 'Use preset_diff_reference when you need to inspect the selected reference preset before copying from it.'
@@ -725,10 +903,7 @@ function buildUserPrompt(dialogState, userText) {
         'Target preset collection: openai',
         `Target preset name: ${dialogState.targetRef?.name || ''}`,
         '',
-        'Current live preset JSON:',
-        '```json',
-        buildJson(dialogState.liveSnapshot?.body || {}),
-        '```',
+        buildPresetPromptOutlineText(dialogState.liveSnapshot?.body || {}),
         '',
         referenceSection,
         '',
@@ -1005,8 +1180,17 @@ function createPresetAssistantReferenceDiffToolApi(dialogState) {
             return {
                 ok: true,
                 referencePresetName: String(referenceSnapshot?.ref?.name || '').trim(),
-                changedTopLevelKeys: getChangedTopLevelKeys(liveBody, referenceBody),
-                delta: buildJsonStateDelta(diffPatcher, liveBody, referenceBody) || {},
+                changedTopLevelKeys: getChangedTopLevelKeys(
+                    buildPresetPromptProjection(liveBody),
+                    buildPresetPromptProjection(referenceBody),
+                ),
+                delta: buildJsonStateDelta(
+                    diffPatcher,
+                    buildPresetPromptProjection(liveBody),
+                    buildPresetPromptProjection(referenceBody),
+                ) || {},
+                currentPromptLayout: buildPresetPromptOutlineText(liveBody),
+                referencePromptLayout: buildPresetPromptOutlineText(referenceBody),
             };
         },
     };
@@ -1143,6 +1327,82 @@ function buildAssistantTools({
                         reason: { type: 'string' },
                     },
                     required: ['path'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: MODEL_TOOLS.UPSERT_PROMPT_ENTRY,
+                description: 'Create or update one prompt entry in prompts by identifier. Prefer this over raw paths for prompt content edits.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        identifier: { type: 'string' },
+                        content: { type: 'string' },
+                        role: { type: 'string' },
+                        enabled: { type: 'boolean' },
+                        name: { type: 'string' },
+                        marker: { type: 'boolean' },
+                        injection_position: { type: 'number' },
+                        injection_depth: { type: 'number' },
+                        injection_order: { type: 'number' },
+                        reason: { type: 'string' },
+                    },
+                    required: ['identifier'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: MODEL_TOOLS.REMOVE_PROMPT_ENTRY,
+                description: 'Remove one prompt entry from prompts by identifier.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        identifier: { type: 'string' },
+                        reason: { type: 'string' },
+                    },
+                    required: ['identifier'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: MODEL_TOOLS.UPSERT_ORDER_ITEM,
+                description: 'Insert or move one prompt_order item. position is 1-based within the target character_id group.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        character_id: { type: 'string' },
+                        identifier: { type: 'string' },
+                        position: { type: 'integer' },
+                        enabled: { type: 'boolean' },
+                        reason: { type: 'string' },
+                    },
+                    required: ['character_id', 'identifier', 'position'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        {
+            type: 'function',
+            function: {
+                name: MODEL_TOOLS.REMOVE_ORDER_ITEM,
+                description: 'Remove one prompt_order item by character_id and identifier.',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        character_id: { type: 'string' },
+                        identifier: { type: 'string' },
+                        reason: { type: 'string' },
+                    },
+                    required: ['character_id', 'identifier'],
                     additionalProperties: false,
                 },
             },
@@ -1349,6 +1609,144 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
     };
 }
 
+function findPromptEntryIndex(prompts, identifier) {
+    return (Array.isArray(prompts) ? prompts : []).findIndex((entry) => normalizePromptIdentifier(entry?.identifier, entry?.id) === identifier);
+}
+
+function upsertPromptEntryInBody(body, edit) {
+    const identifier = normalizePromptIdentifier(edit?.identifier);
+    if (!identifier) {
+        throw new Error('Prompt identifier is required.');
+    }
+    if (!Array.isArray(body.prompts)) {
+        body.prompts = [];
+    }
+    const promptIndex = findPromptEntryIndex(body.prompts, identifier);
+    const current = promptIndex >= 0 && body.prompts[promptIndex] && typeof body.prompts[promptIndex] === 'object'
+        ? clone(body.prompts[promptIndex], {})
+        : { identifier };
+    const next = {
+        ...current,
+        identifier,
+    };
+    if (Object.hasOwn(edit, 'content')) {
+        next.content = String(edit.content ?? '');
+    }
+    if (Object.hasOwn(edit, 'role')) {
+        next.role = String(edit.role ?? '').trim();
+    }
+    if (Object.hasOwn(edit, 'enabled')) {
+        next.enabled = Boolean(edit.enabled);
+    }
+    if (Object.hasOwn(edit, 'name')) {
+        next.name = String(edit.name ?? '').trim();
+    }
+    if (Object.hasOwn(edit, 'marker')) {
+        next.marker = Boolean(edit.marker);
+    }
+    if (Object.hasOwn(edit, 'injection_position')) {
+        next.injection_position = edit.injection_position;
+    }
+    if (Object.hasOwn(edit, 'injection_depth')) {
+        next.injection_depth = edit.injection_depth;
+    }
+    if (Object.hasOwn(edit, 'injection_order')) {
+        next.injection_order = edit.injection_order;
+    }
+    if (promptIndex >= 0) {
+        body.prompts[promptIndex] = next;
+        return;
+    }
+    if (!Object.hasOwn(next, 'content')) {
+        throw new Error(`New prompt entry ${identifier} requires content.`);
+    }
+    body.prompts.push(next);
+}
+
+function removePromptEntryFromBody(body, identifier) {
+    const safeIdentifier = normalizePromptIdentifier(identifier);
+    if (!safeIdentifier) {
+        return;
+    }
+    if (Array.isArray(body.prompts)) {
+        body.prompts = body.prompts.filter((entry) => normalizePromptIdentifier(entry?.identifier, entry?.id) !== safeIdentifier);
+    }
+    if (Array.isArray(body.prompt_order)) {
+        body.prompt_order = body.prompt_order
+            .map((group) => {
+                const nextGroup = group && typeof group === 'object' ? clone(group, {}) : {};
+                nextGroup.order = Array.isArray(nextGroup.order)
+                    ? nextGroup.order.filter((item) => normalizePromptIdentifier(item?.identifier) !== safeIdentifier)
+                    : [];
+                return nextGroup;
+            })
+            .filter((group) => Array.isArray(group?.order) ? group.order.length > 0 : true);
+    }
+}
+
+function getOrCreatePromptOrderGroup(body, characterId) {
+    const safeCharacterId = String(characterId ?? '').trim();
+    if (!safeCharacterId) {
+        throw new Error('character_id is required for prompt order edits.');
+    }
+    if (!Array.isArray(body.prompt_order)) {
+        body.prompt_order = [];
+    }
+    let group = body.prompt_order.find((entry) => String(entry?.character_id ?? '').trim() === safeCharacterId);
+    if (group && typeof group === 'object') {
+        if (!Array.isArray(group.order)) {
+            group.order = [];
+        }
+        return group;
+    }
+    group = {
+        character_id: safeCharacterId,
+        order: [],
+    };
+    body.prompt_order.push(group);
+    return group;
+}
+
+function upsertPromptOrderItemInBody(body, edit) {
+    const characterId = String(edit?.character_id ?? '').trim();
+    const identifier = normalizePromptIdentifier(edit?.identifier);
+    const rawPosition = Number(edit?.position);
+    if (!characterId || !identifier || !Number.isInteger(rawPosition) || rawPosition < 1) {
+        throw new Error('character_id, identifier, and 1-based position are required for prompt order edits.');
+    }
+    const group = getOrCreatePromptOrderGroup(body, characterId);
+    const nextOrder = Array.isArray(group.order)
+        ? group.order.filter((item) => normalizePromptIdentifier(item?.identifier) !== identifier)
+        : [];
+    const enabled = Object.hasOwn(edit, 'enabled') ? Boolean(edit.enabled) : true;
+    const targetIndex = Math.max(0, Math.min(nextOrder.length, rawPosition - 1));
+    nextOrder.splice(targetIndex, 0, {
+        identifier,
+        enabled,
+    });
+    group.order = nextOrder;
+}
+
+function removePromptOrderItemFromBody(body, characterId, identifier) {
+    const safeCharacterId = String(characterId ?? '').trim();
+    const safeIdentifier = normalizePromptIdentifier(identifier);
+    if (!safeCharacterId || !safeIdentifier || !Array.isArray(body.prompt_order)) {
+        return;
+    }
+    body.prompt_order = body.prompt_order
+        .map((group) => {
+            if (String(group?.character_id ?? '').trim() !== safeCharacterId) {
+                return group;
+            }
+            const nextGroup = group && typeof group === 'object' ? clone(group, {}) : { character_id: safeCharacterId };
+            nextGroup.order = Array.isArray(nextGroup.order)
+                ? nextGroup.order.filter((item) => normalizePromptIdentifier(item?.identifier) !== safeIdentifier)
+                : [];
+            return nextGroup;
+        })
+        .filter((group) => Array.isArray(group?.order) ? group.order.length > 0 : true);
+}
+
 function normalizeEditPath(path) {
     return String(path || '').trim();
 }
@@ -1356,14 +1754,13 @@ function normalizeEditPath(path) {
 function normalizeToolCallToEdit(call) {
     const name = String(call?.name || '').trim();
     const args = call?.args && typeof call.args === 'object' ? call.args : {};
-    const path = normalizeEditPath(args.path);
     const reason = String(args.reason || '').trim();
 
-    if (!path) {
-        return null;
-    }
-
     if (name === MODEL_TOOLS.SET_FIELD) {
+        const path = normalizeEditPath(args.path);
+        if (!path) {
+            return null;
+        }
         const rawJson = String(args.value_json || '').trim();
         if (!rawJson) {
             throw new Error(`Missing value_json for ${path}`);
@@ -1378,14 +1775,81 @@ function normalizeToolCallToEdit(call) {
     }
 
     if (name === MODEL_TOOLS.REMOVE_FIELD) {
+        const path = normalizeEditPath(args.path);
+        if (!path) {
+            return null;
+        }
         return { kind: 'remove', path, fromPath: '', reason };
     }
 
     if (name === MODEL_TOOLS.COPY_FROM_REFERENCE) {
+        const path = normalizeEditPath(args.path);
+        if (!path) {
+            return null;
+        }
         return {
             kind: 'copy',
             path,
             fromPath: normalizeEditPath(args.from_path) || path,
+            reason,
+        };
+    }
+
+    if (name === MODEL_TOOLS.UPSERT_PROMPT_ENTRY) {
+        const identifier = normalizePromptIdentifier(args.identifier);
+        if (!identifier) {
+            return null;
+        }
+        const edit = {
+            kind: 'upsert_prompt_entry',
+            identifier,
+            reason,
+        };
+        for (const key of ['content', 'role', 'name']) {
+            if (Object.hasOwn(args, key)) {
+                edit[key] = args[key];
+            }
+        }
+        for (const key of ['enabled', 'marker', 'injection_position', 'injection_depth', 'injection_order']) {
+            if (Object.hasOwn(args, key)) {
+                edit[key] = args[key];
+            }
+        }
+        return edit;
+    }
+
+    if (name === MODEL_TOOLS.REMOVE_PROMPT_ENTRY) {
+        const identifier = normalizePromptIdentifier(args.identifier);
+        return identifier ? { kind: 'remove_prompt_entry', identifier, reason } : null;
+    }
+
+    if (name === MODEL_TOOLS.UPSERT_ORDER_ITEM) {
+        const identifier = normalizePromptIdentifier(args.identifier);
+        const characterId = String(args.character_id ?? '').trim();
+        const position = Number(args.position);
+        if (!identifier || !characterId || !Number.isInteger(position) || position < 1) {
+            return null;
+        }
+        return {
+            kind: 'upsert_order_item',
+            identifier,
+            character_id: characterId,
+            position,
+            enabled: Object.hasOwn(args, 'enabled') ? Boolean(args.enabled) : true,
+            reason,
+        };
+    }
+
+    if (name === MODEL_TOOLS.REMOVE_ORDER_ITEM) {
+        const identifier = normalizePromptIdentifier(args.identifier);
+        const characterId = String(args.character_id ?? '').trim();
+        if (!identifier || !characterId) {
+            return null;
+        }
+        return {
+            kind: 'remove_order_item',
+            identifier,
+            character_id: characterId,
             reason,
         };
     }
@@ -1422,6 +1886,26 @@ function applyEditsToPreset(baseBody, edits, referenceBody = null) {
                 throw new Error(`Reference path not found: ${edit.fromPath || edit.path}`);
             }
             lodash.set(draftBody, edit.path, clone(sourceValue, sourceValue));
+            continue;
+        }
+
+        if (edit.kind === 'upsert_prompt_entry') {
+            upsertPromptEntryInBody(draftBody, edit);
+            continue;
+        }
+
+        if (edit.kind === 'remove_prompt_entry') {
+            removePromptEntryFromBody(draftBody, edit.identifier);
+            continue;
+        }
+
+        if (edit.kind === 'upsert_order_item') {
+            upsertPromptOrderItemInBody(draftBody, edit);
+            continue;
+        }
+
+        if (edit.kind === 'remove_order_item') {
+            removePromptOrderItemFromBody(draftBody, edit.character_id, edit.identifier);
         }
     }
 
@@ -1429,14 +1913,16 @@ function applyEditsToPreset(baseBody, edits, referenceBody = null) {
 }
 
 function renderDeltaHtml(before, after) {
-    const delta = diffPatcher.diff(clone(before, {}), clone(after, {}));
+    const beforeProjection = buildPresetPromptProjection(before);
+    const afterProjection = buildPresetPromptProjection(after);
+    const delta = diffPatcher.diff(clone(beforeProjection, {}), clone(afterProjection, {}));
     if (!delta) {
         return '';
     }
 
     return DOMPurify.sanitize(renderObjectDiffHtml({
-        before: clone(before, {}),
-        after: clone(after, {}),
+        before: clone(beforeProjection, {}),
+        after: clone(afterProjection, {}),
         delta,
         beforeLabel: i18n('Before'),
         afterLabel: i18n('After'),
@@ -1456,6 +1942,22 @@ function describeEdit(edit) {
 
     if (safeEdit.kind === 'remove') {
         return `${safeEdit.path} <- remove`;
+    }
+
+    if (safeEdit.kind === 'upsert_prompt_entry') {
+        return `prompt ${safeEdit.identifier} <- upsert`;
+    }
+
+    if (safeEdit.kind === 'remove_prompt_entry') {
+        return `prompt ${safeEdit.identifier} <- remove`;
+    }
+
+    if (safeEdit.kind === 'upsert_order_item') {
+        return `prompt_order ${safeEdit.character_id}:${safeEdit.identifier} <- position ${safeEdit.position}`;
+    }
+
+    if (safeEdit.kind === 'remove_order_item') {
+        return `prompt_order ${safeEdit.character_id}:${safeEdit.identifier} <- remove`;
     }
 
     return `${safeEdit.path} <- copy ${safeEdit.fromPath || safeEdit.path}`;
@@ -1564,21 +2066,24 @@ function renderDialogHtml(dialogState) {
     const metaItems = buildDialogMetaItems(dialogState);
     const settings = getSettings();
     const isBusy = Boolean(dialogState.busy);
+    const statusHtml = dialogState.status
+        ? `${isBusy ? '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> ' : ''}${escapeHtml(dialogState.status || '')}`
+        : '';
 
     return `
-<div class="cpa_dialog">
+<div class="cpa_dialog${isBusy ? ' is_busy' : ''}">
     <div class="cpa_dialog_meta">
         ${metaItems.map(item => `<div class="cpa_dialog_meta_item">${escapeHtml(item)}</div>`).join('')}
     </div>
     <div class="cpa_dialog_toolbar">
-        <div class="cpa_dialog_toolbar_group cpa_dialog_toolbar_group_wide">
+        <div class="cpa_dialog_toolbar_field">
             <label for="cpa_reference_preset">${escapeHtml(i18n('Reference preset'))}</label>
             <select id="cpa_reference_preset" class="text_pole" title="${escapeHtml(i18n('Select reference preset'))}">
                 ${renderSelectOptions(referenceNames, dialogState.session?.referencePresetName || '', true)}
             </select>
-            <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Compare with reference'))}</div>
         </div>
-        <div class="cpa_dialog_toolbar_group">
+        <div class="cpa_dialog_toolbar_actions">
+            <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Compare with reference'))}</div>
             <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
         </div>
     </div>
@@ -1595,8 +2100,10 @@ function renderDialogHtml(dialogState) {
     <div class="cpa_dialog_footer">
         <textarea id="cpa_dialog_input" class="text_pole" placeholder="${escapeHtml(i18n('Type what to change in this preset...'))}">${escapeHtml(dialogState.inputText || '')}</textarea>
         <div class="cpa_dialog_footer_actions">
-            <div class="cpa_hint">${escapeHtml(dialogState.status || '')}</div>
-            <div class="cpa_hint">${escapeHtml(`LLM: ${settings.requestLlmPresetName || i18n('(current)')}`)}</div>
+            <div class="cpa_dialog_footer_meta">
+                <div class="cpa_hint cpa_status_line">${statusHtml}</div>
+                <div class="cpa_hint">${escapeHtml(`LLM: ${settings.requestLlmPresetName || i18n('(current)')}`)}</div>
+            </div>
             <div class="menu_button" data-cpa-action="send-or-stop">${escapeHtml(isBusy ? i18n('Stop') : i18n('Send'))}</div>
         </div>
     </div>
@@ -1688,11 +2195,10 @@ async function showDiffPopup(title, beforeLabel, afterLabel, beforeBody, afterBo
     </div>
     <div class="cpa_diff_panel">${diffHtml || `<div class="cpa_empty">${escapeHtml(i18n('No diff to display.'))}</div>`}</div>
 </div>`;
-    const popup = new Popup(content, POPUP_TYPE.TEXT, '', {
+    const popup = new Popup(content, POPUP_TYPE.TEXT, title, {
         okButton: false,
         cancelButton: 'Close',
         wider: true,
-        large: true,
         allowVerticalScrolling: true,
     });
     await popup.show();

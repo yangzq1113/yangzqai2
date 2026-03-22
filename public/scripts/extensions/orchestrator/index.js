@@ -8102,13 +8102,16 @@ function canRollbackAiIterationAssistantMessage(session, messageIndex) {
 }
 
 function renderAiIterationMessageDiffHtml(session, item, messageIndex) {
+    const toolState = String(item?.toolState || '').trim().toLowerCase();
+    if (toolState === 'pending') {
+        return '';
+    }
     const profileDeltaHtml = item?.profileDelta
         ? renderAiIterationProfileDeltaHtml(session?.mode, item.profileDelta, item?.profileSnapshotBefore || session?.workingProfile)
         : '';
     if (!profileDeltaHtml) {
         return '';
     }
-    const toolState = String(item?.toolState || '').trim().toLowerCase();
     const summaryLabel = toolState === 'completed'
         ? i18n('Applied changes diff')
         : (toolState === 'rejected' ? i18n('Rejected changes diff') : i18n('Pending changes diff'));
