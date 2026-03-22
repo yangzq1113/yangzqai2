@@ -2844,8 +2844,84 @@ export function textValueMatcher(params, data) {
  * @param {string} minVersion The target version number to test against
  * @returns {boolean} True if srcVersion >= minVersion, false if not
  */
+function parseVersionLike(input) {
+    const raw = String(input || '').trim().replace(/^v/i, '');
+    const match = raw.match(/^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/);
+    if (!match) {
+        return null;
+    }
+
+    const core = match[1].split('.').map(segment => Number(segment));
+    if (core.some(segment => !Number.isInteger(segment) || segment < 0)) {
+        return null;
+    }
+
+    const prerelease = match[2]
+        ? match[2]
+            .split('.')
+            .filter(Boolean)
+            .map(identifier => /^\d+$/.test(identifier) ? Number(identifier) : identifier)
+        : null;
+
+    return { core, prerelease };
+}
+
+function compareVersionSegments(a, b) {
+    const maxLength = Math.max(a?.length || 0, b?.length || 0);
+    for (let i = 0; i < maxLength; i++) {
+        const av = a?.[i] ?? 0;
+        const bv = b?.[i] ?? 0;
+        if (av > bv) return 1;
+        if (av < bv) return -1;
+    }
+    return 0;
+}
+
+function compareVersionPrerelease(a, b) {
+    const left = Array.isArray(a) ? a : null;
+    const right = Array.isArray(b) ? b : null;
+
+    if (!left?.length && !right?.length) return 0;
+    if (!left?.length) return 1;
+    if (!right?.length) return -1;
+
+    const maxLength = Math.max(left.length, right.length);
+    for (let i = 0; i < maxLength; i++) {
+        const av = left[i];
+        const bv = right[i];
+        if (av === undefined) return -1;
+        if (bv === undefined) return 1;
+        if (av === bv) continue;
+
+        const aIsNumber = typeof av === 'number';
+        const bIsNumber = typeof bv === 'number';
+        if (aIsNumber && bIsNumber) return av > bv ? 1 : -1;
+        if (aIsNumber !== bIsNumber) return aIsNumber ? -1 : 1;
+
+        const lexical = String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: 'base' });
+        if (lexical !== 0) return lexical > 0 ? 1 : -1;
+    }
+
+    return 0;
+}
+
+function compareVersionLike(a, b) {
+    const parsedA = parseVersionLike(a);
+    const parsedB = parseVersionLike(b);
+    if (!parsedA || !parsedB) {
+        return String(a || '0.0.0').localeCompare(String(b || '0.0.0'), undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    const coreComparison = compareVersionSegments(parsedA.core, parsedB.core);
+    if (coreComparison !== 0) {
+        return coreComparison;
+    }
+
+    return compareVersionPrerelease(parsedA.prerelease, parsedB.prerelease);
+}
+
 export function versionCompare(srcVersion, minVersion) {
-    return (srcVersion || '0.0.0').localeCompare(minVersion, undefined, { numeric: true, sensitivity: 'base' }) > -1;
+    return compareVersionLike(srcVersion, minVersion) >= 0;
 }
 
 /**
