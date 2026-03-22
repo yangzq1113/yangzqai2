@@ -5118,6 +5118,10 @@ async function syncOpenAIPresetUiAfterApply() {
         }
     }
 
+    if (promptManager) {
+        promptManager.render(false);
+    }
+
     $('#openai_logit_bias_preset').trigger('change');
 }
 
@@ -6259,6 +6263,14 @@ function normalizeComparableOpenAIPresetBodyTypes(body) {
     return normalized;
 }
 
+export function areComparableOpenAIPresetBodiesEqual(leftPresetBody, rightPresetBody) {
+    const leftComparableBody = getComparableOpenAIPresetBody(leftPresetBody);
+    const rightComparableBody = getComparableOpenAIPresetBody(rightPresetBody);
+    const canonicalLeft = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(leftComparableBody));
+    const canonicalRight = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(rightComparableBody));
+    return JSON.stringify(canonicalLeft) === JSON.stringify(canonicalRight);
+}
+
 function hasUnsavedOpenAIPresetChanges(presetName) {
     const normalizedName = String(presetName || '').trim();
     if (!normalizedName) {
@@ -6275,11 +6287,7 @@ function hasUnsavedOpenAIPresetChanges(presetName) {
         return false;
     }
 
-    const currentPresetBody = getComparableOpenAIPresetBody(getChatCompletionPreset(oai_settings, { clone: false }));
-    const savedComparableBody = getComparableOpenAIPresetBody(savedPresetBody);
-    const canonicalCurrent = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(currentPresetBody));
-    const canonicalSaved = canonicalizeComparableOpenAIPresetValue(normalizeComparableOpenAIPresetBodyTypes(savedComparableBody));
-    return JSON.stringify(canonicalCurrent) !== JSON.stringify(canonicalSaved);
+    return !areComparableOpenAIPresetBodiesEqual(getChatCompletionPreset(oai_settings, { clone: false }), savedPresetBody);
 }
 
 async function confirmOpenAIPresetSwitch(presetNameBefore) {

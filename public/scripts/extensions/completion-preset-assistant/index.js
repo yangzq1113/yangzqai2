@@ -3,7 +3,7 @@
 
 import { DOMPurify, lodash } from '../../../lib.js';
 import { saveSettingsDebounced } from '../../../script.js';
-import { sendOpenAIRequest } from '../../openai.js';
+import { areComparableOpenAIPresetBodiesEqual, sendOpenAIRequest } from '../../openai.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { Popup, POPUP_TYPE } from '../../popup.js';
@@ -98,6 +98,13 @@ function buildJson(value) {
 
 function areJsonEqual(left, right) {
     return buildJson(left) === buildJson(right);
+}
+
+function arePresetBodiesEquivalent(left, right) {
+    return areComparableOpenAIPresetBodiesEqual(
+        isPlainObject(left) ? left : {},
+        isPlainObject(right) ? right : {},
+    );
 }
 
 function isAbortError(error, signal = null) {
@@ -901,7 +908,7 @@ function replayJournalBody(journal, {
 }
 
 function journalMatchesLive(journal, liveBody) {
-    return areJsonEqual(replayJournalBody(journal), isPlainObject(liveBody) ? liveBody : {});
+    return arePresetBodiesEquivalent(replayJournalBody(journal), liveBody);
 }
 
 function getCommittedMessageEntryMap(session, journal) {
@@ -2571,7 +2578,7 @@ function buildDraftFromResponse(dialogState, assistantText, toolCalls, sourceMes
         edits,
         dialogState.referenceSnapshot?.body || null,
     );
-    if (areJsonEqual(dialogState.liveSnapshot?.body || {}, draftBody)) {
+    if (arePresetBodiesEquivalent(dialogState.liveSnapshot?.body || {}, draftBody)) {
         return null;
     }
 
@@ -3060,7 +3067,7 @@ async function handleApplyDraft(dialogState) {
     try {
         const currentLiveSnapshot = await readValidatedLiveSnapshot(dialogState);
         dialogState.journal = ensureJournalBaseSnapshot(dialogState.journal, currentLiveSnapshot.body || {});
-        if (!areJsonEqual(currentLiveSnapshot.body || {}, dialogState.liveSnapshot?.body || {})) {
+        if (!arePresetBodiesEquivalent(currentLiveSnapshot.body || {}, dialogState.liveSnapshot?.body || {})) {
             throw new Error(i18n('Current live preset changed since this draft was created. Refresh live and request a new draft.'));
         }
         if (!journalMatchesLive(dialogState.journal, currentLiveSnapshot.body || {})) {
