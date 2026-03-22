@@ -26,6 +26,17 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org/
       - run: npm ci
-      - run: npm publish
+      - name: Resolve npm dist-tag
+        id: npm-dist-tag
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${VERSION}" == *-* ]]; then
+            DIST_TAG="${VERSION#*-}"
+            DIST_TAG="${DIST_TAG%%.*}"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "dist_tag=${DIST_TAG}" >> "${GITHUB_OUTPUT}"
+      - run: npm publish --tag "${{ steps.npm-dist-tag.outputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{secrets.npm_token}}
