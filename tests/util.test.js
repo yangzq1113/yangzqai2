@@ -1,6 +1,6 @@
 import { describe, test, expect } from '@jest/globals';
 import { CHAT_COMPLETION_SOURCES } from '../src/constants';
-import { findNameMatch, flattenSchema, normalizeLookupText } from '../src/util';
+import { deepMerge, findNameMatch, flattenSchema, normalizeLookupText } from '../src/util';
 
 describe('flattenSchema', () => {
     test('should return the schema if it is not an object', () => {
@@ -117,5 +117,43 @@ describe('lookup name normalization', () => {
         const names = ['❤World', '❤️World'];
         expect(findNameMatch(names, '❤World')).toBe('❤World');
         expect(findNameMatch(names, '❤️World')).toBe('❤️World');
+    });
+});
+
+describe('deepMerge', () => {
+    test('should preserve explicit null assignments for nested keys', () => {
+        const result = deepMerge(
+            { data: { extensions: { luker: { chat_completion_preset: { name: 'Old' } } } } },
+            { data: { extensions: { luker: { chat_completion_preset: null } } } },
+        );
+
+        expect(result).toEqual({
+            data: {
+                extensions: {
+                    luker: {
+                        chat_completion_preset: null,
+                    },
+                },
+            },
+        });
+    });
+
+    test('should replace null targets with incoming objects', () => {
+        const result = deepMerge(
+            { data: { extensions: { luker: { chat_completion_preset: null } } } },
+            { data: { extensions: { luker: { chat_completion_preset: { name: 'New' } } } } },
+        );
+
+        expect(result).toEqual({
+            data: {
+                extensions: {
+                    luker: {
+                        chat_completion_preset: {
+                            name: 'New',
+                        },
+                    },
+                },
+            },
+        });
     });
 });
