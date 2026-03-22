@@ -9,6 +9,7 @@ import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
 import { wi_anchor_position, world_info_position } from '../../world-info.js';
 import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
+import { renderObjectDiffHtml } from '../object-diff-view.js';
 import {
     TOOL_PROTOCOL_STYLE,
     extractAllFunctionCalls,
@@ -18,7 +19,6 @@ import {
 } from '../function-call-runtime.js';
 import { DiffMatchPatch, yaml } from '../../../lib.js';
 import { create as createDiffPatcher, reverse as reverseDiffDelta } from '../../vendor/diffpatch/index.js';
-import DiffpatchHtmlFormatter from '../../vendor/diffpatch/formatters/html.js';
 
 const MODULE_NAME = 'orchestrator';
 const CAPSULE_PROMPT_KEY = 'luker_orchestrator_capsule';
@@ -7665,8 +7665,6 @@ const aiIterationDiffPatcher = createDiffPatcher({
     cloneDiffValues: true,
 });
 
-const aiIterationDiffHtmlFormatter = new DiffpatchHtmlFormatter();
-
 function cloneAiIterationProfileDelta(delta) {
     if (!delta || typeof delta !== 'object') {
         return null;
@@ -7698,7 +7696,17 @@ function renderAiIterationProfileDeltaHtml(mode, delta, beforeProfile) {
     }
     try {
         const safeBefore = cloneAiIterationWorkingProfile(mode, beforeProfile);
-        const html = aiIterationDiffHtmlFormatter.format(normalizedDelta, safeBefore);
+        const safeAfter = cloneAiIterationWorkingProfile(mode, safeBefore);
+        aiIterationDiffPatcher.patch(safeAfter, cloneAiIterationProfileDelta(normalizedDelta));
+        const html = renderObjectDiffHtml({
+            before: safeBefore,
+            after: safeAfter,
+            delta: normalizedDelta,
+            beforeLabel: i18n('Before'),
+            afterLabel: i18n('After'),
+            missingLabel: i18n('(missing)'),
+            renderTextDiff: renderIterationLineDiffHtml,
+        });
         return sanitizeAiIterationProfileDiffHtml(html);
     } catch (error) {
         console.warn(`[${MODULE_NAME}] Failed to render iteration profile delta`, error);
@@ -12315,77 +12323,65 @@ function ensureStyles() {
     display: grid;
     gap: 8px;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-delta {
+.luker_orch_iter_diff_popup .luker_object_diff {
+    display: grid;
+    gap: 10px;
     font-size: 0.88rem;
     line-height: 1.45;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-delta,
-.luker_orch_iter_diff_popup .jsondiffpatch-delta ul,
-.luker_orch_iter_diff_popup .jsondiffpatch-delta li {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-node {
-    display: grid;
-    gap: 8px;
-    margin-top: 8px;
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-node > li {
+.luker_orch_iter_diff_popup .luker_object_diff_item {
     border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.28));
     border-radius: 8px;
     background: rgba(0,0,0,0.14);
     padding: 8px;
+    display: grid;
+    gap: 8px;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-property-name {
+.luker_orch_iter_diff_popup .luker_object_diff_path {
     font-weight: 600;
-    margin-bottom: 6px;
     word-break: break-word;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-value pre {
+.luker_orch_iter_diff_popup .luker_object_diff_grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+.luker_orch_iter_diff_popup .luker_object_diff_col {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+    border-radius: 8px;
+    padding: 8px;
+    border-left: 3px solid transparent;
+    background: rgba(255,255,255,0.04);
+}
+.luker_orch_iter_diff_popup .luker_object_diff_col.before {
+    border-left-color: color-mix(in oklab, #f44336 68%, transparent);
+    background: color-mix(in oklab, #f44336 10%, transparent);
+}
+.luker_orch_iter_diff_popup .luker_object_diff_col.after {
+    border-left-color: color-mix(in oklab, #4caf50 68%, transparent);
+    background: color-mix(in oklab, #4caf50 12%, transparent);
+}
+.luker_orch_iter_diff_popup .luker_object_diff_col_title {
+    font-size: 0.9em;
+    font-weight: 700;
+    opacity: 0.82;
+}
+.luker_orch_iter_diff_popup .luker_object_diff_col pre {
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-added .jsondiffpatch-value,
-.luker_orch_iter_diff_popup .jsondiffpatch-modified .jsondiffpatch-right-value {
-    border-left: 3px solid color-mix(in oklab, #4caf50 68%, transparent);
-    padding-left: 8px;
-    background: color-mix(in oklab, #4caf50 12%, transparent);
+.luker_orch_iter_diff_popup .luker_object_diff_missing {
+    opacity: 0.74;
+    font-style: italic;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-deleted .jsondiffpatch-value,
-.luker_orch_iter_diff_popup .jsondiffpatch-modified .jsondiffpatch-left-value {
-    border-left: 3px solid color-mix(in oklab, #f44336 68%, transparent);
-    padding-left: 8px;
-    background: color-mix(in oklab, #f44336 10%, transparent);
+.luker_orch_iter_diff_popup .luker_object_diff_text {
+    min-width: 0;
 }
-.luker_orch_iter_diff_popup .jsondiffpatch-modified .jsondiffpatch-value {
-    display: grid;
-    gap: 8px;
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-textdiff {
-    display: grid;
-    gap: 6px;
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-line {
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-location {
-    display: inline-flex;
-    gap: 6px;
-    opacity: 0.72;
-    font-size: 0.82rem;
-    margin-bottom: 2px;
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-added {
-    background: color-mix(in oklab, #4caf50 20%, transparent);
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-deleted {
-    background: color-mix(in oklab, #f44336 18%, transparent);
-}
-.luker_orch_iter_diff_popup .jsondiffpatch-textdiff-context {
-    opacity: 0.86;
+.luker_orch_iter_diff_popup .luker_object_diff_text .luker_orch_line_diff {
+    margin: 0;
 }
 .luker_orch_iter_diff_title {
     font-weight: 600;

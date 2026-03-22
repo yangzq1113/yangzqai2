@@ -16,7 +16,9 @@
 .popup .cpa_dialog .menu_button,
 .popup .cpa_dialog .menu_button_small {
     display: inline-flex;
+    flex: 0 0 auto;
     width: auto;
+    max-width: none;
     min-height: 2.2em;
     min-width: max-content;
     white-space: nowrap;
@@ -30,14 +32,26 @@
 
 .completion-preset-assistant-open {
     display: inline-flex;
+    flex: 0 0 auto;
     align-items: center;
     justify-content: center;
+    height: auto;
     width: auto;
+    max-width: none;
     min-width: 2.2em;
+    padding: 0 10px;
     white-space: nowrap;
     word-break: keep-all;
     writing-mode: horizontal-tb;
     text-orientation: mixed;
+}
+
+.completion-preset-assistant-open.menu_button,
+.completion-preset-assistant-open.menu_button_small {
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: fit-content;
+    max-width: none;
 }
 
 .popup .cpa_dialog {
@@ -66,6 +80,7 @@
     gap: 8px;
     flex-wrap: wrap;
     align-items: center;
+    min-width: 0;
 }
 
 .popup .cpa_dialog_toolbar_group_wide {
@@ -215,51 +230,70 @@
     background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 94%, transparent);
 }
 
-.popup .cpa_diff_panel .jsondiffpatch-delta,
-.popup .cpa_diff_panel .jsondiffpatch-delta ul,
-.popup .cpa_diff_panel .jsondiffpatch-delta li {
-    list-style: none;
-    margin: 0;
-    padding-left: 14px;
+.popup .cpa_diff_panel .luker_object_diff {
+    display: grid;
+    gap: 10px;
 }
 
-.popup .cpa_diff_panel .jsondiffpatch-property-name {
+.popup .cpa_diff_panel .luker_object_diff_item {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 90%, transparent);
+}
+
+.popup .cpa_diff_panel .luker_object_diff_path {
     font-weight: 700;
+    word-break: break-word;
 }
 
-.popup .cpa_diff_panel .jsondiffpatch-value pre {
+.popup .cpa_diff_panel .luker_object_diff_grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.popup .cpa_diff_panel .luker_object_diff_col {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    border-radius: 8px;
+    border-left: 3px solid transparent;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent);
+}
+
+.popup .cpa_diff_panel .luker_object_diff_col.before {
+    border-left-color: color-mix(in oklab, #d93025 70%, transparent);
+    background: color-mix(in oklab, #d93025 9%, transparent);
+}
+
+.popup .cpa_diff_panel .luker_object_diff_col.after {
+    border-left-color: color-mix(in oklab, #34a853 72%, transparent);
+    background: color-mix(in oklab, #34a853 10%, transparent);
+}
+
+.popup .cpa_diff_panel .luker_object_diff_col_title {
+    font-size: 0.9em;
+    font-weight: 700;
+    opacity: 0.82;
+}
+
+.popup .cpa_diff_panel .luker_object_diff_col pre {
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
 }
 
-.popup .cpa_diff_panel .jsondiffpatch-added .jsondiffpatch-value,
-.popup .cpa_diff_panel .jsondiffpatch-modified .jsondiffpatch-right-value {
-    background: color-mix(in oklab, #34a853 14%, transparent);
+.popup .cpa_diff_panel .luker_object_diff_missing {
+    opacity: 0.75;
+    font-style: italic;
 }
 
-.popup .cpa_diff_panel .jsondiffpatch-deleted .jsondiffpatch-value,
-.popup .cpa_diff_panel .jsondiffpatch-modified .jsondiffpatch-left-value {
-    background: color-mix(in oklab, #d93025 14%, transparent);
-}
-
-.popup .cpa_diff_panel .jsondiffpatch-value,
-.popup .cpa_diff_panel .jsondiffpatch-textdiff {
-    border-radius: 6px;
-    padding: 4px 6px;
-}
-
-.popup .cpa_diff_panel .jsondiffpatch-textdiff-line {
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-.popup .cpa_diff_panel .jsondiffpatch-textdiff-added {
-    background: color-mix(in oklab, #34a853 14%, transparent);
-}
-
-.popup .cpa_diff_panel .jsondiffpatch-textdiff-deleted {
-    background: color-mix(in oklab, #d93025 14%, transparent);
+.popup .cpa_diff_panel .luker_object_diff_text {
+    min-width: 0;
 }
 
 .popup .cpa_dialog_footer textarea {
@@ -269,6 +303,7 @@
 
 .popup .cpa_dialog_footer_actions {
     display: flex;
+    flex: 0 0 auto;
     gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -293,4 +328,5 @@
     .popup .cpa_diff_panel {
         max-height: 38vh;
     }
+
 }

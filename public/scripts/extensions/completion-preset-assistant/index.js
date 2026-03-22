@@ -15,7 +15,6 @@ import {
     getResponseMessageContent,
     validateParsedToolCalls,
 } from '../function-call-runtime.js';
-import DiffpatchHtmlFormatter from '../../vendor/diffpatch/formatters/html.js';
 import {
     buildJsonStateDelta,
     cloneJsonValue,
@@ -25,6 +24,7 @@ import {
     isPlainObject,
     replayJsonStateJournal,
 } from '../json-state-journal.js';
+import { renderObjectDiffHtml } from '../object-diff-view.js';
 
 const MODULE_NAME = 'completion_preset_assistant';
 const UI_BLOCK_ID = 'completion_preset_assistant_settings';
@@ -59,7 +59,6 @@ let activeDialogState = null;
 const diffPatcher = createJsonStateDiffPatcher({
     textDiffMinLength: JSON_TEXTDIFF_MIN_LENGTH,
 });
-const diffFormatter = new DiffpatchHtmlFormatter();
 
 function clone(value, fallback = {}) {
     return cloneJsonValue(value, fallback);
@@ -171,6 +170,9 @@ function registerLocaleData() {
         'No reference diff available.': '没有可显示的参考 diff。',
         'No diff to display.': '没有可显示的 diff。',
         'Reference diff: ${0} -> ${1}': '参考 diff：${0} -> ${1}',
+        'Before': '修改前',
+        'After': '修改后',
+        '(missing)': '（缺失）',
         'AI request failed: ${0}': '模型请求失败：${0}',
         'Save failed.': '保存失败。',
         'Reference preset copied': '已复制参考预设内容',
@@ -250,6 +252,9 @@ function registerLocaleData() {
         'No reference diff available.': '沒有可顯示的參考 diff。',
         'No diff to display.': '沒有可顯示的 diff。',
         'Reference diff: ${0} -> ${1}': '參考 diff：${0} -> ${1}',
+        'Before': '修改前',
+        'After': '修改後',
+        '(missing)': '（缺失）',
         'AI request failed: ${0}': '模型請求失敗：${0}',
         'Save failed.': '儲存失敗。',
         'Reference preset copied': '已複製參考預設內容',
@@ -1429,13 +1434,14 @@ function renderDeltaHtml(before, after) {
         return '';
     }
 
-    try {
-        const html = diffFormatter.format(delta, clone(before, {}));
-        return DOMPurify.sanitize(String(html || '').replace(/<script[\s\S]*?<\/script>/gi, ''));
-    } catch (error) {
-        console.warn(`[${MODULE_NAME}] Failed to render preset diff`, error);
-        return '';
-    }
+    return DOMPurify.sanitize(renderObjectDiffHtml({
+        before: clone(before, {}),
+        after: clone(after, {}),
+        delta,
+        beforeLabel: i18n('Before'),
+        afterLabel: i18n('After'),
+        missingLabel: i18n('(missing)'),
+    }));
 }
 
 function describeEdit(edit) {
