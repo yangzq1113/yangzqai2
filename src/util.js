@@ -1510,6 +1510,25 @@ export function isPathUnderParent(parentPath, childPath) {
 }
 
 /**
+ * Resolves a requested path under a parent directory and rejects path traversal.
+ * Unlike filename sanitizers, this preserves platform-legal characters such as
+ * `?` or `:` that can exist on Android/Linux file systems.
+ * @param {string} parentPath Parent directory path
+ * @param {string} requestedPath Requested relative path
+ * @returns {string | null} Absolute resolved path when valid, otherwise null
+ */
+export function resolvePathWithinParent(parentPath, requestedPath) {
+    const relativePath = String(requestedPath ?? '');
+    if (!relativePath) {
+        return null;
+    }
+
+    const normalizedParent = path.resolve(parentPath);
+    const resolvedChild = path.resolve(normalizedParent, relativePath);
+    return isPathUnderParent(normalizedParent, resolvedChild) ? resolvedChild : null;
+}
+
+/**
  * Checks if the given request is a file URL.
  * @param {string | URL | Request} request The request to check
  * @return {boolean} Returns true if the request is a file URL, false otherwise

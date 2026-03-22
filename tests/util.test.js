@@ -1,6 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
+import path from 'node:path';
 import { CHAT_COMPLETION_SOURCES } from '../src/constants';
-import { deepMerge, findNameMatch, flattenSchema, normalizeLookupText } from '../src/util';
+import { deepMerge, findNameMatch, flattenSchema, normalizeLookupText, resolvePathWithinParent } from '../src/util';
 
 describe('flattenSchema', () => {
     test('should return the schema if it is not an object', () => {
@@ -155,5 +156,18 @@ describe('deepMerge', () => {
                 },
             },
         });
+    });
+});
+
+describe('resolvePathWithinParent', () => {
+    test('should preserve Android/Linux legal filename characters', () => {
+        const root = path.resolve('/tmp/luker-avatar-root');
+        const resolved = resolvePathWithinParent(root, 'migrated?avatar:01.png');
+        expect(resolved).toBe(path.resolve(root, 'migrated?avatar:01.png'));
+    });
+
+    test('should reject path traversal outside the parent directory', () => {
+        const root = path.resolve('/tmp/luker-avatar-root');
+        expect(resolvePathWithinParent(root, '../secrets.json')).toBeNull();
     });
 });

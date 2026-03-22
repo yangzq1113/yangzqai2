@@ -6,7 +6,7 @@ import sanitize from 'sanitize-filename';
 import { Jimp } from '../jimp.js';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-import { getImages, tryParse } from '../util.js';
+import { getImages, resolvePathWithinParent, tryParse } from '../util.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { applyAvatarCropResize } from './characters.js';
 import { invalidateThumbnail } from './thumbnails.js';
@@ -22,16 +22,15 @@ router.post('/get', function (request, response) {
 router.post('/delete', getFileNameValidationFunction('avatar'), function (request, response) {
     if (!request.body) return response.sendStatus(400);
 
-    if (request.body.avatar !== sanitize(request.body.avatar)) {
-        console.error('Malicious avatar name prevented');
+    const fileName = resolvePathWithinParent(request.user.directories.avatars, request.body.avatar);
+    if (!fileName) {
+        console.error('Invalid avatar name prevented');
         return response.sendStatus(403);
     }
 
-    const fileName = path.join(request.user.directories.avatars, sanitize(request.body.avatar));
-
     if (fs.existsSync(fileName)) {
         fs.unlinkSync(fileName);
-        invalidateThumbnail(request.user.directories, 'persona', sanitize(request.body.avatar));
+        invalidateThumbnail(request.user.directories, 'persona', request.body.avatar);
         return response.send({ result: 'ok' });
     }
 

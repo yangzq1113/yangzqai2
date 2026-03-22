@@ -2,12 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import express from 'express';
-import sanitize from 'sanitize-filename';
 import { Jimp, JimpMime } from '../jimp.js';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { imageSize as sizeOf } from 'image-size';
 
-import { getConfigValue, invalidateFirefoxCache } from '../util.js';
+import { getConfigValue, invalidateFirefoxCache, resolvePathWithinParent } from '../util.js';
 import { getThumbnailResolution, isAnimatedWebP, thumbnailDimensions as dimensions, isAnimatedApng } from './image-metadata.js';
 import { ResizeStrategy } from '@jimp/plugin-resize';
 
@@ -84,7 +83,8 @@ export function invalidateThumbnail(directories, type, file) {
     const folder = getThumbnailFolder(directories, type);
     if (folder === undefined) throw new Error('Invalid thumbnail type');
 
-    const pathToThumbnail = path.join(folder, sanitize(file));
+    const pathToThumbnail = resolvePathWithinParent(folder, file);
+    if (!pathToThumbnail) throw new Error('Invalid thumbnail path');
 
     if (fs.existsSync(pathToThumbnail)) {
         fs.unlinkSync(pathToThumbnail);
@@ -232,6 +232,7 @@ async function processSingleImage(file, originalFolder, thumbnailFolder, type) {
             ? await thumbImage.getBuffer(JimpMime.png)
             : await thumbImage.getBuffer(JimpMime.jpeg, { quality: quality, jpegColorSpace: 'ycbcr' });
 
+        fs.mkdirSync(path.dirname(pathToCachedFile), { recursive: true });
         writeFileAtomicSync(pathToCachedFile, buffer);
 
         return { success: true, aspectRatio, resolution: thumbnailResolution };
@@ -254,12 +255,10 @@ publicRouter.get('/', async function (request, response) {
             return response.sendStatus(400);
         }
 
-        const file = sanitize(rawFile);
-        if (file !== rawFile) return response.sendStatus(403);
-
         const serveOriginal = () => {
             const folder = getOriginalFolder(request.user.directories, type);
-            const pathToOriginalFile = path.resolve(path.join(folder, file));
+            const pathToOriginalFile = resolvePathWithinParent(folder, rawFile);
+            if (!pathToOriginalFile) return response.sendStatus(403);
             if (!fs.existsSync(pathToOriginalFile)) return response.sendStatus(404);
             invalidateFirefoxCache(pathToOriginalFile, request, response);
             return response.sendFile(pathToOriginalFile);
@@ -270,7 +269,7 @@ publicRouter.get('/', async function (request, response) {
         }
 
         const animatedEnabled = animated === 'true';
-        const fileExtension = path.extname(file).toLowerCase();
+        const fileExtension = path.extname(rawFile).toLowerCase();
         const isAnimatedFormat = SKIPPED_EXTENSIONS.has(fileExtension);
 
         // Serve original for animated formats or GIFs
@@ -283,11 +282,12 @@ publicRouter.get('/', async function (request, response) {
         }
 
         const thumbnailFolder = getThumbnailFolder(request.user.directories, type);
-        const pathToCachedFile = path.join(thumbnailFolder, file);
+        const pathToCachedFile = resolvePathWithinParent(thumbnailFolder, rawFile);
+        if (!pathToCachedFile) return response.sendStatus(403);
 
         // Try to generate thumbnail if it doesn't exist
         if (!fs.existsSync(pathToCachedFile)) {
-            const thumbResult = await generateThumbnail(request.user.directories, type, file, false);
+            const thumbResult = await generateThumbnail(request.user.directories, type, rawFile, false);
             // If generation failed (path is null), serve the original file
             if (!thumbResult.path) {
                 return serveOriginal();
@@ -296,7 +296,7 @@ publicRouter.get('/', async function (request, response) {
 
         if (fs.existsSync(pathToCachedFile)) {
             invalidateFirefoxCache(pathToCachedFile, request, response);
-            return response.sendFile(file, { root: thumbnailFolder, dotfiles: 'allow' });
+            return response.sendFile(pathToCachedFile, { dotfiles: 'allow' });
         }
 
         // Send a 404 so the frontend can display a placeholder

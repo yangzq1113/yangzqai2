@@ -13,10 +13,9 @@ import mime from 'mime-types';
 import archiver from 'archiver';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
-import sanitize from 'sanitize-filename';
 
 import { USER_DIRECTORY_TEMPLATE, DEFAULT_USER, PUBLIC_DIRECTORIES, SETTINGS_FILE, UPLOADS_DIRECTORY } from './constants.js';
-import { getConfigValue, color, delay, generateTimestamp, invalidateFirefoxCache, Cache, formatBytes } from './util.js';
+import { getConfigValue, color, delay, generateTimestamp, invalidateFirefoxCache, Cache, formatBytes, resolvePathWithinParent } from './util.js';
 import { readSecret, writeSecret } from './endpoints/secrets.js';
 import { getContentOfType } from './endpoints/content-manager.js';
 import { serverDirectory } from './server-directory.js';
@@ -716,8 +715,8 @@ export async function getUserAvatar(handle) {
         if (!avatarFile) {
             return PUBLIC_USER_AVATAR;
         }
-        const avatarPath = path.join(directory.avatars, sanitize(avatarFile));
-        if (!fs.existsSync(avatarPath)) {
+        const avatarPath = resolvePathWithinParent(directory.avatars, avatarFile);
+        if (!avatarPath || !fs.existsSync(avatarPath)) {
             return PUBLIC_USER_AVATAR;
         }
         const mimeType = mime.lookup(avatarPath);
