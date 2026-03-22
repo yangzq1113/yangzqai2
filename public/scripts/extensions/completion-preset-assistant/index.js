@@ -33,6 +33,7 @@ const OPENAI_BUTTON_ID = 'completion_preset_assistant_openai_button';
 const SESSION_NAMESPACE = 'completion_preset_assistant_session';
 const JOURNAL_NAMESPACE = 'completion_preset_assistant_journal';
 const SESSION_VERSION = 3;
+const SESSION_STORE_VERSION = 1;
 const JOURNAL_VERSION = 1;
 const TOOL_CALL_RETRY_MAX = 10;
 const HELPER_TOOL_CHAIN_HARD_LIMIT = 4;
@@ -217,6 +218,18 @@ function registerLocaleData() {
         'Assistant': '助手',
         'System': '系统',
         'LLM preset': 'LLM 预设',
+        'No conversation history yet.': '还没有会话历史。',
+        'New session': '新建会话',
+        'Current': '当前',
+        'Load session': '加载会话',
+        'Delete': '删除',
+        'Delete this conversation session?': '要删除这个会话吗？',
+        'Conversation session deleted.': '会话已删除。',
+        'Session loaded.': '会话已加载。',
+        'Conversation delete failed: ${0}': '删除会话失败：${0}',
+        'Load failed: ${0}': '加载会话失败：${0}',
+        'Tool calls (${0})': '工具调用（${0}）',
+        'Tool result': '工具结果',
     });
     addLocaleData('zh-tw', {
         'Completion Preset Assistant': '聊天補全預設助手',
@@ -299,6 +312,18 @@ function registerLocaleData() {
         'Assistant': '助手',
         'System': '系統',
         'LLM preset': 'LLM 預設',
+        'No conversation history yet.': '還沒有會話歷史。',
+        'New session': '新建會話',
+        'Current': '目前',
+        'Load session': '載入會話',
+        'Delete': '刪除',
+        'Delete this conversation session?': '要刪除這個會話嗎？',
+        'Conversation session deleted.': '會話已刪除。',
+        'Session loaded.': '會話已載入。',
+        'Conversation delete failed: ${0}': '刪除會話失敗：${0}',
+        'Load failed: ${0}': '載入會話失敗：${0}',
+        'Tool calls (${0})': '工具調用（${0}）',
+        'Tool result': '工具結果',
     });
 }
 
@@ -360,12 +385,207 @@ function createEmptyJournal(baseSnapshot = {}) {
     };
 }
 
+function createEmptySessionStore() {
+    return {
+        version: SESSION_STORE_VERSION,
+        currentSessionId: '',
+        sessions: [],
+    };
+}
+
+function makeRuntimeToolCallId() {
+    return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function serializeToolResultContent(result) {
+    if (typeof result === 'string') {
+        return result;
+    }
+    if (result === null || result === undefined) {
+        return '';
+    }
+    try {
+        return JSON.stringify(result, null, 2);
+    } catch {
+        return String(result);
+    }
+}
+
+function createPersistentToolCallPayload(name, args = {}, id = '') {
+    const toolName = String(name || '').trim();
+    if (!toolName) {
+        return null;
+    }
+    const safeArgs = args && typeof args === 'object' ? clone(args, {}) : {};
+    return {
+        id: String(id || '').trim() || makeRuntimeToolCallId(),
+        type: 'function',
+        function: {
+            name: toolName,
+            arguments: JSON.stringify(safeArgs),
+        },
+    };
+}
+
+function buildPersistentToolCallsFromRawCalls(rawCalls = []) {
+    return (Array.isArray(rawCalls) ? rawCalls : [])
+        .map((call) => createPersistentToolCallPayload(call?.name, call?.args, call?.id))
+        .filter(Boolean);
+}
+
+function normalizePersistentToolCalls(message) {
+    const output = [];
+    for (const call of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+        let args = {};
+        if (call?.function?.arguments && typeof call.function.arguments === 'string') {
+            try {
+                const parsed = JSON.parse(call.function.arguments);
+                args = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+            } catch {
+                args = {};
+            }
+        } else if (call?.function?.arguments && typeof call.function.arguments === 'object') {
+            args = call.function.arguments;
+        }
+        const payload = createPersistentToolCallPayload(call?.function?.name, args, call?.id);
+        if (payload) {
+            output.push(payload);
+        }
+    }
+    return output;
+}
+
+function normalizePersistentToolResults(message, toolCalls = []) {
+    const toolCallIds = new Set(toolCalls.map((call) => String(call?.id || '').trim()).filter(Boolean));
+    return (Array.isArray(message?.tool_results) ? message.tool_results : [])
+        .map((item) => ({
+            tool_call_id: String(item?.tool_call_id || '').trim(),
+            content: String(item?.content ?? ''),
+        }))
+        .filter((item) => item.tool_call_id && toolCallIds.has(item.tool_call_id));
+}
+
+function createPersistentToolTurnMessage({
+    messageId = '',
+    assistantText = '',
+    toolCalls = [],
+    toolResults = [],
+    toolSummary = '',
+    toolState = '',
+    extra = {},
+} = {}) {
+    const message = {
+        id: String(messageId || '').trim() || uuidv4(),
+        role: 'assistant',
+        text: String(assistantText || '').trim(),
+        createdAt: Date.now(),
+        ...(extra && typeof extra === 'object' ? extra : {}),
+    };
+    const normalizedToolCalls = normalizePersistentToolCalls({ tool_calls: toolCalls });
+    const normalizedToolResults = normalizePersistentToolResults({ tool_results: toolResults }, normalizedToolCalls);
+    if (normalizedToolCalls.length > 0) {
+        message.tool_calls = normalizedToolCalls;
+    }
+    if (normalizedToolResults.length > 0) {
+        message.tool_results = normalizedToolResults;
+    }
+    if (toolSummary) {
+        message.toolSummary = String(toolSummary);
+    }
+    if (toolState) {
+        message.toolState = String(toolState);
+    }
+    return message;
+}
+
+function buildPersistentToolHistoryMessages(messages = []) {
+    const history = [];
+    for (const item of Array.isArray(messages) ? messages : []) {
+        const role = String(item?.role || '').trim().toLowerCase();
+        if (role === 'user') {
+            const content = String(item?.text || item?.summary || '').trim();
+            if (content) {
+                history.push({ role: 'user', content });
+            }
+            continue;
+        }
+        if (role !== 'assistant') {
+            continue;
+        }
+        const toolCalls = normalizePersistentToolCalls(item);
+        const toolResults = normalizePersistentToolResults(item, toolCalls);
+        const content = String(item?.text || item?.summary || '').trim();
+        if (toolCalls.length > 0 && toolResults.length > 0) {
+            history.push({
+                role: 'assistant',
+                content,
+                tool_calls: toolCalls,
+            });
+            for (const toolResult of toolResults) {
+                history.push({
+                    role: 'tool',
+                    tool_call_id: toolResult.tool_call_id,
+                    content: toolResult.content,
+                });
+            }
+            continue;
+        }
+        if (content) {
+            history.push({ role: 'assistant', content });
+        }
+    }
+    return history;
+}
+
+function buildToolCallSummary(toolCalls = []) {
+    const names = (Array.isArray(toolCalls) ? toolCalls : [])
+        .map((call) => String(call?.function?.name || '').trim())
+        .filter(Boolean);
+    if (names.length === 0) {
+        return '';
+    }
+    return `Tools: ${names.join(', ')}`;
+}
+
+function buildPendingToolResults(toolCalls = [], summaryText = '') {
+    return (Array.isArray(toolCalls) ? toolCalls : []).map((call) => ({
+        tool_call_id: String(call?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: true,
+            pending: true,
+            summary: String(summaryText || 'Pending review.'),
+        }),
+    })).filter((item) => item.tool_call_id);
+}
+
+function buildAppliedToolResults(toolCalls = [], summaryText = '') {
+    return (Array.isArray(toolCalls) ? toolCalls : []).map((call) => ({
+        tool_call_id: String(call?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: true,
+            applied: true,
+            summary: String(summaryText || 'Applied to preset.'),
+        }),
+    })).filter((item) => item.tool_call_id);
+}
+
+function buildRejectedToolResults(toolCalls = [], summaryText = '') {
+    return (Array.isArray(toolCalls) ? toolCalls : []).map((call) => ({
+        tool_call_id: String(call?.id || '').trim(),
+        content: serializeToolResultContent({
+            ok: false,
+            rejected: true,
+            summary: String(summaryText || 'Rejected by user.'),
+        }),
+    })).filter((item) => item.tool_call_id);
+}
+
 function sanitizeMessage(rawMessage) {
     const message = rawMessage && typeof rawMessage === 'object' ? rawMessage : {};
     const role = ['user', 'assistant', 'system'].includes(String(message.role || '').trim().toLowerCase())
         ? String(message.role).trim().toLowerCase()
         : 'system';
-    return {
+    const next = {
         id: String(message.id || uuidv4()),
         role,
         text: String(message.text || '').trim(),
@@ -373,6 +593,23 @@ function sanitizeMessage(rawMessage) {
         summary: String(message.summary || '').trim(),
         editCount: Math.max(0, toInteger(message.editCount, 0)),
     };
+    if (role === 'assistant') {
+        const toolCalls = normalizePersistentToolCalls(message);
+        const toolResults = normalizePersistentToolResults(message, toolCalls);
+        if (toolCalls.length > 0) {
+            next.tool_calls = toolCalls;
+        }
+        if (toolResults.length > 0) {
+            next.tool_results = toolResults;
+        }
+        if (message.toolSummary) {
+            next.toolSummary = String(message.toolSummary || '').trim();
+        }
+        if (message.toolState) {
+            next.toolState = String(message.toolState || '').trim();
+        }
+    }
+    return next;
 }
 
 function sanitizeDraft(rawDraft) {
@@ -430,6 +667,30 @@ function sanitizeSession(rawSession) {
     return next;
 }
 
+function normalizeSessionStore(rawStore) {
+    if (Number(rawStore?.version || 0) === SESSION_STORE_VERSION) {
+        const sessions = (Array.isArray(rawStore?.sessions) ? rawStore.sessions : [])
+            .map((session) => sanitizeSession(session))
+            .sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
+        return {
+            version: SESSION_STORE_VERSION,
+            currentSessionId: String(rawStore?.currentSessionId || '').trim(),
+            sessions,
+        };
+    }
+
+    if (rawStore && typeof rawStore === 'object' && (rawStore.id || rawStore.messages || rawStore.draft)) {
+        const legacySession = sanitizeSession(rawStore);
+        return {
+            version: SESSION_STORE_VERSION,
+            currentSessionId: legacySession.id,
+            sessions: [legacySession],
+        };
+    }
+
+    return createEmptySessionStore();
+}
+
 function sanitizeJournal(rawJournal, fallbackBaseSnapshot = {}) {
     const journal = rawJournal && typeof rawJournal === 'object' ? rawJournal : {};
     return {
@@ -450,7 +711,7 @@ function sanitizeEdit(rawEdit) {
     }
 
     const kind = String(edit.kind || '').trim();
-    if (!['set', 'remove', 'copy'].includes(kind)) {
+    if (!['set', 'remove', 'copy', 'upsert_prompt_entry', 'remove_prompt_entry', 'upsert_order_item', 'remove_order_item'].includes(kind)) {
         return null;
     }
 
@@ -460,27 +721,35 @@ function sanitizeEdit(rawEdit) {
         fromPath: String(edit.fromPath || '').trim(),
         reason: String(edit.reason || '').trim(),
         value: kind === 'set' ? clone(edit.value, edit.value) : undefined,
+        identifier: normalizePromptIdentifier(edit.identifier),
+        character_id: String(edit.character_id || '').trim(),
+        position: Number(edit.position),
+        content: Object.hasOwn(edit, 'content') ? String(edit.content ?? '') : undefined,
+        role: Object.hasOwn(edit, 'role') ? String(edit.role ?? '').trim() : undefined,
+        enabled: Object.hasOwn(edit, 'enabled') ? Boolean(edit.enabled) : undefined,
+        name: Object.hasOwn(edit, 'name') ? String(edit.name ?? '').trim() : undefined,
+        marker: Object.hasOwn(edit, 'marker') ? Boolean(edit.marker) : undefined,
+        injection_position: Object.hasOwn(edit, 'injection_position') ? edit.injection_position : undefined,
+        injection_depth: Object.hasOwn(edit, 'injection_depth') ? edit.injection_depth : undefined,
+        injection_order: Object.hasOwn(edit, 'injection_order') ? edit.injection_order : undefined,
     };
 }
 
-async function loadSession(context, targetRef) {
+async function loadSessionStore(context, targetRef) {
     try {
         const raw = await context.presets.state.get(SESSION_NAMESPACE, { target: targetRef });
-        return sanitizeSession(raw);
+        return normalizeSessionStore(raw);
     } catch (error) {
         console.warn(`[${MODULE_NAME}] Failed to load preset session`, error);
-        return createEmptySession();
+        return createEmptySessionStore();
     }
 }
 
-async function saveSession(context, targetRef, session) {
-    const nextSession = sanitizeSession({
-        ...session,
-        updatedAt: Date.now(),
-    });
+async function persistSessionStore(context, targetRef, store) {
+    const nextStore = normalizeSessionStore(store);
     const result = await context.presets.state.update(
         SESSION_NAMESPACE,
-        () => nextSession,
+        () => nextStore,
         {
             target: targetRef,
             asyncDiff: false,
@@ -489,7 +758,88 @@ async function saveSession(context, targetRef, session) {
     if (!result?.ok) {
         console.warn(`[${MODULE_NAME}] Failed to persist preset session`, result);
     }
-    return nextSession;
+    return nextStore;
+}
+
+function upsertPresetConversationSession(store, session) {
+    const normalizedStore = normalizeSessionStore(store);
+    const normalizedSession = sanitizeSession(session);
+    const nextSessions = normalizedStore.sessions.filter((item) => String(item?.id || '').trim() !== normalizedSession.id);
+    nextSessions.push(normalizedSession);
+    nextSessions.sort((left, right) => Number(left.updatedAt || 0) - Number(right.updatedAt || 0));
+    normalizedStore.sessions = nextSessions;
+    return normalizedStore;
+}
+
+function deletePresetConversationSession(store, sessionId) {
+    const normalizedStore = normalizeSessionStore(store);
+    const safeSessionId = String(sessionId || '').trim();
+    normalizedStore.sessions = normalizedStore.sessions.filter((item) => String(item?.id || '').trim() !== safeSessionId);
+    if (normalizedStore.currentSessionId === safeSessionId) {
+        normalizedStore.currentSessionId = normalizedStore.sessions.length > 0
+            ? String(normalizedStore.sessions[normalizedStore.sessions.length - 1]?.id || '').trim()
+            : '';
+    }
+    return normalizedStore;
+}
+
+function findPresetConversationSession(store, sessionId) {
+    const safeSessionId = String(sessionId || '').trim();
+    if (!safeSessionId) {
+        return null;
+    }
+    return (Array.isArray(store?.sessions) ? store.sessions : [])
+        .find((item) => String(item?.id || '').trim() === safeSessionId) || null;
+}
+
+function summarizePresetConversationSession(session, fallback = '') {
+    const firstUser = (Array.isArray(session?.messages) ? session.messages : [])
+        .find((item) => String(item?.role || '').trim().toLowerCase() === 'user');
+    const summary = String(firstUser?.text || firstUser?.summary || '').trim() || String(fallback || '').trim();
+    return summary.length > 72 ? `${summary.slice(0, 72).trim()}...` : summary;
+}
+
+async function savePresetConversationSession(context, targetRef, session, {
+    store = null,
+    setCurrent = true,
+} = {}) {
+    const nextSession = sanitizeSession({
+        ...session,
+        updatedAt: Date.now(),
+    });
+    const baseStore = store ? normalizeSessionStore(store) : await loadSessionStore(context, targetRef);
+    const nextStore = upsertPresetConversationSession(baseStore, nextSession);
+    if (setCurrent) {
+        nextStore.currentSessionId = nextSession.id;
+    }
+    const persistedStore = await persistSessionStore(context, targetRef, nextStore);
+    return {
+        session: nextSession,
+        store: persistedStore,
+    };
+}
+
+function getPreferredPresetConversationSession(store) {
+    const normalizedStore = normalizeSessionStore(store);
+    const current = findPresetConversationSession(normalizedStore, normalizedStore.currentSessionId);
+    if (current) {
+        return current;
+    }
+    if (normalizedStore.sessions.length > 0) {
+        return normalizedStore.sessions[normalizedStore.sessions.length - 1];
+    }
+    return null;
+}
+
+async function setCurrentPresetConversationSessionId(context, targetRef, store, sessionId) {
+    const nextStore = normalizeSessionStore(store);
+    nextStore.currentSessionId = String(sessionId || '').trim();
+    return await persistSessionStore(context, targetRef, nextStore);
+}
+
+async function deletePresetConversationSessionById(context, targetRef, sessionId) {
+    const store = deletePresetConversationSession(await loadSessionStore(context, targetRef), sessionId);
+    return await persistSessionStore(context, targetRef, store);
 }
 
 async function loadJournal(context, targetRef, fallbackBaseSnapshot = {}) {
@@ -840,6 +1190,59 @@ function buildPresetPromptOutlineText(body) {
     return sections.join('\n');
 }
 
+function buildPresetSettingsOutlineText(body) {
+    const source = isPlainObject(body) ? body : {};
+    const keyLabels = new Map([
+        ['temperature', 'temperature'],
+        ['top_p', 'top_p'],
+        ['top_k', 'top_k'],
+        ['min_p', 'min_p'],
+        ['presence_penalty', 'presence_penalty'],
+        ['frequency_penalty', 'frequency_penalty'],
+        ['openai_max_context', 'context_limit'],
+        ['openai_max_tokens', 'output_tokens'],
+        ['names_behavior', 'names_behavior'],
+        ['send_if_empty', 'send_if_empty'],
+        ['impersonation_prompt', 'impersonation_prompt'],
+        ['continue_nudge_prompt', 'continue_nudge_prompt'],
+        ['stream_openai', 'stream_openai'],
+        ['use_sysprompt', 'use_sysprompt'],
+        ['assistant_prefill', 'assistant_prefill'],
+        ['continue_prefill', 'continue_prefill'],
+        ['continue_postfix', 'continue_postfix'],
+        ['function_calling', 'function_calling'],
+        ['show_thoughts', 'show_thoughts'],
+        ['reasoning_effort', 'reasoning_effort'],
+        ['verbosity', 'verbosity'],
+        ['enable_web_search', 'enable_web_search'],
+        ['seed', 'seed'],
+        ['n', 'n'],
+    ]);
+    const lines = [];
+    for (const [key, label] of keyLabels.entries()) {
+        if (!Object.hasOwn(source, key)) {
+            continue;
+        }
+        const value = source[key];
+        if (value === '' || value === null || value === undefined) {
+            continue;
+        }
+        const text = typeof value === 'string' ? value : buildJson(value);
+        lines.push(`- ${label}: ${text}`);
+    }
+    return lines.length > 0
+        ? ['Generation and context settings:', ...lines].join('\n')
+        : 'Generation and context settings: none';
+}
+
+function buildFormattedLiveStateText(body) {
+    return [
+        buildPresetSettingsOutlineText(body),
+        '',
+        buildPresetPromptOutlineText(body),
+    ].join('\n');
+}
+
 function buildDialogMetaItems(dialogState) {
     const settings = getSettings();
     const requestProfileLabel = settings.requestApiProfileName || i18n('(current)');
@@ -878,15 +1281,8 @@ function buildModelSystemPrompt({
 }
 
 function buildConversationHistoryMessages(session) {
-    const messages = Array.isArray(session?.messages) ? session.messages : [];
-    return messages
-        .filter(item => item && typeof item === 'object' && ['user', 'assistant'].includes(String(item.role || '').trim().toLowerCase()))
-        .slice(-8)
-        .map((item) => ({
-            role: String(item.role || 'assistant').trim().toLowerCase(),
-            content: String(item.text || item.summary || '').trim(),
-        }))
-        .filter(item => item.content);
+    const messages = Array.isArray(session?.messages) ? session.messages.slice(-8) : [];
+    return buildPersistentToolHistoryMessages(messages);
 }
 
 function buildUserPrompt(dialogState, userText) {
@@ -903,7 +1299,7 @@ function buildUserPrompt(dialogState, userText) {
         'Target preset collection: openai',
         `Target preset name: ${dialogState.targetRef?.name || ''}`,
         '',
-        buildPresetPromptOutlineText(dialogState.liveSnapshot?.body || {}),
+        buildFormattedLiveStateText(dialogState.liveSnapshot?.body || {}),
         '',
         referenceSection,
         '',
@@ -1030,24 +1426,6 @@ async function buildPresetAwareMessages(context, systemPrompt, userPrompt, {
     }
 
     return messages;
-}
-
-function makeRuntimeToolCallId() {
-    return `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function serializeToolResultContent(result) {
-    if (typeof result === 'string') {
-        return result;
-    }
-    if (result === null || result === undefined) {
-        return '';
-    }
-    try {
-        return JSON.stringify(result, null, 2);
-    } catch {
-        return String(result);
-    }
 }
 
 function appendStandardToolRoundMessages(targetMessages, executedCalls, assistantText = '') {
@@ -1482,6 +1860,7 @@ async function requestPresetAssistantReply(dialogState, userText, {
         helperToolApis,
     });
     const runtimeToolMessages = [];
+    const helperTurnMessages = [];
     let lastAssistantText = '';
 
     for (let round = 1; round <= HELPER_TOOL_CHAIN_HARD_LIMIT; round += 1) {
@@ -1513,6 +1892,7 @@ async function requestPresetAssistantReply(dialogState, userText, {
             return {
                 assistantText: lastAssistantText,
                 toolCalls: editCalls,
+                helperTurnMessages,
             };
         }
 
@@ -1547,6 +1927,20 @@ async function requestPresetAssistantReply(dialogState, userText, {
         }
 
         appendStandardToolRoundMessages(runtimeToolMessages, executedHelperCalls, lastAssistantText);
+        helperTurnMessages.push(createPersistentToolTurnMessage({
+            assistantText: lastAssistantText,
+            toolCalls: executedHelperCalls.map((call) => ({
+                id: call.id,
+                name: call.name,
+                args: call.args,
+            })),
+            toolResults: executedHelperCalls.map((call) => ({
+                tool_call_id: String(call?.id || '').trim(),
+                content: serializeToolResultContent(call?.result),
+            })),
+            toolSummary: buildToolCallSummary(buildPersistentToolCallsFromRawCalls(executedHelperCalls)),
+            toolState: 'completed',
+        }));
     }
 
     throw new Error(`Preset assistant helper chain exceeded internal safety limit (${HELPER_TOOL_CHAIN_HARD_LIMIT}).`);
@@ -1991,6 +2385,30 @@ function buildDraftFromResponse(dialogState, assistantText, toolCalls, sourceMes
     };
 }
 
+function renderPresetToolTraceHtml(message) {
+    const toolCalls = normalizePersistentToolCalls(message);
+    const toolResults = normalizePersistentToolResults(message, toolCalls);
+    if (toolCalls.length === 0) {
+        return '';
+    }
+    const resultMap = new Map(toolResults.map((item) => [String(item?.tool_call_id || '').trim(), String(item?.content || '')]));
+    return `
+<details class="cpa_tool_trace">
+    <summary>${escapeHtml(i18nFormat('Tool calls (${0})', toolCalls.length))}</summary>
+    <div class="cpa_tool_trace_list">
+        ${toolCalls.map((call) => {
+            const result = resultMap.get(String(call?.id || '').trim()) || '';
+            return `
+<div class="cpa_tool_trace_item">
+    <div class="cpa_tool_trace_name">${escapeHtml(String(call?.function?.name || 'tool'))}</div>
+    <pre>${escapeHtml(String(call?.function?.arguments || '{}'))}</pre>
+    ${result ? `<details class="cpa_tool_trace_result"><summary>${escapeHtml(i18n('Tool result'))}</summary><pre>${escapeHtml(result)}</pre></details>` : ''}
+</div>`;
+        }).join('')}
+    </div>
+</details>`;
+}
+
 function renderMessageHtml(message, {
     commitCount = 0,
 } = {}) {
@@ -2001,6 +2419,9 @@ function renderMessageHtml(message, {
     const note = safeMessage.summary
         ? `<div class="cpa_message_note">${escapeHtml(safeMessage.summary)}</div>`
         : (safeMessage.editCount > 0 ? `<div class="cpa_message_note">${escapeHtml(i18nFormat('Proposed edits: ${0}', safeMessage.editCount))}</div>` : '');
+    const toolSummary = safeMessage.toolSummary
+        ? `<div class="cpa_message_note">${escapeHtml(safeMessage.toolSummary)}</div>`
+        : '';
     const commitBadge = safeMessage.role === 'assistant' && commitCount > 0
         ? `<span class="cpa_message_badge">${escapeHtml(i18n('Applied'))}</span>`
         : '';
@@ -2020,8 +2441,42 @@ function renderMessageHtml(message, {
     </div>
     <div class="cpa_message_body">${escapeHtml(safeMessage.text || safeMessage.summary || '')}</div>
     ${note}
+    ${toolSummary}
+    ${renderPresetToolTraceHtml(safeMessage)}
     ${actions}
 </div>`;
+}
+
+function renderPresetConversationHistoryItems(sessionStore, currentSessionId = '') {
+    const currentId = String(currentSessionId || '').trim();
+    const items = (Array.isArray(sessionStore?.sessions) ? sessionStore.sessions : [])
+        .slice()
+        .sort((left, right) => Number(right?.updatedAt || 0) - Number(left?.updatedAt || 0));
+    const toolbar = `
+<div class="cpa_history_toolbar">
+    <div class="menu_button menu_button_small" data-cpa-history-action="new-session">${escapeHtml(i18n('New session'))}</div>
+</div>`;
+    if (items.length === 0) {
+        return `${toolbar}<div class="cpa_empty">${escapeHtml(i18n('No conversation history yet.'))}</div>`;
+    }
+    return `${toolbar}${items.map((item) => {
+        const sessionId = String(item?.id || '').trim();
+        const isCurrent = sessionId && sessionId === currentId;
+        const summary = summarizePresetConversationSession(item, sessionId) || sessionId;
+        const messageCount = Array.isArray(item?.messages) ? item.messages.length : 0;
+        const pending = item?.draft ? ` · ${escapeHtml(i18n('Draft ready'))}` : '';
+        return `
+<div class="cpa_history_item${isCurrent ? ' active' : ''}">
+    <div class="cpa_history_item_main">
+        <div class="cpa_history_item_summary">${escapeHtml(summary)}${isCurrent ? ` <span class="cpa_history_item_current">${escapeHtml(i18n('Current'))}</span>` : ''}</div>
+        <div class="cpa_history_item_time">${escapeHtml(new Date(Number(item?.updatedAt || Date.now())).toLocaleString())} · ${escapeHtml(String(messageCount))} msgs${pending}</div>
+    </div>
+    <div class="cpa_history_item_actions">
+        ${!isCurrent ? `<div class="menu_button menu_button_small" data-cpa-history-action="load-session" data-cpa-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Load session'))}</div>` : ''}
+        <div class="menu_button menu_button_small" data-cpa-history-action="delete-session" data-cpa-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Delete'))}</div>
+    </div>
+</div>`;
+    }).join('')}`;
 }
 
 function renderConversationHtml(session, journal) {
@@ -2090,6 +2545,10 @@ function renderDialogHtml(dialogState) {
     <div class="cpa_dialog_columns">
         <div class="cpa_conversation_panel">
             <div class="cpa_panel_title">${escapeHtml(i18n('Conversation'))}</div>
+            <details class="cpa_history" open>
+                <summary>${escapeHtml(i18n('Conversation history'))}</summary>
+                ${renderPresetConversationHistoryItems(dialogState.sessionStore, dialogState.currentSessionId)}
+            </details>
             <div class="cpa_conversation_list">${renderConversationHtml(dialogState.session, dialogState.journal)}</div>
         </div>
         <div class="cpa_draft_panel">
@@ -2118,6 +2577,21 @@ function appendSessionMessage(session, message) {
         ...session,
         messages: messages.slice(-settings.sessionMessageLimit),
     };
+}
+
+function replaceSessionMessage(session, messageId, updater) {
+    const safeMessageId = String(messageId || '').trim();
+    if (!safeMessageId || typeof updater !== 'function') {
+        return sanitizeSession(session);
+    }
+    const nextSession = sanitizeSession(session);
+    nextSession.messages = nextSession.messages.map((message) => {
+        if (String(message?.id || '').trim() !== safeMessageId) {
+            return message;
+        }
+        return sanitizeMessage(updater(clone(message, {})) || message);
+    });
+    return nextSession;
 }
 
 async function rerenderDialog(dialogState) {
@@ -2171,7 +2645,13 @@ async function refreshLiveSnapshot(dialogState) {
 }
 
 async function persistDialogSession(dialogState) {
-    dialogState.session = await saveSession(dialogState.context, dialogState.targetRef, dialogState.session);
+    const saved = await savePresetConversationSession(dialogState.context, dialogState.targetRef, dialogState.session, {
+        store: dialogState.sessionStore,
+        setCurrent: true,
+    });
+    dialogState.session = saved.session;
+    dialogState.sessionStore = saved.store;
+    dialogState.currentSessionId = String(saved.session?.id || '').trim();
 }
 
 async function persistDialogJournal(dialogState) {
@@ -2234,7 +2714,8 @@ async function handleMessageDiff(dialogState, messageId) {
 }
 
 async function handleDiscardDraft(dialogState, { silent = false } = {}) {
-    if (!dialogState.session?.draft) {
+    const draft = sanitizeDraft(dialogState.session?.draft);
+    if (!draft) {
         return;
     }
     if (!silent) {
@@ -2242,6 +2723,14 @@ async function handleDiscardDraft(dialogState, { silent = false } = {}) {
         if (!confirmed) {
             return;
         }
+    }
+    if (draft.sourceMessageId) {
+        dialogState.session = replaceSessionMessage(dialogState.session, draft.sourceMessageId, (message) => ({
+            ...message,
+            tool_results: buildRejectedToolResults(normalizePersistentToolCalls(message), i18n('Draft discarded.')),
+            toolSummary: i18n('Draft discarded.'),
+            toolState: 'rejected',
+        }));
     }
     dialogState.session.draft = null;
     dialogState.status = i18n('Draft discarded.');
@@ -2257,6 +2746,8 @@ async function handleClearHistory(dialogState) {
     try {
         await refreshLiveSnapshot(dialogState);
         dialogState.session = createEmptySession();
+        dialogState.sessionStore = createEmptySessionStore();
+        dialogState.currentSessionId = dialogState.session.id;
         dialogState.journal = createEmptyJournal(dialogState.liveSnapshot?.body || {});
         dialogState.referenceSnapshot = null;
         dialogState.status = i18n('Session history cleared.');
@@ -2265,6 +2756,94 @@ async function handleClearHistory(dialogState) {
     } catch (error) {
         dialogState.status = String(error?.message || error || '');
     }
+    await rerenderDialog(dialogState);
+}
+
+async function handleNewSession(dialogState) {
+    if (dialogState.busy) {
+        return;
+    }
+    const saved = await savePresetConversationSession(
+        dialogState.context,
+        dialogState.targetRef,
+        createEmptySession(),
+        {
+            store: dialogState.sessionStore,
+            setCurrent: true,
+        },
+    );
+    dialogState.session = saved.session;
+    dialogState.sessionStore = saved.store;
+    dialogState.currentSessionId = String(saved.session?.id || '').trim();
+    dialogState.referenceSnapshot = null;
+    dialogState.inputText = '';
+    dialogState.status = i18n('New session');
+    await rerenderDialog(dialogState);
+}
+
+async function handleLoadSession(dialogState, sessionId) {
+    if (dialogState.busy) {
+        return;
+    }
+    const safeSessionId = String(sessionId || '').trim();
+    if (!safeSessionId) {
+        return;
+    }
+    const loaded = findPresetConversationSession(dialogState.sessionStore, safeSessionId);
+    if (!loaded) {
+        throw new Error('Session not found.');
+    }
+    dialogState.sessionStore = await setCurrentPresetConversationSessionId(
+        dialogState.context,
+        dialogState.targetRef,
+        dialogState.sessionStore,
+        safeSessionId,
+    );
+    dialogState.currentSessionId = safeSessionId;
+    dialogState.session = sanitizeSession(loaded);
+    dialogState.referenceSnapshot = null;
+    dialogState.inputText = '';
+    await refreshReferenceSnapshot(dialogState);
+    dialogState.status = i18n('Session loaded.');
+    await rerenderDialog(dialogState);
+}
+
+async function handleDeleteSession(dialogState, sessionId) {
+    if (dialogState.busy) {
+        return;
+    }
+    const safeSessionId = String(sessionId || '').trim();
+    if (!safeSessionId) {
+        return;
+    }
+    const confirmed = await Popup.show.confirm(i18n('Delete this conversation session?'), '');
+    if (!confirmed) {
+        return;
+    }
+
+    let nextStore = await deletePresetConversationSessionById(dialogState.context, dialogState.targetRef, safeSessionId);
+    let nextSession = getPreferredPresetConversationSession(nextStore);
+    if (!nextSession) {
+        const saved = await savePresetConversationSession(
+            dialogState.context,
+            dialogState.targetRef,
+            createEmptySession(),
+            {
+                store: nextStore,
+                setCurrent: true,
+            },
+        );
+        nextStore = saved.store;
+        nextSession = saved.session;
+    }
+
+    dialogState.sessionStore = nextStore;
+    dialogState.currentSessionId = String(nextSession?.id || '').trim();
+    dialogState.session = sanitizeSession(nextSession);
+    dialogState.referenceSnapshot = null;
+    dialogState.inputText = '';
+    await refreshReferenceSnapshot(dialogState);
+    dialogState.status = i18n('Conversation session deleted.');
     await rerenderDialog(dialogState);
 }
 
@@ -2318,6 +2897,12 @@ async function handleApplyDraft(dialogState) {
             ].filter(Boolean),
         };
         await refreshLiveSnapshot(dialogState);
+        dialogState.session = replaceSessionMessage(dialogState.session, sourceMessageId, (message) => ({
+            ...message,
+            tool_results: buildAppliedToolResults(normalizePersistentToolCalls(message), i18n('Applied draft to preset.')),
+            toolSummary: i18nFormat('Applied preset edits: ${0}', draft.edits.length),
+            toolState: 'completed',
+        }));
         dialogState.session.draft = null;
         dialogState.status = i18n('Applied draft to preset.');
         await persistDialogJournal(dialogState);
@@ -2444,15 +3029,36 @@ async function handleSend(dialogState) {
             historyMessages,
             abortSignal: dialogState.abortController.signal,
         });
+        const helperTurnMessages = Array.isArray(response?.helperTurnMessages) ? response.helperTurnMessages.map((item) => sanitizeMessage(item)) : [];
+        if (helperTurnMessages.length > 0) {
+            for (const helperMessage of helperTurnMessages) {
+                dialogState.session = appendSessionMessage(dialogState.session, helperMessage);
+            }
+        }
         const assistantMessageId = uuidv4();
         const draft = buildDraftFromResponse(dialogState, response.assistantText, response.toolCalls, assistantMessageId);
-        dialogState.session = appendSessionMessage(dialogState.session, {
-            id: assistantMessageId,
-            role: 'assistant',
-            text: String(response.assistantText || '').trim() || (draft ? i18n('Draft ready') : i18n('No changes proposed')),
-            summary: draft?.summary || '',
-            editCount: draft?.edits?.length || 0,
-        });
+        const persistentToolCalls = buildPersistentToolCallsFromRawCalls(response?.toolCalls || []);
+        const assistantMessage = persistentToolCalls.length > 0
+            ? createPersistentToolTurnMessage({
+                messageId: assistantMessageId,
+                assistantText: String(response.assistantText || '').trim() || (draft ? i18n('Draft ready') : i18n('No changes proposed')),
+                toolCalls: persistentToolCalls,
+                toolResults: draft ? buildPendingToolResults(persistentToolCalls, i18n('Draft ready')) : [],
+                toolSummary: buildToolCallSummary(persistentToolCalls),
+                toolState: draft ? 'pending' : '',
+                extra: {
+                    summary: draft?.summary || '',
+                    editCount: draft?.edits?.length || 0,
+                },
+            })
+            : {
+                id: assistantMessageId,
+                role: 'assistant',
+                text: String(response.assistantText || '').trim() || (draft ? i18n('Draft ready') : i18n('No changes proposed')),
+                summary: draft?.summary || '',
+                editCount: draft?.edits?.length || 0,
+            };
+        dialogState.session = appendSessionMessage(dialogState.session, assistantMessage);
         dialogState.session.draft = draft;
         dialogState.status = draft
             ? i18nFormat('Proposed edits: ${0}', draft.edits.length)
@@ -2510,6 +3116,29 @@ function bindDialogEvents(dialogState) {
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="clear-history"]', async function () {
         await handleClearHistory(dialogState);
     });
+    dialogState.root.on('click.cpaDialog', '[data-cpa-history-action]', async function () {
+        const action = String(jQuery(this).attr('data-cpa-history-action') || '').trim();
+        const sessionId = String(jQuery(this).attr('data-cpa-session-id') || '').trim();
+        try {
+            if (action === 'new-session') {
+                await handleNewSession(dialogState);
+                return;
+            }
+            if (action === 'load-session') {
+                await handleLoadSession(dialogState, sessionId);
+                return;
+            }
+            if (action === 'delete-session') {
+                await handleDeleteSession(dialogState, sessionId);
+            }
+        } catch (error) {
+            if (action === 'delete-session') {
+                toastr.error(i18nFormat('Conversation delete failed: ${0}', error?.message || error));
+                return;
+            }
+            toastr.error(i18nFormat('Load failed: ${0}', error?.message || error));
+        }
+    });
 }
 
 async function openAssistantPopup() {
@@ -2527,17 +3156,31 @@ async function openAssistantPopup() {
         return;
     }
 
-    const [session, journal] = await Promise.all([
-        loadSession(context, targetRef),
+    const [loadedSessionStore, journal] = await Promise.all([
+        loadSessionStore(context, targetRef),
         loadJournal(context, targetRef, liveSnapshot.body || {}),
     ]);
+    let sessionStore = normalizeSessionStore(loadedSessionStore);
+    let session = getPreferredPresetConversationSession(sessionStore);
+    if (!session) {
+        const saved = await savePresetConversationSession(context, targetRef, createEmptySession(), {
+            store: sessionStore,
+            setCurrent: true,
+        });
+        sessionStore = saved.store;
+        session = saved.session;
+    } else if (String(sessionStore.currentSessionId || '').trim() !== String(session.id || '').trim()) {
+        sessionStore = await setCurrentPresetConversationSessionId(context, targetRef, sessionStore, session.id);
+    }
     const dialogState = {
         context,
         popup: null,
         root: null,
         targetRef,
         liveSnapshot,
-        session,
+        sessionStore,
+        currentSessionId: String(session?.id || '').trim(),
+        session: sanitizeSession(session),
         journal: ensureJournalBaseSnapshot(journal, liveSnapshot.body || {}),
         referenceSnapshot: null,
         busy: false,

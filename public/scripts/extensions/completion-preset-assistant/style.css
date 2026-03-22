@@ -137,6 +137,61 @@
     padding-right: 4px;
 }
 
+.popup .cpa_history {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: 10px;
+    padding: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 92%, transparent);
+}
+
+.popup .cpa_history summary {
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.popup .cpa_history_toolbar,
+.popup .cpa_history_item_actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.popup .cpa_history_toolbar {
+    margin-top: 8px;
+}
+
+.popup .cpa_history_item {
+    display: grid;
+    gap: 8px;
+    padding: 8px 0;
+    border-top: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent);
+}
+
+.popup .cpa_history_item:first-of-type {
+    border-top: 0;
+}
+
+.popup .cpa_history_item.active {
+    background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 7%, transparent);
+    border-radius: 8px;
+    padding-inline: 8px;
+}
+
+.popup .cpa_history_item_summary {
+    font-weight: 700;
+    word-break: break-word;
+}
+
+.popup .cpa_history_item_current {
+    font-size: 0.85em;
+    opacity: 0.75;
+}
+
+.popup .cpa_history_item_time {
+    font-size: 0.9em;
+    opacity: 0.78;
+}
+
 .popup .cpa_message {
     border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent);
     border-radius: 10px;
@@ -197,6 +252,40 @@
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+}
+
+.popup .cpa_tool_trace {
+    margin-top: 8px;
+}
+
+.popup .cpa_tool_trace summary {
+    cursor: pointer;
+}
+
+.popup .cpa_tool_trace_list {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.popup .cpa_tool_trace_item {
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 7%, transparent);
+}
+
+.popup .cpa_tool_trace_name {
+    font-weight: 700;
+}
+
+.popup .cpa_tool_trace_item pre,
+.popup .cpa_tool_trace_result pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .popup .cpa_empty {
