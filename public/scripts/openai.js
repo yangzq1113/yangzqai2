@@ -213,6 +213,9 @@ const characterBoundPresetState = {
     runtimePresetBody: null,
 };
 let lastOpenAIPresetSelectValue = '';
+let characterJsonDataWorker = null;
+let characterJsonDataWorkerRequestId = 0;
+const characterJsonDataWorkerPending = new Map();
 
 function scheduleOpenAIPresetChangeNotifications(presetName) {
     const token = ++openAIPresetChangeNotificationToken;
@@ -5146,7 +5149,101 @@ function getCharacterById(characterId = this_chid) {
     return Number.isInteger(id) ? characters[id] : undefined;
 }
 
-function applyPresetByName(presetName) {
+function getCharacterJsonDataWorker() {
+    if (characterJsonDataWorker || typeof Worker === 'undefined') {
+        return characterJsonDataWorker;
+    }
+
+    characterJsonDataWorker = new Worker(new URL('./workers/character-json-data-worker.js', import.meta.url), { type: 'module' });
+    characterJsonDataWorker.addEventListener('message', (event) => {
+        const id = Number(event?.data?.id);
+        if (!Number.isInteger(id)) {
+            return;
+        }
+
+        const pending = characterJsonDataWorkerPending.get(id);
+        if (!pending) {
+            return;
+        }
+
+        characterJsonDataWorkerPending.delete(id);
+        if (event?.data?.ok && typeof event.data.jsonData === 'string') {
+            pending.resolve(event.data.jsonData);
+            return;
+        }
+
+        pending.reject(new Error(String(event?.data?.error || 'Character JSON data worker failed.')));
+    });
+    characterJsonDataWorker.addEventListener('error', (event) => {
+        const error = new Error(event?.message || 'Character JSON data worker failed.');
+        for (const pending of characterJsonDataWorkerPending.values()) {
+            pending.reject(error);
+        }
+        characterJsonDataWorkerPending.clear();
+        characterJsonDataWorker?.terminate();
+        characterJsonDataWorker = null;
+    });
+
+    return characterJsonDataWorker;
+}
+
+function updateCharacterJsonDataSnapshot(jsonDataText, boundPreset) {
+    const jsonData = JSON.parse(String(jsonDataText || ''));
+    jsonData.data = jsonData.data && typeof jsonData.data === 'object' && !Array.isArray(jsonData.data)
+        ? jsonData.data
+        : {};
+    jsonData.data.extensions = jsonData.data.extensions && typeof jsonData.data.extensions === 'object' && !Array.isArray(jsonData.data.extensions)
+        ? jsonData.data.extensions
+        : {};
+    jsonData.data.extensions.luker = jsonData.data.extensions.luker && typeof jsonData.data.extensions.luker === 'object' && !Array.isArray(jsonData.data.extensions.luker)
+        ? jsonData.data.extensions.luker
+        : {};
+    jsonData.data.extensions.luker.chat_completion_preset = boundPreset;
+    return JSON.stringify(jsonData);
+}
+
+async function syncCharacterBoundPresetJsonData(characterId, boundPreset) {
+    const id = Number(characterId);
+    if (Number(this_chid) !== id) {
+        return;
+    }
+
+    const character = getCharacterById(id);
+    if (!character?.json_data) {
+        return;
+    }
+
+    const sourceJsonData = character.json_data;
+    const worker = getCharacterJsonDataWorker();
+    try {
+        let nextJsonData;
+        if (!worker) {
+            nextJsonData = updateCharacterJsonDataSnapshot(sourceJsonData, boundPreset);
+        } else {
+            const requestId = ++characterJsonDataWorkerRequestId;
+            const responsePromise = new Promise((resolve, reject) => {
+                characterJsonDataWorkerPending.set(requestId, { resolve, reject });
+            });
+            worker.postMessage({
+                id: requestId,
+                jsonData: sourceJsonData,
+                boundPreset,
+            });
+            nextJsonData = await responsePromise;
+        }
+
+        if (Number(this_chid) !== id || character.json_data !== sourceJsonData) {
+            return;
+        }
+
+        character.json_data = nextJsonData;
+        $('#character_json_data').val(nextJsonData);
+    } catch (error) {
+        console.warn('Failed to sync character-bound preset to character JSON snapshot', error);
+    }
+}
+
+function applyPresetByName(presetName, { forceChange = false } = {}) {
     const target = findCanonicalNameInList(Object.keys(openai_setting_names || {}), presetName) || String(presetName ?? '').trim();
     if (!target) {
         return false;
@@ -5160,6 +5257,8 @@ function applyPresetByName(presetName) {
     const selectValue = String(presetIndex);
     if ($('#settings_preset_openai').val() !== selectValue) {
         $('#settings_preset_openai').val(selectValue).trigger('change');
+    } else if (forceChange) {
+        $('#settings_preset_openai').trigger('change');
     }
     return true;
 }
@@ -5214,7 +5313,7 @@ function restoreOpenAIPresetAfterCharacterBound(preferredName = '') {
         return false;
     }
 
-    const restored = applyPresetByName(targetPresetName);
+    const restored = applyPresetByName(targetPresetName, { forceChange: true });
     if (!restored) {
         console.warn(`Failed to restore chat completion preset after removing character binding: ${targetPresetName}`);
     }
@@ -5264,8 +5363,13 @@ async function setCharacterBoundPresetValue(characterId, presetName, presetBody 
     const sanitizedPreset = trimmed && presetBody && typeof presetBody === 'object'
         ? stripOpenAIConnectionFieldsFromPreset(structuredClone(presetBody))
         : null;
-    const nextExtensions = structuredClone(character?.data?.extensions ?? {});
-    const currentRaw = nextExtensions?.luker?.chat_completion_preset;
+    const currentExtensions = character?.data?.extensions && typeof character.data.extensions === 'object' && !Array.isArray(character.data.extensions)
+        ? character.data.extensions
+        : {};
+    const currentLukerExtensions = currentExtensions.luker && typeof currentExtensions.luker === 'object' && !Array.isArray(currentExtensions.luker)
+        ? currentExtensions.luker
+        : {};
+    const currentRaw = currentLukerExtensions.chat_completion_preset;
     const currentName = typeof currentRaw === 'string'
         ? currentRaw.trim()
         : String(currentRaw?.name || '').trim();
@@ -5286,36 +5390,27 @@ async function setCharacterBoundPresetValue(characterId, presetName, presetBody 
         return true;
     }
 
-    nextExtensions.luker = nextExtensions.luker && typeof nextExtensions.luker === 'object'
-        ? nextExtensions.luker
-        : {};
-
-    if (trimmed) {
-        nextExtensions.luker.chat_completion_preset = {
+    const nextBoundPreset = trimmed
+        ? {
             name: trimmed,
             preset: sanitizedPreset,
-        };
-    } else {
+        }
+        : null;
+    const nextLukerExtensions = {
+        ...currentLukerExtensions,
         // merge-attributes deep-merges nested objects, so deletion-by-omission
         // would keep the old bound preset on the character card. Persist an
         // explicit null to clear the field reliably.
-        nextExtensions.luker.chat_completion_preset = null;
-    }
+        chat_completion_preset: nextBoundPreset,
+    };
+    const nextExtensions = {
+        ...currentExtensions,
+        luker: nextLukerExtensions,
+    };
 
     character.data = character.data || {};
     character.data.extensions = nextExtensions;
-
-    if (Number(this_chid) === id && character.json_data) {
-        try {
-            const jsonData = JSON.parse(character.json_data);
-            jsonData.data = jsonData.data || {};
-            jsonData.data.extensions = nextExtensions;
-            character.json_data = JSON.stringify(jsonData);
-            $('#character_json_data').val(character.json_data);
-        } catch {
-            // Ignore malformed json_data snapshots.
-        }
-    }
+    const jsonDataSyncPromise = syncCharacterBoundPresetJsonData(id, nextBoundPreset);
 
     const response = await fetch('/api/characters/merge-attributes', {
         method: 'POST',
@@ -5323,10 +5418,16 @@ async function setCharacterBoundPresetValue(characterId, presetName, presetBody 
         body: JSON.stringify({
             avatar: character.avatar,
             data: {
-                extensions: nextExtensions,
+                extensions: {
+                    luker: {
+                        chat_completion_preset: nextBoundPreset,
+                    },
+                },
             },
         }),
     });
+
+    await jsonDataSyncPromise;
 
     if (!response.ok) {
         console.error('Failed to save character-bound chat completion preset', response.statusText);
