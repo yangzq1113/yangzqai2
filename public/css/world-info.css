@@ -222,6 +222,7 @@
     display: inline-flex;
     gap: 4px;
     max-width: 100%;
+    min-width: 0;
     padding: 4px 6px 4px 10px;
 }
 
@@ -234,9 +235,11 @@
     border: 0;
     color: var(--SmartThemeBodyColor);
     cursor: pointer;
+    flex: 1 1 auto;
     font: inherit;
     font-weight: 600;
     max-width: 220px;
+    min-width: 0;
     overflow: hidden;
     padding: 0;
     text-overflow: ellipsis;
@@ -317,6 +320,10 @@
     background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, var(--SmartThemeBlurTintColor));
 }
 
+.world_info_manager_item_main {
+    min-width: 0;
+}
+
 .world_info_manager_item_title {
     background: transparent;
     border: 0;
@@ -327,10 +334,12 @@
     font-size: 0.98rem;
     font-weight: 600;
     margin: 0;
+    min-width: 0;
     overflow: hidden;
     padding: 0;
     text-align: left;
     text-overflow: ellipsis;
+    width: 100%;
     white-space: nowrap;
 }
 
