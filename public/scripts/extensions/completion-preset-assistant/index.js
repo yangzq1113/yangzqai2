@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups
 
-import { DOMPurify, DiffMatchPatch, lodash } from '../../../lib.js';
+import { DOMPurify, lodash } from '../../../lib.js';
 import { saveSettingsDebounced } from '../../../script.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { extension_settings, getContext } from '../../extensions.js';
@@ -15,19 +15,28 @@ import {
     getResponseMessageContent,
     validateParsedToolCalls,
 } from '../function-call-runtime.js';
-import { create as createDiffPatcher } from '../../vendor/diffpatch/index.js';
 import DiffpatchHtmlFormatter from '../../vendor/diffpatch/formatters/html.js';
+import {
+    buildJsonStateDelta,
+    cloneJsonValue,
+    createJsonStateDiffPatcher,
+    extractJsonStateTouchedPaths,
+    hasJsonStatePathConflict,
+    isPlainObject,
+    replayJsonStateJournal,
+} from '../json-state-journal.js';
 
 const MODULE_NAME = 'completion_preset_assistant';
 const UI_BLOCK_ID = 'completion_preset_assistant_settings';
 const OPEN_BUTTON_ID = 'completion_preset_assistant_open';
 const OPENAI_BUTTON_ID = 'completion_preset_assistant_openai_button';
 const SESSION_NAMESPACE = 'completion_preset_assistant_session';
-const SESSION_VERSION = 1;
+const JOURNAL_NAMESPACE = 'completion_preset_assistant_journal';
+const SESSION_VERSION = 3;
+const JOURNAL_VERSION = 1;
 const TOOL_CALL_RETRY_MAX = 10;
 const SESSION_MESSAGE_LIMIT_MIN = 8;
 const SESSION_MESSAGE_LIMIT_MAX = 48;
-const ROLLBACK_HISTORY_LIMIT = 12;
 const JSON_TEXTDIFF_MIN_LENGTH = 80;
 const MODEL_TOOLS = Object.freeze({
     SET_FIELD: 'preset_set_field',
@@ -57,25 +66,13 @@ const defaultSettings = {
 
 let activeDialogState = null;
 
-const diffPatcher = createDiffPatcher({
-    arrays: {
-        detectMove: true,
-        includeValueOnMove: false,
-    },
-    textDiff: {
-        minLength: JSON_TEXTDIFF_MIN_LENGTH,
-        diffMatchPatch: DiffMatchPatch,
-    },
-    cloneDiffValues: true,
+const diffPatcher = createJsonStateDiffPatcher({
+    textDiffMinLength: JSON_TEXTDIFF_MIN_LENGTH,
 });
 const diffFormatter = new DiffpatchHtmlFormatter();
 
 function clone(value, fallback = {}) {
-    try {
-        return structuredClone(value);
-    } catch {
-        return fallback;
-    }
+    return cloneJsonValue(value, fallback);
 }
 
 function i18n(text) {
@@ -84,10 +81,6 @@ function i18n(text) {
 
 function i18nFormat(text, ...values) {
     return i18n(text).replace(/\$\{(\d+)\}/g, (_, idx) => String(values[Number(idx)] ?? ''));
-}
-
-function isPlainObject(value) {
-    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function limitText(value, max = 240) {
@@ -213,18 +206,17 @@ function registerLocaleData() {
         'Request stopped.': '请求已终止。',
         'Selected preset changed outside the assistant. Reopen the assistant on the desired preset.': '助手打开后当前选中的预设已被切换。请在目标预设上重新打开助手。',
         'Current live preset changed since this draft was created. Refresh live and request a new draft.': '当前 live 预设在草稿生成后已发生变化。请先刷新 live 预设，再重新生成草稿。',
-        'Rollback history': '回滚历史',
-        'No rollback history yet.': '还没有可回滚的记录。',
-        'Rollback last apply': '回滚上一版应用',
         'Rollback': '回滚',
         'Show diff': '查看 diff',
-        'Latest': '最新',
-        'Rollback this applied preset change?': '要回滚这次已应用的预设变更吗？',
+        'Applied diff': '已应用 diff',
+        'Rollback to here': '回滚到这里',
+        'Rollback this message and every later applied change in the current session?': '要回滚这条消息以及当前会话里之后所有已应用的变更吗？',
         'Rolling back...': '正在回滚...',
-        'Rolled back preset to previous applied version.': '已将预设回滚到上一个已应用版本。',
-        'Current live preset no longer matches the latest applied revision. Refresh live before rolling back.': '当前 live 预设已经不再匹配最近一次已应用版本。请先刷新 live 预设后再回滚。',
+        'Rolled back current session changes to the selected message.': '已将当前会话的变更回滚到所选消息。',
+        'No applied changes for this message.': '这条消息没有已应用的变更。',
+        'Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.': '当前 live 预设已经不再匹配助手历史。请先清空历史，再继续应用或回滚。',
+        'Later committed changes overlap the same preset paths. Automatic tail rollback is blocked.': '后续已提交的变更与相同预设路径重叠，已阻止自动尾部回滚。',
         'Applied preset edits: ${0}': '已应用预设修改：${0}',
-        'Rollback diff': '回滚 diff',
         'Previous version': '回滚前版本',
         'Applied version': '已应用版本',
         'User': '用户',
@@ -288,18 +280,17 @@ function registerLocaleData() {
         'Request stopped.': '請求已終止。',
         'Selected preset changed outside the assistant. Reopen the assistant on the desired preset.': '助手開啟後目前選中的預設已被切換。請在目標預設上重新開啟助手。',
         'Current live preset changed since this draft was created. Refresh live and request a new draft.': '目前 live 預設在草稿產生後已發生變化。請先重新整理 live 預設，再重新產生草稿。',
-        'Rollback history': '回滾歷史',
-        'No rollback history yet.': '還沒有可回滾的記錄。',
-        'Rollback last apply': '回滾上一版套用',
         'Rollback': '回滾',
         'Show diff': '查看 diff',
-        'Latest': '最新',
-        'Rollback this applied preset change?': '要回滾這次已套用的預設變更嗎？',
+        'Applied diff': '已套用 diff',
+        'Rollback to here': '回滾到這裡',
+        'Rollback this message and every later applied change in the current session?': '要回滾這條訊息以及目前會話裡之後所有已套用的變更嗎？',
         'Rolling back...': '正在回滾...',
-        'Rolled back preset to previous applied version.': '已將預設回滾到上一個已套用版本。',
-        'Current live preset no longer matches the latest applied revision. Refresh live before rolling back.': '目前 live 預設已不再匹配最近一次已套用版本。請先重新整理 live 預設後再回滾。',
+        'Rolled back current session changes to the selected message.': '已將目前會話的變更回滾到所選訊息。',
+        'No applied changes for this message.': '這條訊息沒有已套用的變更。',
+        'Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.': '目前 live 預設已不再匹配助手歷史。請先清空歷史，再繼續套用或回滾。',
+        'Later committed changes overlap the same preset paths. Automatic tail rollback is blocked.': '後續已提交的變更與相同預設路徑重疊，已阻止自動尾部回滾。',
         'Applied preset edits: ${0}': '已套用預設修改：${0}',
-        'Rollback diff': '回滾 diff',
         'Previous version': '回滾前版本',
         'Applied version': '已套用版本',
         'User': '使用者',
@@ -351,11 +342,19 @@ function getCurrentLiveSnapshot(context = getContext()) {
 function createEmptySession() {
     return {
         version: SESSION_VERSION,
+        id: uuidv4(),
         referencePresetName: '',
         messages: [],
         draft: null,
-        history: [],
         updatedAt: Date.now(),
+    };
+}
+
+function createEmptyJournal(baseSnapshot = {}) {
+    return {
+        version: JOURNAL_VERSION,
+        baseSnapshot: isPlainObject(baseSnapshot) ? clone(baseSnapshot, {}) : {},
+        entries: [],
     };
 }
 
@@ -387,23 +386,31 @@ function sanitizeDraft(rawDraft) {
         draftBody: isPlainObject(draft.draftBody) ? clone(draft.draftBody, {}) : {},
         createdAt: Number(draft.createdAt || Date.now()),
         referencePresetName: String(draft.referencePresetName || '').trim(),
+        sourceMessageId: String(draft.sourceMessageId || '').trim(),
     };
 }
 
-function sanitizeRollbackEntry(rawEntry) {
+function sanitizeJournalEntry(rawEntry) {
     const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : null;
     if (!entry) {
         return null;
     }
 
+    const sessionId = String(entry.sessionId || '').trim();
+    const messageId = String(entry.messageId || '').trim();
+    const delta = entry.delta && typeof entry.delta === 'object' ? clone(entry.delta, entry.delta) : null;
+    if (!sessionId || !messageId || !delta) {
+        return null;
+    }
+
     return {
         id: String(entry.id || uuidv4()),
-        kind: 'apply',
-        summary: String(entry.summary || '').trim(),
-        createdAt: Number(entry.createdAt || Date.now()),
-        editCount: Math.max(0, toInteger(entry.editCount, 0)),
-        restoreBody: isPlainObject(entry.restoreBody) ? clone(entry.restoreBody, {}) : {},
-        appliedBody: isPlainObject(entry.appliedBody) ? clone(entry.appliedBody, {}) : {},
+        sessionId,
+        messageId,
+        delta,
+        touchedPaths: Array.isArray(entry.touchedPaths)
+            ? [...new Set(entry.touchedPaths.map(item => String(item || '').trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right))
+            : extractJsonStateTouchedPaths(delta),
     };
 }
 
@@ -411,16 +418,27 @@ function sanitizeSession(rawSession) {
     const session = rawSession && typeof rawSession === 'object' ? rawSession : {};
     const settings = getSettings();
     const next = createEmptySession();
+    next.id = String(session.id || uuidv4());
     next.referencePresetName = String(session.referencePresetName || '').trim();
     next.messages = Array.isArray(session.messages)
         ? session.messages.map(item => sanitizeMessage(item)).slice(-settings.sessionMessageLimit)
         : [];
     next.draft = sanitizeDraft(session.draft);
-    next.history = Array.isArray(session.history)
-        ? session.history.map(item => sanitizeRollbackEntry(item)).filter(Boolean).slice(-ROLLBACK_HISTORY_LIMIT)
-        : [];
     next.updatedAt = Number(session.updatedAt || Date.now());
     return next;
+}
+
+function sanitizeJournal(rawJournal, fallbackBaseSnapshot = {}) {
+    const journal = rawJournal && typeof rawJournal === 'object' ? rawJournal : {};
+    return {
+        version: JOURNAL_VERSION,
+        baseSnapshot: isPlainObject(journal.baseSnapshot)
+            ? clone(journal.baseSnapshot, {})
+            : (isPlainObject(fallbackBaseSnapshot) ? clone(fallbackBaseSnapshot, {}) : {}),
+        entries: Array.isArray(journal.entries)
+            ? journal.entries.map(item => sanitizeJournalEntry(item)).filter(Boolean)
+            : [],
+    };
 }
 
 function sanitizeEdit(rawEdit) {
@@ -470,6 +488,175 @@ async function saveSession(context, targetRef, session) {
         console.warn(`[${MODULE_NAME}] Failed to persist preset session`, result);
     }
     return nextSession;
+}
+
+async function loadJournal(context, targetRef, fallbackBaseSnapshot = {}) {
+    try {
+        const raw = await context.presets.state.get(JOURNAL_NAMESPACE, { target: targetRef });
+        return sanitizeJournal(raw, fallbackBaseSnapshot);
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to load preset journal`, error);
+        return createEmptyJournal(fallbackBaseSnapshot);
+    }
+}
+
+async function saveJournal(context, targetRef, journal) {
+    const nextJournal = sanitizeJournal(journal, journal?.baseSnapshot || {});
+    const result = await context.presets.state.update(
+        JOURNAL_NAMESPACE,
+        () => nextJournal,
+        {
+            target: targetRef,
+            asyncDiff: false,
+        },
+    );
+    if (!result?.ok) {
+        console.warn(`[${MODULE_NAME}] Failed to persist preset journal`, result);
+    }
+    return nextJournal;
+}
+
+function getJournalEntries(journal) {
+    return Array.isArray(journal?.entries)
+        ? journal.entries.map(item => sanitizeJournalEntry(item)).filter(Boolean)
+        : [];
+}
+
+function ensureJournalBaseSnapshot(journal, baseSnapshot = {}) {
+    const nextJournal = sanitizeJournal(journal, baseSnapshot);
+    if (nextJournal.entries.length > 0) {
+        return nextJournal;
+    }
+    return {
+        ...nextJournal,
+        baseSnapshot: isPlainObject(baseSnapshot) ? clone(baseSnapshot, {}) : {},
+    };
+}
+
+function replayJournalBody(journal, {
+    includeEntry = null,
+} = {}) {
+    const safeJournal = sanitizeJournal(journal, journal?.baseSnapshot || {});
+    return replayJsonStateJournal(
+        diffPatcher,
+        safeJournal.baseSnapshot || {},
+        getJournalEntries(safeJournal),
+        { includeEntry },
+    );
+}
+
+function journalMatchesLive(journal, liveBody) {
+    return areJsonEqual(replayJournalBody(journal), isPlainObject(liveBody) ? liveBody : {});
+}
+
+function getCommittedMessageEntryMap(session, journal) {
+    const sessionId = String(session?.id || '').trim();
+    const commitMap = new Map();
+    if (!sessionId) {
+        return commitMap;
+    }
+
+    for (const entry of getJournalEntries(journal)) {
+        if (entry.sessionId !== sessionId) {
+            continue;
+        }
+        const current = commitMap.get(entry.messageId) || 0;
+        commitMap.set(entry.messageId, current + 1);
+    }
+
+    return commitMap;
+}
+
+function collectTouchedPaths(entries) {
+    return [...new Set((Array.isArray(entries) ? entries : []).flatMap(entry => Array.isArray(entry?.touchedPaths) ? entry.touchedPaths : []).filter(Boolean))]
+        .sort((left, right) => left.localeCompare(right));
+}
+
+function getDraftSourceMessageId(session, draft) {
+    const explicitMessageId = String(draft?.sourceMessageId || '').trim();
+    if (explicitMessageId) {
+        return explicitMessageId;
+    }
+
+    const messages = Array.isArray(session?.messages) ? session.messages : [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = sanitizeMessage(messages[index]);
+        if (message.role === 'assistant') {
+            return message.id;
+        }
+    }
+
+    return '';
+}
+
+function buildMessageDiffPlan(session, journal, messageId) {
+    const safeMessageId = String(messageId || '').trim();
+    if (!safeMessageId) {
+        return null;
+    }
+
+    const safeSession = sanitizeSession(session);
+    const entries = getJournalEntries(journal);
+    const matchedIndices = [];
+    for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index];
+        if (entry.sessionId === safeSession.id && entry.messageId === safeMessageId) {
+            matchedIndices.push(index);
+        }
+    }
+
+    if (matchedIndices.length === 0) {
+        return null;
+    }
+
+    const firstIndex = matchedIndices[0];
+    const lastIndex = matchedIndices[matchedIndices.length - 1];
+    return {
+        beforeBody: replayJsonStateJournal(diffPatcher, journal?.baseSnapshot || {}, entries.slice(0, firstIndex)),
+        afterBody: replayJsonStateJournal(diffPatcher, journal?.baseSnapshot || {}, entries.slice(0, lastIndex + 1)),
+    };
+}
+
+function buildTailRollbackPlan(session, journal, messageId) {
+    const safeMessageId = String(messageId || '').trim();
+    if (!safeMessageId) {
+        return null;
+    }
+
+    const safeSession = sanitizeSession(session);
+    const messages = Array.isArray(safeSession.messages) ? safeSession.messages : [];
+    const startIndex = messages.findIndex(message => String(message?.id || '') === safeMessageId);
+    if (startIndex < 0) {
+        return null;
+    }
+
+    const rollbackMessageIds = new Set(messages.slice(startIndex).map(message => String(message?.id || '').trim()).filter(Boolean));
+    const trimIndex = startIndex > 0 && messages[startIndex - 1]?.role === 'user'
+        ? startIndex - 1
+        : startIndex;
+    const entries = getJournalEntries(journal);
+    const targetEntries = entries.filter(entry => entry.sessionId === safeSession.id && rollbackMessageIds.has(entry.messageId));
+    if (targetEntries.length === 0) {
+        return null;
+    }
+
+    const targetEntryIds = new Set(targetEntries.map(entry => entry.id));
+    const firstTargetIndex = entries.findIndex(entry => targetEntryIds.has(entry.id));
+    const retainedLaterEntries = firstTargetIndex >= 0
+        ? entries.slice(firstTargetIndex).filter(entry => !targetEntryIds.has(entry.id))
+        : [];
+
+    return {
+        trimIndex,
+        targetEntries,
+        revertedBody: replayJsonStateJournal(diffPatcher, journal?.baseSnapshot || {}, entries, {
+            includeEntry: entry => !targetEntryIds.has(entry.id),
+        }),
+        conflicting: hasJsonStatePathConflict(
+            collectTouchedPaths(targetEntries),
+            collectTouchedPaths(retainedLaterEntries),
+        ),
+    };
 }
 
 function buildPromptPreview(body = {}) {
@@ -873,7 +1060,7 @@ function describeEdit(edit) {
     return `${safeEdit.path} <- copy ${safeEdit.fromPath || safeEdit.path}`;
 }
 
-function buildDraftFromResponse(dialogState, assistantText, toolCalls) {
+function buildDraftFromResponse(dialogState, assistantText, toolCalls, sourceMessageId = '') {
     const edits = toolCalls
         .map(call => normalizeToolCallToEdit(call))
         .filter(Boolean);
@@ -897,10 +1084,13 @@ function buildDraftFromResponse(dialogState, assistantText, toolCalls) {
         draftBody,
         createdAt: Date.now(),
         referencePresetName: String(dialogState.session?.referencePresetName || '').trim(),
+        sourceMessageId: String(sourceMessageId || '').trim(),
     };
 }
 
-function renderMessageHtml(message) {
+function renderMessageHtml(message, {
+    commitCount = 0,
+} = {}) {
     const safeMessage = sanitizeMessage(message);
     const roleLabel = safeMessage.role === 'user'
         ? i18n('User')
@@ -908,36 +1098,44 @@ function renderMessageHtml(message) {
     const note = safeMessage.summary
         ? `<div class="cpa_message_note">${escapeHtml(safeMessage.summary)}</div>`
         : (safeMessage.editCount > 0 ? `<div class="cpa_message_note">${escapeHtml(i18nFormat('Proposed edits: ${0}', safeMessage.editCount))}</div>` : '');
+    const commitBadge = safeMessage.role === 'assistant' && commitCount > 0
+        ? `<span class="cpa_message_badge">${escapeHtml(i18n('Applied'))}</span>`
+        : '';
+    const actions = safeMessage.role === 'assistant' && commitCount > 0
+        ? `
+<div class="cpa_message_actions">
+    <div class="menu_button menu_button_small" data-cpa-action="show-message-diff" data-cpa-message-id="${escapeHtml(safeMessage.id)}">${escapeHtml(i18n('Applied diff'))}</div>
+    <div class="menu_button menu_button_small" data-cpa-action="rollback-to-message" data-cpa-message-id="${escapeHtml(safeMessage.id)}">${escapeHtml(i18n('Rollback to here'))}</div>
+</div>`
+        : '';
 
     return `
 <div class="cpa_message ${escapeHtml(safeMessage.role)}">
     <div class="cpa_message_meta">
-        <span>${escapeHtml(roleLabel)}</span>
+        <span class="cpa_message_meta_group">${escapeHtml(roleLabel)}${commitBadge}</span>
         <span>${escapeHtml(new Date(safeMessage.createdAt).toLocaleString())}</span>
     </div>
     <div class="cpa_message_body">${escapeHtml(safeMessage.text || safeMessage.summary || '')}</div>
     ${note}
+    ${actions}
 </div>`;
 }
 
-function renderConversationHtml(session) {
+function renderConversationHtml(session, journal) {
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     if (messages.length === 0) {
         return `<div class="cpa_empty">${escapeHtml(i18n('No conversation yet.'))}</div>`;
     }
-    return messages.map(item => renderMessageHtml(item)).join('');
+    const commitMap = getCommittedMessageEntryMap(session, journal);
+    return messages.map((item) => renderMessageHtml(item, {
+        commitCount: commitMap.get(String(item?.id || '').trim()) || 0,
+    })).join('');
 }
 
 function renderDraftHtml(dialogState) {
     const draft = sanitizeDraft(dialogState.session?.draft);
-    const rollbackHistoryHtml = renderRollbackHistoryHtml(dialogState.session);
     if (!draft) {
-        return `
-<div class="cpa_empty">${escapeHtml(i18n('No draft yet. Ask the assistant to propose changes first.'))}</div>
-<details class="cpa_history_section">
-    <summary>${escapeHtml(i18n('Rollback history'))}</summary>
-    <div class="cpa_history_list">${rollbackHistoryHtml}</div>
-</details>`;
+        return `<div class="cpa_empty">${escapeHtml(i18n('No draft yet. Ask the assistant to propose changes first.'))}</div>`;
     }
 
     const diffHtml = renderDeltaHtml(dialogState.liveSnapshot?.body || {}, draft.draftBody || {});
@@ -956,10 +1154,6 @@ function renderDraftHtml(dialogState) {
 <details>
     <summary>${escapeHtml(i18n('Change summary'))}</summary>
     <ul>${editItems || `<li>${escapeHtml(i18n('No meaningful changes detected.'))}</li>`}</ul>
-</details>
-<details class="cpa_history_section">
-    <summary>${escapeHtml(i18n('Rollback history'))}</summary>
-    <div class="cpa_history_list">${rollbackHistoryHtml}</div>
 </details>`;
 }
 
@@ -969,7 +1163,6 @@ function renderDialogHtml(dialogState) {
     const metaItems = buildDialogMetaItems(dialogState);
     const settings = getSettings();
     const isBusy = Boolean(dialogState.busy);
-    const latestRollbackEntry = getLatestRollbackEntry(dialogState.session);
 
     return `
 <div class="cpa_dialog">
@@ -982,14 +1175,13 @@ function renderDialogHtml(dialogState) {
             ${renderSelectOptions(referenceNames, dialogState.session?.referencePresetName || '', true)}
         </select>
         <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Reference diff'))}</div>
-        ${latestRollbackEntry ? `<div class="menu_button menu_button_small" data-cpa-action="rollback-latest">${escapeHtml(i18n('Rollback last apply'))}</div>` : ''}
         <div class="menu_button menu_button_small" data-cpa-action="refresh-live">${escapeHtml(i18n('Refresh live preset'))}</div>
         <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
     </div>
     <div class="cpa_dialog_columns">
         <div class="cpa_conversation_panel">
             <div class="cpa_panel_title">${escapeHtml(i18n('Conversation'))}</div>
-            <div class="cpa_conversation_list">${renderConversationHtml(dialogState.session)}</div>
+            <div class="cpa_conversation_list">${renderConversationHtml(dialogState.session, dialogState.journal)}</div>
         </div>
         <div class="cpa_draft_panel">
             <div class="cpa_panel_title">${escapeHtml(i18n('Draft diff'))}</div>
@@ -1015,66 +1207,6 @@ function appendSessionMessage(session, message) {
         ...session,
         messages: messages.slice(-settings.sessionMessageLimit),
     };
-}
-
-function appendRollbackEntry(session, entry) {
-    const history = Array.isArray(session?.history) ? session.history.slice() : [];
-    const nextEntry = sanitizeRollbackEntry(entry);
-    if (nextEntry) {
-        history.push(nextEntry);
-    }
-    return {
-        ...session,
-        history: history.slice(-ROLLBACK_HISTORY_LIMIT),
-    };
-}
-
-function getRollbackHistory(session) {
-    return Array.isArray(session?.history)
-        ? session.history.map(item => sanitizeRollbackEntry(item)).filter(Boolean)
-        : [];
-}
-
-function getLatestRollbackEntry(session) {
-    const history = getRollbackHistory(session);
-    return history.length > 0 ? history[history.length - 1] : null;
-}
-
-function describeRollbackEntry(entry) {
-    const safeEntry = sanitizeRollbackEntry(entry);
-    if (!safeEntry) {
-        return '';
-    }
-    if (safeEntry.summary) {
-        return safeEntry.summary;
-    }
-    return i18nFormat('Applied preset edits: ${0}', safeEntry.editCount || 0);
-}
-
-function renderRollbackHistoryHtml(session) {
-    const history = getRollbackHistory(session);
-    const latestEntry = getLatestRollbackEntry(session);
-    if (history.length === 0) {
-        return `<div class="cpa_empty">${escapeHtml(i18n('No rollback history yet.'))}</div>`;
-    }
-
-    return history.slice().reverse().map((entry) => {
-        const isLatest = latestEntry?.id === entry.id;
-        const latestBadge = isLatest
-            ? `<span class="cpa_history_badge">${escapeHtml(i18n('Latest'))}</span>`
-            : '';
-        return `
-<div class="cpa_history_item">
-    <div class="cpa_history_item_main">
-        <div class="cpa_history_item_summary">${escapeHtml(describeRollbackEntry(entry))}${latestBadge}</div>
-        <div class="cpa_history_item_time">${escapeHtml(new Date(Number(entry.createdAt || Date.now())).toLocaleString())}</div>
-    </div>
-    <div class="cpa_history_item_actions">
-        <div class="menu_button menu_button_small" data-cpa-action="show-rollback-diff" data-cpa-history-id="${escapeHtml(entry.id)}">${escapeHtml(i18n('Show diff'))}</div>
-        ${isLatest ? `<div class="menu_button menu_button_small" data-cpa-action="rollback-latest">${escapeHtml(i18n('Rollback'))}</div>` : ''}
-    </div>
-</div>`;
-    }).join('');
 }
 
 async function rerenderDialog(dialogState) {
@@ -1123,11 +1255,16 @@ async function readValidatedLiveSnapshot(dialogState) {
 
 async function refreshLiveSnapshot(dialogState) {
     dialogState.liveSnapshot = await readValidatedLiveSnapshot(dialogState);
+    dialogState.journal = ensureJournalBaseSnapshot(dialogState.journal, dialogState.liveSnapshot?.body || {});
     return dialogState.liveSnapshot;
 }
 
 async function persistDialogSession(dialogState) {
     dialogState.session = await saveSession(dialogState.context, dialogState.targetRef, dialogState.session);
+}
+
+async function persistDialogJournal(dialogState) {
+    dialogState.journal = await saveJournal(dialogState.context, dialogState.targetRef, dialogState.journal);
 }
 
 async function handleReferenceChange(dialogState, selectValue) {
@@ -1171,23 +1308,18 @@ async function handleReferenceDiff(dialogState) {
     );
 }
 
-function getRollbackEntryById(session, historyId) {
-    const history = getRollbackHistory(session);
-    return history.find(entry => entry.id === String(historyId || '').trim()) || null;
-}
-
-async function handleRollbackDiff(dialogState, historyId) {
-    const entry = getRollbackEntryById(dialogState.session, historyId);
-    if (!entry) {
-        toastr.info(i18n('No rollback history yet.'));
+async function handleMessageDiff(dialogState, messageId) {
+    const diffPlan = buildMessageDiffPlan(dialogState.session, dialogState.journal, messageId);
+    if (!diffPlan) {
+        toastr.info(i18n('No applied changes for this message.'));
         return;
     }
     await showDiffPopup(
-        i18n('Rollback diff'),
+        i18n('Applied diff'),
         i18n('Previous version'),
         i18n('Applied version'),
-        entry.restoreBody || {},
-        entry.appliedBody || {},
+        diffPlan.beforeBody || {},
+        diffPlan.afterBody || {},
     );
 }
 
@@ -1212,10 +1344,17 @@ async function handleClearHistory(dialogState) {
     if (!confirmed) {
         return;
     }
-    dialogState.session = createEmptySession();
-    dialogState.referenceSnapshot = null;
-    dialogState.status = i18n('Session history cleared.');
-    await persistDialogSession(dialogState);
+    try {
+        await refreshLiveSnapshot(dialogState);
+        dialogState.session = createEmptySession();
+        dialogState.journal = createEmptyJournal(dialogState.liveSnapshot?.body || {});
+        dialogState.referenceSnapshot = null;
+        dialogState.status = i18n('Session history cleared.');
+        await persistDialogJournal(dialogState);
+        await persistDialogSession(dialogState);
+    } catch (error) {
+        dialogState.status = String(error?.message || error || '');
+    }
     await rerenderDialog(dialogState);
 }
 
@@ -1227,10 +1366,17 @@ async function handleRefreshLive(dialogState) {
         }
         dialogState.session.draft = null;
     }
-    await refreshLiveSnapshot(dialogState);
-    dialogState.status = i18n('Live snapshot refreshed.');
-    await refreshReferenceSnapshot(dialogState);
-    await persistDialogSession(dialogState);
+    try {
+        await refreshLiveSnapshot(dialogState);
+        dialogState.status = getJournalEntries(dialogState.journal).length > 0
+            && !journalMatchesLive(dialogState.journal, dialogState.liveSnapshot?.body || {})
+            ? i18n('Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.')
+            : i18n('Live snapshot refreshed.');
+        await refreshReferenceSnapshot(dialogState);
+        await persistDialogSession(dialogState);
+    } catch (error) {
+        dialogState.status = String(error?.message || error || '');
+    }
     await rerenderDialog(dialogState);
 }
 
@@ -1244,8 +1390,23 @@ async function handleApplyDraft(dialogState) {
     await rerenderDialog(dialogState);
     try {
         const currentLiveSnapshot = await readValidatedLiveSnapshot(dialogState);
+        dialogState.journal = ensureJournalBaseSnapshot(dialogState.journal, currentLiveSnapshot.body || {});
         if (!areJsonEqual(currentLiveSnapshot.body || {}, dialogState.liveSnapshot?.body || {})) {
             throw new Error(i18n('Current live preset changed since this draft was created. Refresh live and request a new draft.'));
+        }
+        if (!journalMatchesLive(dialogState.journal, currentLiveSnapshot.body || {})) {
+            throw new Error(i18n('Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.'));
+        }
+        const sourceMessageId = getDraftSourceMessageId(dialogState.session, draft);
+        if (!sourceMessageId) {
+            throw new Error(i18n('Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.'));
+        }
+        const delta = buildJsonStateDelta(diffPatcher, currentLiveSnapshot.body || {}, draft.draftBody || {});
+        if (!delta) {
+            dialogState.session.draft = null;
+            dialogState.status = i18n('No meaningful changes detected.');
+            await persistDialogSession(dialogState);
+            return;
         }
         const result = await dialogState.context.presets.save(
             { collection: 'openai', name: dialogState.targetRef.name },
@@ -1255,22 +1416,23 @@ async function handleApplyDraft(dialogState) {
         if (!result?.ok) {
             throw new Error(i18n('Save failed.'));
         }
+        dialogState.journal = {
+            ...dialogState.journal,
+            entries: [
+                ...getJournalEntries(dialogState.journal),
+                sanitizeJournalEntry({
+                    id: uuidv4(),
+                    sessionId: dialogState.session.id,
+                    messageId: sourceMessageId,
+                    delta,
+                    touchedPaths: extractJsonStateTouchedPaths(delta),
+                }),
+            ].filter(Boolean),
+        };
         await refreshLiveSnapshot(dialogState);
-        dialogState.session = appendRollbackEntry(dialogState.session, {
-            id: uuidv4(),
-            summary: draft.summary || i18nFormat('Applied preset edits: ${0}', draft.edits.length),
-            createdAt: Date.now(),
-            editCount: draft.edits.length,
-            restoreBody: currentLiveSnapshot.body || {},
-            appliedBody: draft.draftBody || {},
-        });
-        dialogState.session = appendSessionMessage(dialogState.session, {
-            role: 'system',
-            text: i18n('Applied draft to preset.'),
-            summary: i18n('Applied'),
-        });
         dialogState.session.draft = null;
         dialogState.status = i18n('Applied draft to preset.');
+        await persistDialogJournal(dialogState);
         await persistDialogSession(dialogState);
     } catch (error) {
         dialogState.status = i18nFormat('AI request failed: ${0}', error?.message || error);
@@ -1281,47 +1443,67 @@ async function handleApplyDraft(dialogState) {
     }
 }
 
-async function handleRollbackLatest(dialogState) {
-    const history = getRollbackHistory(dialogState.session);
-    const latestEntry = history.length > 0 ? history[history.length - 1] : null;
-    if (!latestEntry) {
-        toastr.info(i18n('No rollback history yet.'));
+async function handleRollbackToMessage(dialogState, messageId) {
+    const rollbackPlan = buildTailRollbackPlan(dialogState.session, dialogState.journal, messageId);
+    if (!rollbackPlan) {
+        toastr.info(i18n('No applied changes for this message.'));
         return;
     }
-
-    const confirmed = await Popup.show.confirm(i18n('Rollback this applied preset change?'), describeRollbackEntry(latestEntry));
+    if (rollbackPlan.conflicting) {
+        toastr.warning(i18n('Later committed changes overlap the same preset paths. Automatic tail rollback is blocked.'));
+        return;
+    }
+    const rollbackMessage = sanitizeMessage((dialogState.session?.messages || []).find(item => String(item?.id || '') === String(messageId || '')));
+    const confirmed = await Popup.show.confirm(
+        i18n('Rollback this message and every later applied change in the current session?'),
+        limitText(rollbackMessage?.summary || rollbackMessage?.text || '', 180),
+    );
     if (!confirmed) {
         return;
     }
-
     dialogState.busy = true;
     dialogState.status = i18n('Rolling back...');
     await rerenderDialog(dialogState);
     try {
         const currentLiveSnapshot = await readValidatedLiveSnapshot(dialogState);
-        if (!areJsonEqual(currentLiveSnapshot.body || {}, latestEntry.appliedBody || {})) {
-            throw new Error(i18n('Current live preset no longer matches the latest applied revision. Refresh live before rolling back.'));
+        dialogState.journal = ensureJournalBaseSnapshot(dialogState.journal, currentLiveSnapshot.body || {});
+        if (!journalMatchesLive(dialogState.journal, currentLiveSnapshot.body || {})) {
+            throw new Error(i18n('Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.'));
         }
-        const result = await dialogState.context.presets.save(
-            { collection: 'openai', name: dialogState.targetRef.name },
-            latestEntry.restoreBody || {},
-            { select: true },
-        );
-        if (!result?.ok) {
-            throw new Error(i18n('Save failed.'));
+        const revertDelta = buildJsonStateDelta(diffPatcher, currentLiveSnapshot.body || {}, rollbackPlan.revertedBody || {});
+        if (revertDelta) {
+            const result = await dialogState.context.presets.save(
+                { collection: 'openai', name: dialogState.targetRef.name },
+                rollbackPlan.revertedBody || {},
+                { select: true },
+            );
+            if (!result?.ok) {
+                throw new Error(i18n('Save failed.'));
+            }
+            dialogState.journal = {
+                ...dialogState.journal,
+                entries: [
+                    ...getJournalEntries(dialogState.journal),
+                    sanitizeJournalEntry({
+                        id: uuidv4(),
+                        sessionId: dialogState.session.id,
+                        messageId: String(messageId || '').trim(),
+                        delta: revertDelta,
+                        touchedPaths: extractJsonStateTouchedPaths(revertDelta),
+                    }),
+                ].filter(Boolean),
+            };
+            await refreshLiveSnapshot(dialogState);
+            await persistDialogJournal(dialogState);
         }
-        await refreshLiveSnapshot(dialogState);
         dialogState.session = {
             ...dialogState.session,
-            history: history.slice(0, -1),
+            messages: Array.isArray(dialogState.session?.messages)
+                ? dialogState.session.messages.slice(0, rollbackPlan.trimIndex)
+                : [],
             draft: null,
         };
-        dialogState.session = appendSessionMessage(dialogState.session, {
-            role: 'system',
-            text: i18n('Rolled back preset to previous applied version.'),
-            summary: i18n('Rollback'),
-        });
-        dialogState.status = i18n('Rolled back preset to previous applied version.');
+        dialogState.status = i18n('Rolled back current session changes to the selected message.');
         await persistDialogSession(dialogState);
     } catch (error) {
         dialogState.status = i18nFormat('AI request failed: ${0}', error?.message || error);
@@ -1386,8 +1568,10 @@ async function handleSend(dialogState) {
             llmPresetName: requestOptions.llmPresetName,
             apiSettingsOverride: requestOptions.apiSettingsOverride,
         });
-        const draft = buildDraftFromResponse(dialogState, response.assistantText, response.toolCalls);
+        const assistantMessageId = uuidv4();
+        const draft = buildDraftFromResponse(dialogState, response.assistantText, response.toolCalls, assistantMessageId);
         dialogState.session = appendSessionMessage(dialogState.session, {
+            id: assistantMessageId,
             role: 'assistant',
             text: String(response.assistantText || '').trim() || (draft ? i18n('Draft ready') : i18n('No changes proposed')),
             summary: draft?.summary || '',
@@ -1441,11 +1625,11 @@ function bindDialogEvents(dialogState) {
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="show-reference-diff"]', async function () {
         await handleReferenceDiff(dialogState);
     });
-    dialogState.root.on('click.cpaDialog', '[data-cpa-action="show-rollback-diff"]', async function () {
-        await handleRollbackDiff(dialogState, jQuery(this).attr('data-cpa-history-id'));
+    dialogState.root.on('click.cpaDialog', '[data-cpa-action="show-message-diff"]', async function () {
+        await handleMessageDiff(dialogState, jQuery(this).attr('data-cpa-message-id'));
     });
-    dialogState.root.on('click.cpaDialog', '[data-cpa-action="rollback-latest"]', async function () {
-        await handleRollbackLatest(dialogState);
+    dialogState.root.on('click.cpaDialog', '[data-cpa-action="rollback-to-message"]', async function () {
+        await handleRollbackToMessage(dialogState, jQuery(this).attr('data-cpa-message-id'));
     });
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="refresh-live"]', async function () {
         await handleRefreshLive(dialogState);
@@ -1470,7 +1654,10 @@ async function openAssistantPopup() {
         return;
     }
 
-    const session = await loadSession(context, targetRef);
+    const [session, journal] = await Promise.all([
+        loadSession(context, targetRef),
+        loadJournal(context, targetRef, liveSnapshot.body || {}),
+    ]);
     const dialogState = {
         context,
         popup: null,
@@ -1478,12 +1665,16 @@ async function openAssistantPopup() {
         targetRef,
         liveSnapshot,
         session,
+        journal: ensureJournalBaseSnapshot(journal, liveSnapshot.body || {}),
         referenceSnapshot: null,
         busy: false,
         status: '',
         inputText: '',
         abortController: null,
     };
+    if (getJournalEntries(dialogState.journal).length > 0 && !journalMatchesLive(dialogState.journal, liveSnapshot.body || {})) {
+        dialogState.status = i18n('Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.');
+    }
 
     await refreshReferenceSnapshot(dialogState);
 

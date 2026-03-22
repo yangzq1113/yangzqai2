@@ -115,6 +115,13 @@
     margin-bottom: 6px;
 }
 
+.popup .cpa_message_meta_group {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
 .popup .cpa_message_body {
     white-space: pre-wrap;
     word-break: break-word;
@@ -124,6 +131,22 @@
     margin-top: 6px;
     font-size: 0.92em;
     opacity: 0.82;
+}
+
+.popup .cpa_message_badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.82em;
+    background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 16%, transparent);
+}
+
+.popup .cpa_message_actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
 .popup .cpa_empty {
@@ -148,69 +171,6 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-}
-
-.popup .cpa_history_section {
-    margin-top: 8px;
-    border-top: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent);
-    padding-top: 8px;
-}
-
-.popup .cpa_history_section > summary {
-    cursor: pointer;
-    font-weight: 600;
-    opacity: 0.9;
-}
-
-.popup .cpa_history_list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin-top: 8px;
-}
-
-.popup .cpa_history_item {
-    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent);
-    border-radius: 10px;
-    padding: 8px;
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    align-items: flex-start;
-}
-
-.popup .cpa_history_item_main {
-    min-width: 0;
-    flex: 1;
-}
-
-.popup .cpa_history_item_summary {
-    font-weight: 600;
-    line-height: 1.35;
-    word-break: break-word;
-}
-
-.popup .cpa_history_item_time {
-    opacity: 0.75;
-    font-size: 0.9em;
-    margin-top: 4px;
-}
-
-.popup .cpa_history_item_actions {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-}
-
-.popup .cpa_history_badge {
-    display: inline-flex;
-    align-items: center;
-    margin-left: 6px;
-    padding: 1px 6px;
-    border-radius: 999px;
-    font-size: 0.8em;
-    background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 16%, transparent);
 }
 
 .popup .cpa_diff_panel {
