@@ -20,6 +20,7 @@ import {
     sendTextareaMessage,
     doNavbarIconClick,
     isSwipingAllowed,
+    isCharacterFavorite,
 } from '../script.js';
 
 import {
@@ -436,7 +437,7 @@ export async function favsToHotswap() {
     // Hard limit is required because even if all hotswaps don't fit the screen, their images would still be loaded
     // 25 is roughly calculated as the maximum number of favs that can fit an ultrawide monitor with the default theme
     const FAVS_LIMIT = 25;
-    const favs = entities.filter(x => x.item.fav || x.item.fav == 'true').slice(0, FAVS_LIMIT);
+    const favs = entities.filter(x => isCharacterFavorite(x.item)).slice(0, FAVS_LIMIT);
 
     //helpful instruction message if no characters are favorited
     if (favs.length == 0) {

@@ -578,7 +578,10 @@ export class FilterHelper {
      */
     favFilter(data) {
         const state = this.filterData[FILTER_TYPES.FAV];
-        const isFav = entity => entity.item.fav || entity.item.fav == 'true';
+        const isFav = entity => {
+            const favorite = entity?.item?.data?.extensions?.fav ?? entity?.item?.fav;
+            return favorite === true || favorite === 'true';
+        };
 
         return this.filterDataByState(data, state, isFav, { includeFolders: true });
     }

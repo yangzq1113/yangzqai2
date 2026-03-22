@@ -27,6 +27,8 @@ import {
     this_chid,
     unshallowCharacter,
     updateRemoteChatName,
+    getCharacterFirstMessage,
+    getCharacterName,
 } from '../script.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
 import { deleteGroupChatByName, getGroupAvatar, groups, is_group_generating, openGroupById, openGroupChat } from './group-chats.js';
@@ -280,13 +282,13 @@ function getAssistantGreeting(character) {
         return defaultGreeting;
     }
 
-    return getRegexedString(character.first_mes || '', regex_placement.AI_OUTPUT, { depth: 0 }) || defaultGreeting;
+    return getRegexedString(getCharacterFirstMessage(character), regex_placement.AI_OUTPUT, { depth: 0 }) || defaultGreeting;
 }
 
 function sendAssistantMessage() {
     const currentAssistantAvatar = getPermanentAssistantAvatar();
     const character = characters.find(x => x.avatar === currentAssistantAvatar);
-    const name = character ? character.name : neutralCharacterName;
+    const name = character ? getCharacterName(character) : neutralCharacterName;
     const avatar = character ? getThumbnailUrl('avatar', character.avatar) : system_avatar;
     const greeting = getAssistantGreeting(character);
 
@@ -749,7 +751,7 @@ async function getRecentChats() {
 
     dataWithEntities.forEach(({ chat, character, group }, index) => {
         const chatTimestamp = timestampToMoment(chat.last_mes);
-        chat.char_name = character?.name || group?.name || '';
+        chat.char_name = character ? getCharacterName(character) : (group?.name || '');
         chat.date_short = chatTimestamp.format('l');
         chat.date_long = chatTimestamp.format('LL LT');
         chat.chat_name = chat.file_name.replace('.jsonl', '');
@@ -874,18 +876,18 @@ export function assignCharacterAsAssistant(characterId) {
     const currentAssistantAvatar = getPermanentAssistantAvatar();
     if (currentAssistantAvatar === character.avatar) {
         if (character.avatar === defaultAssistantAvatar) {
-            toastr.info(t`${character.name} is a system assistant. Choose another character.`);
+            toastr.info(t`${getCharacterName(character)} is a system assistant. Choose another character.`);
             return;
         }
 
-        toastr.info(t`${character.name} is no longer your assistant.`);
+        toastr.info(t`${getCharacterName(character)} is no longer your assistant.`);
         accountStorage.removeItem(assistantAvatarKey);
         return;
     }
 
     accountStorage.setItem(assistantAvatarKey, character.avatar);
     printCharactersDebounced();
-    toastr.success(t`Set ${character.name} as your assistant.`);
+    toastr.success(t`Set ${getCharacterName(character)} as your assistant.`);
 }
 
 export function initWelcomeScreen() {

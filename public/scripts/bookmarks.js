@@ -14,6 +14,8 @@ import {
     setActiveGroup,
     eventSource,
     event_types,
+    getCharacterName,
+    isCharacterFavorite,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -342,12 +344,12 @@ export async function convertSoloToGroupChat() {
     const character = characters[this_chid];
 
     // Populate group required fields
-    const name = getUniqueName(`Group: ${character.name}`, y => groups.findIndex(x => x.name === y) !== -1);
+    const name = getUniqueName(`Group: ${getCharacterName(character)}`, y => groups.findIndex(x => x.name === y) !== -1);
     const avatar = getThumbnailUrl('avatar', character.avatar);
     const chatName = humanizedDateTime();
     const chats = [chatName];
     const members = [character.avatar];
-    const favChecked = character.fav || character.fav == 'true';
+    const favChecked = isCharacterFavorite(character);
     /** @type {ChatMetadata} */
     const metadata = Object.assign({}, chat_metadata);
     delete metadata.main_chat;
@@ -410,7 +412,7 @@ export async function convertSoloToGroupChat() {
         }
 
         // Set force fields for solo character
-        message.name = character.name;
+        message.name = getCharacterName(character);
         message.original_avatar = character.avatar;
         message.force_avatar = getThumbnailUrl('avatar', character.avatar);
         // Allow regens of a single message in group

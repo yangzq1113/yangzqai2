@@ -29,6 +29,8 @@ import {
     getMediaIndex,
     getMediaDisplay,
     chatElement,
+    getCharacterCreatorNotes,
+    getCharacterName,
 } from '../script.js';
 import { selected_group } from './group-chats.js';
 import { power_user } from './power-user.js';
@@ -785,7 +787,7 @@ async function checkForCreatorNotesStyles() {
         return;
     }
 
-    const notes = characters[this_chid].data?.creator_notes || characters[this_chid].creatorcomment;
+    const notes = getCharacterCreatorNotes(characters[this_chid]);
     const avatarId = characters[this_chid].avatar;
     const styleContents = getStyleContentsFromMarkdown(notes);
 
@@ -1539,7 +1541,7 @@ async function openAttachmentManager() {
         template.find('.characterAttachmentsBlock').toggle(!isNotCharacter);
         template.find('.chatAttachmentsBlock').toggle(!isNotInChat);
 
-        const characterName = characters[this_chid]?.name || 'Anonymous';
+        const characterName = getCharacterName(characters[this_chid]) || 'Anonymous';
         template.find('.characterAttachmentsName').text(characterName);
 
         const chatName = getCurrentChatId() || 'Unnamed chat';

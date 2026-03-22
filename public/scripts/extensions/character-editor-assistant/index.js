@@ -4,6 +4,12 @@
 
 import {
     converter,
+    getCharacterDescription,
+    getCharacterFirstMessage,
+    getCharacterMesExample,
+    getCharacterName,
+    getCharacterPersonality,
+    getCharacterScenario,
     saveSettingsDebounced,
     select_selected_character,
 } from '../../../script.js';
@@ -4014,13 +4020,13 @@ async function buildCharacterEditorContextPayload(context, avatar = '') {
     const lorebookStats = buildCharacterEditorLorebookStats(lorebookData.entries || {});
     return {
         avatar: record.avatar,
-        name: String(character?.name || ''),
+        name: String(getCharacterName(character) || ''),
         fields: {
-            description: String(character?.description || ''),
-            personality: String(character?.personality || ''),
-            scenario: String(character?.scenario || ''),
-            first_mes: String(character?.first_mes || character?.data?.first_mes || ''),
-            mes_example: String(character?.mes_example || ''),
+            description: String(getCharacterDescription(character) || ''),
+            personality: String(getCharacterPersonality(character) || ''),
+            scenario: String(getCharacterScenario(character) || ''),
+            first_mes: String(getCharacterFirstMessage(character) || ''),
+            mes_example: String(getCharacterMesExample(character) || ''),
             system_prompt: String(character?.data?.system_prompt || ''),
             post_history_instructions: String(character?.data?.post_history_instructions || ''),
             creator_notes: String(character?.data?.creator_notes || ''),

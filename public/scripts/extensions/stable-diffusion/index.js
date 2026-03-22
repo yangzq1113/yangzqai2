@@ -7,6 +7,8 @@ import {
     formatCharacterAvatar,
     generateQuietPrompt,
     getCharacterAvatar,
+    getCharacterDescription,
+    getCharacterScenario,
     getCurrentChatId,
     getRequestHeaders,
     getUserAvatar,
@@ -2765,7 +2767,7 @@ function getRawLastMessage() {
         return processReply(lastMessage.mes);
     }
 
-    return `((${processReply(lastMessage.mes)})), (${processReply(character.scenario)}:0.7), (${processReply(character.description)}:0.5)`;
+    return `((${processReply(lastMessage.mes)})), (${processReply(getCharacterScenario(character))}:0.7), (${processReply(getCharacterDescription(character))}:0.5)`;
 }
 
 /**

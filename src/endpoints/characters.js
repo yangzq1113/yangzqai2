@@ -266,6 +266,7 @@ async function writeCharacterData(inputFile, data, outputFile, request, crop = u
         }
 
         const inputImage = await getInputImage();
+        data = normalizeCharacterCardForStorage(data, request.user.directories);
 
         // Get the chunks
         const outputImage = write(inputImage, data);
@@ -419,16 +420,16 @@ const toShallow = (character) => {
 
     return {
         shallow: true,
-        name: character.name,
+        name: _.get(character, 'data.name', character.name),
         avatar: character.avatar,
         chat: character.chat,
-        fav: character.fav,
+        fav: _.get(character, 'data.extensions.fav', character.fav),
         date_added: character.date_added,
         create_date: character.create_date,
         date_last_chat: character.date_last_chat,
         chat_size: character.chat_size,
         data_size: character.data_size,
-        tags: character.tags,
+        tags: _.get(character, 'data.tags', character.tags),
         data: {
             name: _.get(character, 'data.name', ''),
             character_version: _.get(character, 'data.character_version', ''),
@@ -532,7 +533,7 @@ export async function getCharactersSnapshot(directories) {
     const pngFiles = files.filter(file => file.endsWith('.png'));
     if (!isAndroid) {
         const processingPromises = pngFiles.map(file => processCharacter(file, directories, { shallow: useShallowCharacters }));
-        return (await Promise.all(processingPromises)).filter(character => character.name);
+        return (await Promise.all(processingPromises)).filter(character => _.get(character, 'data.name', character.name));
     }
 
     const characters = await mapWithConcurrency(
@@ -540,17 +541,17 @@ export async function getCharactersSnapshot(directories) {
         1,
         (file) => processCharacter(file, directories, { shallow: useShallowCharacters }),
     );
-    return characters.filter(character => character.name);
+    return characters.filter(character => _.get(character, 'data.name', character.name));
 }
 
 /**
- * Convert a character object to Spec V2 format.
+ * Convert a character object to stored Spec V2 format.
  * @param {object} jsonObject Character object
  * @param {import('../users.js').UserDirectoryList} directories User directories
  * @param {boolean} hoistDate Will set the chat and create_date fields to the current date if they are missing
- * @returns {object} Character object in Spec V2 format
+ * @returns {object} Character object in stored Spec V2 format
  */
-function getCharaCardV2(jsonObject, directories, hoistDate = true) {
+function getStoredCharaCardV2(jsonObject, directories, hoistDate = true) {
     if (jsonObject.spec === undefined) {
         jsonObject = convertToV2(jsonObject, directories);
 
@@ -558,9 +559,23 @@ function getCharaCardV2(jsonObject, directories, hoistDate = true) {
             jsonObject.create_date = new Date().toISOString();
         }
     } else {
-        jsonObject = readFromV2(jsonObject);
+        jsonObject = toStoredV2Character(jsonObject);
+        if (hoistDate && !jsonObject.create_date) {
+            jsonObject.create_date = new Date().toISOString();
+        }
     }
     return jsonObject;
+}
+
+/**
+ * Convert a character object to runtime Spec V2 format with legacy root-field projections.
+ * @param {object} jsonObject Character object
+ * @param {import('../users.js').UserDirectoryList} directories User directories
+ * @param {boolean} hoistDate Will set the chat and create_date fields to the current date if they are missing
+ * @returns {object} Character object in runtime Spec V2 format
+ */
+function getCharaCardV2(jsonObject, directories, hoistDate = true) {
+    return projectRuntimeCharacterFields(getStoredCharaCardV2(jsonObject, directories, hoistDate));
 }
 
 /**
@@ -573,23 +588,23 @@ function convertToV2(char, directories) {
     // Simulate incoming data from frontend form
     const result = charaFormatData({
         json_data: JSON.stringify(char),
-        ch_name: char.name,
-        description: char.description,
-        personality: char.personality,
-        scenario: char.scenario,
-        first_mes: char.first_mes,
-        mes_example: char.mes_example,
-        creator_notes: char.creatorcomment,
-        talkativeness: char.talkativeness,
-        fav: char.fav,
-        creator: char.creator,
-        tags: char.tags,
-        depth_prompt_prompt: char.depth_prompt_prompt,
-        depth_prompt_depth: char.depth_prompt_depth,
-        depth_prompt_role: char.depth_prompt_role,
+        ch_name: _.get(char, 'data.name', char.name),
+        description: _.get(char, 'data.description', char.description),
+        personality: _.get(char, 'data.personality', char.personality),
+        scenario: _.get(char, 'data.scenario', char.scenario),
+        first_mes: _.get(char, 'data.first_mes', char.first_mes),
+        mes_example: _.get(char, 'data.mes_example', char.mes_example),
+        creator_notes: _.get(char, 'data.creator_notes', char.creatorcomment),
+        talkativeness: _.get(char, 'data.extensions.talkativeness', char.talkativeness),
+        fav: _.get(char, 'data.extensions.fav', char.fav),
+        creator: _.get(char, 'data.creator', char.creator),
+        tags: _.get(char, 'data.tags', char.tags),
+        depth_prompt_prompt: _.get(char, 'data.extensions.depth_prompt.prompt', char.depth_prompt_prompt),
+        depth_prompt_depth: _.get(char, 'data.extensions.depth_prompt.depth', char.depth_prompt_depth),
+        depth_prompt_role: _.get(char, 'data.extensions.depth_prompt.role', char.depth_prompt_role),
     }, directories);
 
-    result.chat = char.chat ?? `${char.name} - ${humanizedDateTime()}`;
+    result.chat = char.chat ?? `${_.get(result, 'data.name', _.get(char, 'data.name', char.name) || 'Unnamed')} - ${humanizedDateTime()}`;
     result.create_date = char.create_date;
 
     return result;
@@ -599,12 +614,12 @@ function convertToV2(char, directories) {
  * Removes fields that are not meant to be shared.
  */
 function unsetPrivateFields(char) {
-    _.set(char, 'fav', false);
+    _.unset(char, 'fav');
     _.set(char, 'data.extensions.fav', false);
     _.unset(char, 'chat');
 }
 
-function readFromV2(char) {
+function projectRuntimeCharacterFields(char) {
     if (_.isUndefined(char.data)) {
         console.warn(`Char ${char['name']} has Spec v2 data missing`);
         return char;
@@ -626,81 +641,167 @@ function readFromV2(char) {
     };
 
     _.forEach(fieldMappings, (v2Path, charField) => {
-        //console.info(`Migrating field: ${charField} from ${v2Path}`);
         const v2Value = _.get(char.data, v2Path);
-        if (_.isUndefined(v2Value)) {
-            let defaultValue = undefined;
+        if (!_.isUndefined(v2Value)) {
+            char[charField] = v2Value;
+            return;
+        }
 
-            // Backfill default values for missing ST extension fields
-            if (v2Path === 'extensions.talkativeness') {
-                defaultValue = 0.5;
-            }
-
-            if (v2Path === 'extensions.fav') {
-                defaultValue = false;
-            }
-
-            if (!_.isUndefined(defaultValue)) {
-                //console.warn(`Spec v2 extension data missing for field: ${charField}, using default value: ${defaultValue}`);
-                char[charField] = defaultValue;
-            } else {
-                console.warn(`Char ${char['name']} has Spec v2 data missing for unknown field: ${charField}`);
+        switch (v2Path) {
+            case 'extensions.talkativeness':
+                char[charField] = 0.5;
                 return;
-            }
+            case 'extensions.fav':
+                char[charField] = false;
+                return;
+            case 'tags':
+                char[charField] = [];
+                return;
+            default:
+                char[charField] = '';
+                return;
         }
-        if (!_.isUndefined(char[charField]) && !_.isUndefined(v2Value) && String(char[charField]) !== String(v2Value)) {
-            console.warn(`Char ${char['name']} has Spec v2 data mismatch with Spec v1 for field: ${charField}`, char[charField], v2Value);
-        }
-        char[charField] = v2Value;
     });
 
-    char['chat'] = char['chat'] ?? `${char.name} - ${humanizedDateTime()}`;
+    const runtimeName = _.get(char, 'data.name', char.name) || 'Unnamed';
+    char['chat'] = char['chat'] ?? `${runtimeName} - ${humanizedDateTime()}`;
 
     return char;
 }
 
 /**
- * Normalize mirrored V1/V2 fields after merge-attributes updates.
- * Keep root and data.* synchronized when either side is updated.
- * @param {object} character
- * @param {object} update
+ * Legacy root-field to canonical V2 storage mappings.
  */
-function normalizeMirroredCharacterFields(character, update) {
-    if (!character || typeof character !== 'object' || !update || typeof update !== 'object') {
-        return;
+const legacyCharacterStorageFieldSpecs = Object.freeze({
+    name: { path: 'data.name', normalize: value => String(value ?? '') },
+    description: { path: 'data.description', normalize: value => String(value ?? '') },
+    personality: { path: 'data.personality', normalize: value => String(value ?? '') },
+    scenario: { path: 'data.scenario', normalize: value => String(value ?? '') },
+    first_mes: { path: 'data.first_mes', normalize: value => String(value ?? '') },
+    mes_example: { path: 'data.mes_example', normalize: value => String(value ?? '') },
+    creatorcomment: { path: 'data.creator_notes', normalize: value => String(value ?? '') },
+    creator_notes: { path: 'data.creator_notes', normalize: value => String(value ?? '') },
+    system_prompt: { path: 'data.system_prompt', normalize: value => String(value ?? '') },
+    post_history_instructions: { path: 'data.post_history_instructions', normalize: value => String(value ?? '') },
+    tags: {
+        path: 'data.tags',
+        normalize: value => Array.isArray(value)
+            ? value.map(tag => String(tag ?? '').trim()).filter(Boolean)
+            : String(value ?? '').split(',').map(tag => tag.trim()).filter(Boolean),
+    },
+    creator: { path: 'data.creator', normalize: value => String(value ?? '') },
+    character_version: { path: 'data.character_version', normalize: value => String(value ?? '') },
+    alternate_greetings: {
+        path: 'data.alternate_greetings',
+        normalize: value => Array.isArray(value)
+            ? value.map(item => String(item ?? ''))
+            : (typeof value === 'string' ? [value] : []),
+    },
+    talkativeness: {
+        path: 'data.extensions.talkativeness',
+        normalize: value => {
+            const numericValue = Number(value);
+            return Number.isFinite(numericValue) ? numericValue : 0.5;
+        },
+    },
+    fav: {
+        path: 'data.extensions.fav',
+        normalize: value => {
+            if (typeof value === 'string') {
+                const normalized = value.trim().toLowerCase();
+                if (normalized === 'true') return true;
+                if (normalized === 'false' || normalized === '') return false;
+            }
+            return Boolean(value);
+        },
+    },
+    world: { path: 'data.extensions.world', normalize: value => String(value ?? '') },
+    depth_prompt_prompt: { path: 'data.extensions.depth_prompt.prompt', normalize: value => String(value ?? '') },
+    depth_prompt_depth: {
+        path: 'data.extensions.depth_prompt.depth',
+        normalize: value => {
+            const numericValue = Number(value);
+            return Number.isFinite(numericValue) ? numericValue : 4;
+        },
+    },
+    depth_prompt_role: { path: 'data.extensions.depth_prompt.role', normalize: value => String(value ?? 'system') || 'system' },
+});
+
+const legacyCharacterStorageRootFields = Object.freeze([
+    ...Object.keys(legacyCharacterStorageFieldSpecs),
+    'extensions',
+]);
+
+function normalizeCharacterCardForStorage(data, directories) {
+    if (typeof data !== 'string' || data.length === 0) {
+        return data;
     }
 
-    const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
-    const updateData = update.data && typeof update.data === 'object' ? update.data : null;
-    const mirroredFields = ['name', 'description', 'personality', 'scenario', 'first_mes', 'mes_example'];
-    const touchedMirroredField = mirroredFields.some((field) => hasOwn(update, field) || Boolean(updateData && hasOwn(updateData, field)));
-    const touchedCreatorNotesField = hasOwn(update, 'creatorcomment') || Boolean(updateData && hasOwn(updateData, 'creator_notes'));
-
-    if (!touchedMirroredField && !touchedCreatorNotesField) {
-        return;
+    const parsed = tryParse(data);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return data;
     }
-    if (!character.data || typeof character.data !== 'object') {
+
+    const character = parsed.spec === undefined
+        ? convertToV2(parsed, directories)
+        : parsed;
+
+    return JSON.stringify(toStoredV2Character(character));
+}
+
+function toStoredV2Character(character) {
+    if (!character || typeof character !== 'object' || Array.isArray(character)) {
+        return character;
+    }
+
+    _.unset(character, 'json_data');
+
+    if (!_.isPlainObject(character.data)) {
         character.data = {};
     }
 
-    for (const field of mirroredFields) {
-        const hasRoot = hasOwn(update, field);
-        const hasData = Boolean(updateData && hasOwn(updateData, field));
-        if (!hasRoot && !hasData) {
-            continue;
-        }
-        const nextValue = String((hasData ? updateData[field] : update[field]) ?? '');
-        _.set(character, field, nextValue);
-        _.set(character, `data.${field}`, nextValue);
+    if (!_.isPlainObject(character.data.extensions)) {
+        character.data.extensions = {};
     }
 
-    const hasRootCreatorNotes = hasOwn(update, 'creatorcomment');
-    const hasDataCreatorNotes = Boolean(updateData && hasOwn(updateData, 'creator_notes'));
-    if (hasRootCreatorNotes || hasDataCreatorNotes) {
-        const nextValue = String((hasDataCreatorNotes ? updateData.creator_notes : update.creatorcomment) ?? '');
-        _.set(character, 'creatorcomment', nextValue);
-        _.set(character, 'data.creator_notes', nextValue);
+    for (const [field, spec] of Object.entries(legacyCharacterStorageFieldSpecs)) {
+        if (!Object.prototype.hasOwnProperty.call(character, field)) {
+            continue;
+        }
+
+        _.set(character, spec.path, spec.normalize(character[field]));
     }
+
+    if (_.isPlainObject(character.extensions)) {
+        character.data.extensions = deepMerge(character.data.extensions, character.extensions);
+    }
+
+    for (const field of legacyCharacterStorageRootFields) {
+        _.unset(character, field);
+    }
+
+    return character;
+}
+
+function resolveCharacterEditFieldPath(field) {
+    const normalizedField = String(field ?? '').trim();
+    if (!normalizedField) {
+        return '';
+    }
+
+    if (legacyCharacterStorageFieldSpecs[normalizedField]) {
+        return legacyCharacterStorageFieldSpecs[normalizedField].path;
+    }
+
+    if (normalizedField === 'extensions') {
+        return 'data.extensions';
+    }
+
+    if (normalizedField.startsWith('data.')) {
+        return normalizedField;
+    }
+
+    return normalizedField;
 }
 
 /**
@@ -723,21 +824,8 @@ function charaFormatData(data, directories) {
         return [];
     };
 
-    // Spec V1 fields
-    _.set(char, 'name', data.ch_name);
-    _.set(char, 'description', data.description || '');
-    _.set(char, 'personality', data.personality || '');
-    _.set(char, 'scenario', data.scenario || '');
-    _.set(char, 'first_mes', data.first_mes || '');
-    _.set(char, 'mes_example', data.mes_example || '');
-
-    // Old ST extension fields (for backward compatibility, will be deprecated)
-    _.set(char, 'creatorcomment', data.creator_notes || '');
     _.set(char, 'avatar', 'none');
     _.set(char, 'chat', data.ch_name + ' - ' + humanizedDateTime());
-    _.set(char, 'talkativeness', data.talkativeness || 0.5);
-    _.set(char, 'fav', data.fav == 'true');
-    _.set(char, 'tags', typeof data.tags == 'string' ? (data.tags.split(',').map(x => x.trim()).filter(x => x)) : data.tags || []);
 
     // Spec V2 fields
     _.set(char, 'spec', 'chara_card_v2');
@@ -784,7 +872,7 @@ function charaFormatData(data, directories) {
         }
     }
 
-    return char;
+    return toStoredV2Character(char);
 }
 
 /**
@@ -935,15 +1023,16 @@ async function importFromCharX(uploadPath, { request }, preservedFileName) {
     const { card, avatar, auxiliaryAssets, extractedBuffers } = await parser.parse();
 
     // Apply standard character transformations
-    let processedCard = readFromV2(card);
+    let processedCard = getStoredCharaCardV2(card, request.user.directories);
     unsetPrivateFields(processedCard);
     processedCard['create_date'] = new Date().toISOString();
-    processedCard.name = sanitize(processedCard.name);
+    _.set(processedCard, 'data.name', sanitize(_.get(processedCard, 'data.name', processedCard.name)));
 
-    const fileName = preservedFileName || getPngName(processedCard.name, request.user.directories);
+    const processedCardName = _.get(processedCard, 'data.name', 'Unnamed');
+    const fileName = preservedFileName || getPngName(processedCardName, request.user.directories);
     // Use the actual character name for asset folders, not the unique filename
     // ST's sprite system looks up by character name, not PNG filename
-    const characterFolder = processedCard.name;
+    const characterFolder = processedCardName;
 
     if (auxiliaryAssets.length > 0) {
         try {
@@ -966,8 +1055,9 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
     console.info('Importing from BYAF');
 
     const byafData = await new ByafParser(data).parse();
-    const card = readFromV2(byafData.card);
-    const fileName = preservedFileName || getPngName(sanitize(byafData.character.displayName || card.name, { replacement: sanitizeSafeCharacterReplacements }), request.user.directories);
+    const card = getStoredCharaCardV2(byafData.card, request.user.directories);
+    const cardName = String(_.get(card, 'data.name', card.name) || '');
+    const fileName = preservedFileName || getPngName(sanitize(byafData.character.displayName || cardName, { replacement: sanitizeSafeCharacterReplacements }), request.user.directories);
 
     // Don't import chats and images if the character is being replaced or updated, instead of newly imported.
     if (!preservedFileName) {
@@ -975,11 +1065,11 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
          * @param {Partial<ByafScenario>} scenario
         */
         const createChatAsCurrentPersona = (scenario) => {
-            const chatName = sanitize(`${scenario.title || card.name} - ${humanizedDateTime()} imported.jsonl`, { replacement: sanitizeSafeCharacterReplacements });
+            const chatName = sanitize(`${scenario.title || cardName} - ${humanizedDateTime()} imported.jsonl`, { replacement: sanitizeSafeCharacterReplacements });
             const filePath = path.join(request.user.directories.chats, path.basename(fileName), chatName);
             const dir = path.dirname(filePath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            writeFileAtomicSync(filePath, ByafParser.getChatFromScenario(scenario, request.body.user_name, card.name, byafData.chatBackgrounds), 'utf8');
+            writeFileAtomicSync(filePath, ByafParser.getChatFromScenario(scenario, request.body.user_name, cardName, byafData.chatBackgrounds), 'utf8');
             console.log(`Created ${chatName} chat from BYAF import`);
             return chatName;
         };
@@ -1017,7 +1107,7 @@ async function importFromByaf(uploadPath, { request }, preservedFileName) {
             // BYAF does not support character expressions, so using the same structure will not result in conflicts,
             // even if the expression system did not tolerate additional icons that are not mapped to expressions.
             // This will not yet allow changing icons within the UI but at least the icons will be available for manual selection, rather than being lost.
-            const altImagesFolder = path.join(request.user.directories.characters, sanitize(card.name));
+            const altImagesFolder = path.join(request.user.directories.characters, sanitize(cardName));
             if (!fs.existsSync(altImagesFolder)) fs.mkdirSync(altImagesFolder, { recursive: true });
             const extension = path.extname(icon.filename) || '.png';
             const file = getUniqueName(`${sanitize(icon.label, { replacement: sanitizeSafeCharacterReplacements }) || 'alt'}`, (name) => fs.existsSync(path.join(altImagesFolder, `${name}${extension}`)));
@@ -1050,7 +1140,7 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         console.info(`Importing from ${jsonData.spec} json`);
         importRisuSprites(request.user.directories, jsonData);
         unsetPrivateFields(jsonData);
-        jsonData = readFromV2(jsonData);
+        jsonData = getStoredCharaCardV2(jsonData, request.user.directories);
         jsonData['create_date'] = new Date().toISOString();
         const pngName = preservedFileName || getPngName(jsonData.data?.name || jsonData.name, request.user.directories);
         const char = JSON.stringify(jsonData);
@@ -1133,7 +1223,7 @@ async function importFromPng(uploadPath, { request }, preservedFileName) {
         console.info(`Found a ${jsonData.spec} character file.`);
         importRisuSprites(request.user.directories, jsonData);
         unsetPrivateFields(jsonData);
-        jsonData = readFromV2(jsonData);
+        jsonData = getStoredCharaCardV2(jsonData, request.user.directories);
         jsonData['create_date'] = new Date().toISOString();
         const char = JSON.stringify(jsonData);
         const result = await writeCharacterData(uploadPath, char, pngName, request);
@@ -1224,9 +1314,8 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
         const rawOldData = await readCharacterData(oldAvatarPath);
         if (rawOldData === undefined) throw new Error('Failed to read character file');
 
-        const oldData = getCharaCardV2(JSON.parse(rawOldData), request.user.directories);
+        const oldData = getStoredCharaCardV2(JSON.parse(rawOldData), request.user.directories);
         _.set(oldData, 'data.name', newName);
-        _.set(oldData, 'name', newName);
         const newData = JSON.stringify(oldData);
 
         // Write data to new location
@@ -1275,8 +1364,8 @@ router.post('/edit', validateAvatarUrlMiddleware, async function (request, respo
         const existingRaw = await readCharacterData(avatarPath);
         if (typeof existingRaw === 'string' && existingRaw.length > 0) {
             try {
-                const existingChar = getCharaCardV2(JSON.parse(existingRaw), request.user.directories, false);
-                char = deepMerge(existingChar, char);
+                const existingChar = getStoredCharaCardV2(JSON.parse(existingRaw), request.user.directories, false);
+                char = toStoredV2Character(deepMerge(existingChar, char));
             } catch (error) {
                 console.warn('Failed to parse existing character while preserving extension fields in /edit', error);
             }
@@ -1390,15 +1479,15 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
         if (typeof charJSON !== 'string') throw new Error('Failed to read character file');
 
         const char = JSON.parse(charJSON);
+        const targetPath = resolveCharacterEditFieldPath(request.body.field);
         //check if the field exists
-        if (char[request.body.field] === undefined && char.data[request.body.field] === undefined) {
+        if (!targetPath || _.get(char, targetPath) === undefined) {
             console.warn('Error: invalid field.');
             response.status(400).send('Error: invalid field.');
             return;
         }
-        char[request.body.field] = request.body.value;
-        char.data[request.body.field] = request.body.value;
-        let newCharJSON = JSON.stringify(char);
+        _.set(char, targetPath, request.body.value);
+        const newCharJSON = JSON.stringify(toStoredV2Character(char));
         const targetFile = (request.body.avatar_url).replace('.png', '');
         const writeOk = await writeCharacterData(
             avatarPath,
@@ -1447,8 +1536,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         _.unset(update, 'json_data');
         _.unset(character, 'json_data');
 
-        character = deepMerge(character, update);
-        normalizeMirroredCharacterFields(character, update);
+        character = toStoredV2Character(deepMerge(character, update));
 
         const validator = new TavernCardValidator(character);
         const targetImg = (update.avatar).replace('.png', '');
@@ -1470,7 +1558,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
             response.sendStatus(200);
         } else {
             console.warn(validator.lastValidationError);
-            response.status(400).send({ message: `Validation failed for ${character.name}`, error: validator.lastValidationError });
+            response.status(400).send({ message: `Validation failed for ${_.get(character, 'data.name', character.name)}`, error: validator.lastValidationError });
         }
     } catch (exception) {
         response.status(500).send({ message: 'Unexpected error while saving character.', error: exception.toString() });
@@ -1937,10 +2025,10 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
             case 'png': {
                 const rawBuffer = await fsPromises.readFile(filename);
                 const rawData = read(rawBuffer);
-                const jsonObject = getCharaCardV2(JSON.parse(rawData), request.user.directories);
+                const jsonObject = getStoredCharaCardV2(JSON.parse(rawData), request.user.directories);
                 syncCharacterBookFromWorldInfo(jsonObject, request.user.directories, _.get(jsonObject, 'data.extensions.world'));
                 unsetPrivateFields(jsonObject);
-                const mutatedBuffer = write(rawBuffer, JSON.stringify(jsonObject));
+                const mutatedBuffer = write(rawBuffer, JSON.stringify(toStoredV2Character(jsonObject)));
                 const contentType = mime.lookup(filename) || 'image/png';
                 response.setHeader('Content-Type', contentType);
                 response.setHeader('Content-Disposition', `attachment; filename="${encodeURI(path.basename(filename))}"`);
@@ -1950,10 +2038,10 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                 try {
                     const json = await readCharacterData(filename);
                     if (json === undefined) return response.sendStatus(400);
-                    const jsonObject = getCharaCardV2(JSON.parse(json), request.user.directories);
+                    const jsonObject = getStoredCharaCardV2(JSON.parse(json), request.user.directories);
                     syncCharacterBookFromWorldInfo(jsonObject, request.user.directories, _.get(jsonObject, 'data.extensions.world'));
                     unsetPrivateFields(jsonObject);
-                    return response.type('json').send(JSON.stringify(jsonObject, null, 4));
+                    return response.type('json').send(JSON.stringify(toStoredV2Character(jsonObject), null, 4));
                 }
                 catch {
                     return response.sendStatus(400);

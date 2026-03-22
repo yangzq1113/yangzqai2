@@ -8,6 +8,8 @@ import {
     eventSource,
     event_types,
     getRequestHeaders,
+    getCharacterDescription,
+    getCharacterName,
     getThumbnailUrl,
     groupToEntity,
     menu_type,
@@ -1420,8 +1422,8 @@ export async function convertCharacterToPersona(characterId = null) {
         return false;
     }
 
-    const name = characters[characterId]?.name;
-    let description = characters[characterId]?.description;
+    const name = getCharacterName(characters[characterId]);
+    let description = getCharacterDescription(characters[characterId]);
     const overwriteName = `${name} (Persona).png`;
 
     if (overwriteName in power_user.personas) {
@@ -1655,7 +1657,9 @@ export async function askForPersonaSelection(title, text, personas, { okButton =
                 saveSettingsDebounced();
                 updatePersonaConnectionsAvatarList();
                 if (power_user.persona_show_notifications) {
-                    const name = targetedChar.type == 'character' ? characters[targetedChar.id]?.name : groups[targetedChar.id]?.name;
+                    const name = targetedChar.type == 'character'
+                        ? getCharacterName(characters[targetedChar.id])
+                        : groups[targetedChar.id]?.name;
                     toastr.info(t`All connections to ${name} have been removed.`, t`Personas Unlocked`);
                 }
             },

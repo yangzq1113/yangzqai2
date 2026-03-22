@@ -1841,6 +1841,8 @@ async function getHiddenBlock(hidden) {
 }
 
 function getCharacterBlock(item, id) {
+    const itemName = getCharacterName(item);
+    const isFavorite = isCharacterFavorite(item);
     let this_avatar = default_avatar;
     if (item.avatar != 'none') {
         this_avatar = getThumbnailUrl('avatar', item.avatar);
@@ -1848,22 +1850,22 @@ function getCharacterBlock(item, id) {
     // Populate the template
     const template = $('#character_template .character_select').clone();
     template.attr({ 'data-chid': id, 'id': `CharID${id}` });
-    template.find('img').attr('src', this_avatar).attr('alt', item.name);
-    template.find('.avatar').attr('title', `[Character] ${item.name}\nFile: ${item.avatar}`);
-    template.find('.ch_name').text(item.name).attr('title', `[Character] ${item.name}`);
+    template.find('img').attr('src', this_avatar).attr('alt', itemName);
+    template.find('.avatar').attr('title', `[Character] ${itemName}\nFile: ${item.avatar}`);
+    template.find('.ch_name').text(itemName).attr('title', `[Character] ${itemName}`);
     if (power_user.show_card_avatar_urls) {
         template.find('.ch_avatar_url').text(item.avatar);
     }
     template.find('.ch_fav_icon').css('display', 'none');
-    template.toggleClass('is_fav', item.fav || item.fav == 'true');
-    template.find('.ch_fav').val(item.fav);
+    template.toggleClass('is_fav', isFavorite);
+    template.find('.ch_fav').val(String(isFavorite));
 
     const isAssistant = item.avatar === getPermanentAssistantAvatar();
     if (!isAssistant) {
         template.find('.ch_assistant').remove();
     }
 
-    const description = item.data?.creator_notes || '';
+    const description = getCharacterCreatorNotes(item);
     if (description) {
         template.find('.ch_description').text(description);
     }
@@ -2263,7 +2265,7 @@ async function getReplacementCharacterChatName(character) {
     chats.sort((a, b) => sortMoments(timestampToMoment(a.last_mes), timestampToMoment(b.last_mes)));
     return chats.length && typeof chats[0] === 'object'
         ? chats[0].file_name.replace('.jsonl', '')
-        : `${character.name} - ${humanizedDateTime()}`;
+        : `${getCharacterName(character)} - ${humanizedDateTime()}`;
 }
 
 async function getRawCharacterChatSnapshot(characterId, fileName) {
@@ -2279,7 +2281,7 @@ async function getRawCharacterChatSnapshot(characterId, fileName) {
         headers: getRequestHeaders(),
         cache: 'no-cache',
         body: JSON.stringify({
-            ch_name: character.name,
+            ch_name: getCharacterName(character),
             file_name: fileName,
             avatar_url: character.avatar,
         }),
@@ -2306,7 +2308,7 @@ async function restoreCharacterChatSnapshot(characterId, fileName, chatFile) {
         cache: 'no-cache',
         headers: getRequestHeaders(),
         body: JSON.stringify({
-            ch_name: character.name,
+            ch_name: getCharacterName(character),
             file_name: fileName,
             chat: structuredClone(chatFile),
             avatar_url: character.avatar,
@@ -2368,7 +2370,7 @@ async function getCharacterDeletionUndoSnapshot(characterId, { includeChats = fa
 
     return {
         avatarUrl: character.avatar,
-        characterName: String(character.name || ''),
+        characterName: String(getCharacterName(character) || ''),
         cardBase64: String(snapshotData.card),
         states: Array.isArray(snapshotData.states) ? structuredClone(snapshotData.states) : [],
         chats,
@@ -2703,7 +2705,7 @@ export async function showMoreMessages(messagesToLoad = null) {
         const body = selected_group
             ? { id: groups.find(x => x.id == selected_group)?.chat_id, from_index: startIndex, limit }
             : {
-                ch_name: characters[this_chid]?.name,
+                ch_name: getCharacterName(characters[this_chid]),
                 file_name: characters[this_chid]?.chat,
                 avatar_url: characters[this_chid]?.avatar,
                 from_index: startIndex,
@@ -2985,7 +2987,7 @@ async function getChatBoundLorebookName(chatFile, groupId = null, { avatarUrl = 
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
-                ch_name: String(characterName || characters?.[this_chid]?.name || name2 || ''),
+                ch_name: String(characterName || getCharacterName(characters?.[this_chid]) || name2 || ''),
                 file_name: normalizedFileName,
                 avatar_url: resolvedAvatarUrl,
             }),
@@ -4761,7 +4763,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
             const disabledMembers = groups.find(x => x.id === selected_group)?.disabled_members ?? [];
             const isMuted = x => includeMuted ? true : !disabledMembers.includes(x);
             const names = Array.isArray(members)
-                ? members.filter(isMuted).map(m => characters.find(c => c.avatar === m)?.name).filter(Boolean).join(', ')
+                ? members.filter(isMuted).map(m => getCharacterName(characters.find(c => c.avatar === m))).filter(Boolean).join(', ')
                 : '';
             return names;
         } else {
@@ -4786,7 +4788,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
         }
 
         const memberNames = members
-            .map(m => characters.find(c => c.avatar === m)?.name)
+            .map(m => getCharacterName(characters.find(c => c.avatar === m)))
             .filter(Boolean); // Filter out any null/undefined names
 
         // Filter out the current speaker and add the user
@@ -5047,7 +5049,7 @@ function cleanGroupMessage(getMessage) {
                 continue;
             }
 
-            const name = character.name;
+            const name = getCharacterName(character);
 
             // Skip current speaker.
             if (name === name2) {
@@ -5255,6 +5257,104 @@ export function createLazyFields(resolvers) {
 }
 
 /**
+ * @param {Character|any} character
+ * @returns {Record<string, any>|undefined}
+ */
+function getCharacterData(character) {
+    return character && typeof character === 'object' && character.data && typeof character.data === 'object'
+        ? character.data
+        : undefined;
+}
+
+/**
+ * @param {Character|any} character
+ * @returns {Record<string, any>|undefined}
+ */
+function getCharacterExtensions(character) {
+    const data = getCharacterData(character);
+    return data && typeof data.extensions === 'object' ? data.extensions : undefined;
+}
+
+export function getCharacterName(character) {
+    return getCharacterData(character)?.name ?? character?.name ?? '';
+}
+
+export function getCharacterDescription(character) {
+    return getCharacterData(character)?.description ?? character?.description ?? '';
+}
+
+export function getCharacterPersonality(character) {
+    return getCharacterData(character)?.personality ?? character?.personality ?? '';
+}
+
+export function getCharacterScenario(character) {
+    return getCharacterData(character)?.scenario ?? character?.scenario ?? '';
+}
+
+export function getCharacterFirstMessage(character) {
+    return getCharacterData(character)?.first_mes ?? character?.first_mes ?? '';
+}
+
+export function getCharacterMesExample(character) {
+    return getCharacterData(character)?.mes_example ?? character?.mes_example ?? '';
+}
+
+export function getCharacterCreatorNotes(character) {
+    return getCharacterData(character)?.creator_notes ?? character?.creator_notes ?? character?.creatorcomment ?? '';
+}
+
+export function getCharacterTags(character) {
+    const tags = getCharacterData(character)?.tags ?? character?.tags;
+    return Array.isArray(tags) ? tags : [];
+}
+
+export function getCharacterSystemPrompt(character) {
+    return getCharacterData(character)?.system_prompt ?? character?.system_prompt ?? '';
+}
+
+export function getCharacterPostHistoryInstructions(character) {
+    return getCharacterData(character)?.post_history_instructions ?? character?.post_history_instructions ?? '';
+}
+
+export function getCharacterVersion(character) {
+    return getCharacterData(character)?.character_version ?? character?.character_version ?? '';
+}
+
+export function getCharacterCreator(character) {
+    return getCharacterData(character)?.creator ?? character?.creator ?? '';
+}
+
+export function getCharacterAlternateGreetings(character) {
+    const alternateGreetings = getCharacterData(character)?.alternate_greetings ?? character?.alternate_greetings;
+    return Array.isArray(alternateGreetings) ? alternateGreetings : [];
+}
+
+export function getCharacterWorld(character) {
+    return getCharacterExtensions(character)?.world ?? character?.world ?? '';
+}
+
+export function getCharacterDepthPromptPrompt(character) {
+    return getCharacterExtensions(character)?.depth_prompt?.prompt ?? character?.depth_prompt_prompt ?? '';
+}
+
+export function getCharacterDepthPromptDepth(character) {
+    return getCharacterExtensions(character)?.depth_prompt?.depth ?? character?.depth_prompt_depth;
+}
+
+export function getCharacterDepthPromptRole(character) {
+    return getCharacterExtensions(character)?.depth_prompt?.role ?? character?.depth_prompt_role;
+}
+
+export function getCharacterTalkativeness(character) {
+    return getCharacterExtensions(character)?.talkativeness ?? character?.talkativeness;
+}
+
+export function isCharacterFavorite(character) {
+    const favorite = getCharacterExtensions(character)?.fav ?? character?.fav;
+    return favorite === true || favorite === 'true';
+}
+
+/**
  * Returns the character card fields for the current character as lazy getters.
  * Each field is only processed (baseChatReplace) when first accessed.
  * @param {Object} [options={}]
@@ -5274,43 +5374,43 @@ export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
         persona: () => baseChatReplace(power_user.persona_description?.trim()),
         system: () => {
             if (!character) return '';
-            const systemPrompt = chat_metadata['system_prompt'] || character.data?.system_prompt || '';
+            const systemPrompt = chat_metadata['system_prompt'] || getCharacterSystemPrompt(character) || '';
             return power_user.prefer_character_prompt ? baseChatReplace(systemPrompt.trim()) : '';
         },
         jailbreak: () => {
             if (!character) return '';
-            return power_user.prefer_character_jailbreak ? baseChatReplace(character.data?.post_history_instructions?.trim()) : '';
+            return power_user.prefer_character_jailbreak ? baseChatReplace(getCharacterPostHistoryInstructions(character)?.trim()) : '';
         },
-        version: () => character?.data?.character_version ?? '',
+        version: () => getCharacterVersion(character),
         charDepthPrompt: () => {
             if (!character) return '';
-            return baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim());
+            return baseChatReplace(getCharacterDepthPromptPrompt(character)?.trim());
         },
         creatorNotes: () => {
             if (!character) return '';
-            return baseChatReplace(character.data?.creator_notes?.trim());
+            return baseChatReplace(getCharacterCreatorNotes(character)?.trim());
         },
         // These four fields may be overridden by group cards
         description: () => {
             if (groupCardsLazy) return groupCardsLazy.description;
             if (!character) return '';
-            return baseChatReplace(character.description?.trim());
+            return baseChatReplace(getCharacterDescription(character)?.trim());
         },
         personality: () => {
             if (groupCardsLazy) return groupCardsLazy.personality;
             if (!character) return '';
-            return baseChatReplace(character.personality?.trim());
+            return baseChatReplace(getCharacterPersonality(character)?.trim());
         },
         scenario: () => {
             if (groupCardsLazy) return groupCardsLazy.scenario;
             if (!character) return '';
-            const scenarioText = chat_metadata['scenario'] || character.scenario || '';
+            const scenarioText = chat_metadata['scenario'] || getCharacterScenario(character) || '';
             return baseChatReplace(scenarioText.trim());
         },
         mesExamples: () => {
             if (groupCardsLazy) return groupCardsLazy.mesExamples;
             if (!character) return '';
-            const exampleDialog = chat_metadata['mes_example'] || character.mes_example || '';
+            const exampleDialog = chat_metadata['mes_example'] || getCharacterMesExample(character) || '';
             return baseChatReplace(exampleDialog.trim());
         },
     };
@@ -9572,13 +9672,14 @@ export async function renameCharacter(name = null, { silent = false, renameChats
     }
 
     const oldAvatar = characters[this_chid].avatar;
-    const newValue = name || await callGenericPopup('<h3>' + t`New name:` + '</h3>', POPUP_TYPE.INPUT, characters[this_chid].name);
+    const currentCharacterName = getCharacterName(characters[this_chid]);
+    const newValue = name || await callGenericPopup('<h3>' + t`New name:` + '</h3>', POPUP_TYPE.INPUT, currentCharacterName);
 
     if (!newValue) {
         toastr.warning(t`No character name provided.`, t`Rename Character`);
         return false;
     }
-    if (newValue === characters[this_chid].name) {
+    if (newValue === currentCharacterName) {
         toastr.info(t`Same character name provided, so name did not change.`, t`Rename Character`);
         return false;
     }
@@ -9806,7 +9907,7 @@ function resolveChatStateTarget(target = null) {
 
     const avatar_url = String(characters[this_chid]?.avatar || '').trim();
     const file_name = String(characters[this_chid]?.chat || '').trim();
-    const char_name = String(characters[this_chid]?.name || '').trim();
+    const char_name = String(getCharacterName(characters[this_chid]) || '').trim();
     return avatar_url && file_name
         ? { is_group: false, avatar_url, file_name, ...(char_name ? { char_name } : {}) }
         : null;
@@ -10429,7 +10530,7 @@ async function fetchCurrentServerChatSnapshot(target = resolveChatStateTarget())
                 }),
             });
         } else {
-            const charName = String(resolvedTarget.char_name || characters[this_chid]?.name || '').trim();
+            const charName = String(resolvedTarget.char_name || getCharacterName(characters[this_chid]) || '').trim();
             if (!charName) {
                 return null;
             }
@@ -11319,7 +11420,7 @@ async function appendChatMessagesInternal(messages, retryCount = 0) {
 
         const fileName = characters[this_chid]?.chat;
         const avatar = characters[this_chid]?.avatar;
-        const charName = characters[this_chid]?.name;
+        const charName = getCharacterName(characters[this_chid]);
 
         if (!fileName || !avatar || !charName) {
             return false;
@@ -11433,7 +11534,7 @@ async function patchChatMessagesInternal(operations, retryCount = 0) {
 
         const fileName = characters[this_chid]?.chat;
         const avatar = characters[this_chid]?.avatar;
-        const charName = characters[this_chid]?.name;
+        const charName = getCharacterName(characters[this_chid]);
 
         if (!fileName || !avatar || !charName) {
             return false;
@@ -11532,7 +11633,7 @@ function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undef
     const characterId = this_chid;
     const avatarUrl = String(target.avatar_url || '').trim();
     const fileName = String(chatName ?? target.file_name ?? '').trim();
-    const charName = String(target.char_name || characters[characterId]?.name || '').trim();
+    const charName = String(target.char_name || getCharacterName(characters[characterId]) || '').trim();
     if (characterId === undefined || !avatarUrl || !fileName || !charName) {
         return null;
     }
@@ -11642,7 +11743,7 @@ async function saveChatMetadataInternal(withMetadata = undefined, retryCount = 0
                 });
             }
         } else {
-            const charName = String(saveContext.charName || target.char_name || characters[this_chid]?.name || '').trim();
+            const charName = String(saveContext.charName || target.char_name || getCharacterName(characters[this_chid]) || '').trim();
             if (!charName) {
                 return false;
             }
@@ -11728,7 +11829,7 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
         return;
     }
 
-    const charName = String(saveContext?.charName || target?.char_name || characters[this_chid]?.name || '').trim();
+    const charName = String(saveContext?.charName || target?.char_name || getCharacterName(characters[this_chid]) || '').trim();
     const avatar = String(saveContext?.avatarUrl || target?.avatar_url || characters[this_chid]?.avatar || '').trim();
     if (!charName || !avatar) {
         console.warn('saveChat called without active character identity');
@@ -11939,11 +12040,13 @@ export function buildAvatarList(block, entities, { templateId = 'inline_avatar_t
 
         avatarTemplate.attr('data-type', entity.type);
         avatarTemplate.attr('data-chid', id);
-        avatarTemplate.find('img').attr('src', this_avatar).attr('alt', entity.item.name);
-        avatarTemplate.attr('title', `[Character] ${entity.item.name}\nFile: ${entity.item.avatar}`);
+        const itemName = getCharacterName(entity.item);
+        avatarTemplate.find('img').attr('src', this_avatar).attr('alt', itemName);
+        avatarTemplate.attr('title', `[Character] ${itemName}\nFile: ${entity.item.avatar}`);
         if (highlightFavs) {
-            avatarTemplate.toggleClass('is_fav', entity.item.fav || entity.item.fav == 'true');
-            avatarTemplate.find('.ch_fav').val(entity.item.fav);
+            const isFavorite = isCharacterFavorite(entity.item);
+            avatarTemplate.toggleClass('is_fav', isFavorite);
+            avatarTemplate.find('.ch_fav').val(String(isFavorite));
         }
 
         // If this is a group, we need to hack slightly. We still want to keep most of the css classes and layout, but use a group avatar instead.
@@ -12013,7 +12116,7 @@ export async function getChat() {
             headers: getRequestHeaders(),
             cache: 'no-cache',
             body: JSON.stringify({
-                ch_name: characters[this_chid].name,
+                ch_name: getCharacterName(characters[this_chid]),
                 file_name: characters[this_chid].chat,
                 avatar_url: characters[this_chid].avatar,
             }),
@@ -12061,7 +12164,7 @@ export async function getChat() {
 }
 
 async function getChatResult() {
-    name2 = characters[this_chid].name;
+    name2 = getCharacterName(characters[this_chid]);
     let freshChat = false;
     if (chat.length === 0) {
         const message = getFirstMessage();
@@ -12091,8 +12194,9 @@ async function getChatResult() {
 }
 
 function getFirstMessage() {
-    const firstMes = characters[this_chid]?.first_mes || '';
-    const alternateGreetings = characters[this_chid]?.data?.alternate_greetings;
+    const character = characters[this_chid];
+    const firstMes = getCharacterFirstMessage(character);
+    const alternateGreetings = getCharacterAlternateGreetings(character);
 
     const message = {
         name: name2,
@@ -13309,7 +13413,7 @@ export async function getChatsFromFiles(data, isGroupChat) {
                 const requestBody = isGroupChat
                     ? JSON.stringify({ id: file_name })
                     : JSON.stringify({
-                        ch_name: characters[context.characterId].name,
+                        ch_name: getCharacterName(characters[context.characterId]),
                         file_name: file_name.replace('.jsonl', ''),
                         avatar_url: characters[context.characterId].avatar,
                     });
@@ -13390,7 +13494,7 @@ export function getCurrentChatDetails() {
 
     const group = selected_group ? groups.find(x => x.id === selected_group) : null;
     const currentChat = selected_group ? group?.chat_id : characters[this_chid]['chat'];
-    const displayName = selected_group ? group?.name : characters[this_chid].name;
+    const displayName = selected_group ? group?.name : getCharacterName(characters[this_chid]);
     const avatarImg = selected_group ? group?.avatar_url : getThumbnailUrl('avatar', characters[this_chid]['avatar']);
     return { sessionName: currentChat, group: group, characterName: displayName, avatarImgURL: avatarImg };
 }
@@ -13415,7 +13519,7 @@ function buildCurrentChatFileActionContext() {
     const character = characters[this_chid];
     const chatFile = String(character?.chat || '').trim();
     const avatarUrl = String(character?.avatar || '').trim();
-    const characterName = String(character?.name || name2 || '').trim();
+    const characterName = String(getCharacterName(character) || name2 || '').trim();
     if (!characterId || !character || !chatFile || !avatarUrl) {
         return null;
     }
@@ -13448,7 +13552,7 @@ async function createNewCharacterChatForContext(context) {
         return '';
     }
 
-    const prefix = String(context?.characterName || character?.name || name2 || neutralCharacterName).trim() || neutralCharacterName;
+    const prefix = String(context?.characterName || getCharacterName(character) || name2 || neutralCharacterName).trim() || neutralCharacterName;
     const newChatName = `${prefix} - ${humanizedDateTime()}`;
 
     if (isCurrentChatFileActionContextActive(context)) {
@@ -13703,6 +13807,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
  * @param {boolean} [param1.switchMenu=true] Whether to switch the menu
  */
 export function select_selected_character(chid, { switchMenu = true } = {}) {
+    const character = characters[chid];
     //character select
     //console.log('select_selected_character() -- starting with input of -- ' + chid + ' (name:' + characters[chid].name + ')');
     select_rm_create({ switchMenu });
@@ -13723,41 +13828,41 @@ export function select_selected_character(chid, { switchMenu = true } = {}) {
 
     // Don't update the navbar name if we're peeking the group member defs
     if (!selected_group) {
-        $('#rm_button_selected_ch').children('h2').text(characters[chid].name);
+        $('#rm_button_selected_ch').children('h2').text(getCharacterName(character));
     }
 
     $('#add_avatar_button').val('');
 
-    $('#character_popup-button-h3').text(characters[chid].name);
-    $('#character_name_pole').val(characters[chid].name);
-    $('#description_textarea').val(characters[chid].description);
-    $('#character_world').val(characters[chid].data?.extensions?.world || '');
-    $('#creator_notes_textarea').val(characters[chid].data?.creator_notes || characters[chid].creatorcomment);
-    $('#creator_notes_spoiler').html(formatCreatorNotes(characters[chid].data?.creator_notes || characters[chid].creatorcomment, characters[chid].avatar));
-    $('#character_version_textarea').val(characters[chid].data?.character_version || '');
-    $('#system_prompt_textarea').val(characters[chid].data?.system_prompt || '');
-    $('#post_history_instructions_textarea').val(characters[chid].data?.post_history_instructions || '');
-    $('#tags_textarea').val(Array.isArray(characters[chid].data?.tags) ? characters[chid].data.tags.join(', ') : '');
-    $('#creator_textarea').val(characters[chid].data?.creator);
-    $('#character_version_textarea').val(characters[chid].data?.character_version || '');
-    $('#personality_textarea').val(characters[chid].personality);
-    $('#firstmessage_textarea').val(characters[chid].first_mes);
-    $('#scenario_pole').val(characters[chid].scenario);
-    $('#depth_prompt_prompt').val(characters[chid].data?.extensions?.depth_prompt?.prompt ?? '');
-    $('#depth_prompt_depth').val(characters[chid].data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default);
-    $('#depth_prompt_role').val(characters[chid].data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default);
-    $('#talkativeness_slider').val(characters[chid].talkativeness || talkativeness_default);
-    $('#mes_example_textarea').val(characters[chid].mes_example);
-    $('#selected_chat_pole').val(characters[chid].chat);
-    $('#create_date_pole').val(timestampToMoment(characters[chid].create_date).toISOString());
-    $('#avatar_url_pole').val(characters[chid].avatar);
-    $('#chat_import_avatar_url').val(characters[chid].avatar);
-    $('#chat_import_character_name').val(characters[chid].name);
-    $('#character_json_data').val(characters[chid].json_data);
+    $('#character_popup-button-h3').text(getCharacterName(character));
+    $('#character_name_pole').val(getCharacterName(character));
+    $('#description_textarea').val(getCharacterDescription(character));
+    $('#character_world').val(getCharacterWorld(character));
+    $('#creator_notes_textarea').val(getCharacterCreatorNotes(character));
+    $('#creator_notes_spoiler').html(formatCreatorNotes(getCharacterCreatorNotes(character), character.avatar));
+    $('#character_version_textarea').val(getCharacterVersion(character));
+    $('#system_prompt_textarea').val(getCharacterSystemPrompt(character));
+    $('#post_history_instructions_textarea').val(getCharacterPostHistoryInstructions(character));
+    $('#tags_textarea').val(getCharacterTags(character).join(', '));
+    $('#creator_textarea').val(getCharacterCreator(character));
+    $('#character_version_textarea').val(getCharacterVersion(character));
+    $('#personality_textarea').val(getCharacterPersonality(character));
+    $('#firstmessage_textarea').val(getCharacterFirstMessage(character));
+    $('#scenario_pole').val(getCharacterScenario(character));
+    $('#depth_prompt_prompt').val(getCharacterDepthPromptPrompt(character));
+    $('#depth_prompt_depth').val(getCharacterDepthPromptDepth(character) ?? depth_prompt_depth_default);
+    $('#depth_prompt_role').val(getCharacterDepthPromptRole(character) ?? depth_prompt_role_default);
+    $('#talkativeness_slider').val(getCharacterTalkativeness(character) ?? talkativeness_default);
+    $('#mes_example_textarea').val(getCharacterMesExample(character));
+    $('#selected_chat_pole').val(character.chat);
+    $('#create_date_pole').val(timestampToMoment(character.create_date).toISOString());
+    $('#avatar_url_pole').val(character.avatar);
+    $('#chat_import_avatar_url').val(character.avatar);
+    $('#chat_import_character_name').val(getCharacterName(character));
+    $('#character_json_data').val(character.json_data);
 
-    updateFavButtonState(characters[chid].fav || characters[chid].fav == 'true');
+    updateFavButtonState(isCharacterFavorite(character));
 
-    const avatarUrl = characters[chid].avatar != 'none' ? getThumbnailUrl('avatar', characters[chid].avatar) : default_avatar;
+    const avatarUrl = character.avatar != 'none' ? getThumbnailUrl('avatar', character.avatar) : default_avatar;
     $('#avatar_load_preview').attr('src', avatarUrl);
     $('.open_alternate_greetings').data('chid', chid);
     $('#set_character_world').data('chid', chid);
@@ -15874,7 +15979,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
                     }
                     const result = await maybeDeleteChatBoundLorebook(fileName, null, {
                         avatarUrl: character.avatar,
-                        characterName: character.name,
+                        characterName: getCharacterName(character),
                     });
                     if (result?.lorebookName) {
                         promptedLorebooks.add(result.lorebookName);
@@ -15907,7 +16012,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             accountStorage.removeItem(`AlertRegex_${character.avatar}`);
             accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
             delete tag_map[character.avatar];
-            select_rm_info('char_delete', character.name);
+            select_rm_info('char_delete', getCharacterName(character));
 
             const pendingCharacterUndo = pendingCharacterUndoByAvatar.get(character.avatar);
             const shouldDelayDeleteCommit = Boolean(pendingCharacterUndo);
@@ -18343,7 +18448,7 @@ jQuery(async function () {
                                 : {};
                             previousLorebookSnapshot = {
                                 avatar: previousAvatar,
-                                characterName: String(previousCharacter?.name || ''),
+                                characterName: String(getCharacterName(previousCharacter) || ''),
                                 bookName: previousBookName,
                                 entries,
                                 capturedAt: Date.now(),

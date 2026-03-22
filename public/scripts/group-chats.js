@@ -91,6 +91,15 @@ import {
     refreshChatWriteSnapshotsFromServer,
     resolveChatWriteConflictForTarget,
     runSerializedChatWrite,
+    getCharacterAlternateGreetings,
+    getCharacterDescription,
+    getCharacterFirstMessage,
+    isCharacterFavorite,
+    getCharacterMesExample,
+    getCharacterName,
+    getCharacterPersonality,
+    getCharacterScenario,
+    getCharacterTalkativeness,
 } from '../script.js';
 import { printTagList, createTagMapFromList, applyTagsOnCharacterSelect, tag_map, applyTagsOnGroupSelect } from './tags.js';
 import { FILTER_TYPES, FilterHelper } from './filters.js';
@@ -236,7 +245,7 @@ async function validateGroup(group) {
     // Validate that all members exist as characters
     let dirty = false;
     group.members = group.members.filter(member => {
-        const character = characters.find(x => x.avatar === member || x.name === member);
+        const character = characters.find(x => x.avatar === member || getCharacterName(x) === member);
         if (!character) {
             const msg = t`Warning: Listed member ${member} does not exist as a character. It will be removed from the group.`;
             toastr.warning(msg, t`Group Validation`);
@@ -299,7 +308,7 @@ export async function getGroupChat(groupId, reload = false) {
         chat.splice(0, chat.length);
         chatElement.find('.mes').remove();
         for (let member of group.members) {
-            const character = characters.find(x => x.avatar === member || x.name === member);
+            const character = characters.find(x => x.avatar === member || getCharacterName(x) === member);
             if (!character) {
                 continue;
             }
@@ -357,7 +366,7 @@ export function getGroupNames() {
     }
     const groupMembers = groups.find(x => x.id == selected_group)?.members;
     return Array.isArray(groupMembers)
-        ? groupMembers.map(x => characters.find(y => y.avatar === x)?.name).filter(x => x)
+        ? groupMembers.map(x => getCharacterName(characters.find(y => y.avatar === x))).filter(x => x)
         : [];
 }
 
@@ -388,7 +397,7 @@ export function findGroupMemberId(arg, full = false) {
     if (searchByString) {
         const memberNames = group.members.map(x => ({
             avatar: x,
-            name: characters.find(y => y.avatar === x)?.name,
+            name: getCharacterName(characters.find(y => y.avatar === x)),
             index: characters.findIndex(y => y.avatar === x),
         }));
         const fuse = new Fuse(memberNames, { keys: ['avatar', 'name'] });
@@ -430,7 +439,7 @@ export function findGroupMemberId(arg, full = false) {
         return !full ? chid : {
             id: chid,
             avatar: memberAvatar,
-            name: characters.find(y => y.avatar === memberAvatar)?.name,
+            name: getCharacterName(characters.find(y => y.avatar === memberAvatar)),
             index: index,
         };
     }
@@ -474,7 +483,7 @@ export function getGroupDepthPrompts(groupId, characterId) {
             continue;
         }
 
-        const depthPromptText = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), null, character.name) || '';
+        const depthPromptText = baseChatReplace(character.data?.extensions?.depth_prompt?.prompt?.trim(), null, getCharacterName(character)) || '';
         const depthPromptDepth = character.data?.extensions?.depth_prompt?.depth ?? depth_prompt_depth_default;
         const depthPromptRole = character.data?.extensions?.depth_prompt?.role ?? depth_prompt_role_default;
 
@@ -571,7 +580,7 @@ export function getGroupCharacterCardsLazy(groupId, characterId) {
             if (group.disabled_members.includes(member) && characterId !== index && group.generation_mode !== group_generation_mode.APPEND_DISABLED) {
                 continue;
             }
-            values.push(replaceAndPrepareForJoin(getter(character), character.name, fieldName, preprocess));
+            values.push(replaceAndPrepareForJoin(getter(character), getCharacterName(character), fieldName, preprocess));
         }
         return values.filter(x => x.length).join('\n');
     }
@@ -580,11 +589,11 @@ export function getGroupCharacterCardsLazy(groupId, characterId) {
     const mesExamplesOverride = String(chat_metadata['mes_example'] || '');
 
     return createLazyFields({
-        description: () => collectField('Description', c => c.description),
-        personality: () => collectField('Personality', c => c.personality),
-        scenario: () => baseChatReplace(scenarioOverride?.trim()) || collectField('Scenario', c => c.scenario),
+        description: () => collectField('Description', c => getCharacterDescription(c)),
+        personality: () => collectField('Personality', c => getCharacterPersonality(c)),
+        scenario: () => baseChatReplace(scenarioOverride?.trim()) || collectField('Scenario', c => getCharacterScenario(c)),
         mesExamples: () => baseChatReplace(mesExamplesOverride?.trim()) ||
-            collectField('Example Messages', c => c.mes_example, x => !x.startsWith('<START>') ? `<START>\n${x}` : x),
+            collectField('Example Messages', c => getCharacterMesExample(c), x => !x.startsWith('<START>') ? `<START>\n${x}` : x),
     });
 }
 
@@ -594,11 +603,12 @@ export function getGroupCharacterCardsLazy(groupId, characterId) {
  * @returns {Promise<ChatMessage>} First message object
  */
 async function getFirstCharacterMessage(character) {
-    let messageText = character.first_mes;
+    let messageText = getCharacterFirstMessage(character);
 
     // if there are alternate greetings, pick one at random
-    if (Array.isArray(character.data?.alternate_greetings)) {
-        const messageTexts = [character.first_mes, ...character.data.alternate_greetings].filter(x => x);
+    const alternateGreetings = getCharacterAlternateGreetings(character);
+    if (alternateGreetings.length > 0) {
+        const messageTexts = [getCharacterFirstMessage(character), ...alternateGreetings].filter(x => x);
         messageText = messageTexts[Math.floor(Math.random() * messageTexts.length)];
     }
 
@@ -612,12 +622,12 @@ async function getFirstCharacterMessage(character) {
     const mes = {};
     mes['is_user'] = false;
     mes['is_system'] = false;
-    mes['name'] = character.name;
+    mes['name'] = getCharacterName(character);
     mes['send_date'] = getMessageTimeStamp();
     mes['original_avatar'] = character.avatar;
     mes['extra'] = { 'gen_id': Date.now() * Math.random() * 1000000 };
     mes['mes'] = messageText
-        ? substituteParams(messageText.trim(), { name2Override: character.name })
+        ? substituteParams(messageText.trim(), { name2Override: getCharacterName(character) })
         : '';
     mes['force_avatar'] =
         character.avatar != 'none'
@@ -888,7 +898,7 @@ async function getGroups() {
                 group.chat_id = group.id;
                 group.chats = [group.id];
                 group.members = group.members
-                    .map(x => characters.find(y => y.name == x)?.avatar)
+                    .map(x => characters.find(y => getCharacterName(y) == x)?.avatar)
                     .filter(x => x)
                     .filter(onlyUnique);
             }
@@ -920,9 +930,9 @@ export function getGroupBlock(group) {
     // Build inline name list
     if (Array.isArray(group.members) && group.members.length) {
         for (const member of group.members) {
-            const character = characters.find(x => x.avatar === member || x.name === member);
+            const character = characters.find(x => x.avatar === member || getCharacterName(x) === member);
             if (character) {
-                namesList.push(character.name);
+                namesList.push(getCharacterName(character));
                 count++;
             }
         }
@@ -1174,7 +1184,7 @@ async function generateGroupWrapper(byAutoMode, type = null, params = {}) {
             throwIfAborted();
             deactivateSendButtons();
             setCharacterId(chId);
-            setCharacterName(characters[chId].name);
+            setCharacterName(getCharacterName(characters[chId]));
             if (power_user.show_group_chat_queue) {
                 printGroupMembers();
             }
@@ -1276,7 +1286,7 @@ function activateSwipe(members, { allowSystem = false } = {}) {
 
     // pre-update group chat swipe
     if (!lastMessage.original_avatar) {
-        const matches = characters.filter(x => x.name == lastMessage.name);
+        const matches = characters.filter(x => getCharacterName(x) == lastMessage.name);
 
         for (const match of matches) {
             if (members.includes(match.avatar)) {
@@ -1379,11 +1389,11 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
             for (let member of members) {
                 const character = characters.find(x => x.avatar === member);
 
-                if (!character || character.name === bannedUser) {
+                if (!character || getCharacterName(character) === bannedUser) {
                     continue;
                 }
 
-                if (extractAllWords(character.name).includes(inputWord)) {
+                if (extractAllWords(getCharacterName(character)).includes(inputWord)) {
                     activatedMembers.push(member);
                     break;
                 }
@@ -1397,14 +1407,15 @@ function activateNaturalOrder(members, input, lastMessage, allowSelfResponses, i
     for (let member of shuffledMembers) {
         const character = characters.find((x) => x.avatar === member);
 
-        if (!character || character.name === bannedUser) {
+        if (!character || getCharacterName(character) === bannedUser) {
             continue;
         }
 
         const rollValue = Math.random();
-        const talkativeness = isNaN(character.talkativeness)
+        const talkativenessValue = getCharacterTalkativeness(character);
+        const talkativeness = isNaN(talkativenessValue)
             ? talkativeness_default
-            : Number(character.talkativeness);
+            : Number(talkativenessValue);
         if (talkativeness >= rollValue) {
             activatedMembers.push(member);
         }
@@ -1772,10 +1783,10 @@ function printGroupMembers() {
 function getGroupCharacterBlock(character) {
     const avatar = getThumbnailUrl('avatar', character.avatar);
     const template = $('#group_member_template .group_member').clone();
-    const isFav = !!character.fav || character.fav == 'true';
+    const isFav = isCharacterFavorite(character);
     template.data('id', character.avatar);
     template.find('.avatar img').attr({ 'src': avatar, 'title': character.avatar });
-    template.find('.ch_name').text(character.name);
+    template.find('.ch_name').text(getCharacterName(character));
     template.attr('data-chid', characters.indexOf(character));
     template.find('.ch_fav').val(String(isFav));
     template.toggleClass('is_fav', isFav);
@@ -2173,7 +2184,7 @@ async function createGroup() {
     let generationMode = Number($('#rm_group_generation_mode').find(':selected').val()) ?? group_generation_mode.SWAP;
     let autoModeDelay = Number($('#rm_group_automode_delay').val()) ?? DEFAULT_AUTO_MODE_DELAY;
     const members = newGroupMembers;
-    const memberNames = characters.filter(x => members.includes(x.avatar)).map(x => x.name).join(', ');
+    const memberNames = characters.filter(x => members.includes(x.avatar)).map(x => getCharacterName(x)).join(', ');
 
     if (!name) {
         name = t`Group: ${memberNames}`;
