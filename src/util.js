@@ -118,16 +118,6 @@ export function getConfigValue(key, defaultValue = null, typeConverter = null) {
 }
 
 /**
- * THIS FUNCTION IS DEPRECATED AND ONLY EXISTS FOR BACKWARDS COMPATIBILITY. DON'T USE IT.
- * @param {any} _key Unused
- * @param {any} _value Unused
- * @deprecated Configs are read-only. Use environment variables instead.
- */
-export function setConfigValue(_key, _value) {
-    console.trace(color.yellow('setConfigValue is deprecated and should not be used.'));
-}
-
-/**
  * Encodes the Basic Auth header value for the given user and password.
  * @param {string} auth username:password
  * @returns {string} Basic Auth header value
