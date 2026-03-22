@@ -233,6 +233,18 @@ function autoSelectPreset() {
         return;
     }
 
+    if (main_api === 'openai' && !selected_group) {
+        const rawBoundPreset = characters?.[this_chid]?.data?.extensions?.luker?.chat_completion_preset;
+        const boundPresetName = typeof rawBoundPreset === 'string'
+            ? rawBoundPreset.trim()
+            : String(rawBoundPreset?.name || '').trim();
+
+        if (boundPresetName) {
+            console.debug('Skipping OpenAI preset auto-selection because the current character has an explicit bound preset.');
+            return;
+        }
+    }
+
     const name = selected_group ? groups.find(x => x.id == selected_group)?.name : characters[this_chid]?.name;
 
     if (!name) {

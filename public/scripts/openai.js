@@ -5115,11 +5115,51 @@ function updateCharacterBoundPresetBadge(forceVisible = null) {
     $('#luker_char_bound_preset_badge').toggleClass('displayNone', !visible);
 }
 
+function getSelectedNonCharacterBoundPresetName() {
+    const selected = $('#settings_preset_openai').find(':selected');
+    if (selected.attr('data-luker-char-bound') === '1') {
+        return '';
+    }
+    return String(selected.text() || '').trim();
+}
+
+function resolveExistingOpenAIPresetName(name = '') {
+    const presetNames = getOrderedPresetNames(openai_setting_names || {});
+    return findCanonicalNameInList(presetNames, name) || '';
+}
+
+function resolveOpenAIPresetRestoreTarget(preferredName = '') {
+    return resolveExistingOpenAIPresetName(preferredName)
+        || resolveExistingOpenAIPresetName(getSelectedNonCharacterBoundPresetName())
+        || resolveExistingOpenAIPresetName(String(oai_settings.preset_settings_openai ?? '').trim())
+        || getOrderedPresetNames(openai_setting_names || {})[0]
+        || '';
+}
+
 function removeCharacterBoundRuntimeOption() {
     $('#settings_preset_openai option[data-luker-char-bound="1"]').remove();
     characterBoundPresetState.runtimePresetName = '';
     characterBoundPresetState.runtimePresetBody = null;
     updateCharacterBoundPresetBadge(false);
+}
+
+function restoreOpenAIPresetAfterCharacterBound(preferredName = '') {
+    const targetPresetName = resolveOpenAIPresetRestoreTarget(preferredName);
+    removeCharacterBoundRuntimeOption();
+
+    if (!targetPresetName) {
+        $('#settings_preset_openai').prop('selectedIndex', -1);
+        oai_settings.preset_settings_openai = '';
+        lastOpenAIPresetSelectValue = '';
+        updateCharacterBoundPresetBadge(false);
+        return false;
+    }
+
+    const restored = applyPresetByName(targetPresetName);
+    if (!restored) {
+        console.warn(`Failed to restore chat completion preset after removing character binding: ${targetPresetName}`);
+    }
+    return restored;
 }
 
 function upsertCharacterBoundRuntimeOption(presetName, presetBody) {
@@ -5197,11 +5237,10 @@ async function setCharacterBoundPresetValue(characterId, presetName, presetBody 
             preset: sanitizedPreset,
         };
     } else {
-        delete nextExtensions.luker.chat_completion_preset;
-    }
-
-    if (Object.keys(nextExtensions.luker).length === 0) {
-        delete nextExtensions.luker;
+        // merge-attributes deep-merges nested objects, so deletion-by-omission
+        // would keep the old bound preset on the character card. Persist an
+        // explicit null to clear the field reliably.
+        nextExtensions.luker.chat_completion_preset = null;
     }
 
     character.data = character.data || {};
@@ -5244,14 +5283,15 @@ async function maybeApplyCharacterBoundPreset() {
     }
 
     if (selected_group) {
-        removeCharacterBoundRuntimeOption();
         if (characterBoundPresetState.active) {
-            const restored = applyPresetByName(characterBoundPresetState.previousPreset);
+            const restored = restoreOpenAIPresetAfterCharacterBound(characterBoundPresetState.previousPreset);
             if (!restored && characterBoundPresetState.previousPreset) {
                 console.warn(`Failed to restore previous chat completion preset: ${characterBoundPresetState.previousPreset}`);
             }
             characterBoundPresetState.active = false;
             characterBoundPresetState.previousPreset = '';
+        } else {
+            removeCharacterBoundRuntimeOption();
         }
         updateCharacterBoundPresetBadge(false);
         return;
@@ -5261,21 +5301,23 @@ async function maybeApplyCharacterBoundPreset() {
     const embeddedPayload = getCharacterBoundPresetPayload(character);
     const legacyBoundPresetName = getCharacterBoundPresetName(character);
     if (!embeddedPayload && !legacyBoundPresetName) {
-        removeCharacterBoundRuntimeOption();
         if (characterBoundPresetState.active) {
-            const restored = applyPresetByName(characterBoundPresetState.previousPreset);
+            const restored = restoreOpenAIPresetAfterCharacterBound(characterBoundPresetState.previousPreset);
             if (!restored && characterBoundPresetState.previousPreset) {
                 console.warn(`Failed to restore previous chat completion preset: ${characterBoundPresetState.previousPreset}`);
             }
             characterBoundPresetState.active = false;
             characterBoundPresetState.previousPreset = '';
+        } else {
+            removeCharacterBoundRuntimeOption();
         }
         updateCharacterBoundPresetBadge(false);
         return;
     }
 
     if (!characterBoundPresetState.active) {
-        characterBoundPresetState.previousPreset = String(oai_settings.preset_settings_openai ?? '').trim();
+        characterBoundPresetState.previousPreset = resolveExistingOpenAIPresetName(getSelectedNonCharacterBoundPresetName())
+            || resolveExistingOpenAIPresetName(String(oai_settings.preset_settings_openai ?? '').trim());
         characterBoundPresetState.active = true;
     }
 
@@ -8710,7 +8752,9 @@ export function initOpenAI() {
     $('#customize_additional_parameters').on('click', onCustomizeParametersClick);
     $('#openai_proxy_preset').on('change', onProxyPresetChange);
 
-    eventSource.on(event_types.CHAT_CHANGED, () => {
-        void maybeApplyCharacterBoundPreset();
-    });
+    eventSource.makeFirst(event_types.CHAT_CHANGED, onOpenAIChatChanged);
+}
+
+async function onOpenAIChatChanged() {
+    await maybeApplyCharacterBoundPreset();
 }
