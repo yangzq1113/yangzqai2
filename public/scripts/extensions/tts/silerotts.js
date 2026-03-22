@@ -1,4 +1,3 @@
-import { doExtrasFetch, getApiUrl, modules } from '../../extensions.js';
 import { saveTtsProviderSettings } from './index.js';
 
 export { SileroTtsProvider };
@@ -23,7 +22,7 @@ class SileroTtsProvider {
         <label for="silero_tts_endpoint">Provider Endpoint:</label>
         <input id="silero_tts_endpoint" type="text" class="text_pole" maxlength="250" value="${this.defaultSettings.provider_endpoint}"/>
         <span>
-        <span>Use <a target="_blank" href="https://github.com/SillyTavern/SillyTavern-extras">SillyTavern Extras API</a> or <a target="_blank" href="https://github.com/ouoertheo/silero-api-server">Silero TTS Server</a>.</span>
+        <span>Use <a target="_blank" href="https://github.com/ouoertheo/silero-api-server">Silero TTS Server</a>.</span>
         `;
         return html;
     }
@@ -51,17 +50,6 @@ class SileroTtsProvider {
                 throw `Invalid setting passed to TTS Provider: ${key}`;
             }
         }
-
-        const apiCheckInterval = setInterval(() => {
-            // Use Extras API if TTS support is enabled
-            if (modules.includes('tts') || modules.includes('silero-tts')) {
-                const baseUrl = new URL(getApiUrl());
-                baseUrl.pathname = '/api/tts';
-                this.settings.provider_endpoint = baseUrl.toString();
-                $('#silero_tts_endpoint').val(this.settings.provider_endpoint);
-                clearInterval(apiCheckInterval);
-            }
-        }, 2000);
 
         $('#silero_tts_endpoint').val(this.settings.provider_endpoint);
         $('#silero_tts_endpoint').on('input', () => { this.onSettingsChange(); });
@@ -111,7 +99,7 @@ class SileroTtsProvider {
     // API CALLS //
     //###########//
     async fetchTtsVoiceObjects() {
-        const response = await doExtrasFetch(`${this.settings.provider_endpoint}/speakers`);
+        const response = await fetch(`${this.settings.provider_endpoint}/speakers`);
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${await response.json()}`);
         }
@@ -121,7 +109,7 @@ class SileroTtsProvider {
 
     async fetchTtsGeneration(inputText, voiceId) {
         console.info(`Generating new TTS for voice_id ${voiceId}`);
-        const response = await doExtrasFetch(
+        const response = await fetch(
             `${this.settings.provider_endpoint}/generate`,
             {
                 method: 'POST',
@@ -146,7 +134,7 @@ class SileroTtsProvider {
     async initSession() {
         console.info('Silero TTS: requesting new session');
         try {
-            const response = await doExtrasFetch(
+            const response = await fetch(
                 `${this.settings.provider_endpoint}/session`,
                 {
                     method: 'POST',

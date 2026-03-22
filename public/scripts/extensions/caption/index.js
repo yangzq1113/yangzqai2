@@ -1,5 +1,5 @@
 import { ensureImageFormatSupported, getBase64Async, getFileExtension, isTrueBoolean, saveBase64AsFile } from '../../utils.js';
-import { getContext, getApiUrl, doExtrasFetch, extension_settings, modules, renderExtensionTemplateAsync } from '../../extensions.js';
+import { getContext, extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { appendMediaToMessage, chat_metadata, eventSource, event_types, getRequestHeaders, saveChatConditional, saveSettingsDebounced, substituteParamsExtended } from '../../../script.js';
 import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';
@@ -30,7 +30,11 @@ function migrateSettings() {
     delete extension_settings.caption.local;
 
     if (!extension_settings.caption.source) {
-        extension_settings.caption.source = 'extras';
+        extension_settings.caption.source = 'local';
+    }
+
+    if (extension_settings.caption.source === 'extras') {
+        extension_settings.caption.source = 'local';
     }
 
     if (extension_settings.caption.source === 'openai') {
@@ -225,8 +229,6 @@ async function doCaptionRequest(base64Img, fileData, externalPrompt) {
     switch (extension_settings.caption.source) {
         case 'local':
             return await captionLocal(base64Img);
-        case 'extras':
-            return await captionExtras(base64Img);
         case 'horde':
             return await captionHorde(base64Img);
         case 'multimodal':
@@ -234,36 +236,6 @@ async function doCaptionRequest(base64Img, fileData, externalPrompt) {
         default:
             throw new Error('Unknown caption source.');
     }
-}
-
-/**
- * Generates a caption for an image using Extras API.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @returns {Promise<{caption: string}>} Generated caption
- */
-async function captionExtras(base64Img) {
-    if (!modules.includes('caption')) {
-        throw new Error('No captioning module is available.');
-    }
-
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/caption';
-
-    const apiResult = await doExtrasFetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Bypass-Tunnel-Reminder': 'bypass',
-        },
-        body: JSON.stringify({ image: base64Img }),
-    });
-
-    if (!apiResult.ok) {
-        throw new Error('Failed to caption image via Extras.');
-    }
-
-    const data = await apiResult.json();
-    return data;
 }
 
 /**
@@ -472,7 +444,6 @@ jQuery(async function () {
                 const settings = extension_settings.caption;
 
                 // Handle non-multimodal sources
-                if (settings.source === 'extras' && modules.includes('caption')) return true;
                 if (settings.source === 'local' || settings.source === 'horde') return true;
 
                 // Handle multimodal sources

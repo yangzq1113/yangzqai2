@@ -2,7 +2,7 @@ import { Fuse } from '../../../lib.js';
 
 import { characters, eventSource, event_types, generateQuietPrompt, generateRaw, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types, this_chid } from '../../../script.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
-import { getContext, getApiUrl, modules, extension_settings, ModuleWorkerWrapper, doExtrasFetch, renderExtensionTemplateAsync } from '../../extensions.js';
+import { getContext, extension_settings, ModuleWorkerWrapper, renderExtensionTemplateAsync } from '../../extensions.js';
 import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';
 import { onlyUnique, debounce, getCharaFilename, trimToEndSentence, trimToStartSentence, waitUntilCondition, findChar, isFalseBoolean } from '../../utils.js';
 import { hideMutedSprites, selected_group } from '../../group-chats.js';
@@ -80,7 +80,6 @@ const RESET_SPRITE_LABEL = '#reset';
 /** @enum {number} */
 const EXPRESSION_API = {
     local: 0,
-    extras: 1,
     llm: 2,
     webllm: 3,
     none: 99,
@@ -513,7 +512,7 @@ async function moduleWorker({ newChat = false } = {}) {
     }
 
     const offlineMode = $('.expression_settings .offline_mode');
-    if (!modules.includes('classify') && extension_settings.expressions.api == EXPRESSION_API.extras) {
+    if (extension_settings.expressions.api === EXPRESSION_API.none) {
         $('#open_chat_expressions').show();
         $('#no_chat_expressions').hide();
         offlineMode.css('display', 'block');
@@ -712,11 +711,6 @@ async function classifyCallback(/** @type {{api: string?, filter: string?, promp
 
     if (expressionApi === EXPRESSION_API.none) {
         toastr.warning('No classifier API selected');
-        return '';
-    }
-
-    if (!modules.includes('classify') && expressionApi == EXPRESSION_API.extras) {
-        toastr.warning('Text classification is disabled or not available');
         return '';
     }
 
@@ -1018,8 +1012,7 @@ function onTextGenSettingsReady(args) {
  * @returns {Promise<string?>} - The label of the expression.
  */
 export async function getExpressionLabel(text, expressionsApi = extension_settings.expressions.api, { filterAvailable = null, customPrompt = null } = {}) {
-    // Return if text is undefined, saving a costly fetch request
-    if ((!modules.includes('classify') && expressionsApi == EXPRESSION_API.extras) || !text) {
+    if (!text) {
         return extension_settings.expressions.fallback_expression;
     }
 
@@ -1094,25 +1087,6 @@ export async function getExpressionLabel(text, expressionsApi = extension_settin
                 const emotionResponse = await generateWebLlmChatPrompt(messages);
                 return parseLlmResponse(emotionResponse, expressionsList);
             }
-            // Extras
-            case EXPRESSION_API.extras: {
-                const url = new URL(getApiUrl());
-                url.pathname = '/api/classify';
-
-                const extrasResult = await doExtrasFetch(url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Bypass-Tunnel-Reminder': 'bypass',
-                    },
-                    body: JSON.stringify({ text: text }),
-                });
-
-                if (extrasResult.ok) {
-                    const data = await extrasResult.json();
-                    return data.classification[0].label;
-                }
-            } break;
             // None
             case EXPRESSION_API.none: {
                 // Return empty, the fallback expression will be used
@@ -1403,24 +1377,6 @@ export async function getExpressionsList({ filterAvailable = false } = {}) {
     async function resolveExpressionsList() {
         // See if we can retrieve a specific expression list from the API
         try {
-            // Check Extras api first, if enabled and that module active
-            if (extension_settings.expressions.api == EXPRESSION_API.extras && modules.includes('classify')) {
-                const url = new URL(getApiUrl());
-                url.pathname = '/api/classify/labels';
-
-                const apiResult = await doExtrasFetch(url, {
-                    method: 'GET',
-                    headers: { 'Bypass-Tunnel-Reminder': 'bypass' },
-                });
-
-                if (apiResult.ok) {
-
-                    const data = await apiResult.json();
-                    expressionsList = data.labels;
-                    return expressionsList;
-                }
-            }
-
             // If running the local classify model (not using the LLM), we ask that one
             if (extension_settings.expressions.api == EXPRESSION_API.local) {
                 const apiResult = await fetch('/api/extra/classify/labels', {
@@ -2120,6 +2076,11 @@ async function fetchImagesNoCache() {
 function migrateSettings() {
     if (extension_settings.expressions.api === undefined) {
         extension_settings.expressions.api = EXPRESSION_API.none;
+        saveSettingsDebounced();
+    }
+
+    if (extension_settings.expressions.api === 1) {
+        extension_settings.expressions.api = EXPRESSION_API.local;
         saveSettingsDebounced();
     }
 

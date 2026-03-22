@@ -14,7 +14,6 @@ import { SimpleMutex } from './util/SimpleMutex.js';
 
 export {
     getContext,
-    getApiUrl,
     SimpleMutex as ModuleWorkerWrapper,
 };
 
@@ -29,12 +28,6 @@ export let extensionNames = [];
 export let extensionTypes = {};
 
 /**
- * A list of active modules provided by the Extras API.
- * @type {string[]}
- */
-export let modules = [];
-
-/**
  * A set of active extensions.
  * @type {Set<string>}
  */
@@ -46,10 +39,8 @@ const activeExtensions = new Set();
  */
 const extensionLoadErrors = new Set();
 
-const getApiUrl = () => extension_settings.apiUrl;
 const sortManifestsByOrder = (a, b) => parseInt(a.loading_order) - parseInt(b.loading_order) || String(a.display_name).localeCompare(String(b.display_name));
 const sortManifestsByName = (a, b) => String(a.display_name).localeCompare(String(b.display_name)) || parseInt(a.loading_order) - parseInt(b.loading_order);
-let connectedToApi = false;
 let pendingExtensionBootstrap = null;
 let extensionBootstrapPromise = null;
 
@@ -58,11 +49,6 @@ let extensionBootstrapPromise = null;
  * @type {Record<string, object>}
  */
 let manifests = {};
-
-/**
- * Default URL for the Extras API.
- */
-const defaultUrl = 'http://localhost:5100';
 
 let requiresReload = false;
 let stateChanged = false;
@@ -129,9 +115,6 @@ export function renderExtensionTemplateAsync(extensionName, templateId, template
 }
 
 export const extension_settings = {
-    apiUrl: defaultUrl,
-    apiKey: '',
-    autoConnect: false,
     notifyUpdates: false,
     disabledExtensions: [],
     expressionOverrides: [],
@@ -239,34 +222,6 @@ const menuInterval = setInterval(showHideExtensionsMenu, 1000);
 function getExtensionType(externalId) {
     const id = Object.keys(extensionTypes).find(id => id === externalId || (id.startsWith('third-party') && id.endsWith(externalId)));
     return id ? extensionTypes[id] : '';
-}
-
-/**
- * Performs a fetch of the Extras API.
- * @param {string|URL} endpoint Extras API endpoint
- * @param {RequestInit} args Request arguments
- * @returns {Promise<Response>} Response from the fetch
- */
-export async function doExtrasFetch(endpoint, args = {}) {
-    if (!args) {
-        args = {};
-    }
-
-    if (!args.method) {
-        Object.assign(args, { method: 'GET' });
-    }
-
-    if (!args.headers) {
-        args.headers = {};
-    }
-
-    if (extension_settings.apiKey) {
-        Object.assign(args.headers, {
-            'Authorization': `Bearer ${extension_settings.apiKey}`,
-        });
-    }
-
-    return await fetch(endpoint, args);
 }
 
 /**
@@ -394,7 +349,6 @@ async function activateExtensions() {
     for (let entry of extensions) {
         const name = entry[0];
         const manifest = entry[1];
-        const extrasRequirements = manifest.requires;
         const extensionDependencies = manifest.dependencies;
         const minClientVersion = manifest.minimum_client_version;
         const displayName = manifest.display_name || name;
@@ -406,18 +360,6 @@ async function activateExtensions() {
         let meetsClientMinimumVersion = true;
         if (minClientVersion !== undefined) {
             meetsClientMinimumVersion = versionCompare(clientVersion, minClientVersion);
-        }
-
-        // Module requirements: pass if 'requires' is undefined, null, or not an array; check subset if it's an array
-        let meetsModuleRequirements = true;
-        let missingModules = [];
-        if (extrasRequirements !== undefined) {
-            if (Array.isArray(extrasRequirements)) {
-                meetsModuleRequirements = isSubsetOf(modules, extrasRequirements);
-                missingModules = extrasRequirements.filter(req => !modules.includes(req));
-            } else {
-                console.warn(`Extension ${name}: manifest.json 'requires' field is not an array. Loading allowed, but any intended requirements were not verified to exist.`);
-            }
         }
 
         // Extension dependencies: pass if 'dependencies' is undefined or not an array; check subset and disabled status if it's an array
@@ -444,7 +386,7 @@ async function activateExtensions() {
 
         const isDisabled = extension_settings.disabledExtensions.includes(name);
 
-        if (meetsModuleRequirements && meetsExtensionDeps && meetsClientMinimumVersion && !isDisabled) {
+        if (meetsExtensionDeps && meetsClientMinimumVersion && !isDisabled) {
             try {
                 console.debug('Activating extension', name);
                 const promise = addExtensionLocale(name, manifest).finally(() =>
@@ -460,9 +402,6 @@ async function activateExtensions() {
             } catch (error) {
                 console.error('Could not activate extension', name, error);
             }
-        } else if (!meetsModuleRequirements && !isDisabled) {
-            console.warn(t`Extension "${name}" did not load. Missing required Extras module(s): "${missingModules.join(', ')}"`);
-            extensionLoadErrors.add(t`Extension "${displayName}" did not load. Missing required Extras module(s): "${missingModules.join(', ')}"`);
         } else if (!meetsExtensionDeps && !isDisabled) {
             if (disabledDependencies.length > 0) {
                 console.warn(t`Extension "${name}" did not load. Required extensions exist but are disabled: "${disabledDependencies.join(', ')}". Enable them first, then reload.`);
@@ -479,26 +418,6 @@ async function activateExtensions() {
 
     await Promise.allSettled(promises);
     $('#extensions_details').toggleClass('warning', extensionLoadErrors.size > 0);
-}
-
-async function connectClickHandler() {
-    const baseUrl = String($('#extensions_url').val());
-    extension_settings.apiUrl = baseUrl;
-    const testApiKey = $('#extensions_api_key').val();
-    extension_settings.apiKey = String(testApiKey);
-    saveSettingsDebounced();
-    await connectToApi(baseUrl);
-}
-
-function autoConnectInputHandler() {
-    const value = $(this).prop('checked');
-    extension_settings.autoConnect = !!value;
-
-    if (value && !connectedToApi) {
-        $('#extensions_connect').trigger('click');
-    }
-
-    saveSettingsDebounced();
 }
 
 async function addExtensionsButtonAndMenu() {
@@ -545,48 +464,6 @@ function notifyUpdatesInputHandler() {
     if (extension_settings.notifyUpdates) {
         checkForExtensionUpdates(true);
     }
-}
-
-/**
- * Connects to the Extras API.
- * @param {string} baseUrl Extras API base URL
- * @returns {Promise<void>}
- */
-async function connectToApi(baseUrl) {
-    if (!baseUrl) {
-        return;
-    }
-
-    const url = new URL(baseUrl);
-    url.pathname = '/api/modules';
-
-    try {
-        const getExtensionsResult = await doExtrasFetch(url);
-
-        if (getExtensionsResult.ok) {
-            const data = await getExtensionsResult.json();
-            modules = data.modules;
-            await activateExtensions();
-            await eventSource.emit(event_types.EXTRAS_CONNECTED, modules);
-        }
-
-        updateStatus(getExtensionsResult.ok);
-    }
-    catch {
-        updateStatus(false);
-    }
-}
-
-/**
- * Updates the status of Extras API connection.
- * @param {boolean} success Whether the connection was successful
- */
-function updateStatus(success) {
-    connectedToApi = success;
-    const _text = success ? t`Connected to API` : t`Could not connect to API`;
-    const _class = success ? 'success' : 'failure';
-    $('#extensions_status').text(_text);
-    $('#extensions_status').attr('class', _class);
 }
 
 /**
@@ -737,24 +614,6 @@ function generateExtensionHtml(name, manifest, isActive, isDisabled, isExternal,
     let updateButton = isExternal ? `<button class="btn_update menu_button displayNone" data-name="${externalId}" title="Update available"><i class="fa-solid fa-download fa-fw"></i></button>` : '';
     let moveButton = isExternal && isUserAdmin ? `<button class="btn_move menu_button" data-name="${externalId}" data-i18n="[title]Move" title="Move"><i class="fa-solid fa-folder-tree fa-fw"></i></button>` : '';
     let branchButton = isExternal && isUserAdmin ? `<button class="btn_branch menu_button" data-name="${externalId}" data-i18n="[title]Switch branch" title="Switch branch"><i class="fa-solid fa-code-branch fa-fw"></i></button>` : '';
-    let modulesInfo = '';
-
-    if (isActive && Array.isArray(manifest.optional)) {
-        const optional = new Set(manifest.optional);
-        modules.forEach(x => optional.delete(x));
-        if (optional.size > 0) {
-            const optionalString = DOMPurify.sanitize([...optional].join(', '));
-            modulesInfo = '<div class="extension_modules">' + t`Optional modules:` + ` <span class="optional">${optionalString}</span></div>`;
-        }
-    } else if (!isDisabled) { // Neither active nor disabled
-        const requirements = new Set(manifest.requires);
-        modules.forEach(x => requirements.delete(x));
-        if (requirements.size > 0) {
-            const requirementsString = DOMPurify.sanitize([...requirements].join(', '));
-            modulesInfo = `<div class="extension_modules">Missing modules: <span class="failure">${requirementsString}</span></div>`;
-        }
-    }
-
     // if external, wrap the name in a link to the repo
 
     let extensionHtml = `
@@ -770,7 +629,6 @@ function generateExtensionHtml(name, manifest, isActive, isDisabled, isExternal,
                 <span class="${isActive ? 'extension_enabled' : isDisabled ? 'extension_disabled' : 'extension_missing'}">
                     <span class="extension_name">${DOMPurify.sanitize(displayName)}</span>
                     <span class="extension_version">${DOMPurify.sanitize(displayVersion)}</span>
-                    ${modulesInfo}
                 </span>
                 ${isExternal ? '</a>' : ''}
             </div>
@@ -806,19 +664,6 @@ function getExtensionData(extension) {
     return { isExternal, extensionHtml };
 }
 
-
-/**
- * Gets the module information to be displayed.
- *
- * @return {string} - The HTML string for the module information.
- */
-function getModuleInformation() {
-    let moduleInfo = modules.length ? `<p>${DOMPurify.sanitize(modules.join(', '))}</p>` : '<p class="failure">' + t`Not connected to the API!` + '</p>';
-    return `
-        <h3>` + t`Modules provided by your Extras API:` + `</h3>
-        ${moduleInfo}
-    `;
-}
 
 /**
  * Generates HTML for the extension load errors.
@@ -880,8 +725,7 @@ async function showExtensionsDetails() {
             .addClass('extensions_info')
             .append(htmlErrors)
             .append(htmlDefault)
-            .append(htmlExternal)
-            .append(getModuleInformation());
+            .append(htmlExternal);
 
         {
             const updateAction = async (force) => {
@@ -1347,9 +1191,9 @@ export function primeExtensionSettings(settings, versionChanged, enableAutoUpdat
         Object.assign(extension_settings, settings.extension_settings);
     }
 
-    $('#extensions_url').val(extension_settings.apiUrl);
-    $('#extensions_api_key').val(extension_settings.apiKey);
-    $('#extensions_autoconnect').prop('checked', extension_settings.autoConnect);
+    delete extension_settings.apiUrl;
+    delete extension_settings.apiKey;
+    delete extension_settings.autoConnect;
     $('#extensions_notify_updates').prop('checked', extension_settings.notifyUpdates);
 
     pendingExtensionBootstrap = {
@@ -1383,9 +1227,6 @@ export async function bootstrapExtensions(options = null) {
         }
 
         await activateExtensions();
-        if (extension_settings.autoConnect && extension_settings.apiUrl) {
-            connectToApi(extension_settings.apiUrl);
-        }
         await eventSource.emit(event_types.EXTENSION_SETTINGS_LOADED);
     })();
 
@@ -1753,8 +1594,6 @@ export async function initExtensions() {
     await addExtensionsButtonAndMenu();
     $('#extensionsMenuButton').css('display', 'flex');
 
-    $('#extensions_connect').on('click', connectClickHandler);
-    $('#extensions_autoconnect').on('input', autoConnectInputHandler);
     $('#extensions_details').on('click', showExtensionsDetails);
     $('#extensions_notify_updates').on('input', notifyUpdatesInputHandler);
     $(document).on('click', '.extensions_info .extension_block .toggle_disable', onDisableExtensionClick);

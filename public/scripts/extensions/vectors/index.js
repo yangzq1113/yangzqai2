@@ -16,9 +16,7 @@ import {
     ModuleWorkerWrapper,
     extension_settings,
     getContext,
-    modules,
     renderExtensionTemplateAsync,
-    doExtrasFetch, getApiUrl,
     openThirdPartyExtensionMenu,
 } from '../../extensions.js';
 import { collapseNewlines, registerDebugFunction } from '../../power-user.js';
@@ -226,41 +224,6 @@ function splitByChunks(items) {
 }
 
 /**
- * Summarizes messages using the Extras API method.
- * @param {HashedMessage} element hashed message
- * @returns {Promise<boolean>} Sucess
- */
-async function summarizeExtra(element) {
-    try {
-        const url = new URL(getApiUrl());
-        url.pathname = '/api/summarize';
-
-        const apiResult = await doExtrasFetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Bypass-Tunnel-Reminder': 'bypass',
-            },
-            body: JSON.stringify({
-                text: element.text,
-                params: {},
-            }),
-        });
-
-        if (apiResult.ok) {
-            const data = await apiResult.json();
-            element.text = data.summary;
-        }
-    }
-    catch (error) {
-        console.log(error);
-        return false;
-    }
-
-    return true;
-}
-
-/**
  * Summarizes messages using the main API method.
  * @param {HashedMessage} element hashed message
  * @returns {Promise<boolean>} Success
@@ -301,9 +264,6 @@ async function summarize(hashedMessages, endpoint = 'main') {
             switch (endpoint) {
                 case 'main':
                     success = await summarizeMain(element);
-                    break;
-                case 'extras':
-                    success = await summarizeExtra(element);
                     break;
                 case 'webllm':
                     success = await summarizeWebLLM(element);
@@ -384,8 +344,6 @@ async function synchronizeChat(batchSize = 5) {
                     return 'API URL missing. Save it in the "API Connections" panel.';
                 case 'api_model_missing':
                     return 'Vectorization Source Model is required, but not set.';
-                case 'extras_module_missing':
-                    return 'Extras API must provide an "embeddings" module.';
                 case 'webllm_not_supported':
                     return 'WebLLM extension is not installed or the model is not set.';
                 default:
@@ -787,10 +745,6 @@ async function getQueryText(chat, initiator) {
 function getVectorsRequestBody(args = {}) {
     const body = Object.assign({}, args);
     switch (settings.source) {
-        case 'extras':
-            body.extrasUrl = extension_settings.apiUrl;
-            body.extrasKey = extension_settings.apiKey;
-            break;
         case 'electronhub':
             body.model = extension_settings.vectors.electronhub_model;
             break;
@@ -950,10 +904,6 @@ function throwIfSourceInvalid() {
 
     if (settings.source === 'ollama' && !settings.ollama_model || settings.source === 'vllm' && !settings.vllm_model) {
         throw new Error('Vectors: API model missing', { cause: 'api_model_missing' });
-    }
-
-    if (settings.source === 'extras' && !modules.includes('embeddings')) {
-        throw new Error('Vectors: Embeddings module missing', { cause: 'extras_module_missing' });
     }
 
     if (settings.source === 'webllm' && (!isWebLlmSupported() || !settings.webllm_model)) {
@@ -1670,8 +1620,10 @@ jQuery(async () => {
 
     Object.assign(settings, extension_settings.vectors);
 
-    // Migrate from TensorFlow to Transformers
+    // Migrate removed/renamed sources to currently supported ones.
     settings.source = settings.source !== 'local' ? settings.source : 'transformers';
+    settings.source = settings.source !== 'extras' ? settings.source : 'transformers';
+    settings.summary_source = settings.summary_source !== 'extras' ? settings.summary_source : 'main';
     const template = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
     $('#vectors_container').append(template);
     $('#vectors_enabled_chats').prop('checked', settings.enabled_chats).on('input', () => {

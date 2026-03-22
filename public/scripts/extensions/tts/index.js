@@ -5,7 +5,6 @@ import { EdgeTtsProvider } from './edge.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
 import { SileroTtsProvider } from './silerotts.js';
 import { GptSovitsV2Provider } from './gpt-sovits-v2.js';
-import { CoquiTtsProvider } from './coqui.js';
 import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
@@ -128,7 +127,6 @@ const ttsProviders = {
     Azure: AzureTtsProvider,
     Chatterbox: ChatterboxTtsProvider,
     Chutes: ChutesTtsProvider,
-    Coqui: CoquiTtsProvider,
     'CosyVoice (Unofficial)': CosyVoiceProvider,
     Edge: EdgeTtsProvider,
     ElevenLabs: ElevenLabsTtsProvider,
@@ -818,6 +816,9 @@ function loadSettings() {
         if (!(key in extension_settings.tts)) {
             extension_settings.tts[key] = defaultSettings[key];
         }
+    }
+    if (extension_settings.tts.currentProvider === 'Coqui') {
+        extension_settings.tts.currentProvider = 'System';
     }
     $('#tts_provider').val(extension_settings.tts.currentProvider);
     $('#tts_enabled').prop(

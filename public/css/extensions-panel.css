@@ -1,8 +1,4 @@
 /* Extensions */
-#extensions_url {
-    display: block;
-}
-
 .extensions_block input[type="submit"]:hover {
     background-color: green;
 }
@@ -11,23 +7,6 @@
 .extensions_block input[type="radio"] {
     margin-left: 10px;
     margin-right: 10px;
-}
-
-label[for="extensions_autoconnect"] {
-    display: flex;
-    align-items: center;
-    margin: 0 !important;
-}
-
-.extensions_url_block {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-}
-
-.extensions_url_block h4 {
-    display: inline;
 }
 
 .extensions_block {
@@ -74,11 +53,6 @@ label[for="extensions_autoconnect"] {
 
 .extensions_info .extension_missing {
     color: gray;
-}
-
-.extensions_info .extension_modules {
-    font-size: 0.8em;
-    font-weight: normal;
 }
 
 .extensions_info .extension_block {

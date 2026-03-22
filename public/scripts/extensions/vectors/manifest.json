@@ -1,10 +1,6 @@
 {
     "display_name": "Vector Storage",
     "loading_order": 100,
-    "requires": [],
-    "optional": [
-        "embeddings"
-    ],
     "generate_interceptor": "vectors_rearrangeChat",
     "js": "index.js",
     "css": "style.css",

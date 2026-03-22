@@ -1,8 +1,6 @@
 {
     "display_name": "Hook Order",
     "loading_order": 990,
-    "requires": [],
-    "optional": [],
     "js": "index.js",
     "author": "Luker",
     "version": "0.1.0",

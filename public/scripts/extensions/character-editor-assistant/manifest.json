@@ -1,8 +1,6 @@
 {
     "display_name": "Character Editor Assistant",
     "loading_order": 112,
-    "requires": [],
-    "optional": [],
     "js": "index.js",
     "author": "Luker",
     "version": "0.1.0",

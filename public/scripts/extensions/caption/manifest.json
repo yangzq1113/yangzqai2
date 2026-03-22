@@ -1,10 +1,6 @@
 {
     "display_name": "Image Captioning",
     "loading_order": 4,
-    "requires": [],
-    "optional": [
-        "caption"
-    ],
     "js": "index.js",
     "css": "style.css",
     "author": "Cohee#1207",

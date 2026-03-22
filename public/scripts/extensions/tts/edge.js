@@ -1,15 +1,10 @@
 import { getRequestHeaders } from '../../../script.js';
-import { getApiUrl } from '../../extensions.js';
-import { doExtrasFetch, modules } from '../../extensions.js';
 import { getPreviewString } from './index.js';
 import { saveTtsProviderSettings } from './index.js';
 
 export { EdgeTtsProvider };
 
-const EDGE_TTS_PROVIDER = {
-    extras: 'extras',
-    plugin: 'plugin',
-};
+const EDGE_TTS_PROVIDER = 'plugin';
 
 class EdgeTtsProvider {
     //########//
@@ -24,16 +19,12 @@ class EdgeTtsProvider {
     defaultSettings = {
         voiceMap: {},
         rate: 0,
-        provider: EDGE_TTS_PROVIDER.extras,
+        provider: EDGE_TTS_PROVIDER,
     };
 
     get settingsHtml() {
         let html = `Microsoft Edge TTS<br>
-        <label for="edge_tts_provider">Provider</label>
-        <select id="edge_tts_provider">
-            <option value="${EDGE_TTS_PROVIDER.extras}">Extras</option>
-            <option value="${EDGE_TTS_PROVIDER.plugin}">Plugin</option>
-        </select>
+        <span>Use the <a target="_blank" href="https://github.com/SillyTavern/SillyTavern-EdgeTTS-Plugin">Edge TTS server plugin</a>.</span>
         <label for="edge_tts_rate">Rate: <span id="edge_tts_rate_output"></span></label>
         <input id="edge_tts_rate" type="range" value="${this.defaultSettings.rate}" min="-100" max="100" step="1" />
         `;
@@ -43,7 +34,7 @@ class EdgeTtsProvider {
     onSettingsChange() {
         this.settings.rate = Number($('#edge_tts_rate').val());
         $('#edge_tts_rate_output').text(this.settings.rate);
-        this.settings.provider = String($('#edge_tts_provider').val());
+        this.settings.provider = EDGE_TTS_PROVIDER;
         saveTtsProviderSettings();
     }
 
@@ -64,11 +55,10 @@ class EdgeTtsProvider {
             }
         }
 
+        this.settings.provider = EDGE_TTS_PROVIDER;
         $('#edge_tts_rate').val(this.settings.rate || 0);
         $('#edge_tts_rate_output').text(this.settings.rate || 0);
         $('#edge_tts_rate').on('input', () => { this.onSettingsChange(); });
-        $('#edge_tts_provider').val(this.settings.provider || EDGE_TTS_PROVIDER.extras);
-        $('#edge_tts_provider').on('change', () => { this.onSettingsChange(); });
         await this.checkReady();
 
         console.debug('EdgeTTS: Settings loaded');
@@ -194,15 +184,7 @@ class EdgeTtsProvider {
      * @returns {Promise<Response>} Fetch response
      */
     doFetch(url, options) {
-        if (this.settings.provider === EDGE_TTS_PROVIDER.extras) {
-            return doExtrasFetch(url, options);
-        }
-
-        if (this.settings.provider === EDGE_TTS_PROVIDER.plugin) {
-            return fetch(url, options);
-        }
-
-        throw new Error('Invalid TTS Provider');
+        return fetch(url, options);
     }
 
     /**
@@ -210,17 +192,7 @@ class EdgeTtsProvider {
      * @returns {string} URL string
      */
     getGenerateUrl() {
-        if (this.settings.provider === EDGE_TTS_PROVIDER.extras) {
-            const url = new URL(getApiUrl());
-            url.pathname = '/api/edge-tts/generate';
-            return url.toString();
-        }
-
-        if (this.settings.provider === EDGE_TTS_PROVIDER.plugin) {
-            return '/api/plugins/edge-tts/generate';
-        }
-
-        throw new Error('Invalid TTS Provider');
+        return '/api/plugins/edge-tts/generate';
     }
 
     /**
@@ -228,27 +200,11 @@ class EdgeTtsProvider {
      * @returns {string} URL object or string
      */
     getVoicesUrl() {
-        if (this.settings.provider === EDGE_TTS_PROVIDER.extras) {
-            const url = new URL(getApiUrl());
-            url.pathname = '/api/edge-tts/list';
-            return url.toString();
-        }
-
-        if (this.settings.provider === EDGE_TTS_PROVIDER.plugin) {
-            return '/api/plugins/edge-tts/list';
-        }
-
-        throw new Error('Invalid TTS Provider');
+        return '/api/plugins/edge-tts/list';
     }
 
     async throwIfModuleMissing() {
-        if (this.settings.provider === EDGE_TTS_PROVIDER.extras && !modules.includes('edge-tts')) {
-            const message = 'Edge TTS module not loaded. Add edge-tts to enable-modules and restart the Extras API.';
-            // toastr.error(message)
-            throw new Error(message);
-        }
-
-        if (this.settings.provider === EDGE_TTS_PROVIDER.plugin && !this.isPluginAvailable()) {
+        if (!this.isPluginAvailable()) {
             const message = 'Edge TTS Server plugin not loaded. Install it from https://github.com/SillyTavern/SillyTavern-EdgeTTS-Plugin and restart the Luker server.';
             // toastr.error(message)
             throw new Error(message);

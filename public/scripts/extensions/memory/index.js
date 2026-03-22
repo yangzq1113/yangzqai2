@@ -1,5 +1,5 @@
 import { getStringHash, debounce, waitUntilCondition, extractAllWords, isTrueBoolean } from '../../utils.js';
-import { getContext, getApiUrl, extension_settings, doExtrasFetch, modules, renderExtensionTemplateAsync } from '../../extensions.js';
+import { getContext, extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import {
     activateSendButtons,
     deactivateSendButtons,
@@ -21,7 +21,7 @@ import {
 import { is_group_generating, selected_group } from '../../group-chats.js';
 import { loadMovingUIState, power_user } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
-import { getTextTokens, getTokenCountAsync, tokenizers } from '../../tokenizers.js';
+import { getTokenCountAsync } from '../../tokenizers.js';
 import { debounce_timeout } from '../../constants.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
@@ -51,11 +51,6 @@ async function countSourceTokens(text, padding = 0) {
         return count + padding;
     }
 
-    if (extension_settings.memory.source === summary_sources.extras) {
-        const count = getTextTokens(tokenizers.GPT2, text).length;
-        return count + padding;
-    }
-
     return await getTokenCountAsync(text, padding);
 }
 
@@ -65,10 +60,6 @@ async function getSourceContextSize() {
     if (extension_settings.memory.source === summary_sources.webllm) {
         const maxContext = await getWebLlmContextSize();
         return overrideLength > 0 ? (maxContext - overrideLength) : Math.round(maxContext * 0.75);
-    }
-
-    if (extension_settings.source === summary_sources.extras) {
-        return 1024 - 64;
     }
 
     return getMaxContextSize(overrideLength);
@@ -91,7 +82,6 @@ const formatMemoryValue = function (value) {
 const saveChatDebounced = debounce(() => getContext().saveChat(), debounce_timeout.relaxed);
 
 const summary_sources = {
-    'extras': 'extras',
     'main': 'main',
     'webllm': 'webllm',
 };
@@ -108,7 +98,7 @@ const defaultTemplate = '[Summary: {{summary}}]';
 const defaultSettings = {
     memoryFrozen: false,
     SkipWIAN: false,
-    source: summary_sources.extras,
+    source: summary_sources.main,
     prompt: defaultPrompt,
     template: defaultTemplate,
     position: extension_prompt_types.IN_PROMPT,
@@ -147,6 +137,10 @@ function loadSettings() {
         if (extension_settings.memory[key] === undefined) {
             extension_settings.memory[key] = defaultSettings[key];
         }
+    }
+
+    if (extension_settings.memory.source === 'extras') {
+        extension_settings.memory.source = summary_sources.main;
     }
 
     $('#summary_source').val(extension_settings.memory.source).trigger('change');
@@ -415,11 +409,6 @@ function onChatChanged() {
 }
 
 async function onChatEvent() {
-    // Module not enabled
-    if (extension_settings.memory.source === summary_sources.extras && !modules.includes('summarize')) {
-        return;
-    }
-
     // WebLLM is not supported
     if (extension_settings.memory.source === summary_sources.webllm && !isWebLlmSupported()) {
         return;
@@ -472,11 +461,6 @@ async function onChatEvent() {
  * @returns {Promise<string>} Summarized text
  */
 async function forceSummarizeChat(quiet) {
-    if (extension_settings.memory.source === summary_sources.extras) {
-        toastr.warning('Force summarization is not supported for Extras API');
-        return;
-    }
-
     const context = getContext();
     const skipWIAN = extension_settings.memory.SkipWIAN;
 
@@ -514,8 +498,6 @@ async function summarizeCallback(args, text) {
 
     try {
         switch (source) {
-            case summary_sources.extras:
-                return await callExtrasSummarizeAPI(text);
             case summary_sources.main:
                 return removeReasoningFromString(await generateRaw({ prompt: text, systemPrompt: prompt, responseLength: extension_settings.memory.overrideResponseLength }));
             case summary_sources.webllm: {
@@ -537,9 +519,6 @@ async function summarizeCallback(args, text) {
 async function summarizeChat(context) {
     const skipWIAN = extension_settings.memory.SkipWIAN;
     switch (extension_settings.memory.source) {
-        case summary_sources.extras:
-            await summarizeChatExtras(context);
-            break;
         case summary_sources.main:
             await summarizeChatMain(context, false, skipWIAN);
             break;
@@ -818,106 +797,6 @@ async function getRawSummaryPrompt(context, prompt) {
     const lastUsedIndex = context.chat.indexOf(latestUsedMessage);
     const rawPrompt = getMemoryString(false);
     return { rawPrompt, lastUsedIndex };
-}
-
-async function summarizeChatExtras(context) {
-    function getMemoryString() {
-        return (longMemory + '\n\n' + memoryBuffer.slice().reverse().join('\n\n')).trim();
-    }
-
-    const chat = context.chat;
-    const longMemory = getLatestMemoryFromChat(chat);
-    const reversedChat = chat.slice().reverse();
-    reversedChat.shift();
-    const memoryBuffer = [];
-    const CONTEXT_SIZE = await getSourceContextSize();
-
-    for (const message of reversedChat) {
-        // we reached the point of latest memory
-        if (longMemory && message.extra && message.extra.memory == longMemory) {
-            break;
-        }
-
-        // don't care about system
-        if (message.is_system) {
-            continue;
-        }
-
-        // determine the sender's name
-        const entry = `${message.name}:\n${message.mes}`;
-        memoryBuffer.push(entry);
-
-        // check if token limit was reached
-        const tokens = await countSourceTokens(getMemoryString());
-        if (tokens >= CONTEXT_SIZE) {
-            break;
-        }
-    }
-
-    const resultingString = getMemoryString();
-    const resultingTokens = await countSourceTokens(resultingString);
-
-    if (!resultingString || resultingTokens < CONTEXT_SIZE) {
-        console.debug('Not enough context to summarize');
-        return;
-    }
-
-    // perform the summarization API call
-    try {
-        inApiCall = true;
-        const summary = await callExtrasSummarizeAPI(resultingString);
-
-        if (!summary) {
-            console.warn('Empty summary received');
-            return;
-        }
-
-        if (isContextChanged(context)) {
-            return;
-        }
-
-        setMemoryContext(summary, true);
-    }
-    catch (error) {
-        console.log(error);
-    }
-    finally {
-        inApiCall = false;
-    }
-}
-
-/**
- * Call the Extras API to summarize the provided text.
- * @param {string} text Text to summarize
- * @returns {Promise<string>} Summarized text
- */
-async function callExtrasSummarizeAPI(text) {
-    if (!modules.includes('summarize')) {
-        throw new Error('Summarize module is not enabled in Extras API');
-    }
-
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/summarize';
-
-    const apiResult = await doExtrasFetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Bypass-Tunnel-Reminder': 'bypass',
-        },
-        body: JSON.stringify({
-            text: text,
-            params: {},
-        }),
-    });
-
-    if (apiResult.ok) {
-        const data = await apiResult.json();
-        const summary = data.summary;
-        return summary;
-    }
-
-    throw new Error('Extras API call failed');
 }
 
 function onMemoryRestoreClick() {

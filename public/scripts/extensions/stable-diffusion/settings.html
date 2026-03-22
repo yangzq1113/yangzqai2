@@ -47,7 +47,6 @@
                 <option value="comfy">ComfyUI</option>
                 <option value="drawthings">DrawThings HTTP API</option>
                 <option value="electronhub">Electron Hub</option>
-                <option value="extras">Extras API (deprecated)</option>
                 <option value="falai">FAL.AI</option>
                 <option value="google">Google AI</option>
                 <option value="huggingface">HuggingFace Inference API (serverless)</option>
@@ -411,7 +410,7 @@
             </div>
 
             <div class="flex-container">
-                <div class="flex1" data-sd-source="extras,horde,auto,drawthings,novel,vlad,comfy,sdcpp">
+                <div class="flex1" data-sd-source="horde,auto,drawthings,novel,vlad,comfy,sdcpp">
                     <label for="sd_sampler" data-i18n="Sampling method">Sampling method</label>
                     <select id="sd_sampler"></select>
                 </div>
@@ -499,7 +498,7 @@
                     <input class="neo-range-input" type="number" id="sd_hr_second_pass_steps_value" data-for="sd_hr_second_pass_steps" max="{{hr_second_pass_steps_max}}" step="{{hr_second_pass_steps_step}}" value="{{hr_second_pass_steps}}" >
                 </div>
 
-                <div class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink gap0 flexBasis48p" data-sd-source="auto,vlad,comfy,horde,drawthings,extras,sdcpp">
+                <div class="alignitemscenter flex-container flexFlowColumn flexGrow flexShrink gap0 flexBasis48p" data-sd-source="auto,vlad,comfy,horde,drawthings,sdcpp">
                     <small>
                         <span data-i18n="CLIP Skip">CLIP Skip</span>
                     </small>
@@ -508,7 +507,7 @@
                 </div>
             </div>
 
-            <div class="flex-container marginTopBot5" data-sd-source="auto,vlad,extras,horde,drawthings">
+            <div class="flex-container marginTopBot5" data-sd-source="auto,vlad,horde,drawthings">
                 <label class="flex1 checkbox_label">
                     <input id="sd_restore_faces" type="checkbox" />
                     <small data-i18n="Restore Faces">Restore Faces</small>
@@ -553,7 +552,7 @@
                 </label>
             </div>
 
-            <div data-sd-source="novel,togetherai,pollinations,comfy,drawthings,vlad,auto,horde,extras,stability,bfl,sdcpp" class="marginTop5">
+            <div data-sd-source="novel,togetherai,pollinations,comfy,drawthings,vlad,auto,horde,stability,bfl,sdcpp" class="marginTop5">
                 <label for="sd_seed">
                     <span data-i18n="Seed">Seed</span>
                     <small data-i18n="(-1 for random)">(-1 for random)</small>

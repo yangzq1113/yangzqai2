@@ -18,11 +18,8 @@ import {
     user_avatar,
 } from '../../../script.js';
 import {
-    doExtrasFetch,
     extension_settings,
-    getApiUrl,
     getContext,
-    modules,
     renderExtensionTemplateAsync,
     writeExtensionField,
 } from '../../extensions.js';
@@ -75,7 +72,6 @@ let generationToast = null;
 const generationAbortControllers = [];
 const trackedGenerationControllers = new Set();
 const sources = {
-    extras: 'extras',
     horde: 'horde',
     auto: 'auto',
     sdcpp: 'sdcpp',
@@ -234,7 +230,7 @@ const defaultStyles = [
 const placeholderVae = 'Automatic';
 
 const defaultSettings = {
-    source: sources.extras,
+    source: sources.auto,
 
     // CFG Scale
     scale_min: 1,
@@ -470,6 +466,10 @@ async function loadSettings() {
         if (extension_settings.sd[key] === undefined) {
             extension_settings.sd[key] = value;
         }
+    }
+
+    if (extension_settings.sd.source === 'extras') {
+        extension_settings.sd.source = sources.auto;
     }
 
     if (extension_settings.sd.prompts === undefined) {
@@ -1452,7 +1452,6 @@ async function onModelChange() {
     const updateRemoteModelSources = [
         sources.auto,
         sources.vlad,
-        sources.extras,
     ];
 
     if (!updateRemoteModelSources.includes(extension_settings.sd.source)) {
@@ -1460,9 +1459,6 @@ async function onModelChange() {
     }
 
     toastr.info('Updating remote model...', 'Please wait');
-    if (extension_settings.sd.source === sources.extras) {
-        await updateExtrasRemoteModel();
-    }
     if (extension_settings.sd.source === sources.auto || extension_settings.sd.source === sources.vlad) {
         await updateAutoRemoteModel();
     }
@@ -1608,27 +1604,11 @@ async function updateAutoRemoteModel() {
     }
 }
 
-async function updateExtrasRemoteModel() {
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/image/model';
-    const getCurrentModelResult = await doExtrasFetch(url, {
-        method: 'POST',
-        body: JSON.stringify({ model: extension_settings.sd.model }),
-    });
-
-    if (getCurrentModelResult.ok) {
-        console.log('Model successfully updated on SD remote.');
-    }
-}
-
 async function loadSamplers() {
     $('#sd_sampler').empty();
     let samplers = [];
 
     switch (extension_settings.sd.source) {
-        case sources.extras:
-            samplers = await loadExtrasSamplers();
-            break;
         case sources.horde:
             samplers = await loadHordeSamplers();
             break;
@@ -1719,23 +1699,6 @@ async function loadHordeSamplers() {
 
     if (result.ok) {
         return await result.json();
-    }
-
-    return [];
-}
-
-async function loadExtrasSamplers() {
-    if (!modules.includes('sd')) {
-        return [];
-    }
-
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/image/samplers';
-    const result = await doExtrasFetch(url);
-
-    if (result.ok) {
-        const data = await result.json();
-        return data.samplers;
     }
 
     return [];
@@ -1848,9 +1811,6 @@ async function loadModels() {
     let models = [];
 
     switch (extension_settings.sd.source) {
-        case sources.extras:
-            models = await loadExtrasModels();
-            break;
         case sources.horde:
             models = await loadHordeModels();
             break;
@@ -2167,31 +2127,6 @@ async function loadHordeModels() {
     return [];
 }
 
-async function loadExtrasModels() {
-    if (!modules.includes('sd')) {
-        return [];
-    }
-
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/image/model';
-    const getCurrentModelResult = await doExtrasFetch(url);
-
-    if (getCurrentModelResult.ok) {
-        const data = await getCurrentModelResult.json();
-        extension_settings.sd.model = data.model;
-    }
-
-    url.pathname = '/api/image/models';
-    const getModelsResult = await doExtrasFetch(url);
-
-    if (getModelsResult.ok) {
-        const data = await getModelsResult.json();
-        return data.models.map(x => ({ value: x, text: x }));
-    }
-
-    return [];
-}
-
 async function loadAutoModels() {
     if (!extension_settings.sd.auto_url) {
         return [];
@@ -2458,9 +2393,6 @@ async function loadSchedulers() {
     let schedulers = [];
 
     switch (extension_settings.sd.source) {
-        case sources.extras:
-            schedulers = ['N/A'];
-            break;
         case sources.horde:
             schedulers = ['N/A'];
             break;
@@ -2578,9 +2510,6 @@ async function loadVaes() {
     let vaes = [];
 
     switch (extension_settings.sd.source) {
-        case sources.extras:
-            vaes = ['N/A'];
-            break;
         case sources.horde:
             vaes = ['N/A'];
             break;
@@ -3337,9 +3266,6 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
 
     try {
         switch (extension_settings.sd.source) {
-            case sources.extras:
-                result = await generateExtrasImage(prefixedPrompt, negativePrompt, signal);
-                break;
             case sources.horde:
                 result = await generateHordeImage(prefixedPrompt, negativePrompt, signal);
                 break;
@@ -3502,51 +3428,6 @@ async function generatePollinationsImage(prompt, negativePrompt, signal) {
     if (result.ok) {
         const data = await result.json();
         return { format: data?.format, data: data?.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
-}
-
-/**
- * Generates an "extras" image using a provided prompt and other settings.
- *
- * @param {string} prompt - The main instruction used to guide the image generation.
- * @param {string} negativePrompt - The instruction used to restrict the image generation.
- * @param {AbortSignal} signal - An AbortSignal object that can be used to cancel the request.
- * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
- */
-async function generateExtrasImage(prompt, negativePrompt, signal) {
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/image';
-    const result = await doExtrasFetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        signal: signal,
-        body: JSON.stringify({
-            prompt: prompt,
-            sampler: extension_settings.sd.sampler,
-            steps: extension_settings.sd.steps,
-            scale: extension_settings.sd.scale,
-            width: extension_settings.sd.width,
-            height: extension_settings.sd.height,
-            negative_prompt: negativePrompt,
-            restore_faces: !!extension_settings.sd.restore_faces,
-            enable_hr: !!extension_settings.sd.enable_hr,
-            karras: !!extension_settings.sd.horde_karras,
-            hr_upscaler: extension_settings.sd.hr_upscaler,
-            hr_scale: extension_settings.sd.hr_scale,
-            denoising_strength: extension_settings.sd.denoising_strength,
-            hr_second_pass_steps: extension_settings.sd.hr_second_pass_steps,
-            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
-        }),
-    });
-
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
     } else {
         const text = await result.text();
         throw new Error(text);
@@ -5013,8 +4894,6 @@ async function addSDGenButtons() {
 
 function isValidState() {
     switch (extension_settings.sd.source) {
-        case sources.extras:
-            return modules.includes('sd');
         case sources.horde:
             return true;
         case sources.auto:
@@ -5817,12 +5696,6 @@ jQuery(async () => {
         option.text = value.name;
         $('#sd_resolution').append(option);
     }
-
-    eventSource.on(event_types.EXTRAS_CONNECTED, async () => {
-        if (extension_settings.sd.source === sources.extras) {
-            await loadSettingOptions();
-        }
-    });
 
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.IMAGE_SWIPED, onImageSwiped);

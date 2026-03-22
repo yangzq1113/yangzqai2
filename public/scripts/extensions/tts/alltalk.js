@@ -1,4 +1,3 @@
-import { doExtrasFetch } from '../../extensions.js';
 import { debounce } from '../../utils.js';
 import { saveTtsProviderSettings } from './index.js';
 
@@ -1015,7 +1014,7 @@ class AllTalkTtsProvider {
         }
 
         try {
-            const response = await doExtrasFetch(
+            const response = await fetch(
                 `${this.settings.provider_endpoint}/api/tts-generate`,
                 {
                     method: 'POST',

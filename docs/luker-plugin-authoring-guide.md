@@ -58,8 +58,6 @@ Minimal example:
 {
   "display_name": "My Plugin",
   "loading_order": 50,
-  "requires": [],
-  "optional": [],
   "js": "index.js",
   "css": "style.css",
   "author": "Your Name",
@@ -74,8 +72,6 @@ Supported fields you will care about most:
 - `loading_order`: Lower numbers load earlier.
 - `js`: Entry module file. Loaded as a module script.
 - `css`: Optional stylesheet loaded into `<head>`.
-- `requires`: Required Extras API modules. If missing, Luker skips activation and reports why.
-- `optional`: Optional Extras modules. Shown in UI as informative capability hints.
 - `dependencies`: Other extension IDs that must exist and be enabled before this plugin loads.
 - `minimum_client_version`: Optional minimum compatible Luker extension client version.
 - `author`, `version`, `homePage`: Metadata shown in extension management UI.
@@ -84,8 +80,6 @@ Supported fields you will care about most:
 Notes:
 
 - If you do not need CSS, omit `css`.
-- If you do not need external Extras modules, keep `requires: []`.
-- `optional` does not block loading.
 - HTML fragments are not declared here; fetch them from code when needed.
 
 ## 5) Minimal Working Plugin
@@ -96,8 +90,6 @@ Notes:
 {
   "display_name": "Hello Plugin",
   "loading_order": 50,
-  "requires": [],
-  "optional": [],
   "js": "index.js",
   "author": "Your Name",
   "version": "0.1.0",
@@ -321,9 +313,8 @@ If a plugin does not appear or does not run:
 2. Check that `manifest.json` points to the correct `js` and `css` filenames.
 3. Open DevTools and inspect the browser console for module import errors.
 4. Check whether the extension is disabled in `extension_settings.disabledExtensions`.
-5. If you use `requires`, confirm the needed Extras modules are connected.
-6. If you use `dependencies`, confirm the dependent extensions exist and are enabled.
-7. If you load HTML templates manually, verify the relative path matches the extension folder.
+5. If you use `dependencies`, confirm the dependent extensions exist and are enabled.
+6. If you load HTML templates manually, verify the relative path matches the extension folder.
 
 If the plugin loads but behaves incorrectly:
 

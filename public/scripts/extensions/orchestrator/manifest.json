@@ -1,8 +1,6 @@
 {
     "display_name": "Orchestrator",
     "loading_order": 110,
-    "requires": [],
-    "optional": [],
     "js": "index.js",
     "author": "Luker",
     "version": "0.1.0",

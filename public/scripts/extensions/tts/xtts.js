@@ -1,4 +1,3 @@
-import { doExtrasFetch, getApiUrl, modules } from '../../extensions.js';
 import { saveTtsProviderSettings } from './index.js';
 
 export { XTTSTtsProvider };
@@ -163,17 +162,6 @@ class XTTSTtsProvider {
             }
         }
 
-        const apiCheckInterval = setInterval(() => {
-            // Use Extras API if TTS support is enabled
-            if (modules.includes('tts') || modules.includes('xtts-tts')) {
-                const baseUrl = new URL(getApiUrl());
-                baseUrl.pathname = '/api/tts';
-                this.settings.provider_endpoint = baseUrl.toString();
-                $('#xtts_tts_endpoint').val(this.settings.provider_endpoint);
-                clearInterval(apiCheckInterval);
-            }
-        }, 2000);
-
         // Set initial values from the settings
         $('#xtts_tts_endpoint').val(this.settings.provider_endpoint);
         $('#xtts_api_language').val(this.settings.language);
@@ -249,7 +237,7 @@ class XTTSTtsProvider {
     // API CALLS //
     //###########//
     async fetchTtsVoiceObjects() {
-        const response = await doExtrasFetch(`${this.settings.provider_endpoint}/speakers`);
+        const response = await fetch(`${this.settings.provider_endpoint}/speakers`);
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${await response.json()}`);
         }
@@ -263,7 +251,7 @@ class XTTSTtsProvider {
             return;
         }
 
-        const response = await doExtrasFetch(
+        const response = await fetch(
             `${this.settings.provider_endpoint}/set_tts_settings`,
             {
                 method: 'POST',
@@ -297,7 +285,7 @@ class XTTSTtsProvider {
             return `${this.settings.provider_endpoint}/tts_stream/?${params.toString()}`;
         }
 
-        const response = await doExtrasFetch(
+        const response = await fetch(
             `${this.settings.provider_endpoint}/tts_to_audio/`,
             {
                 method: 'POST',

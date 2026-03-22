@@ -12,7 +12,6 @@
                 <label for="summary_source" data-i18n="ext_sum_with">Summarize with:</label>
                 <select id="summary_source" class="text_pole">
                     <option value="main" data-i18n="ext_sum_main_api">Main API</option>
-                    <option value="extras">Extras API (deprecated)</option>
                     <option value="webllm" data-i18n="ext_sum_webllm">WebLLM Extension</option>
                 </select><br>
 
@@ -32,7 +31,7 @@
                         <span data-i18n="ext_sum_force_text">Summarize now</span>
                     </div>
                     <label for="memory_frozen" title="Disable automatic summary updates. While paused, the summary remains as-is. You can still force an update by pressing the Summarize now button (which is only available with the Main API)." data-i18n="[title]Disable automatic summary updates. While paused, the summary remains as-is. You can still force an update by pressing the Summarize now button (which is only available with the Main API)."><input id="memory_frozen" type="checkbox" /><span data-i18n="ext_sum_pause">Pause</span></label>
-                    <label data-summary-source="main" for="memory_skipWIAN" title="Omit World Info and Author's Note from text to be summarized. Only has an effect when using the Main API. The Extras API always omits WI/AN." data-i18n="[title]Omit World Info and Author's Note from text to be summarized. Only has an effect when using the Main API. The Extras API always omits WI/AN.">
+                    <label data-summary-source="main" for="memory_skipWIAN" title="Omit World Info and Author's Note from text to be summarized. Only has an effect when using the Main API." data-i18n="[title]Omit World Info and Author's Note from text to be summarized. Only has an effect when using the Main API.">
                         <input id="memory_skipWIAN" type="checkbox" />
                         <span data-i18n="ext_sum_no_wi_an">No WI/AN</span>
                     </label>
