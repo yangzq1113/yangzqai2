@@ -1440,14 +1440,12 @@ function appendUniqueWorldInfoBlock(payload, key, block) {
     if (!content) {
         return;
     }
-    if (Array.isArray(payload[key])) {
-        if (!payload[key].includes(content)) {
-            payload[key].push(content);
-        }
-        return;
+    if (!Array.isArray(payload[key])) {
+        payload[key] = [];
     }
-    const current = String(payload[key] || '').trim();
-    payload[key] = current ? `${current}\n${content}` : content;
+    if (!payload[key].includes(content)) {
+        payload[key].push(content);
+    }
 }
 
 function rewriteDepthWorldInfoToAfter(payload = {}) {
@@ -1472,11 +1470,7 @@ function rewriteDepthWorldInfoToAfter(payload = {}) {
 
     payload.worldInfoDepth = [];
     for (const block of blocks) {
-        if (Array.isArray(payload.worldInfoAfterEntries)) {
-            appendUniqueWorldInfoBlock(payload, 'worldInfoAfterEntries', block);
-        } else {
-            appendUniqueWorldInfoBlock(payload, 'worldInfoAfter', block);
-        }
+        appendUniqueWorldInfoBlock(payload, 'worldInfoAfterEntries', block);
     }
     return payload;
 }
