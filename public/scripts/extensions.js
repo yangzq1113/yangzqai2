@@ -4,7 +4,7 @@ import { eventSource, event_types, saveSettings, saveSettingsDebounced, getReque
 import { showLoader } from './loader.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { renderTemplate, renderTemplateAsync } from './templates.js';
-import { delay, equalsIgnoreCaseAndAccents, isSubsetOf, sanitizeSelector, setValueByPath, versionCompare } from './utils.js';
+import { equalsIgnoreCaseAndAccents, isSubsetOf, sanitizeSelector, setValueByPath, versionCompare } from './utils.js';
 import { getContext } from './st-context.js';
 import { isAdmin } from './user.js';
 import { addLocaleData, getCurrentLocale, t } from './i18n.js';
@@ -53,6 +53,7 @@ let manifests = {};
 let requiresReload = false;
 let stateChanged = false;
 let saveMetadataTimeout = null;
+const extensionsPopupReloadBypassIds = new Set();
 
 export function cancelDebouncedMetadataSave() {
     if (saveMetadataTimeout) {
@@ -692,12 +693,15 @@ function getExtensionLoadErrorsHtml() {
 async function showExtensionsDetails() {
     const abortController = new AbortController();
     let popupPromise;
+    /** @type {Popup?} */
+    let popup = null;
     try {
         // If we are updating an extension, the "old" popup is still active. We should close that.
         let initialScrollTop = 0;
         const oldPopup = Popup.util.popups.find(popup => popup.content.querySelector('.extensions_info'));
         if (oldPopup) {
             initialScrollTop = oldPopup.content.scrollTop;
+            extensionsPopupReloadBypassIds.add(oldPopup.id);
             await oldPopup.completeCancelled();
         }
         const htmlErrors = getExtensionLoadErrorsHtml();
@@ -765,7 +769,7 @@ async function showExtensionsDetails() {
 
         let waitingForSave = false;
 
-        const popup = new Popup(html, POPUP_TYPE.TEXT, '', {
+        popup = new Popup(html, POPUP_TYPE.TEXT, '', {
             okButton: t`Close`,
             wide: true,
             large: true,
@@ -796,6 +800,9 @@ async function showExtensionsDetails() {
     if (popupPromise) {
         await popupPromise;
         abortController.abort();
+    }
+    if (popup && extensionsPopupReloadBypassIds.delete(popup.id)) {
+        return;
     }
     if (requiresReload) {
         showLoader();
@@ -902,7 +909,13 @@ async function onDeleteClick() {
     // use callPopup to create a popup for the user to confirm before delete
     const confirmation = await callGenericPopup(t`Are you sure you want to delete ${extensionName}?`, POPUP_TYPE.CONFIRM, '', {});
     if (confirmation === POPUP_RESULT.AFFIRMATIVE) {
-        await deleteExtension(extensionName);
+        const deleted = await deleteExtension(extensionName);
+        if (!deleted) {
+            return;
+        }
+
+        await loadExtensionSettings({}, false, false);
+        void showExtensionsDetails();
     }
 }
 
@@ -1008,6 +1021,7 @@ async function moveExtension(extensionName, source, destination) {
 /**
  * Deletes an extension via the API.
  * @param {string} extensionName Extension name to delete
+ * @returns {Promise<boolean>} True if the extension was deleted
  */
 export async function deleteExtension(extensionName) {
     try {
@@ -1024,16 +1038,17 @@ export async function deleteExtension(extensionName) {
             const text = await response.text();
             toastr.error(text || response.statusText, t`Extension delete failed`, { timeOut: 5000 });
             console.error('Extension delete failed', response.status, response.statusText, text);
-            return;
+            return false;
         }
     } catch (error) {
         console.error('Error:', error);
         toastr.error(t`Extension delete failed`);
-        return;
+        return false;
     }
 
-    toastr.success(t`Extension ${extensionName} deleted`);
-    delay(1000).then(() => location.reload());
+    requiresReload = true;
+    toastr.success(t`Extension ${extensionName} deleted`, t`Reload the page to apply changes`);
+    return true;
 }
 
 /**

@@ -234,13 +234,20 @@ function autoSelectPreset() {
     }
 
     if (main_api === 'openai' && !selected_group) {
-        const rawBoundPreset = characters?.[this_chid]?.data?.extensions?.luker?.chat_completion_preset;
+        const lukerExtensions = characters?.[this_chid]?.data?.extensions?.luker;
+        const hasExplicitCharacterPresetConfig = lukerExtensions && typeof lukerExtensions === 'object'
+            && Object.prototype.hasOwnProperty.call(lukerExtensions, 'chat_completion_preset');
+        const rawBoundPreset = hasExplicitCharacterPresetConfig ? lukerExtensions.chat_completion_preset : undefined;
         const boundPresetName = typeof rawBoundPreset === 'string'
             ? rawBoundPreset.trim()
             : String(rawBoundPreset?.name || '').trim();
 
-        if (boundPresetName) {
-            console.debug('Skipping OpenAI preset auto-selection because the current character has an explicit bound preset.');
+        if (hasExplicitCharacterPresetConfig) {
+            if (boundPresetName) {
+                console.debug('Skipping OpenAI preset auto-selection because the current character has an explicit bound preset.');
+            } else {
+                console.debug('Skipping OpenAI preset auto-selection because the current character explicitly cleared character-bound preset selection.');
+            }
             return;
         }
     }
