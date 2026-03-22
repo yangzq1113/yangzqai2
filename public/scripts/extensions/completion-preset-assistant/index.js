@@ -44,6 +44,8 @@ const MODEL_TOOLS = Object.freeze({
     SET_FIELD: 'preset_set_field',
     REMOVE_FIELD: 'preset_remove_field',
     COPY_FROM_REFERENCE: 'preset_copy_from_reference',
+    READ_LIVE_FIELDS: 'preset_read_live_fields',
+    READ_REFERENCE_FIELDS: 'preset_read_reference_fields',
     UPSERT_PROMPT_ENTRY: 'preset_upsert_prompt_entry',
     REMOVE_PROMPT_ENTRY: 'preset_remove_prompt_entry',
     UPSERT_ORDER_ITEM: 'preset_upsert_prompt_order_item',
@@ -1268,6 +1270,10 @@ function buildModelSystemPrompt({
         'Prefer minimal edits over broad rewrites unless the user explicitly asks for a rewrite.',
         'Prefer the prompt-specific tools when adding, removing, or reordering prompt entries.',
         'Use 1-based positions for preset_upsert_prompt_order_item.',
+        'Use preset_read_live_fields when you need exact current values for specific preset paths.',
+        hasReference
+            ? 'Use preset_read_reference_fields when you need exact values from the selected reference preset.'
+            : 'No reference preset is selected. Do not call preset_read_reference_fields.',
         'Use lodash-style paths like new_chat_prompt or prompts[0].content only when the prompt-specific tools are not enough.',
         'For preset_set_field, value_json must be valid JSON text.',
         hasReference
@@ -1496,6 +1502,114 @@ function buildSimulationSourceMessages(context, {
             ...currentChatMessages,
             { role: 'user', content: safeText },
         ],
+    };
+}
+
+function normalizePresetReadPaths(args = {}) {
+    return Array.isArray(args?.paths)
+        ? [...new Set(args.paths.map((item) => String(item || '').trim()).filter(Boolean))]
+        : [];
+}
+
+function buildPresetFieldReadResult(body, paths = []) {
+    const source = isPlainObject(body) ? body : {};
+    return paths.map((path) => ({
+        path,
+        exists: lodash.has(source, path),
+        value: clone(lodash.get(source, path), null),
+    }));
+}
+
+function createPresetAssistantLiveReadToolApi(dialogState) {
+    return {
+        toolNames: {
+            READ_LIVE_FIELDS: MODEL_TOOLS.READ_LIVE_FIELDS,
+        },
+        getToolDefs() {
+            return [{
+                type: 'function',
+                function: {
+                    name: MODEL_TOOLS.READ_LIVE_FIELDS,
+                    description: 'Read exact values from the current live preset by lodash-style paths.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            paths: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'One or more lodash-style paths such as prompts[0].content or prompt_order[0].order.',
+                            },
+                        },
+                        required: ['paths'],
+                        additionalProperties: false,
+                    },
+                },
+            }];
+        },
+        isToolName(name) {
+            return String(name || '').trim() === MODEL_TOOLS.READ_LIVE_FIELDS;
+        },
+        async invoke(call) {
+            const paths = normalizePresetReadPaths(call?.args);
+            if (paths.length === 0) {
+                throw new Error('preset_read_live_fields requires at least one path.');
+            }
+            const liveBody = isPlainObject(dialogState.liveSnapshot?.body) ? dialogState.liveSnapshot.body : {};
+            return {
+                ok: true,
+                presetName: String(dialogState.targetRef?.name || '').trim(),
+                source: 'live',
+                values: buildPresetFieldReadResult(liveBody, paths),
+            };
+        },
+    };
+}
+
+function createPresetAssistantReferenceReadToolApi(dialogState) {
+    return {
+        toolNames: {
+            READ_REFERENCE_FIELDS: MODEL_TOOLS.READ_REFERENCE_FIELDS,
+        },
+        getToolDefs() {
+            return [{
+                type: 'function',
+                function: {
+                    name: MODEL_TOOLS.READ_REFERENCE_FIELDS,
+                    description: 'Read exact values from the selected reference preset by lodash-style paths.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            paths: {
+                                type: 'array',
+                                items: { type: 'string' },
+                                description: 'One or more lodash-style paths such as prompts[0].content or prompt_order[0].order.',
+                            },
+                        },
+                        required: ['paths'],
+                        additionalProperties: false,
+                    },
+                },
+            }];
+        },
+        isToolName(name) {
+            return String(name || '').trim() === MODEL_TOOLS.READ_REFERENCE_FIELDS;
+        },
+        async invoke(call) {
+            const paths = normalizePresetReadPaths(call?.args);
+            if (paths.length === 0) {
+                throw new Error('preset_read_reference_fields requires at least one path.');
+            }
+            const referenceSnapshot = dialogState.referenceSnapshot;
+            if (!referenceSnapshot || !isPlainObject(referenceSnapshot.body)) {
+                throw new Error('No reference preset selected.');
+            }
+            return {
+                ok: true,
+                presetName: String(referenceSnapshot?.ref?.name || '').trim(),
+                source: 'reference',
+                values: buildPresetFieldReadResult(referenceSnapshot.body, paths),
+            };
+        },
     };
 }
 
@@ -1852,7 +1966,9 @@ async function requestPresetAssistantReply(dialogState, userText, {
 } = {}) {
     const options = requestOptions && typeof requestOptions === 'object' ? requestOptions : {};
     const helperToolApis = [
+        createPresetAssistantLiveReadToolApi(dialogState),
         createPresetAssistantSimulateToolApi(dialogState),
+        ...(dialogState.referenceSnapshot ? [createPresetAssistantReferenceReadToolApi(dialogState)] : []),
         ...(dialogState.referenceSnapshot ? [createPresetAssistantReferenceDiffToolApi(dialogState)] : []),
     ];
     const modelTools = buildAssistantTools({
