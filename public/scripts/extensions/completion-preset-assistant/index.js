@@ -1394,7 +1394,7 @@ function buildPresetStructureGuideText() {
         '- prompts[] entries: identifier, name, content, role, enabled, marker, injection_position, injection_depth, injection_order.',
         '- prompt_order[] groups: each item has character_id and order[]. Each order[] item has identifier and enabled.',
         '- Prefer prompt-specific tools over raw path edits for prompts and prompt_order.',
-        '- New presets created from this assistant start from the stored Default preset when available.',
+        '- New presets created from this assistant start from the packaged Default preset when available.',
     ].join('\n');
 }
 
