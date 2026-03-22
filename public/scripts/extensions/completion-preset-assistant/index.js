@@ -400,7 +400,21 @@ function findCanonicalPresetName(names = [], requestedName = '') {
     return names.find((name) => String(name || '').trim().toLocaleLowerCase() === normalizedRequested) || '';
 }
 
-function buildNewPresetBaseline(context = getContext()) {
+async function buildNewPresetBaseline(context = getContext()) {
+    try {
+        const manager = typeof context?.getPresetManager === 'function'
+            ? context.getPresetManager('openai')
+            : null;
+        if (typeof manager?.getDefaultPreset === 'function') {
+            const restored = await manager.getDefaultPreset('Default');
+            if (restored?.isDefault && isPlainObject(restored?.preset)) {
+                return clone(restored.preset, {});
+            }
+        }
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to load packaged Default preset baseline`, error);
+    }
+
     const defaultSnapshot = getStoredDefaultSnapshot(context);
     if (isPlainObject(defaultSnapshot?.body)) {
         return clone(defaultSnapshot.body, {});
@@ -3417,7 +3431,7 @@ async function handleCreateNewPreset() {
     try {
         const result = await context.presets.save(
             { collection: 'openai', name: requestedName },
-            buildNewPresetBaseline(context),
+            await buildNewPresetBaseline(context),
             { select: true },
         );
         if (!result?.ok || !result?.ref) {
