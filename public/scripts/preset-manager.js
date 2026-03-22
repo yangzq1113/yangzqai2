@@ -15,6 +15,8 @@ import {
     novelai_setting_names,
     novelai_settings,
     online_status,
+    deleteAllPresetState,
+    renamePresetStateTarget,
     saveSettings,
     saveSettingsDebounced,
     requestAsyncDiffForNextSettingsSave,
@@ -305,7 +307,9 @@ async function syncCharacterBoundOpenAIPresetExtensionField({ presetName, path, 
 
     const boundPresetBody = ensurePlainObject(boundPreset.preset);
     const boundPresetExtensions = ensurePlainObject(boundPresetBody.extensions);
-    path ? lodash.set(boundPresetExtensions, path, value) : undefined;
+    if (path) {
+        lodash.set(boundPresetExtensions, path, value);
+    }
     boundPresetBody.extensions = path ? boundPresetExtensions : value;
     boundPreset.preset = boundPresetBody;
     lukerExtensions.chat_completion_preset = boundPreset;
@@ -785,6 +789,13 @@ class PresetManager {
         }
         try {
             await this.savePreset(newName);
+            const renamedState = await renamePresetStateTarget(
+                { apiId: this.apiId, name: oldName },
+                { apiId: this.apiId, name: newName },
+            );
+            if (!renamedState) {
+                throw new Error('Preset state sidecars could not be renamed');
+            }
             await this.deletePreset(oldName);
         } catch (error) {
             toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Preset could not be renamed`);
@@ -1468,6 +1479,7 @@ export async function initPresetManager() {
             if (!presetSnapshot) {
                 toastr.success(successToast);
                 await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
+                await deleteAllPresetState({ apiId, name });
                 await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: name, extensions });
             } else {
                 showUndoToast({
@@ -1482,6 +1494,7 @@ export async function initPresetManager() {
                     },
                     onCommit: async () => {
                         await eventSource.emit(event_types.PRESET_DELETED, { apiId, name });
+                        await deleteAllPresetState({ apiId, name });
                         await maybeDeleteLinkedLorebookForPresetDeletion({ presetName: name, extensions });
                     },
                 });

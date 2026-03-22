@@ -189,6 +189,7 @@ import {
     saveBase64AsFile,
     uuidv4,
     equalsIgnoreCaseAndAccents,
+    findCanonicalNameInList,
     localizePagination,
     renderPaginationDropdown,
     paginationDropdownChangeHandler,
@@ -9798,7 +9799,80 @@ function resolveChatStateTarget(target = null) {
 }
 
 const chatStateRequestCache = new Map();
+const presetStateRequestCache = new Map();
 let settingsGetCacheGeneration = 0;
+
+function normalizePresetStateApiId(apiId = '') {
+    const normalized = String(apiId || (main_api === 'koboldhorde' ? 'kobold' : main_api) || '').trim();
+    if (!normalized) {
+        return '';
+    }
+    return normalized === 'koboldhorde' ? 'kobold' : normalized;
+}
+
+function resolvePresetStateTarget(target = null) {
+    if (target && typeof target === 'object') {
+        const apiId = normalizePresetStateApiId(target.apiId || target.type || '');
+        const requestedName = String(target.name || '').trim();
+        if (!apiId || !requestedName) {
+            return null;
+        }
+        const manager = getPresetManager(apiId);
+        const resolvedName = typeof manager?.resolvePresetName === 'function'
+            ? manager.resolvePresetName(requestedName)
+            : (findCanonicalNameInList(manager?.getAllPresets?.() || [], requestedName) || requestedName);
+        return resolvedName
+            ? { apiId, name: resolvedName }
+            : { apiId, name: requestedName };
+    }
+
+    const apiId = normalizePresetStateApiId();
+    const manager = getPresetManager(apiId);
+    const name = String(manager?.getSelectedPresetName?.() || '').trim();
+    return apiId && name ? { apiId, name } : null;
+}
+
+function getPresetStateTargetKey(target) {
+    if (!target || typeof target !== 'object') {
+        return '';
+    }
+    const apiId = normalizePresetStateApiId(target.apiId);
+    const name = String(target.name || '').trim();
+    return apiId && name
+        ? `preset:${apiId}:${name.toLowerCase()}`
+        : '';
+}
+
+function getPresetStateRequestKey(target, namespace) {
+    return `${getPresetStateTargetKey(target)}::${String(namespace || '').trim().toLowerCase()}`;
+}
+
+function invalidatePresetStateRequestCache(target, namespaces = []) {
+    const targetKey = getPresetStateTargetKey(target);
+    if (!targetKey) {
+        return;
+    }
+
+    const normalizedNamespaces = [...new Set((Array.isArray(namespaces) ? namespaces : [namespaces])
+        .map((namespace) => String(namespace || '').trim().toLowerCase())
+        .filter(Boolean))];
+    for (const namespace of normalizedNamespaces) {
+        presetStateRequestCache.delete(getPresetStateRequestKey(target, namespace));
+    }
+}
+
+function invalidateAllPresetStateRequestCache(target) {
+    const targetKey = getPresetStateTargetKey(target);
+    if (!targetKey) {
+        return;
+    }
+
+    for (const cacheKey of [...presetStateRequestCache.keys()]) {
+        if (cacheKey.startsWith(`${targetKey}::`)) {
+            presetStateRequestCache.delete(cacheKey);
+        }
+    }
+}
 
 function getChatStateTargetKey(target) {
     if (!target || typeof target !== 'object') {
@@ -10738,6 +10812,364 @@ export async function deleteChatState(namespace, options = {}) {
         return response.ok;
     } catch (error) {
         console.warn('Incremental chat state delete failed', error);
+        return false;
+    }
+}
+
+/**
+ * Gets preset-bound plugin state payloads from server side.
+ * @param {string[]} namespaces Preset state namespaces.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit preset target.
+ * @returns {Promise<Map<string, object|null>>} Stored state payloads keyed by namespace.
+ */
+export async function getPresetStateBatch(namespaces, options = {}) {
+    try {
+        const requestedNamespaces = [...new Set((Array.isArray(namespaces) ? namespaces : [])
+            .map((namespace) => String(namespace || '').trim().toLowerCase())
+            .filter(Boolean))];
+        if (!requestedNamespaces.length) {
+            return new Map();
+        }
+
+        const target = resolvePresetStateTarget(options?.target || null);
+        if (!target) {
+            return new Map();
+        }
+
+        const results = new Map();
+        const awaitedRequests = [];
+        const pendingNamespaces = [];
+
+        for (const namespace of requestedNamespaces) {
+            const requestKey = getPresetStateRequestKey(target, namespace);
+            if (presetStateRequestCache.has(requestKey)) {
+                awaitedRequests.push(presetStateRequestCache.get(requestKey).then((data) => {
+                    results.set(namespace, cloneJsonValue(data));
+                }));
+                continue;
+            }
+
+            pendingNamespaces.push(namespace);
+        }
+
+        if (pendingNamespaces.length) {
+            const batchPromise = (async () => {
+                const response = await fetch('/api/presets/state/get-batch', {
+                    method: 'POST',
+                    cache: 'no-cache',
+                    headers: getRequestHeaders(),
+                    body: JSON.stringify({
+                        apiId: target.apiId,
+                        name: target.name,
+                        namespaces: pendingNamespaces,
+                    }),
+                });
+
+                if (!response.ok) {
+                    return new Map(pendingNamespaces.map((namespace) => [namespace, null]));
+                }
+
+                const payload = await response.json();
+                const batchResults = new Map();
+                for (const namespace of pendingNamespaces) {
+                    const data = payload?.data?.[namespace];
+                    batchResults.set(namespace, data && typeof data === 'object' ? data : null);
+                }
+                return batchResults;
+            })();
+
+            for (const namespace of pendingNamespaces) {
+                const requestKey = getPresetStateRequestKey(target, namespace);
+                presetStateRequestCache.set(requestKey, batchPromise.then((batchResults) => batchResults.get(namespace) ?? null));
+            }
+
+            try {
+                const batchResults = await batchPromise;
+                for (const namespace of pendingNamespaces) {
+                    results.set(namespace, cloneJsonValue(batchResults.get(namespace) ?? null));
+                }
+            } finally {
+                for (const namespace of pendingNamespaces) {
+                    presetStateRequestCache.delete(getPresetStateRequestKey(target, namespace));
+                }
+            }
+        }
+
+        if (awaitedRequests.length) {
+            await Promise.all(awaitedRequests);
+        }
+
+        return results;
+    } catch (error) {
+        console.warn('Incremental preset state batch get failed', error);
+        return new Map();
+    }
+}
+
+/**
+ * Gets preset-bound plugin state payload from server side.
+ * @param {string} namespace Preset state namespace.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit preset target.
+ * @returns {Promise<object|null>} Stored state object or null when not found/failed.
+ */
+export async function getPresetState(namespace, options = {}) {
+    const stateNamespace = String(namespace || '').trim().toLowerCase();
+    if (!stateNamespace) {
+        return null;
+    }
+
+    const results = await getPresetStateBatch([stateNamespace], options);
+    return results.get(stateNamespace) ?? null;
+}
+
+/**
+ * Applies incremental patch operations to preset-bound plugin state payload.
+ * @param {string} namespace Preset state namespace.
+ * @param {object[]} operations Patch operations.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit preset target.
+ * @returns {Promise<boolean>} True when patch request succeeded.
+ */
+export async function patchPresetState(namespace, operations, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace || !Array.isArray(operations) || operations.length === 0) {
+            return false;
+        }
+        const target = resolvePresetStateTarget(options?.target || null);
+        if (!target) {
+            return false;
+        }
+        invalidatePresetStateRequestCache(target, [stateNamespace]);
+        const sourceOperations = operations.filter(op => op && typeof op === 'object');
+        const baseOperations = sourceOperations.filter(op => String(op.op || '').trim().toLowerCase() !== 'test');
+        if (baseOperations.length === 0) {
+            return true;
+        }
+
+        const patchOnce = async (baseState) => {
+            const guardedOperations = attachObjectPatchTests(baseState || {}, baseOperations);
+            return fetch('/api/presets/state/patch', {
+                method: 'POST',
+                cache: 'no-cache',
+                headers: getRequestHeaders(),
+                body: JSON.stringify({
+                    apiId: target.apiId,
+                    name: target.name,
+                    namespace: stateNamespace,
+                    operations: guardedOperations,
+                }),
+            });
+        };
+
+        let currentState = await getPresetState(stateNamespace, { target });
+        let response = await patchOnce(currentState);
+
+        if (response.status === 409) {
+            currentState = await getPresetState(stateNamespace, { target });
+            response = await patchOnce(currentState);
+        }
+
+        if (response.ok) {
+            invalidatePresetStateRequestCache(target, [stateNamespace]);
+        }
+
+        return response.ok;
+    } catch (error) {
+        console.warn('Incremental preset state patch failed', error);
+        return false;
+    }
+}
+
+/**
+ * Updates preset-bound plugin state by applying a reducer against the latest server state.
+ * @param {string} namespace Preset state namespace.
+ * @param {(currentState: object, meta?: { attempt: number, target: object, namespace: string }) => (object|null|undefined|Promise<object|null|undefined>)} updater
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit preset target.
+ * @param {number} [options.maxOperations] Max patch ops before fallback replace patch is used.
+ * @param {number} [options.maxRetries] Number of retry rounds when patch update fails.
+ * @returns {Promise<{ ok: boolean, state: object|null, updated: boolean }>} Update result.
+ */
+export async function updatePresetState(namespace, updater, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace || typeof updater !== 'function') {
+            return { ok: false, state: null, updated: false };
+        }
+
+        const target = resolvePresetStateTarget(options?.target || null);
+        if (!target) {
+            return { ok: false, state: null, updated: false };
+        }
+        invalidatePresetStateRequestCache(target, [stateNamespace]);
+
+        const maxOperations = Number.isInteger(options?.maxOperations) && options.maxOperations > 0
+            ? Number(options.maxOperations)
+            : 2000;
+        const maxRetries = Number.isInteger(options?.maxRetries) && options.maxRetries >= 0
+            ? Number(options.maxRetries)
+            : 1;
+
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            const currentStateRaw = await getPresetState(stateNamespace, { target });
+            const currentState = normalizeJsonObject(currentStateRaw);
+            const nextStateRaw = await updater(cloneJsonValue(currentState), {
+                attempt,
+                target: cloneJsonValue(target),
+                namespace: stateNamespace,
+            });
+
+            if (nextStateRaw === undefined || nextStateRaw === null) {
+                return {
+                    ok: true,
+                    state: currentState,
+                    updated: false,
+                };
+            }
+
+            const nextState = normalizeJsonObject(nextStateRaw);
+            const operations = options?.asyncDiff === false
+                ? buildObjectPatchOperations(currentState, nextState, { maxOperations })
+                : await buildObjectPatchOperationsAsync(currentState, nextState, { maxOperations });
+            if (operations.length === 0) {
+                return {
+                    ok: true,
+                    state: nextState,
+                    updated: false,
+                };
+            }
+
+            const ok = await patchPresetState(stateNamespace, operations, { target });
+            if (ok) {
+                invalidatePresetStateRequestCache(target, [stateNamespace]);
+                return {
+                    ok: true,
+                    state: nextState,
+                    updated: true,
+                };
+            }
+        }
+
+        return { ok: false, state: null, updated: false };
+    } catch (error) {
+        console.warn('Incremental preset state update failed', error);
+        return { ok: false, state: null, updated: false };
+    }
+}
+
+/**
+ * Deletes preset-bound plugin state payload for namespace.
+ * @param {string} namespace Preset state namespace.
+ * @param {object} [options] Additional options.
+ * @param {object|null} [options.target] Optional explicit preset target.
+ * @returns {Promise<boolean>} True when delete request succeeded.
+ */
+export async function deletePresetState(namespace, options = {}) {
+    try {
+        const stateNamespace = String(namespace || '').trim();
+        if (!stateNamespace) {
+            return false;
+        }
+        const target = resolvePresetStateTarget(options?.target || null);
+        if (!target) {
+            return false;
+        }
+        invalidatePresetStateRequestCache(target, [stateNamespace]);
+
+        const response = await fetch('/api/presets/state/delete', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                apiId: target.apiId,
+                name: target.name,
+                namespace: stateNamespace,
+            }),
+        });
+
+        if (response.ok) {
+            invalidatePresetStateRequestCache(target, [stateNamespace]);
+        }
+
+        return response.ok;
+    } catch (error) {
+        console.warn('Incremental preset state delete failed', error);
+        return false;
+    }
+}
+
+/**
+ * Deletes all preset-bound plugin state payloads for a preset target.
+ * @param {object|null} target Explicit preset target.
+ * @returns {Promise<boolean>} True when delete request succeeded.
+ */
+export async function deleteAllPresetState(target = null) {
+    try {
+        const resolvedTarget = resolvePresetStateTarget(target);
+        if (!resolvedTarget) {
+            return false;
+        }
+        invalidateAllPresetStateRequestCache(resolvedTarget);
+
+        const response = await fetch('/api/presets/state/delete-all', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                apiId: resolvedTarget.apiId,
+                name: resolvedTarget.name,
+            }),
+        });
+
+        if (response.ok) {
+            invalidateAllPresetStateRequestCache(resolvedTarget);
+        }
+
+        return response.ok;
+    } catch (error) {
+        console.warn('Preset state delete-all failed', error);
+        return false;
+    }
+}
+
+/**
+ * Renames all preset-bound plugin state payloads from one preset target to another.
+ * @param {object|null} sourceTarget Source preset target.
+ * @param {object|null} targetTarget Target preset target.
+ * @returns {Promise<boolean>} True when rename request succeeded.
+ */
+export async function renamePresetStateTarget(sourceTarget = null, targetTarget = null) {
+    try {
+        const source = resolvePresetStateTarget(sourceTarget);
+        const target = resolvePresetStateTarget(targetTarget);
+        if (!source || !target || source.apiId !== target.apiId) {
+            return false;
+        }
+        invalidateAllPresetStateRequestCache(source);
+        invalidateAllPresetStateRequestCache(target);
+
+        const response = await fetch('/api/presets/state/rename', {
+            method: 'POST',
+            cache: 'no-cache',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                apiId: source.apiId,
+                oldName: source.name,
+                newName: target.name,
+            }),
+        });
+
+        if (response.ok) {
+            invalidateAllPresetStateRequestCache(source);
+            invalidateAllPresetStateRequestCache(target);
+        }
+
+        return response.ok;
+    } catch (error) {
+        console.warn('Preset state rename failed', error);
         return false;
     }
 }
