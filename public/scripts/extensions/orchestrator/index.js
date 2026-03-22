@@ -27,6 +27,7 @@ const ORCH_CHAT_STATE_NAMESPACE = 'luker_orchestrator_state';
 const ORCH_CHAT_STATE_VERSION = 2;
 const ORCH_CHAT_CONTENT_NAMESPACE_PREFIX = 'luker_orchestrator_anchor_';
 const ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE = 'orchestrator_iteration_history';
+const ORCH_GLOBAL_ITERATION_HISTORY_KEY = 'global_iteration_history';
 const ORCH_CHARACTER_ITERATION_HISTORY_VERSION = 3;
 const ORCH_CHARACTER_ITERATION_HISTORY_LIMIT = 24;
 const ORCH_ITERATION_DIFF_TEXT_MIN_LENGTH = 80;
@@ -7908,6 +7909,32 @@ async function persistAiIterationHistoryState(context, avatar, historyState) {
     );
 }
 
+function loadGlobalAiIterationHistoryState() {
+    ensureSettings();
+    return normalizeAiIterationHistoryState(extension_settings?.[MODULE_NAME]?.[ORCH_GLOBAL_ITERATION_HISTORY_KEY]);
+}
+
+async function persistGlobalAiIterationHistoryState(historyState) {
+    ensureSettings();
+    extension_settings[MODULE_NAME][ORCH_GLOBAL_ITERATION_HISTORY_KEY] = normalizeAiIterationHistoryState(historyState);
+    saveSettingsDebounced();
+}
+
+async function loadAiIterationHistoryStateForScope(context, { scope = 'global', avatar = '' } = {}) {
+    if (String(scope || '').trim() === 'character' && String(avatar || '').trim()) {
+        return await loadAiIterationHistoryState(context, avatar);
+    }
+    return loadGlobalAiIterationHistoryState();
+}
+
+async function persistAiIterationHistoryStateForScope(context, historyState, { scope = 'global', avatar = '' } = {}) {
+    if (String(scope || '').trim() === 'character' && String(avatar || '').trim()) {
+        await persistAiIterationHistoryState(context, avatar, historyState);
+        return;
+    }
+    await persistGlobalAiIterationHistoryState(historyState);
+}
+
 function summarizeAiIterationHistorySession(session, fallback = '') {
     const firstUserMessage = (Array.isArray(session?.messages) ? session.messages : [])
         .find(item => String(item?.role || '').trim().toLowerCase() === 'user');
@@ -10725,49 +10752,57 @@ function buildAiIterationPopupHtml(popupId, session, { allowCharacterApply = fal
 async function openAiIterationStudio(context, settings, root) {
     ensureStyles();
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
-    const enableSessionHistory = Boolean(activeAvatar);
+    const displayedScope = getDisplayedScope(context, settings);
+    const historyScope = displayedScope === 'character' && activeAvatar ? 'character' : 'global';
+    const enableSessionHistory = true;
     let historyState = createEmptyAiIterationHistoryState();
-    if (enableSessionHistory) {
-        try {
-            historyState = await loadAiIterationHistoryState(context, activeAvatar);
-        } catch (error) {
-            console.warn(`[${MODULE_NAME}] Failed to load AI iteration history`, error);
-        }
+    try {
+        historyState = await loadAiIterationHistoryStateForScope(context, {
+            scope: historyScope,
+            avatar: activeAvatar,
+        });
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to load AI iteration history`, error);
     }
     const session = ensureAiIterationSession(context, settings, { forceNew: false });
-    if (enableSessionHistory) {
-        const latestSession = historyState.sessions.length > 0 ? historyState.sessions[historyState.sessions.length - 1] : null;
-        if (latestSession) {
-            replaceAiIterationSession(session, latestSession);
-        } else {
+    const latestSession = historyState.sessions.length > 0 ? historyState.sessions[historyState.sessions.length - 1] : null;
+    if (latestSession) {
+        replaceAiIterationSession(session, latestSession);
+    } else {
+        if (historyScope === 'character') {
             session.sourceAvatar = activeAvatar;
-            historyState = upsertAiIterationHistorySession(historyState, session);
-            try {
-                await persistAiIterationHistoryState(context, activeAvatar, historyState);
-            } catch (error) {
-                console.warn(`[${MODULE_NAME}] Failed to initialize AI iteration history`, error);
-            }
         }
-        uiState.aiIterationSession = session;
+        historyState = upsertAiIterationHistorySession(historyState, session);
+        try {
+            await persistAiIterationHistoryStateForScope(context, historyState, {
+                scope: historyScope,
+                avatar: activeAvatar,
+            });
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to initialize AI iteration history`, error);
+        }
     }
+    uiState.aiIterationSession = session;
     const popupId = `luker_orch_iter_popup_${Date.now()}`;
     const namespace = `.lukerOrchIter_${popupId}`;
     const selector = `#${popupId}`;
     const popupHtml = buildAiIterationPopupHtml(popupId, session, {
-        allowCharacterApply: enableSessionHistory,
+        allowCharacterApply: Boolean(activeAvatar),
         enableSessionHistory,
     });
     let isRunning = false;
 
     const persistSessionHistory = async () => {
-        if (!enableSessionHistory) {
-            return;
-        }
         try {
-            session.sourceAvatar = activeAvatar;
+            if (historyScope === 'character') {
+                session.sourceAvatar = activeAvatar;
+            }
             session.updatedAt = Date.now();
             historyState = upsertAiIterationHistorySession(historyState, session);
-            await persistAiIterationHistoryState(context, activeAvatar, historyState);
+            await persistAiIterationHistoryStateForScope(context, historyState, {
+                scope: historyScope,
+                avatar: activeAvatar,
+            });
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Failed to persist AI iteration history`, error);
         }
@@ -10788,9 +10823,7 @@ async function openAiIterationStudio(context, settings, root) {
             profileOverride: null,
             previewPending: Boolean(session?.pendingApproval),
         }));
-        if (enableSessionHistory) {
-            popupRoot.find(`#${popupId}_history`).html(renderAiIterationSessionHistory(historyState, session?.id));
-        }
+        popupRoot.find(`#${popupId}_history`).html(renderAiIterationSessionHistory(historyState, session?.id));
     };
 
     const setStatus = (text) => {
@@ -10803,7 +10836,9 @@ async function openAiIterationStudio(context, settings, root) {
 
     const resetCurrentSession = async () => {
         const nextSession = createAiIterationSession(context, settings);
-        nextSession.sourceAvatar = activeAvatar;
+        if (historyScope === 'character') {
+            nextSession.sourceAvatar = activeAvatar;
+        }
         replaceAiIterationSession(session, nextSession);
         uiState.aiIterationSession = session;
         await persistSessionHistory();
@@ -10811,9 +10846,6 @@ async function openAiIterationStudio(context, settings, root) {
     };
 
     const loadSessionById = async (sessionId) => {
-        if (!enableSessionHistory) {
-            return false;
-        }
         const stored = findAiIterationHistorySession(historyState, sessionId);
         if (!stored) {
             return false;
@@ -10826,12 +10858,12 @@ async function openAiIterationStudio(context, settings, root) {
     };
 
     const deleteSessionById = async (sessionId) => {
-        if (!enableSessionHistory) {
-            return;
-        }
         historyState = deleteAiIterationHistorySession(historyState, sessionId);
         try {
-            await persistAiIterationHistoryState(context, activeAvatar, historyState);
+            await persistAiIterationHistoryStateForScope(context, historyState, {
+                scope: historyScope,
+                avatar: activeAvatar,
+            });
         } catch (error) {
             console.warn(`[${MODULE_NAME}] Failed to delete AI iteration session`, error);
         }
@@ -10839,7 +10871,9 @@ async function openAiIterationStudio(context, settings, root) {
             const fallback = historyState.sessions.length > 0
                 ? historyState.sessions[historyState.sessions.length - 1]
                 : createAiIterationSession(context, settings);
-            fallback.sourceAvatar = activeAvatar;
+            if (historyScope === 'character') {
+                fallback.sourceAvatar = activeAvatar;
+            }
             replaceAiIterationSession(session, fallback);
             uiState.aiIterationSession = session;
             await persistSessionHistory();
