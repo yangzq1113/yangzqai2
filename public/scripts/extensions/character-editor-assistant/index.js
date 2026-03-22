@@ -32,6 +32,7 @@ const TOOL_NAMES = Object.freeze({
     DELETE_ENTRY: 'luker_card_delete_lorebook_entry',
     QUERY_ENTRIES: 'luker_card_query_lorebook_entries',
     GET_ENTRIES: 'luker_card_get_lorebook_entries',
+    SIMULATE_PROMPT: 'luker_card_simulate_prompt',
 });
 const CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT = 12;
 const CHARACTER_EDITOR_QUERY_LIMIT_DEFAULT = 10;
@@ -499,6 +500,33 @@ function rewriteDepthWorldInfoToAfterWithNotes(payload = {}) {
         }
     }
     return payload;
+}
+
+function normalizeWorldInfoResolverMessages(messages = []) {
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+
+    return messages.map((message) => {
+        if (!message || typeof message !== 'object') {
+            return message;
+        }
+        const next = { ...message };
+        const rawRole = String(next.role || '').trim().toLowerCase();
+        if (rawRole === 'system' || rawRole === 'user' || rawRole === 'assistant') {
+            next.role = rawRole;
+        } else if (next.is_system) {
+            next.role = 'system';
+        } else if (next.is_user) {
+            next.role = 'user';
+        } else {
+            next.role = 'assistant';
+        }
+        if (next.content === undefined && Object.hasOwn(next, 'mes')) {
+            next.content = String(next.mes ?? '');
+        }
+        return next;
+    });
 }
 
 function getOpenAIPresetNames(context) {
@@ -1734,6 +1762,118 @@ function createCharacterEditorLorebookToolApi(context, { avatar = '' } = {}) {
                 return await getCharacterEditorLorebookEntries(context, args, { avatar });
             }
             throw new Error(`Unsupported character editor lorebook tool: ${name}`);
+        },
+    };
+}
+
+function buildCharacterEditorSimulationSourceMessages(context, {
+    text = '',
+    messages = null,
+} = {}) {
+    const explicitMessages = normalizeWorldInfoResolverMessages(messages)
+        .filter(message => message && typeof message === 'object' && String(message.content ?? '').trim());
+    if (explicitMessages.length > 0) {
+        return {
+            mode: 'messages',
+            messages: explicitMessages,
+        };
+    }
+
+    const safeText = String(text || '').trim();
+    if (!safeText) {
+        return {
+            mode: '',
+            messages: [],
+        };
+    }
+
+    const currentChatMessages = normalizeWorldInfoResolverMessages(Array.isArray(context?.chat) ? context.chat : [])
+        .filter(message => message && typeof message === 'object' && String(message.content ?? '').trim());
+    return {
+        mode: 'text',
+        messages: [
+            ...currentChatMessages,
+            { role: 'user', content: safeText },
+        ],
+    };
+}
+
+function createCharacterEditorSimulateToolApi(context) {
+    const toolNames = Object.freeze({
+        SIMULATE: TOOL_NAMES.SIMULATE_PROMPT,
+    });
+    return {
+        toolNames,
+        getToolDefs: () => [
+            {
+                type: 'function',
+                function: {
+                    name: toolNames.SIMULATE,
+                    description: 'Simulate current prompt assembly with character card and world info. Prefer text to append one user turn to the current chat. Use messages only when the user explicitly supplied a structured message array.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            text: {
+                                type: 'string',
+                                description: 'Preferred. Append this user text to the current chat and simulate with world info activation.',
+                            },
+                            messages: {
+                                type: 'array',
+                                description: 'Explicit message array. Use only when the user already gave structured records/messages.',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        role: { type: 'string' },
+                                        content: { type: 'string' },
+                                        mes: { type: 'string' },
+                                        is_user: { type: 'boolean' },
+                                        is_system: { type: 'boolean' },
+                                    },
+                                    additionalProperties: true,
+                                },
+                            },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
+        ],
+        isToolName: (name) => String(name || '').trim() === toolNames.SIMULATE,
+        invoke: async (call) => {
+            const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            const source = buildCharacterEditorSimulationSourceMessages(context, {
+                text: String(args.text || '').trim(),
+                messages: Array.isArray(args.messages) ? args.messages : null,
+            });
+            if (source.messages.length === 0) {
+                throw new Error(`${toolNames.SIMULATE} requires either text or messages.`);
+            }
+            if (typeof context?.buildPresetAwarePromptMessages !== 'function') {
+                throw new Error('Prompt preset assembly is unavailable.');
+            }
+
+            const runtimeWorldInfo = typeof context?.resolveWorldInfoForMessages === 'function'
+                ? await context.resolveWorldInfoForMessages(source.messages, {
+                    type: 'quiet',
+                    fallbackToCurrentChat: false,
+                    postActivationHook: rewriteDepthWorldInfoToAfterWithNotes,
+                })
+                : {};
+            const promptMessages = context.buildPresetAwarePromptMessages({
+                messages: source.messages,
+                envelopeOptions: {
+                    includeCharacterCard: true,
+                    api: String(context?.mainApi || 'openai').trim() || 'openai',
+                },
+                runtimeWorldInfo,
+            });
+            return {
+                ok: true,
+                mode: source.mode,
+                sourceMessages: source.messages,
+                runtimeWorldInfo,
+                promptMessages,
+            };
         },
     };
 }
@@ -3912,10 +4052,12 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         }))
         .filter(item => (item.role === 'assistant' || item.role === 'user') && item.content);
     const lorebookToolApi = createCharacterEditorLorebookToolApi(context, { avatar });
+    const simulateToolApi = createCharacterEditorSimulateToolApi(context);
     const searchApi = getCharacterEditorSearchApi();
     const hasSearchTools = Boolean(searchApi);
     const helperToolApis = [
         lorebookToolApi,
+        simulateToolApi,
         ...(searchApi ? [searchApi] : []),
     ];
     const modelTools = buildCharacterEditorModelTools({ helperToolApis });
@@ -3930,12 +4072,15 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         String(lorebookToolApi?.toolNames?.QUERY || '').trim(),
         String(lorebookToolApi?.toolNames?.GET || '').trim(),
     ].filter(Boolean);
+    const simulateToolName = String(simulateToolApi?.toolNames?.SIMULATE || '').trim();
     const systemPrompt = [
         'You are editing the current character card and its primary lorebook.',
         'Continue the conversation naturally, and propose edits only when needed.',
         'Use tool calls for concrete edits.',
         `Available tools: ${availableToolNames.join(', ')}`,
         `The primary lorebook is not included in full. Use ${lorebookToolNames.join(' and ')} before editing lorebook entries that need entry-level details.`,
+        `${simulateToolName} can simulate current prompt assembly with world info and character card included.`,
+        `For ${simulateToolName}, prefer the text argument so the tool appends that user text to the current chat. Use the messages array only when the user explicitly supplied structured records/messages.`,
         'If you call any helper tool in a round, do not emit edit tool calls in that same round.',
         'Do not repeat rejected operation keys unless user explicitly asks to reconsider.',
         hasSearchTools
@@ -3963,6 +4108,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
                 rejected_operation_keys: Array.isArray(rejectedOperationKeys) ? rejectedOperationKeys : [],
                 helper_tools_available: {
                     lorebook_query: true,
+                    simulate_prompt: true,
                     web_search: hasSearchTools,
                 },
                 tool_round: round,
