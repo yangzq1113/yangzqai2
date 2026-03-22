@@ -1,0 +1,230 @@
+#completion_preset_assistant_settings .cpa_row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 6px 0;
+}
+
+#completion_preset_assistant_settings .cpa_hint,
+#completion_preset_assistant_settings .cpa_status {
+    opacity: 0.8;
+}
+
+#completion_preset_assistant_settings .menu_button,
+#completion_preset_assistant_settings .menu_button_small,
+.popup .cpa_dialog .menu_button,
+.popup .cpa_dialog .menu_button_small {
+    min-height: 2.2em;
+}
+
+.completion-preset-assistant-open {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.popup .cpa_dialog {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+.popup .cpa_dialog_toolbar,
+.popup .cpa_dialog_footer,
+.popup .cpa_dialog_meta {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.popup .cpa_dialog_toolbar .text_pole,
+.popup .cpa_dialog_footer .text_pole {
+    min-width: 0;
+    flex: 1 1 220px;
+}
+
+.popup .cpa_dialog_meta_item {
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent);
+    word-break: break-word;
+}
+
+.popup .cpa_dialog_columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: 12px;
+    min-height: 0;
+}
+
+.popup .cpa_conversation_panel,
+.popup .cpa_draft_panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent);
+    border-radius: 10px;
+    padding: 10px;
+    background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 88%, transparent);
+}
+
+.popup .cpa_panel_title {
+    font-weight: 700;
+}
+
+.popup .cpa_conversation_list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 220px;
+    max-height: 52vh;
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.popup .cpa_message {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent);
+    border-radius: 10px;
+    padding: 8px;
+    min-width: 0;
+}
+
+.popup .cpa_message.user {
+    background: color-mix(in oklab, #2f80ed 12%, transparent);
+}
+
+.popup .cpa_message.assistant {
+    background: color-mix(in oklab, #34a853 12%, transparent);
+}
+
+.popup .cpa_message.system {
+    background: color-mix(in oklab, #fbbc05 14%, transparent);
+}
+
+.popup .cpa_message_meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.9em;
+    opacity: 0.8;
+    margin-bottom: 6px;
+}
+
+.popup .cpa_message_body {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.popup .cpa_message_note {
+    margin-top: 6px;
+    font-size: 0.92em;
+    opacity: 0.82;
+}
+
+.popup .cpa_empty {
+    opacity: 0.75;
+}
+
+.popup .cpa_draft_summary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.popup .cpa_draft_summary_badge {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent);
+    font-size: 0.9em;
+}
+
+.popup .cpa_draft_actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.popup .cpa_diff_panel {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: 10px;
+    padding: 10px;
+    max-height: 52vh;
+    overflow: auto;
+    background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 94%, transparent);
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-delta,
+.popup .cpa_diff_panel .jsondiffpatch-delta ul,
+.popup .cpa_diff_panel .jsondiffpatch-delta li {
+    list-style: none;
+    margin: 0;
+    padding-left: 14px;
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-property-name {
+    font-weight: 700;
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-value pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-added .jsondiffpatch-value,
+.popup .cpa_diff_panel .jsondiffpatch-modified .jsondiffpatch-right-value {
+    background: color-mix(in oklab, #34a853 14%, transparent);
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-deleted .jsondiffpatch-value,
+.popup .cpa_diff_panel .jsondiffpatch-modified .jsondiffpatch-left-value {
+    background: color-mix(in oklab, #d93025 14%, transparent);
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-value,
+.popup .cpa_diff_panel .jsondiffpatch-textdiff {
+    border-radius: 6px;
+    padding: 4px 6px;
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-textdiff-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-textdiff-added {
+    background: color-mix(in oklab, #34a853 14%, transparent);
+}
+
+.popup .cpa_diff_panel .jsondiffpatch-textdiff-deleted {
+    background: color-mix(in oklab, #d93025 14%, transparent);
+}
+
+.popup .cpa_dialog_footer textarea {
+    min-height: 96px;
+    resize: vertical;
+}
+
+.popup .cpa_dialog_footer_actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+@media (max-width: 1000px) {
+    .popup .cpa_dialog_columns {
+        grid-template-columns: 1fr;
+    }
+
+    .popup .cpa_conversation_list,
+    .popup .cpa_diff_panel {
+        max-height: 38vh;
+    }
+}
