@@ -20,7 +20,7 @@ import {
 
 const MODULE_NAME = 'memory_graph';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
-const PERSISTED_STORE_VERSION = 6;
+const PERSISTED_STORE_VERSION = 7;
 const UI_BLOCK_ID = 'memory_graph_settings';
 const STYLE_ID = 'memory_graph_style';
 const SHARED_LOREBOOK_NAME = '__MEMORY_GRAPH__';
@@ -32,6 +32,7 @@ const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
 const CHARACTER_ADVANCED_OVERRIDE_KEY = 'advancedOverride';
 const MEMORY_GRAPH_SEARCH_ALL_TYPE = '__all__';
 const MEMORY_GRAPH_SEARCH_RESULT_PREVIEW_LIMIT = 10;
+const SWIPE_TAIL_CACHE_MAX_ENTRIES = 12;
 const GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID = `${MODULE_NAME}_generation_visible_history`;
 const GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID = `${MODULE_NAME}_generation_visible_history_runtime_script`;
 const RECALL_INJECT_POSITION_SCHEMA_VERSION = 2;
@@ -1698,6 +1699,7 @@ function createEmptyStore() {
         lastRecallTrace: [],
         lastRecallProjection: null,
         sourceMessageCount: 0,
+        swipeTailCache: {},
     };
 }
 
@@ -1708,6 +1710,7 @@ function createEmptyPersistedMemoryState() {
         lastRecallTrace: [],
         lastRecallProjection: null,
         sourceMessageCount: 0,
+        swipeTailCache: {},
     };
 }
 
@@ -1723,6 +1726,7 @@ function normalizeStoreForRuntime(store) {
     normalized.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? store.lastRecallProjection
         : null;
+    normalized.swipeTailCache = normalizeSwipeTailCache(store.swipeTailCache);
 
     if (store.nodes && typeof store.nodes === 'object') {
         for (const [id, rawNode] of Object.entries(store.nodes)) {
@@ -1829,6 +1833,122 @@ function normalizeMemoryLogEntry(raw) {
     return { seq, ops };
 }
 
+function normalizeSwipeTailCacheEntry(raw) {
+    if (!raw || typeof raw !== 'object') {
+        return null;
+    }
+    const seqFrom = Math.max(1, Math.floor(Number(raw.seqFrom || 0)));
+    if (!Number.isFinite(seqFrom) || seqFrom <= 0) {
+        return null;
+    }
+    return {
+        seqFrom,
+        prefixHash: String(raw.prefixHash || ''),
+        tailLog: Array.isArray(raw.tailLog)
+            ? raw.tailLog.map(normalizeMemoryLogEntry).filter(Boolean)
+            : [],
+        cachedAt: Number.isFinite(Number(raw.cachedAt))
+            ? Math.max(0, Math.floor(Number(raw.cachedAt)))
+            : 0,
+    };
+}
+
+function normalizeSwipeTailCache(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return {};
+    }
+    const normalized = {};
+    for (const [key, value] of Object.entries(raw)) {
+        const cacheKey = String(key || '').trim();
+        if (!cacheKey) {
+            continue;
+        }
+        const entry = normalizeSwipeTailCacheEntry(value);
+        if (!entry) {
+            continue;
+        }
+        normalized[cacheKey] = entry;
+    }
+    return normalized;
+}
+
+function cloneSwipeTailCache(cache) {
+    return structuredClone(normalizeSwipeTailCache(cache));
+}
+
+function buildSwipeTailMessageHash(message) {
+    const payload = {
+        name: String(message?.name || ''),
+        send_date: String(message?.send_date || ''),
+        mes: normalizeText(message?.mes || ''),
+    };
+    return String(getStringHash(JSON.stringify(payload)));
+}
+
+function buildSwipeTailCacheKey(assistantSeq, messageHash) {
+    return `${Math.max(1, Math.floor(Number(assistantSeq || 0)))}:${String(messageHash || '')}`;
+}
+
+function computeSwipeTailPrefixHash(state, seqFrom) {
+    const startSeq = Math.max(1, Math.floor(Number(seqFrom || 0)));
+    const normalizedState = normalizePersistedStateBase(state);
+    const prefixLog = normalizedState.opLog.filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < startSeq);
+    return String(getStringHash(JSON.stringify(prefixLog)));
+}
+
+function pruneSwipeTailCache(cache, { activeSeq = null, maxEntries = SWIPE_TAIL_CACHE_MAX_ENTRIES } = {}) {
+    const normalized = normalizeSwipeTailCache(cache);
+    const targetSeq = Number.isFinite(Number(activeSeq)) && Number(activeSeq) > 0
+        ? Math.max(1, Math.floor(Number(activeSeq)))
+        : null;
+    let entries = Object.entries(normalized);
+    if (targetSeq !== null) {
+        entries = entries.filter(([, entry]) => Math.max(0, Math.floor(Number(entry?.seqFrom || 0))) === targetSeq);
+    }
+    entries.sort(([, a], [, b]) => Math.max(0, Number(b?.cachedAt || 0)) - Math.max(0, Number(a?.cachedAt || 0)));
+    return Object.fromEntries(entries.slice(0, Math.max(1, Math.floor(Number(maxEntries || SWIPE_TAIL_CACHE_MAX_ENTRIES)))).map(([key, value]) => [key, structuredClone(value)]));
+}
+
+function buildActiveSwipeTailDescriptor(context, { messageIndex = null, expectedAssistantSeq = null } = {}) {
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    if (source.length === 0) {
+        return null;
+    }
+    const targetIndex = messageIndex === null || messageIndex === undefined
+        ? source.length - 1
+        : Math.max(0, Math.floor(Number(messageIndex)));
+    if (!Number.isFinite(targetIndex) || targetIndex < 0 || targetIndex >= source.length) {
+        return null;
+    }
+    if (targetIndex !== source.length - 1) {
+        return null;
+    }
+    const message = source[targetIndex];
+    if (!isExtractableAssistantMessage(message)) {
+        return null;
+    }
+    if (!Array.isArray(message?.swipes) || message.swipes.length < 2) {
+        return null;
+    }
+    const assistantSeq = findAffectedAssistantSeqFromMessageIndex(context, targetIndex);
+    if (!Number.isFinite(assistantSeq) || assistantSeq <= 0) {
+        return null;
+    }
+    const requiredSeq = Number.isFinite(Number(expectedAssistantSeq)) && Number(expectedAssistantSeq) > 0
+        ? Math.max(1, Math.floor(Number(expectedAssistantSeq)))
+        : null;
+    if (requiredSeq !== null && assistantSeq !== requiredSeq) {
+        return null;
+    }
+    const messageHash = buildSwipeTailMessageHash(message);
+    return {
+        messageIndex: targetIndex,
+        assistantSeq,
+        messageHash,
+        cacheKey: buildSwipeTailCacheKey(assistantSeq, messageHash),
+    };
+}
+
 function getLatestLoggedSeq(stateOrLog) {
     const log = Array.isArray(stateOrLog)
         ? stateOrLog
@@ -1846,6 +1966,7 @@ function normalizePersistedStateBase(raw) {
     normalized.lastRecallProjection = raw.lastRecallProjection && typeof raw.lastRecallProjection === 'object'
         ? structuredClone(raw.lastRecallProjection)
         : null;
+    normalized.swipeTailCache = normalizeSwipeTailCache(raw.swipeTailCache);
     normalized.opLog = Array.isArray(raw.opLog)
         ? raw.opLog.map(normalizeMemoryLogEntry).filter(Boolean)
         : [];
@@ -1892,12 +2013,14 @@ function buildPersistedStateFromLegacyStore(raw, context) {
     normalized.lastRecallProjection = legacyStore.lastRecallProjection && typeof legacyStore.lastRecallProjection === 'object'
         ? structuredClone(legacyStore.lastRecallProjection)
         : null;
+    normalized.swipeTailCache = cloneSwipeTailCache(legacyStore.swipeTailCache);
 
     const hasLegacyPayload = Object.keys(legacyStore.nodes || {}).length > 0
         || (Array.isArray(legacyStore.edges) && legacyStore.edges.length > 0)
         || normalized.sourceMessageCount > 0
         || normalized.lastRecallTrace.length > 0
-        || Boolean(normalized.lastRecallProjection);
+        || Boolean(normalized.lastRecallProjection)
+        || Object.keys(normalized.swipeTailCache).length > 0;
     if (hasLegacyPayload) {
         const seq = buildLegacyMigrationSeq(context, legacyStore);
         const ops = buildMemoryLogOpsFromStore(legacyStore);
@@ -1993,6 +2116,7 @@ function buildRuntimeStoreFromPersistedState(state) {
         ? structuredClone(normalizedState.lastRecallProjection)
         : null;
     runtimeStore.sourceMessageCount = Math.max(0, Number(normalizedState.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(normalizedState.swipeTailCache);
     return runtimeStore;
 }
 
@@ -2014,6 +2138,7 @@ function updatePersistedStateMetadataFromStore(chatKey, store) {
     state.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? structuredClone(store.lastRecallProjection)
         : null;
+    state.swipeTailCache = cloneSwipeTailCache(store?.swipeTailCache);
     memoryStateCache.set(chatKey, state);
     return state;
 }
@@ -2115,15 +2240,17 @@ function appendPersistedDiffEntry(chatKey, beforeStore, afterStore, seq) {
         return false;
     }
     state.opLog.push({ seq: normalizedSeq, ops });
-    memoryStateCache.set(key, state);
-    afterStore.loggedSeqTo = Math.max(Number(afterStore?.loggedSeqTo || 0), getLatestLoggedSeq(state));
-    const runtimeStore = normalizeStoreForRuntime(afterStore);
-    runtimeStore.loggedSeqTo = Math.max(getLatestLoggedSeq(state), runtimeStore.loggedSeqTo);
-    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(afterStore?.lastRecallTrace) ? afterStore.lastRecallTrace : []);
-    runtimeStore.lastRecallProjection = afterStore?.lastRecallProjection && typeof afterStore.lastRecallProjection === 'object'
-        ? structuredClone(afterStore.lastRecallProjection)
+    const prepared = prepareCommittedStateWithSwipeTailCache(getContext(), state, afterStore, normalizedSeq);
+    memoryStateCache.set(key, prepared.state);
+    afterStore.loggedSeqTo = Math.max(Number(afterStore?.loggedSeqTo || 0), getLatestLoggedSeq(prepared.state));
+    const runtimeStore = normalizeStoreForRuntime(prepared.store);
+    runtimeStore.loggedSeqTo = Math.max(getLatestLoggedSeq(prepared.state), runtimeStore.loggedSeqTo);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(prepared.store?.lastRecallTrace) ? prepared.store.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = prepared.store?.lastRecallProjection && typeof prepared.store.lastRecallProjection === 'object'
+        ? structuredClone(prepared.store.lastRecallProjection)
         : null;
-    runtimeStore.sourceMessageCount = Math.max(0, Number(afterStore?.sourceMessageCount || 0));
+    runtimeStore.sourceMessageCount = Math.max(0, Number(prepared.store?.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(prepared.store?.swipeTailCache);
     memoryStoreCache.set(key, runtimeStore);
     updatePersistedStateMetadataFromStore(key, runtimeStore);
     return true;
@@ -2138,6 +2265,7 @@ function applyStoreMetadataToPersistedState(state, store) {
     nextState.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
         ? structuredClone(store.lastRecallProjection)
         : null;
+    nextState.swipeTailCache = cloneSwipeTailCache(store?.swipeTailCache);
     return nextState;
 }
 
@@ -2148,6 +2276,7 @@ function buildRuntimeStoreWithPersistedMetadata(state, sourceStore) {
         ? structuredClone(sourceStore.lastRecallProjection)
         : null;
     runtimeStore.sourceMessageCount = Math.max(0, Number(sourceStore?.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(sourceStore?.swipeTailCache);
     runtimeStore.lastExtractionDebug = sourceStore?.lastExtractionDebug && typeof sourceStore.lastExtractionDebug === 'object'
         ? structuredClone(sourceStore.lastExtractionDebug)
         : null;
@@ -2163,9 +2292,109 @@ function hasPersistedStoreMetadataChanges(beforeStore, afterStore) {
     const afterProjection = JSON.stringify(afterStore?.lastRecallProjection && typeof afterStore.lastRecallProjection === 'object'
         ? afterStore.lastRecallProjection
         : null);
+    const beforeSwipeTailCache = JSON.stringify(normalizeSwipeTailCache(beforeStore?.swipeTailCache));
+    const afterSwipeTailCache = JSON.stringify(normalizeSwipeTailCache(afterStore?.swipeTailCache));
     return Math.max(0, Number(beforeStore?.sourceMessageCount || 0)) !== Math.max(0, Number(afterStore?.sourceMessageCount || 0))
         || beforeTrace !== afterTrace
-        || beforeProjection !== afterProjection;
+        || beforeProjection !== afterProjection
+        || beforeSwipeTailCache !== afterSwipeTailCache;
+}
+
+function prepareCommittedStateWithSwipeTailCache(context, state, store, seq) {
+    const normalizedState = normalizePersistedStateBase(state);
+    const normalizedStore = normalizeStoreForRuntime(store);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedStore.appliedSeqTo || getSemanticCoverageSeq(normalizedStore) || 0)));
+    const settings = getEffectiveSettings(context, getSettings());
+    const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
+    const descriptor = latestSeq > 0
+        ? buildActiveSwipeTailDescriptor(context, { expectedAssistantSeq: latestSeq })
+        : null;
+    let nextCache = descriptor
+        ? pruneSwipeTailCache(normalizedState.swipeTailCache, { activeSeq: descriptor.assistantSeq })
+        : {};
+    if (descriptor && normalizedSeq >= latestSeq) {
+        nextCache[descriptor.cacheKey] = {
+            seqFrom: descriptor.assistantSeq,
+            prefixHash: computeSwipeTailPrefixHash(normalizedState, descriptor.assistantSeq),
+            tailLog: normalizedState.opLog
+                .filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) >= descriptor.assistantSeq)
+                .map(entry => structuredClone(entry)),
+            cachedAt: Date.now(),
+        };
+        nextCache = pruneSwipeTailCache(nextCache, { activeSeq: descriptor.assistantSeq });
+    }
+    normalizedState.swipeTailCache = nextCache;
+    normalizedStore.swipeTailCache = cloneSwipeTailCache(nextCache);
+    return {
+        state: normalizedState,
+        store: normalizedStore,
+    };
+}
+
+function cancelPendingMutationInvalidation(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return;
+    }
+    const pending = pendingMutationInvalidations.get(key);
+    if (pending?.timer) {
+        clearTimeout(pending.timer);
+    }
+    pendingMutationInvalidations.delete(key);
+}
+
+async function restoreSwipeTailCacheForMessage(context, messageIndex) {
+    const chatKey = getChatKey(context);
+    if (!chatKey || chatKey === 'invalid_target') {
+        return false;
+    }
+    const descriptor = buildActiveSwipeTailDescriptor(context, { messageIndex });
+    if (!descriptor) {
+        return false;
+    }
+    const currentState = normalizePersistedStateBase(getMemoryState(chatKey));
+    const cacheEntry = normalizeSwipeTailCacheEntry(currentState.swipeTailCache?.[descriptor.cacheKey]);
+    if (!cacheEntry) {
+        return false;
+    }
+    const prefixHash = computeSwipeTailPrefixHash(currentState, descriptor.assistantSeq);
+    if (String(cacheEntry.prefixHash || '') !== prefixHash) {
+        return false;
+    }
+    cancelPendingMutationInvalidation(chatKey);
+    if (extractionTimers.has(chatKey)) {
+        clearTimeout(extractionTimers.get(chatKey));
+        extractionTimers.delete(chatKey);
+    }
+    if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+        clearRuntimeInfoToast();
+        activeExtractionAbortController.abort();
+    }
+    const nextState = normalizePersistedStateBase(currentState);
+    nextState.opLog = nextState.opLog
+        .filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < descriptor.assistantSeq)
+        .concat(cacheEntry.tailLog.map(entry => structuredClone(entry)));
+    nextState.sourceMessageCount = Math.max(0, Number(computeChatSourceState(context)?.messageCount || nextState.sourceMessageCount || 0));
+    nextState.lastRecallTrace = [];
+    nextState.lastRecallProjection = null;
+    nextState.swipeTailCache = pruneSwipeTailCache(nextState.swipeTailCache, { activeSeq: descriptor.assistantSeq });
+    const restoredStore = buildRuntimeStoreWithPersistedMetadata(nextState, {
+        sourceMessageCount: nextState.sourceMessageCount,
+        lastRecallTrace: [],
+        lastRecallProjection: null,
+        swipeTailCache: nextState.swipeTailCache,
+        lastExtractionDebug: {
+            beginSeq: descriptor.assistantSeq,
+            latestSeq: descriptor.assistantSeq,
+            coveredSeqTo: Math.max(0, descriptor.assistantSeq - 1),
+            extracted: cacheEntry.tailLog.length > 0,
+            reason: 'swipe_cache_hit',
+            at: Date.now(),
+        },
+    });
+    await persistPreparedMemoryStateByChatKey(context, chatKey, nextState, restoredStore, { syncPersistentProjection: true });
+    refreshUiStats();
+    return true;
 }
 
 async function persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection = false } = {}) {
@@ -2210,27 +2439,28 @@ async function commitMemoryStoreReplaceByChatKey(context, chatKey, store, seq, {
     nextState.opLog = (normalizedSeq > 0 || ops.length > 0)
         ? [{ seq: normalizedSeq, ops }]
         : [];
-    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(nextState, normalizedStore);
-    return await persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection });
+    const prepared = prepareCommittedStateWithSwipeTailCache(context, nextState, normalizedStore, normalizedSeq);
+    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(prepared.state, prepared.store);
+    return await persistPreparedMemoryStateByChatKey(context, chatKey, prepared.state, runtimeStore, { syncPersistentProjection });
 }
 
 async function commitMemoryStoreDiffByChatKey(context, chatKey, beforeStore, afterStore, seq, { syncPersistentProjection = false } = {}) {
     const normalizedBefore = normalizeStoreForRuntime(beforeStore);
     const normalizedAfter = normalizeStoreForRuntime(afterStore);
     const ops = buildMemoryLogDiffOps(normalizedBefore, normalizedAfter);
-    const metadataChanged = hasPersistedStoreMetadataChanges(normalizedBefore, normalizedAfter);
-    if (ops.length === 0 && !metadataChanged) {
-        return normalizedAfter;
-    }
-
     const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedAfter.appliedSeqTo || getSemanticCoverageSeq(normalizedAfter) || 0)));
     const nextState = normalizePersistedStateBase(getMemoryState(chatKey));
     if (ops.length > 0) {
         nextState.opLog.push({ seq: normalizedSeq, ops });
     }
     applyStoreMetadataToPersistedState(nextState, normalizedAfter);
-    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(nextState, normalizedAfter);
-    return await persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection });
+    const prepared = prepareCommittedStateWithSwipeTailCache(context, nextState, normalizedAfter, normalizedSeq);
+    const metadataChanged = hasPersistedStoreMetadataChanges(normalizedBefore, prepared.store);
+    if (ops.length === 0 && !metadataChanged) {
+        return prepared.store;
+    }
+    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(prepared.state, prepared.store);
+    return await persistPreparedMemoryStateByChatKey(context, chatKey, prepared.state, runtimeStore, { syncPersistentProjection });
 }
 
 function replacePersistedGraphWithStore(chatKey, store, seq) {
@@ -2245,14 +2475,16 @@ function replacePersistedGraphWithStore(chatKey, store, seq) {
     state.opLog = (normalizedSeq > 0 || ops.length > 0)
         ? [{ seq: normalizedSeq, ops }]
         : [];
-    memoryStateCache.set(key, state);
-    store.loggedSeqTo = Math.max(Number(store?.loggedSeqTo || 0), getLatestLoggedSeq(state));
-    const runtimeStore = buildRuntimeStoreFromPersistedState(state);
-    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(normalizedStore.lastRecallTrace) ? normalizedStore.lastRecallTrace : []);
-    runtimeStore.lastRecallProjection = normalizedStore.lastRecallProjection && typeof normalizedStore.lastRecallProjection === 'object'
-        ? structuredClone(normalizedStore.lastRecallProjection)
+    const prepared = prepareCommittedStateWithSwipeTailCache(getContext(), state, normalizedStore, normalizedSeq);
+    memoryStateCache.set(key, prepared.state);
+    store.loggedSeqTo = Math.max(Number(store?.loggedSeqTo || 0), getLatestLoggedSeq(prepared.state));
+    const runtimeStore = buildRuntimeStoreFromPersistedState(prepared.state);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(prepared.store.lastRecallTrace) ? prepared.store.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = prepared.store.lastRecallProjection && typeof prepared.store.lastRecallProjection === 'object'
+        ? structuredClone(prepared.store.lastRecallProjection)
         : null;
-    runtimeStore.sourceMessageCount = Math.max(0, Number(normalizedStore.sourceMessageCount || 0));
+    runtimeStore.sourceMessageCount = Math.max(0, Number(prepared.store.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(prepared.store.swipeTailCache);
     updatePersistedStateMetadataFromStore(key, runtimeStore);
     memoryStoreCache.set(key, runtimeStore);
     return runtimeStore;
@@ -2342,10 +2574,12 @@ async function inheritMemoryStoreForBranch(context, payload) {
     nextState.sourceMessageCount = assistantMessageCount;
     nextState.lastRecallTrace = [];
     nextState.lastRecallProjection = null;
+    nextState.swipeTailCache = {};
     const branchStore = buildRuntimeStoreWithPersistedMetadata(nextState, {
         sourceMessageCount: assistantMessageCount,
         lastRecallTrace: [],
         lastRecallProjection: null,
+        swipeTailCache: {},
     });
     branchStore.pendingFullRebuild = false;
 
@@ -2518,6 +2752,13 @@ function findValueByKeyDeep(value, targetKey, depth = 0) {
     return undefined;
 }
 
+function isExtractableAssistantMessage(message) {
+    if (!message || message.is_system || message.is_user) {
+        return false;
+    }
+    return Boolean(normalizeText(message?.mes || ''));
+}
+
 function getAssistantChatMessages(sourceOrContext) {
     const source = Array.isArray(sourceOrContext)
         ? sourceOrContext
@@ -2536,10 +2777,10 @@ function getAssistantChatMessages(sourceOrContext) {
             };
             continue;
         }
-        const text = normalizeText(message?.mes || '');
-        if (!text) {
+        if (!isExtractableAssistantMessage(message)) {
             continue;
         }
+        const text = normalizeText(message?.mes || '');
         result.push({
             is_user: false,
             name: String(message.name || ''),
@@ -2893,7 +3134,7 @@ function findAssistantSeqFromPlayableSeq(context, playableSeqFrom) {
             continue;
         }
         playableSeq += 1;
-        if (message.is_user) {
+        if (!isExtractableAssistantMessage(message)) {
             continue;
         }
         assistantSeq += 1;
@@ -2913,10 +3154,7 @@ function findAffectedAssistantSeqFromMessageIndex(context, messageIndex) {
     let assistantSeq = 0;
     for (let i = 0; i < source.length; i++) {
         const message = source[i];
-        if (!message || message.is_system) {
-            continue;
-        }
-        if (message.is_user) {
+        if (!isExtractableAssistantMessage(message)) {
             continue;
         }
         assistantSeq += 1;
@@ -12685,8 +12923,11 @@ jQuery(() => {
         queueMutationInvalidation(fromSeq, { scheduleReplay: true });
     });
     if (context.eventTypes.MESSAGE_SWIPED) {
-        context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, (messageId, meta) => {
+        context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, async (messageId, meta) => {
             if (meta?.pendingGeneration === true) {
+                return;
+            }
+            if (await restoreSwipeTailCacheForMessage(getContext(), messageId)) {
                 return;
             }
             const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
