@@ -30,6 +30,7 @@ import { renderObjectDiffHtml } from '../object-diff-view.js';
 const MODULE_NAME = 'completion_preset_assistant';
 const UI_BLOCK_ID = 'completion_preset_assistant_settings';
 const OPEN_BUTTON_ID = 'completion_preset_assistant_open';
+const CREATE_BUTTON_ID = 'completion_preset_assistant_create';
 const OPENAI_BUTTON_ID = 'completion_preset_assistant_openai_button';
 const SESSION_NAMESPACE = 'completion_preset_assistant_session';
 const JOURNAL_NAMESPACE = 'completion_preset_assistant_journal';
@@ -150,7 +151,12 @@ function registerLocaleData() {
     addLocaleData('zh-cn', {
         'Completion Preset Assistant': '聊天补全预设助手',
         'Open Assistant': '打开助手',
-        'Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.': '当前 MVP 只支持已保存的聊天补全预设。角色卡绑定的运行时预设暂不支持直接编辑。',
+        'Create New Preset': '新建预设',
+        'Character-bound runtime presets are not directly editable.': '角色卡绑定的运行时预设暂不支持直接编辑。',
+        'Enter a name for the new preset.': '请输入新预设名称。',
+        'Preset already exists: ${0}': '预设已存在：${0}',
+        'Preset created: ${0}': '已创建预设：${0}',
+        'Create preset failed.': '创建预设失败。',
         'Model request LLM preset name (empty = current)': '模型请求提示词预设（留空=当前）',
         'Model request API preset name (Connection profile, empty = current)': '模型请求 API 预设（连接配置，留空=当前）',
         'Include world info (simulate current chat)': '包含世界书信息（按当前聊天重新模拟）',
@@ -244,7 +250,12 @@ function registerLocaleData() {
     addLocaleData('zh-tw', {
         'Completion Preset Assistant': '聊天補全預設助手',
         'Open Assistant': '開啟助手',
-        'Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.': '目前 MVP 只支援已儲存的聊天補全預設。角色卡綁定的執行時預設暫不支援直接編輯。',
+        'Create New Preset': '新建預設',
+        'Character-bound runtime presets are not directly editable.': '角色卡綁定的執行時預設暫不支援直接編輯。',
+        'Enter a name for the new preset.': '請輸入新預設名稱。',
+        'Preset already exists: ${0}': '預設已存在：${0}',
+        'Preset created: ${0}': '已建立預設：${0}',
+        'Create preset failed.': '建立預設失敗。',
         'Model request LLM preset name (empty = current)': '模型請求提示詞預設（留空=目前）',
         'Model request API preset name (Connection profile, empty = current)': '模型請求 API 預設（連線設定，留空=目前）',
         'Include world info (simulate current chat)': '包含世界書資訊（按目前聊天重新模擬）',
@@ -374,6 +385,31 @@ function getCurrentTargetRef(context = getContext()) {
 function getCurrentLiveSnapshot(context = getContext()) {
     const snapshot = context?.presets?.getLive?.('openai');
     return snapshot && typeof snapshot === 'object' ? clone(snapshot, null) : null;
+}
+
+function getStoredDefaultSnapshot(context = getContext()) {
+    const snapshot = context?.presets?.getStored?.({ collection: 'openai', name: 'Default' });
+    return snapshot && typeof snapshot === 'object' ? clone(snapshot, null) : null;
+}
+
+function findCanonicalPresetName(names = [], requestedName = '') {
+    const normalizedRequested = String(requestedName || '').trim().toLocaleLowerCase();
+    if (!normalizedRequested) {
+        return '';
+    }
+    return names.find((name) => String(name || '').trim().toLocaleLowerCase() === normalizedRequested) || '';
+}
+
+function buildNewPresetBaseline(context = getContext()) {
+    const defaultSnapshot = getStoredDefaultSnapshot(context);
+    if (isPlainObject(defaultSnapshot?.body)) {
+        return clone(defaultSnapshot.body, {});
+    }
+    const liveSnapshot = getCurrentLiveSnapshot(context);
+    if (isPlainObject(liveSnapshot?.body)) {
+        return clone(liveSnapshot.body, {});
+    }
+    return {};
 }
 
 function createEmptySession() {
@@ -1336,6 +1372,18 @@ function buildFormattedLiveStateText(body) {
     ].join('\n');
 }
 
+function buildPresetStructureGuideText() {
+    return [
+        'OpenAI preset structure guide:',
+        '- Base prompt fields: new_chat_prompt, new_group_chat_prompt, continue_nudge_prompt, impersonation_prompt, assistant_prefill, continue_prefill, continue_postfix, send_if_empty, wi_format, scenario_format, personality_format, group_nudge_prompt, use_sysprompt, squash_system_messages.',
+        '- Common generation/context fields: temperature, top_p, top_k, min_p, presence_penalty, frequency_penalty, openai_max_context, openai_max_tokens, names_behavior, function_calling, show_thoughts, reasoning_effort, verbosity, seed, n.',
+        '- prompts[] entries: identifier, name, content, role, enabled, marker, injection_position, injection_depth, injection_order.',
+        '- prompt_order[] groups: each item has character_id and order[]. Each order[] item has identifier and enabled.',
+        '- Prefer prompt-specific tools over raw path edits for prompts and prompt_order.',
+        '- New presets created from this assistant start from the stored Default preset when available.',
+    ].join('\n');
+}
+
 function buildDialogMetaItems(dialogState) {
     const settings = getSettings();
     const requestProfileLabel = settings.requestApiProfileName || i18n('(current)');
@@ -1395,6 +1443,8 @@ function buildUserPrompt(dialogState, userText) {
     return [
         'Target preset collection: openai',
         `Target preset name: ${dialogState.targetRef?.name || ''}`,
+        '',
+        buildPresetStructureGuideText(),
         '',
         buildFormattedLiveStateText(dialogState.liveSnapshot?.body || {}),
         '',
@@ -3347,10 +3397,59 @@ function bindDialogEvents(dialogState) {
     });
 }
 
-async function openAssistantPopup() {
+async function handleCreateNewPreset() {
     const context = getContext();
-    const targetRef = getCurrentTargetRef(context);
-    const liveSnapshot = getCurrentLiveSnapshot(context);
+    const requestedName = String(await Popup.show.input(
+        i18n('Create New Preset'),
+        i18n('Enter a name for the new preset.'),
+        '',
+    ) || '').trim();
+    if (!requestedName) {
+        return;
+    }
+
+    const existingName = findCanonicalPresetName(getOpenAIPresetNames(context), requestedName);
+    if (existingName) {
+        toastr.warning(i18nFormat('Preset already exists: ${0}', existingName));
+        return;
+    }
+
+    try {
+        const result = await context.presets.save(
+            { collection: 'openai', name: requestedName },
+            buildNewPresetBaseline(context),
+            { select: true },
+        );
+        if (!result?.ok || !result?.ref) {
+            throw new Error(i18n('Create preset failed.'));
+        }
+
+        const liveSnapshot = getCurrentLiveSnapshot(context) || {
+            ref: clone(result.ref, null),
+            body: clone(result.body || {}, {}),
+            source: 'live',
+            selected: true,
+            stored: true,
+        };
+        toastr.success(i18nFormat('Preset created: ${0}', result.ref.name || requestedName));
+        await openAssistantPopup({
+            targetRef: result.ref,
+            liveSnapshot,
+        });
+    } catch (error) {
+        toastr.error(i18nFormat('AI request failed: ${0}', error?.message || error));
+        console.error(`[${MODULE_NAME}] Failed to create preset`, error);
+    }
+}
+
+async function openAssistantPopup({ targetRef: explicitTargetRef = null, liveSnapshot: explicitLiveSnapshot = null } = {}) {
+    const context = getContext();
+    const targetRef = explicitTargetRef && typeof explicitTargetRef === 'object'
+        ? clone(explicitTargetRef, null)
+        : getCurrentTargetRef(context);
+    const liveSnapshot = explicitLiveSnapshot && typeof explicitLiveSnapshot === 'object'
+        ? clone(explicitLiveSnapshot, null)
+        : getCurrentLiveSnapshot(context);
 
     if (!targetRef || !liveSnapshot?.stored) {
         toastr.warning(i18n('Current preset is not a stored chat completion preset. Please select a saved preset first.'));
@@ -3465,6 +3564,9 @@ function bindUi() {
     root.on('click.cpa', `#${OPEN_BUTTON_ID}`, async function () {
         await openAssistantPopup();
     });
+    root.on('click.cpa', `#${CREATE_BUTTON_ID}`, async function () {
+        await handleCreateNewPreset();
+    });
     root.on('change.cpa', '#cpa_request_llm_preset', function () {
         getSettings().requestLlmPresetName = String(jQuery(this).val() || '').trim();
         saveSettingsDebounced();
@@ -3519,8 +3621,9 @@ function ensureUi() {
         <div class="inline-drawer-content">
             <div class="cpa_row">
                 <div id="${OPEN_BUTTON_ID}" class="menu_button">${escapeHtml(i18n('Open Assistant'))}</div>
+                <div id="${CREATE_BUTTON_ID}" class="menu_button">${escapeHtml(i18n('Create New Preset'))}</div>
             </div>
-            <div class="cpa_hint">${escapeHtml(i18n('Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.'))}</div>
+            <div class="cpa_hint">${escapeHtml(i18n('Character-bound runtime presets are not directly editable.'))}</div>
             <label for="cpa_request_llm_preset">${escapeHtml(i18n('Model request LLM preset name (empty = current)'))}</label>
             <select id="cpa_request_llm_preset" class="text_pole"></select>
             <label for="cpa_request_api_profile">${escapeHtml(i18n('Model request API preset name (Connection profile, empty = current)'))}</label>
