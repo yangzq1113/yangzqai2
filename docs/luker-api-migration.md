@@ -29,6 +29,23 @@ Global object recommendation:
 - `updateChatState(namespace, updater, options?)`
 - `deleteChatState(namespace, options?)`
 
+### Preset helpers
+
+- `presets.list(apiId?)`
+- `presets.resolve(target?, options?)`
+- `presets.getSelected(apiId?)`
+- `presets.getLive(apiId?)`
+- `presets.getStored(target?)`
+- `presets.save(target, body, options?)`
+- `presets.readExtensions(target?, path?)`
+- `presets.writeExtensions(target?, path, value)`
+- `presets.state.get(namespace, options?)`
+- `presets.state.getBatch(namespaces, options?)`
+- `presets.state.patch(namespace, operations, options?)`
+- `presets.state.update(namespace, updater, options?)`
+- `presets.state.delete(namespace, options?)`
+- `presets.state.deleteAll(target?)`
+
 ### Prompt/world-info assembly
 
 - `getActivePromptPresetEnvelope(options?)`
@@ -153,6 +170,161 @@ Practical rules:
 - Keep namespace payloads JSON-serializable plain objects.
 - Prefer chat state sidecars over stuffing large plugin objects into `chat_metadata`.
 - Treat `false` / `ok=false` as “state not persisted” and keep your plugin UI resilient.
+
+##### Preset helpers
+
+```ts
+type PresetRef = {
+  apiId: string,
+  name: string,
+}
+
+type PresetSnapshot = {
+  ref: PresetRef,
+  body: object,
+  source: 'live' | 'stored',
+  selected: boolean,
+  stored: boolean,
+}
+```
+
+Important scope rules:
+
+- `apiId` here means preset collection (`openai`, `context`, `instruct`, `sysprompt`, `reasoning`, `kobold`, `novel`, `textgenerationwebui`), not API endpoint/proxy presets.
+- `presets.list(...)` and `presets.getSelected(...)` only work with stored presets.
+- OpenAI character-bound runtime presets are intentionally excluded from stored refs. When such a runtime preset is active, `presets.getSelected('openai')` returns `null`, while `presets.getLive('openai')` still returns the current live body with `stored: false`.
+
+```ts
+presets.list(apiId?: string): Array<PresetRef>
+```
+
+- Lists stored preset refs for the collection.
+- Preserves the collection’s UI ordering.
+- Safe for building pickers or cross-preset copy flows.
+
+```ts
+presets.resolve(
+  target?: PresetRef | { apiId?: string, type?: string, collection?: string, name?: string } | string | null,
+  options?: { apiId?: string, defaultApiId?: string }
+): PresetRef | null
+```
+
+- Resolves a preset target to the canonical stored preset ref currently known to the UI.
+- If `target` omits `name`, Luker resolves the currently selected stored preset for that collection.
+- Returns `null` when no stored preset target is available.
+- `save(...)` is the only helper that accepts a new preset name not already in the stored list.
+
+```ts
+presets.getSelected(apiId?: string): PresetRef | null
+```
+
+- Returns the currently selected stored preset ref for the collection.
+- Returns `null` when the active selection is runtime-only or invalid.
+
+```ts
+presets.getLive(apiId?: string): PresetSnapshot | null
+```
+
+- Returns the current live preset body from the UI/settings layer.
+- Use this when your plugin edits the preset currently loaded in the editor, even if the user has unsaved changes.
+- `stored: false` means the live preset is not currently backed by a stored preset ref.
+
+```ts
+presets.getStored(target?: PresetRef | object | string | null): PresetSnapshot | null
+```
+
+- Returns a cloned stored preset snapshot.
+- Returns `null` when the target does not resolve to an existing stored preset.
+- Use this for diffing against another saved preset without pulling editor-only live state.
+
+```ts
+presets.save(
+  target: PresetRef | { apiId?: string, type?: string, name?: string },
+  body: object,
+  options?: {
+    apiId?: string,
+    select?: boolean,
+    maxOperations?: number,
+  }
+): Promise<{
+  ok: boolean,
+  ref: PresetRef | null,
+  mode: 'patch' | 'full' | 'noop',
+  operations: object[],
+  response?: Response | null,
+  body?: object | null,
+  snapshot?: PresetSnapshot | null,
+}>
+```
+
+- Persists a preset body using the same patch-first strategy as core preset saves.
+- `mode='patch'` means Luker stored the change through `/api/presets/patch`; `mode='full'` means it fell back to a full save; `mode='noop'` means no change was needed.
+- By default, Luker only re-selects the preset in UI when saving the currently selected stored preset. Pass `select: true` to force selection.
+- This is the preferred helper for plugin-authored preset edits; you do not need to build raw preset patches yourself.
+
+```ts
+presets.readExtensions(
+  target?: PresetRef | object | string | null,
+  path?: string
+): any
+
+presets.writeExtensions(
+  target?: PresetRef | object | string | null,
+  path?: string,
+  value?: any
+): Promise<boolean>
+```
+
+- Reads or writes `preset.extensions` payloads through the same preset-manager semantics used by core.
+- Use this only for actual preset content. For plugin runtime/session data, prefer `presets.state.*`.
+
+```ts
+presets.state.get(
+  namespace: string,
+  options?: { apiId?: string, target?: PresetRef | object | string | null }
+): Promise<object | null>
+
+presets.state.getBatch(
+  namespaces: string[],
+  options?: { apiId?: string, target?: PresetRef | object | string | null }
+): Promise<Map<string, object | null>>
+
+presets.state.patch(
+  namespace: string,
+  operations: object[],
+  options?: { apiId?: string, target?: PresetRef | object | string | null }
+): Promise<boolean>
+
+presets.state.update(
+  namespace: string,
+  updater: (currentState: object, meta?: {
+    attempt: number,
+    target: PresetRef,
+    namespace: string,
+  }) => object | null | undefined | Promise<object | null | undefined>,
+  options?: {
+    apiId?: string,
+    target?: PresetRef | object | string | null,
+    maxOperations?: number,
+    maxRetries?: number,
+    asyncDiff?: boolean,
+  }
+): Promise<{ ok: boolean, state: object | null, updated: boolean }>
+
+presets.state.delete(
+  namespace: string,
+  options?: { apiId?: string, target?: PresetRef | object | string | null }
+): Promise<boolean>
+
+presets.state.deleteAll(
+  target?: PresetRef | object | string | null
+): Promise<boolean>
+```
+
+- These helpers store plugin state in preset-bound sidecar files instead of polluting preset bodies or global settings.
+- When `target` is omitted, Luker uses the currently selected stored preset for that collection.
+- If no stored preset target exists, these helpers return `null`, `false`, or an empty result instead of silently binding state to an ephemeral runtime preset name.
+- Use `update(...)` for read-modify-write logic and `patch(...)` only when you already have a precise RFC6902 object patch.
 
 ##### Prompt/world-info assembly
 

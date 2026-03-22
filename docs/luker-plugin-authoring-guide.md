@@ -186,6 +186,7 @@ Use `getContext()` for:
 - active character/group information
 - generation hooks and event types
 - chat state sidecars
+- preset refs, live/stored preset snapshots, and preset sidecars via `context.presets`
 - prompt/world-info helpers
 - patch-first message and metadata persistence
 
@@ -244,6 +245,27 @@ Typical helpers:
 - `deleteChatState(...)`
 
 Use these through `getContext()` rather than calling low-level chat state endpoints yourself.
+
+### Preset Helpers
+
+If your plugin inspects, diffs, or edits presets, use `context.presets` instead of importing `PresetManager` internals.
+
+Typical helpers:
+
+- `context.presets.list('openai')`
+- `context.presets.getSelected('openai')`
+- `context.presets.getLive('openai')`
+- `context.presets.getStored({ apiId: 'openai', name: 'My Preset' })`
+- `context.presets.save({ apiId: 'openai', name: 'My Preset' }, nextBody)`
+- `context.presets.state.update(MODULE_NAME, updater, { target: presetRef })`
+
+Practical rules:
+
+- `apiId` here means preset collection, not endpoint/proxy presets.
+- Prefer `getLive(...)` when editing the preset currently open in UI.
+- Prefer `getStored(...)` when comparing against other saved presets or copying content across presets.
+- Use `context.presets.state.*` for plugin runtime/session data bound to a preset. Do not stuff that data into the preset body unless it is meant to ship with the preset itself.
+- OpenAI character-bound runtime presets are not treated as stored refs. If one is selected, `getSelected('openai')` returns `null`, while `getLive('openai')` still lets you inspect the current live body.
 
 ## 7) Lifecycle and Cleanup
 
