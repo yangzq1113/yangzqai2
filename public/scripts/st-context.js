@@ -63,7 +63,13 @@ import {
     getChatStateBatch,
     patchChatState,
     updateChatState,
+    getPresetState,
+    getPresetStateBatch,
+    patchPresetState,
+    updatePresetState,
     deleteChatState,
+    deletePresetState,
+    deleteAllPresetState,
     swipe_right,
     swipe_left,
     generateRaw,
@@ -99,6 +105,7 @@ import { getChatCompletionModel, oai_settings } from './openai.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
+import { persistPreset } from './preset-persistence.js';
 import { humanizedDateTime, isMobile, shouldSendOnEnter } from './RossAscends-mods.js';
 import { ScraperManager } from './scrapers.js';
 import { executeSlashCommands, executeSlashCommandsWithOptions, registerSlashCommand } from './slash-commands.js';
@@ -110,7 +117,7 @@ import { getTextGenServer, textgenerationwebui_settings } from './textgen-settin
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { findCanonicalNameInList, timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
+import { areLookupNamesEqual, findCanonicalNameInList, timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
 import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
 import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, loadWorldInfoBatch, reloadEditor, saveWorldInfo, updateWorldInfoList, wi_anchor_position } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
@@ -185,6 +192,196 @@ function getPresetSnapshot(apiId, presetName = '') {
         name: String(resolvedName || selectedName || ''),
         settings,
     };
+}
+
+function isPlainObject(value) {
+    return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function getStoredPresetNames(apiId = '') {
+    const normalizedApiId = normalizePresetApi(apiId);
+    const manager = getPresetManager(normalizedApiId);
+    const presetNames = manager?.getPresetList?.()?.preset_names;
+
+    if (Array.isArray(presetNames)) {
+        return [...presetNames];
+    }
+
+    return isPlainObject(presetNames) ? Object.keys(presetNames) : [];
+}
+
+function normalizePresetRef(target = null, options = {}) {
+    const fallbackApiId = options?.apiId || options?.defaultApiId || '';
+    const allowMissingName = options?.allowMissingName === true;
+
+    if (target && typeof target === 'object') {
+        const apiId = normalizePresetApi(target.apiId || target.type || target.collection || fallbackApiId);
+        const manager = getPresetManager(apiId);
+        const presetNames = getStoredPresetNames(apiId);
+        const selectedName = cleanText(manager?.getSelectedPresetName?.());
+        const selectedStoredName = findCanonicalNameInList(presetNames, selectedName) || '';
+        const requestedName = cleanText(target.name);
+        const resolvedName = requestedName
+            ? (findCanonicalNameInList(presetNames, requestedName) || (allowMissingName ? requestedName : ''))
+            : selectedStoredName;
+
+        return apiId && resolvedName
+            ? { apiId, name: resolvedName }
+            : null;
+    }
+
+    if (typeof target === 'string') {
+        const apiId = normalizePresetApi(target || fallbackApiId);
+        const manager = getPresetManager(apiId);
+        const selectedName = cleanText(manager?.getSelectedPresetName?.());
+        const selectedStoredName = findCanonicalNameInList(getStoredPresetNames(apiId), selectedName) || '';
+        return apiId && selectedStoredName
+            ? { apiId, name: selectedStoredName }
+            : null;
+    }
+
+    const apiId = normalizePresetApi(fallbackApiId);
+    const manager = getPresetManager(apiId);
+    const selectedName = cleanText(manager?.getSelectedPresetName?.());
+    const selectedStoredName = findCanonicalNameInList(getStoredPresetNames(apiId), selectedName) || '';
+    return apiId && selectedStoredName
+        ? { apiId, name: selectedStoredName }
+        : null;
+}
+
+function buildPresetBodySnapshot(apiId, name, body, source, { stored = true, selected = false } = {}) {
+    const ref = { apiId, name: cleanText(name) };
+    return {
+        ref,
+        body: safeClone(isPlainObject(body) ? body : {}, {}),
+        source,
+        selected,
+        stored,
+    };
+}
+
+function listPresetRefs(apiId = '') {
+    const normalizedApiId = normalizePresetApi(apiId);
+    const names = getStoredPresetNames(normalizedApiId);
+    return names.map((name) => ({ apiId: normalizedApiId, name }));
+}
+
+function getSelectedPresetRef(apiId = '') {
+    return normalizePresetRef(apiId || null);
+}
+
+function getLivePresetBody(apiId = '') {
+    const normalizedApiId = normalizePresetApi(apiId);
+    const manager = getPresetManager(normalizedApiId);
+    const selectedName = cleanText(manager?.getSelectedPresetName?.());
+    const body = safeClone(manager?.getPresetSettings?.(selectedName) || {}, {});
+    const storedRef = normalizePresetRef(normalizedApiId);
+    const snapshotName = storedRef?.name || selectedName;
+
+    if (!snapshotName && !Object.keys(body).length) {
+        return null;
+    }
+
+    return buildPresetBodySnapshot(normalizedApiId, snapshotName, body, 'live', {
+        stored: Boolean(storedRef),
+        selected: true,
+    });
+}
+
+function getStoredPresetBody(target = null) {
+    const ref = normalizePresetRef(target);
+    if (!ref) {
+        return null;
+    }
+
+    const manager = getPresetManager(ref.apiId);
+    const body = manager?.getStoredPreset?.(ref.name);
+    if (!isPlainObject(body)) {
+        return null;
+    }
+
+    const selectedRef = normalizePresetRef(ref.apiId);
+    return buildPresetBodySnapshot(ref.apiId, ref.name, body, 'stored', {
+        stored: true,
+        selected: Boolean(selectedRef && areLookupNamesEqual(selectedRef.name, ref.name)),
+    });
+}
+
+async function savePresetBody(target, body, options = {}) {
+    const ref = normalizePresetRef(target, { apiId: options?.apiId, allowMissingName: true });
+    const presetBody = safeClone(isPlainObject(body) ? body : {}, {});
+    if (!ref) {
+        return { ok: false, ref: null, mode: 'noop', operations: [] };
+    }
+
+    const manager = getPresetManager(ref.apiId);
+    const existingPreset = manager?.getStoredPreset?.(ref.name) || null;
+    const selectedRef = normalizePresetRef(ref.apiId);
+    const shouldSelect = typeof options?.select === 'boolean'
+        ? options.select
+        : Boolean(selectedRef && areLookupNamesEqual(selectedRef.name, ref.name));
+    const saveResult = await persistPreset({
+        apiId: ref.apiId,
+        name: ref.name,
+        preset: presetBody,
+        existingPreset,
+        maxOperations: Number.isInteger(options?.maxOperations) && options.maxOperations > 0 ? options.maxOperations : 4000,
+    });
+
+    if (!saveResult.ok) {
+        return {
+            ok: false,
+            ref,
+            mode: saveResult.mode,
+            operations: safeClone(saveResult.operations || [], []),
+            response: saveResult.response || null,
+            body: null,
+        };
+    }
+
+    const savedName = cleanText(saveResult?.data?.name || ref.name);
+    manager?.updateList?.(savedName, presetBody, { select: shouldSelect });
+    return {
+        ok: true,
+        ref: { apiId: ref.apiId, name: savedName },
+        mode: saveResult.mode,
+        operations: safeClone(saveResult.operations || [], []),
+        response: saveResult.response || null,
+        body: safeClone(presetBody, {}),
+        snapshot: getStoredPresetBody({ apiId: ref.apiId, name: savedName }),
+    };
+}
+
+function readPresetExtensions(target = null, path = '') {
+    const ref = normalizePresetRef(target);
+    if (!ref) {
+        return null;
+    }
+
+    const manager = getPresetManager(ref.apiId);
+    const value = manager?.readPresetExtensionField?.({ name: ref.name, path: cleanText(path) });
+    return value === null || value === undefined
+        ? null
+        : safeClone(value, value);
+}
+
+async function writePresetExtensions(target = null, path = '', value = null) {
+    const ref = normalizePresetRef(target);
+    if (!ref) {
+        return false;
+    }
+
+    const manager = getPresetManager(ref.apiId);
+    if (!manager?.writePresetExtensionField) {
+        return false;
+    }
+
+    await manager.writePresetExtensionField({
+        name: ref.name,
+        path: cleanText(path),
+        value: safeClone(value, value),
+    });
+    return true;
 }
 
 function pickPromptLikeFields(settings) {
@@ -1375,6 +1572,39 @@ export function getContext() {
         patchChatState,
         updateChatState,
         deleteChatState,
+        presets: {
+            list: listPresetRefs,
+            resolve: normalizePresetRef,
+            getSelected: getSelectedPresetRef,
+            getLive: getLivePresetBody,
+            getStored: getStoredPresetBody,
+            save: savePresetBody,
+            readExtensions: readPresetExtensions,
+            writeExtensions: writePresetExtensions,
+            state: {
+                get: (namespace, options = {}) => getPresetState(namespace, {
+                    ...options,
+                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                }),
+                getBatch: (namespaces, options = {}) => getPresetStateBatch(namespaces, {
+                    ...options,
+                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                }),
+                patch: (namespace, operations, options = {}) => patchPresetState(namespace, operations, {
+                    ...options,
+                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                }),
+                update: (namespace, updater, options = {}) => updatePresetState(namespace, updater, {
+                    ...options,
+                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                }),
+                delete: (namespace, options = {}) => deletePresetState(namespace, {
+                    ...options,
+                    target: normalizePresetRef(options?.target, { apiId: options?.apiId }),
+                }),
+                deleteAll: (target = null) => deleteAllPresetState(normalizePresetRef(target)),
+            },
+        },
         openCharacterChat,
         openGroupChat,
         saveMetadata,

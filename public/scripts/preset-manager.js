@@ -888,21 +888,25 @@ class PresetManager {
      * @param {string} name Name of the preset
      * @param {object} preset Preset object
      */
-    updateList(name, preset) {
+    updateList(name, preset, { select = true } = {}) {
         const { presets, preset_names } = this.getPresetList();
         const presetExists = this.isKeyedApi() ? preset_names.includes(name) : Object.keys(preset_names).includes(name);
 
         if (presetExists) {
             if (this.isKeyedApi()) {
                 presets[preset_names.indexOf(name)] = preset;
-                $(this.select).find(`option[value="${name}"]`).prop('selected', true);
-                $(this.select).val(name).trigger('change');
+                if (select) {
+                    $(this.select).find(`option[value="${name}"]`).prop('selected', true);
+                    $(this.select).val(name).trigger('change');
+                }
             }
             else {
                 const value = preset_names[name];
                 presets[value] = preset;
-                $(this.select).find(`option[value="${value}"]`).prop('selected', true);
-                $(this.select).val(value).trigger('change');
+                if (select) {
+                    $(this.select).find(`option[value="${value}"]`).prop('selected', true);
+                    $(this.select).val(value).trigger('change');
+                }
             }
         }
         else {
@@ -911,14 +915,18 @@ class PresetManager {
 
             if (this.isKeyedApi()) {
                 preset_names[value] = name;
-                const option = $('<option></option>', { value: name, text: name, selected: true });
+                const option = $('<option></option>', { value: name, text: name, selected: select });
                 $(this.select).append(option);
-                $(this.select).val(name).trigger('change');
+                if (select) {
+                    $(this.select).val(name).trigger('change');
+                }
             } else {
                 preset_names[name] = value;
-                const option = $('<option></option>', { value: value, text: name, selected: true });
+                const option = $('<option></option>', { value: value, text: name, selected: select });
                 $(this.select).append(option);
-                $(this.select).val(value).trigger('change');
+                if (select) {
+                    $(this.select).val(value).trigger('change');
+                }
             }
         }
     }
