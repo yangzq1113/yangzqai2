@@ -60,6 +60,7 @@ const PROMPT_PREVIEW_FIELDS = Object.freeze([
 const defaultSettings = {
     requestLlmPresetName: '',
     requestApiProfileName: '',
+    includeWorldInfo: false,
     toolCallRetryMax: 2,
     sessionMessageLimit: 24,
 };
@@ -137,6 +138,7 @@ function ensureSettings() {
     const settings = extension_settings[MODULE_NAME];
     settings.requestLlmPresetName = String(settings.requestLlmPresetName || '').trim();
     settings.requestApiProfileName = String(settings.requestApiProfileName || '').trim();
+    settings.includeWorldInfo = settings.includeWorldInfo === true;
     settings.toolCallRetryMax = Math.max(0, Math.min(TOOL_CALL_RETRY_MAX, toInteger(settings.toolCallRetryMax, defaultSettings.toolCallRetryMax)));
     settings.sessionMessageLimit = Math.max(
         SESSION_MESSAGE_LIMIT_MIN,
@@ -156,6 +158,7 @@ function registerLocaleData() {
         'Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.': '当前 MVP 只支持已保存的聊天补全预设。角色卡绑定的运行时预设暂不支持直接编辑。',
         'Model request LLM preset name (empty = current)': '模型请求提示词预设（留空=当前）',
         'Model request API preset name (Connection profile, empty = current)': '模型请求 API 预设（连接配置，留空=当前）',
+        'Include world info (simulate current chat)': '包含世界书信息（按当前聊天重新模拟）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Stored session messages per preset': '每个预设保留的会话消息数',
         'Current preset is not a stored chat completion preset. Please select a saved preset first.': '当前不是已保存的聊天补全预设，请先选择一个已保存预设。',
@@ -234,6 +237,7 @@ function registerLocaleData() {
         'Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.': '目前 MVP 只支援已儲存的聊天補全預設。角色卡綁定的執行時預設暫不支援直接編輯。',
         'Model request LLM preset name (empty = current)': '模型請求提示詞預設（留空=目前）',
         'Model request API preset name (Connection profile, empty = current)': '模型請求 API 預設（連線設定，留空=目前）',
+        'Include world info (simulate current chat)': '包含世界書資訊（按目前聊天重新模擬）',
         'Tool-call retries on invalid/missing tool call (N)': '工具調用重試次數（無效/缺失時）',
         'Stored session messages per preset': '每個預設保留的會話訊息數',
         'Current preset is not a stored chat completion preset. Please select a saved preset first.': '目前不是已儲存的聊天補全預設，請先選擇一個已儲存預設。',
@@ -789,11 +793,61 @@ function buildUserPrompt(dialogState, userText) {
     ].join('\n');
 }
 
-function buildPresetAwareMessages(context, systemPrompt, userPrompt, {
+function appendUniqueWorldInfoBlock(payload, key, block) {
+    if (!payload || typeof payload !== 'object') {
+        return;
+    }
+    const content = String(block ?? '').trim();
+    if (!content) {
+        return;
+    }
+    if (Array.isArray(payload[key])) {
+        if (!payload[key].includes(content)) {
+            payload[key].push(content);
+        }
+        return;
+    }
+    const current = String(payload[key] || '').trim();
+    payload[key] = current ? `${current}\n${content}` : content;
+}
+
+function rewriteDepthWorldInfoToAfter(payload = {}) {
+    if (!payload || typeof payload !== 'object') {
+        return payload;
+    }
+    const depthEntries = Array.isArray(payload.worldInfoDepth) ? payload.worldInfoDepth : [];
+    if (depthEntries.length === 0) {
+        return payload;
+    }
+
+    const blocks = [];
+    for (const entry of depthEntries) {
+        const lines = Array.isArray(entry?.entries) ? entry.entries : [];
+        for (const line of lines) {
+            const content = String(line ?? '').trim();
+            if (content) {
+                blocks.push(content);
+            }
+        }
+    }
+
+    payload.worldInfoDepth = [];
+    for (const block of blocks) {
+        if (Array.isArray(payload.worldInfoAfterEntries)) {
+            appendUniqueWorldInfoBlock(payload, 'worldInfoAfterEntries', block);
+        } else {
+            appendUniqueWorldInfoBlock(payload, 'worldInfoAfter', block);
+        }
+    }
+    return payload;
+}
+
+async function buildPresetAwareMessages(context, systemPrompt, userPrompt, {
     llmPresetName = '',
     requestApi = '',
     historyMessages = null,
 } = {}) {
+    const settings = getSettings();
     const messages = [
         ...(Array.isArray(historyMessages) ? historyMessages.map(item => ({ ...item })) : []),
         { role: 'system', content: String(systemPrompt || '').trim() },
@@ -804,6 +858,14 @@ function buildPresetAwareMessages(context, systemPrompt, userPrompt, {
     const envelopeApi = selectedPromptPresetName ? 'openai' : (String(requestApi || context?.mainApi || 'openai').trim() || 'openai');
 
     try {
+        let resolvedRuntimeWorldInfo = settings.includeWorldInfo ? null : {};
+        if (settings.includeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function') {
+            resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages([], {
+                type: 'quiet',
+                fallbackToCurrentChat: true,
+                postActivationHook: rewriteDepthWorldInfoToAfter,
+            });
+        }
         const built = context.buildPresetAwarePromptMessages({
             messages,
             envelopeOptions: {
@@ -812,7 +874,7 @@ function buildPresetAwareMessages(context, systemPrompt, userPrompt, {
                 promptPresetName: selectedPromptPresetName,
             },
             promptPresetName: selectedPromptPresetName,
-            runtimeWorldInfo: {},
+            runtimeWorldInfo: resolvedRuntimeWorldInfo,
         });
         if (Array.isArray(built) && built.length > 0) {
             return built;
@@ -1186,7 +1248,6 @@ function renderDialogHtml(dialogState) {
             <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Compare with reference'))}</div>
         </div>
         <div class="cpa_dialog_toolbar_group">
-            <div class="menu_button menu_button_small" data-cpa-action="refresh-live">${escapeHtml(i18n('Re-read current preset'))}</div>
             <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
         </div>
     </div>
@@ -1370,28 +1431,6 @@ async function handleClearHistory(dialogState) {
     await rerenderDialog(dialogState);
 }
 
-async function handleRefreshLive(dialogState) {
-    if (dialogState.session?.draft) {
-        const confirmed = await Popup.show.confirm(i18n('Refreshing live preset will discard the current draft. Continue?'), '');
-        if (!confirmed) {
-            return;
-        }
-        dialogState.session.draft = null;
-    }
-    try {
-        await refreshLiveSnapshot(dialogState);
-        dialogState.status = getJournalEntries(dialogState.journal).length > 0
-            && !journalMatchesLive(dialogState.journal, dialogState.liveSnapshot?.body || {})
-            ? i18n('Current live preset no longer matches assistant history. Clear history before applying or rolling back more changes.')
-            : i18n('Live snapshot refreshed.');
-        await refreshReferenceSnapshot(dialogState);
-        await persistDialogSession(dialogState);
-    } catch (error) {
-        dialogState.status = String(error?.message || error || '');
-    }
-    await rerenderDialog(dialogState);
-}
-
 async function handleApplyDraft(dialogState) {
     const draft = sanitizeDraft(dialogState.session?.draft);
     if (!draft) {
@@ -1564,7 +1603,7 @@ async function handleSend(dialogState) {
     try {
         const requestOptions = getRequestPresetOptions(dialogState.context);
         const tools = buildAssistantTools(Boolean(dialogState.referenceSnapshot));
-        const promptMessages = buildPresetAwareMessages(
+        const promptMessages = await buildPresetAwareMessages(
             dialogState.context,
             buildModelSystemPrompt(),
             buildUserPrompt(dialogState, inputText),
@@ -1642,9 +1681,6 @@ function bindDialogEvents(dialogState) {
     });
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="rollback-to-message"]', async function () {
         await handleRollbackToMessage(dialogState, jQuery(this).attr('data-cpa-message-id'));
-    });
-    dialogState.root.on('click.cpaDialog', '[data-cpa-action="refresh-live"]', async function () {
-        await handleRefreshLive(dialogState);
     });
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="clear-history"]', async function () {
         await handleClearHistory(dialogState);
@@ -1738,6 +1774,7 @@ function refreshUiState(context = getContext()) {
     const settings = getSettings();
     root.find('#cpa_request_llm_preset').html(renderSelectOptions(getOpenAIPresetNames(context), settings.requestLlmPresetName, true, '(current)'));
     root.find('#cpa_request_api_profile').html(renderSelectOptions(getConnectionProfileNames(), settings.requestApiProfileName, true, '(current)'));
+    root.find('#cpa_include_world_info').prop('checked', settings.includeWorldInfo === true);
     root.find('#cpa_tool_retries').val(String(settings.toolCallRetryMax));
     root.find('#cpa_session_message_limit').val(String(settings.sessionMessageLimit));
 }
@@ -1760,6 +1797,10 @@ function bindUi() {
     });
     root.on('change.cpa', '#cpa_request_api_profile', function () {
         getSettings().requestApiProfileName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+    root.on('change.cpa', '#cpa_include_world_info', function () {
+        getSettings().includeWorldInfo = jQuery(this).prop('checked') === true;
         saveSettingsDebounced();
     });
     root.on('change.cpa', '#cpa_tool_retries', function () {
@@ -1810,6 +1851,7 @@ function ensureUi() {
             <select id="cpa_request_llm_preset" class="text_pole"></select>
             <label for="cpa_request_api_profile">${escapeHtml(i18n('Model request API preset name (Connection profile, empty = current)'))}</label>
             <select id="cpa_request_api_profile" class="text_pole"></select>
+            <label class="checkbox_label"><input id="cpa_include_world_info" type="checkbox"/> ${escapeHtml(i18n('Include world info (simulate current chat)'))}</label>
             <label for="cpa_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="cpa_tool_retries" class="text_pole" type="number" min="0" max="${TOOL_CALL_RETRY_MAX}" step="1"/>
             <label for="cpa_session_message_limit">${escapeHtml(i18n('Stored session messages per preset'))}</label>

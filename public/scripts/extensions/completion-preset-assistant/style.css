@@ -16,6 +16,8 @@
 .popup .cpa_dialog .menu_button,
 .popup .cpa_dialog .menu_button_small {
     min-height: 2.2em;
+    min-width: max-content;
+    white-space: nowrap;
 }
 
 .completion-preset-assistant-open {
