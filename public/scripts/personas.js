@@ -279,6 +279,34 @@ function getCharacterByAvatar(avatarId) {
     return characters.find(character => character?.avatar === avatarId) ?? null;
 }
 
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function syncCharacterDedicatedPersonasJsonData(characterAvatar, entries) {
+    const character = getCharacterByAvatar(characterAvatar);
+    if (!character?.json_data) {
+        return;
+    }
+
+    try {
+        const jsonData = JSON.parse(character.json_data);
+        jsonData.data = isPlainObject(jsonData.data) ? jsonData.data : {};
+        jsonData.data.extensions = isPlainObject(jsonData.data.extensions) ? jsonData.data.extensions : {};
+        jsonData.data.extensions.luker = isPlainObject(jsonData.data.extensions.luker) ? jsonData.data.extensions.luker : {};
+        jsonData.data.extensions.luker.dedicated_personas = entries;
+
+        const nextJsonData = JSON.stringify(jsonData);
+        character.json_data = nextJsonData;
+
+        if (String(characters[Number(this_chid)]?.avatar || '').trim() === String(characterAvatar || '').trim()) {
+            $('#character_json_data').val(nextJsonData);
+        }
+    } catch (error) {
+        console.warn('Failed to sync dedicated personas to character JSON snapshot', error);
+    }
+}
+
 function getDedicatedPersonaEntryFromCharacterByAvatar(characterAvatar, personaAvatar) {
     const targetCharacterAvatar = String(characterAvatar || '').trim();
     const targetPersonaAvatar = String(personaAvatar || '').trim();
@@ -770,15 +798,18 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries, { r
     // remove existing keys on the character card. Always send an explicit array value.
     nextExtensions.luker.dedicated_personas = nextDedicatedPersonas;
 
-    character.data = character.data || {};
-    character.data.extensions = nextExtensions;
-
     const mergeResponse = await fetch('/api/characters/merge-attributes', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({
             avatar: character.avatar,
-            data: { extensions: nextExtensions },
+            data: {
+                extensions: {
+                    luker: {
+                        dedicated_personas: nextDedicatedPersonas,
+                    },
+                },
+            },
         }),
     });
 
@@ -786,6 +817,10 @@ async function setCharacterDedicatedPersonaEntries(characterAvatar, entries, { r
         console.error('Failed to sync dedicated personas to character card', mergeResponse.statusText);
         return false;
     }
+
+    character.data = character.data || {};
+    character.data.extensions = nextExtensions;
+    syncCharacterDedicatedPersonasJsonData(character.avatar, nextDedicatedPersonas);
 
     const currentByAvatar = new Map(
         currentEntries
