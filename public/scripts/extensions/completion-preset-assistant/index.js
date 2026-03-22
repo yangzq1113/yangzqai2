@@ -154,8 +154,8 @@ function registerLocaleData() {
         'Completion Preset Assistant': '聊天补全预设助手',
         'Open Assistant': '打开助手',
         'Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.': '当前 MVP 只支持已保存的聊天补全预设。角色卡绑定的运行时预设暂不支持直接编辑。',
-        'Model request LLM preset name': '模型请求提示词预设',
-        'Model request API profile': '模型请求 API 配置档',
+        'Model request LLM preset name (empty = current)': '模型请求提示词预设（留空=当前）',
+        'Model request API preset name (Connection profile, empty = current)': '模型请求 API 预设（连接配置，留空=当前）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Stored session messages per preset': '每个预设保留的会话消息数',
         'Current preset is not a stored chat completion preset. Please select a saved preset first.': '当前不是已保存的聊天补全预设，请先选择一个已保存预设。',
@@ -163,8 +163,11 @@ function registerLocaleData() {
         'Target': '目标预设',
         'Reference preset': '参考预设',
         '(none)': '（无）',
+        '(current)': '（当前）',
         'Refresh live preset': '刷新当前 live 预设',
         'Reference diff': '参考预设 diff',
+        'Compare with reference': '与参考预设比较',
+        'Re-read current preset': '重新读取当前预设',
         'Discard draft': '丢弃草稿',
         'Clear history': '清空历史',
         'Conversation': '会话',
@@ -201,7 +204,8 @@ function registerLocaleData() {
         'No meaningful changes detected.': '未检测到有效变更。',
         'Select reference preset': '选择参考预设',
         'Prompt preset paths use lodash syntax like prompts[0].content or new_chat_prompt.': '预设路径使用 lodash 语法，例如 prompts[0].content 或 new_chat_prompt。',
-        'Current request profile': '当前请求配置',
+        'Current request API preset': '当前请求 API 预设',
+        'Current request prompt preset': '当前请求提示词预设',
         'Live snapshot refreshed.': '已刷新 live 快照。',
         'Request stopped.': '请求已终止。',
         'Selected preset changed outside the assistant. Reopen the assistant on the desired preset.': '助手打开后当前选中的预设已被切换。请在目标预设上重新打开助手。',
@@ -228,8 +232,8 @@ function registerLocaleData() {
         'Completion Preset Assistant': '聊天補全預設助手',
         'Open Assistant': '開啟助手',
         'Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.': '目前 MVP 只支援已儲存的聊天補全預設。角色卡綁定的執行時預設暫不支援直接編輯。',
-        'Model request LLM preset name': '模型請求提示詞預設',
-        'Model request API profile': '模型請求 API 設定檔',
+        'Model request LLM preset name (empty = current)': '模型請求提示詞預設（留空=目前）',
+        'Model request API preset name (Connection profile, empty = current)': '模型請求 API 預設（連線設定，留空=目前）',
         'Tool-call retries on invalid/missing tool call (N)': '工具調用重試次數（無效/缺失時）',
         'Stored session messages per preset': '每個預設保留的會話訊息數',
         'Current preset is not a stored chat completion preset. Please select a saved preset first.': '目前不是已儲存的聊天補全預設，請先選擇一個已儲存預設。',
@@ -237,8 +241,11 @@ function registerLocaleData() {
         'Target': '目標預設',
         'Reference preset': '參考預設',
         '(none)': '（無）',
+        '(current)': '（目前）',
         'Refresh live preset': '重新整理目前 live 預設',
         'Reference diff': '參考預設 diff',
+        'Compare with reference': '與參考預設比較',
+        'Re-read current preset': '重新讀取目前預設',
         'Discard draft': '捨棄草稿',
         'Clear history': '清空歷史',
         'Conversation': '會話',
@@ -275,7 +282,8 @@ function registerLocaleData() {
         'No meaningful changes detected.': '未檢測到有效變更。',
         'Select reference preset': '選擇參考預設',
         'Prompt preset paths use lodash syntax like prompts[0].content or new_chat_prompt.': '預設路徑使用 lodash 語法，例如 prompts[0].content 或 new_chat_prompt。',
-        'Current request profile': '目前請求設定',
+        'Current request API preset': '目前請求 API 預設',
+        'Current request prompt preset': '目前請求提示詞預設',
         'Live snapshot refreshed.': '已重新整理 live 快照。',
         'Request stopped.': '請求已終止。',
         'Selected preset changed outside the assistant. Reopen the assistant on the desired preset.': '助手開啟後目前選中的預設已被切換。請在目標預設上重新開啟助手。',
@@ -315,10 +323,10 @@ function getOpenAIPresetNames(context = getContext()) {
         .sort((left, right) => left.localeCompare(right));
 }
 
-function renderSelectOptions(names, selectedName = '', includeBlank = true) {
+function renderSelectOptions(names, selectedName = '', includeBlank = true, blankLabel = '(none)') {
     const options = [];
     if (includeBlank) {
-        options.push(`<option value="">${escapeHtml(i18n('(none)'))}</option>`);
+        options.push(`<option value="">${escapeHtml(i18n(blankLabel))}</option>`);
     }
 
     for (const name of names) {
@@ -716,12 +724,12 @@ function buildReferencePromptPayload(referenceSnapshot, liveSnapshot) {
 
 function buildDialogMetaItems(dialogState) {
     const settings = getSettings();
-    const requestProfileLabel = settings.requestApiProfileName || i18n('(none)');
-    const llmPresetLabel = settings.requestLlmPresetName || i18n('(none)');
+    const requestProfileLabel = settings.requestApiProfileName || i18n('(current)');
+    const llmPresetLabel = settings.requestLlmPresetName || i18n('(current)');
     return [
         `${i18n('Target')}: ${dialogState.targetRef?.name || ''}`,
-        `${i18n('Current request profile')}: ${requestProfileLabel}`,
-        `${i18n('LLM preset')}: ${llmPresetLabel}`,
+        `${i18n('Current request API preset')}: ${requestProfileLabel}`,
+        `${i18n('Current request prompt preset')}: ${llmPresetLabel}`,
         i18n('Prompt preset paths use lodash syntax like prompts[0].content or new_chat_prompt.'),
     ];
 }
@@ -1170,13 +1178,17 @@ function renderDialogHtml(dialogState) {
         ${metaItems.map(item => `<div class="cpa_dialog_meta_item">${escapeHtml(item)}</div>`).join('')}
     </div>
     <div class="cpa_dialog_toolbar">
-        <label for="cpa_reference_preset">${escapeHtml(i18n('Reference preset'))}</label>
-        <select id="cpa_reference_preset" class="text_pole" title="${escapeHtml(i18n('Select reference preset'))}">
-            ${renderSelectOptions(referenceNames, dialogState.session?.referencePresetName || '', true)}
-        </select>
-        <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Reference diff'))}</div>
-        <div class="menu_button menu_button_small" data-cpa-action="refresh-live">${escapeHtml(i18n('Refresh live preset'))}</div>
-        <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
+        <div class="cpa_dialog_toolbar_group cpa_dialog_toolbar_group_wide">
+            <label for="cpa_reference_preset">${escapeHtml(i18n('Reference preset'))}</label>
+            <select id="cpa_reference_preset" class="text_pole" title="${escapeHtml(i18n('Select reference preset'))}">
+                ${renderSelectOptions(referenceNames, dialogState.session?.referencePresetName || '', true)}
+            </select>
+            <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Compare with reference'))}</div>
+        </div>
+        <div class="cpa_dialog_toolbar_group">
+            <div class="menu_button menu_button_small" data-cpa-action="refresh-live">${escapeHtml(i18n('Re-read current preset'))}</div>
+            <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
+        </div>
     </div>
     <div class="cpa_dialog_columns">
         <div class="cpa_conversation_panel">
@@ -1192,7 +1204,7 @@ function renderDialogHtml(dialogState) {
         <textarea id="cpa_dialog_input" class="text_pole" placeholder="${escapeHtml(i18n('Type what to change in this preset...'))}">${escapeHtml(dialogState.inputText || '')}</textarea>
         <div class="cpa_dialog_footer_actions">
             <div class="cpa_hint">${escapeHtml(dialogState.status || '')}</div>
-            <div class="cpa_hint">${escapeHtml(`LLM: ${settings.requestLlmPresetName || i18n('(none)')}`)}</div>
+            <div class="cpa_hint">${escapeHtml(`LLM: ${settings.requestLlmPresetName || i18n('(current)')}`)}</div>
             <div class="menu_button" data-cpa-action="send-or-stop">${escapeHtml(isBusy ? i18n('Stop') : i18n('Send'))}</div>
         </div>
     </div>
@@ -1724,8 +1736,8 @@ function refreshUiState(context = getContext()) {
     }
 
     const settings = getSettings();
-    root.find('#cpa_request_llm_preset').html(renderSelectOptions(getOpenAIPresetNames(context), settings.requestLlmPresetName, true));
-    root.find('#cpa_request_api_profile').html(renderSelectOptions(getConnectionProfileNames(), settings.requestApiProfileName, true));
+    root.find('#cpa_request_llm_preset').html(renderSelectOptions(getOpenAIPresetNames(context), settings.requestLlmPresetName, true, '(current)'));
+    root.find('#cpa_request_api_profile').html(renderSelectOptions(getConnectionProfileNames(), settings.requestApiProfileName, true, '(current)'));
     root.find('#cpa_tool_retries').val(String(settings.toolCallRetryMax));
     root.find('#cpa_session_message_limit').val(String(settings.sessionMessageLimit));
 }
@@ -1794,9 +1806,9 @@ function ensureUi() {
                 <div id="${OPEN_BUTTON_ID}" class="menu_button">${escapeHtml(i18n('Open Assistant'))}</div>
             </div>
             <div class="cpa_hint">${escapeHtml(i18n('Works on saved Chat Completion presets. Character-bound runtime presets are read-only for this MVP.'))}</div>
-            <label for="cpa_request_llm_preset">${escapeHtml(i18n('Model request LLM preset name'))}</label>
+            <label for="cpa_request_llm_preset">${escapeHtml(i18n('Model request LLM preset name (empty = current)'))}</label>
             <select id="cpa_request_llm_preset" class="text_pole"></select>
-            <label for="cpa_request_api_profile">${escapeHtml(i18n('Model request API profile'))}</label>
+            <label for="cpa_request_api_profile">${escapeHtml(i18n('Model request API preset name (Connection profile, empty = current)'))}</label>
             <select id="cpa_request_api_profile" class="text_pole"></select>
             <label for="cpa_tool_retries">${escapeHtml(i18n('Tool-call retries on invalid/missing tool call (N)'))}</label>
             <input id="cpa_tool_retries" class="text_pole" type="number" min="0" max="${TOOL_CALL_RETRY_MAX}" step="1"/>

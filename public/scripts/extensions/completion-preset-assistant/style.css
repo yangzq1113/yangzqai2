@@ -40,6 +40,23 @@
     align-items: center;
 }
 
+.popup .cpa_dialog_toolbar {
+    align-items: stretch;
+    justify-content: space-between;
+}
+
+.popup .cpa_dialog_toolbar_group {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.popup .cpa_dialog_toolbar_group_wide {
+    flex: 1 1 420px;
+    min-width: 0;
+}
+
 .popup .cpa_dialog_toolbar .text_pole,
 .popup .cpa_dialog_footer .text_pole {
     min-width: 0;
@@ -244,6 +261,15 @@
 @media (max-width: 1000px) {
     .popup .cpa_dialog_columns {
         grid-template-columns: 1fr;
+    }
+
+    .popup .cpa_dialog_toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .popup .cpa_dialog_toolbar_group {
+        width: 100%;
     }
 
     .popup .cpa_conversation_list,
