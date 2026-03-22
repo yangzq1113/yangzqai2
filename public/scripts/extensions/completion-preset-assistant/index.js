@@ -27,6 +27,7 @@ const SESSION_VERSION = 1;
 const TOOL_CALL_RETRY_MAX = 10;
 const SESSION_MESSAGE_LIMIT_MIN = 8;
 const SESSION_MESSAGE_LIMIT_MAX = 48;
+const ROLLBACK_HISTORY_LIMIT = 12;
 const JSON_TEXTDIFF_MIN_LENGTH = 80;
 const MODEL_TOOLS = Object.freeze({
     SET_FIELD: 'preset_set_field',
@@ -212,6 +213,20 @@ function registerLocaleData() {
         'Request stopped.': '请求已终止。',
         'Selected preset changed outside the assistant. Reopen the assistant on the desired preset.': '助手打开后当前选中的预设已被切换。请在目标预设上重新打开助手。',
         'Current live preset changed since this draft was created. Refresh live and request a new draft.': '当前 live 预设在草稿生成后已发生变化。请先刷新 live 预设，再重新生成草稿。',
+        'Rollback history': '回滚历史',
+        'No rollback history yet.': '还没有可回滚的记录。',
+        'Rollback last apply': '回滚上一版应用',
+        'Rollback': '回滚',
+        'Show diff': '查看 diff',
+        'Latest': '最新',
+        'Rollback this applied preset change?': '要回滚这次已应用的预设变更吗？',
+        'Rolling back...': '正在回滚...',
+        'Rolled back preset to previous applied version.': '已将预设回滚到上一个已应用版本。',
+        'Current live preset no longer matches the latest applied revision. Refresh live before rolling back.': '当前 live 预设已经不再匹配最近一次已应用版本。请先刷新 live 预设后再回滚。',
+        'Applied preset edits: ${0}': '已应用预设修改：${0}',
+        'Rollback diff': '回滚 diff',
+        'Previous version': '回滚前版本',
+        'Applied version': '已应用版本',
         'User': '用户',
         'Assistant': '助手',
         'System': '系统',
@@ -273,6 +288,20 @@ function registerLocaleData() {
         'Request stopped.': '請求已終止。',
         'Selected preset changed outside the assistant. Reopen the assistant on the desired preset.': '助手開啟後目前選中的預設已被切換。請在目標預設上重新開啟助手。',
         'Current live preset changed since this draft was created. Refresh live and request a new draft.': '目前 live 預設在草稿產生後已發生變化。請先重新整理 live 預設，再重新產生草稿。',
+        'Rollback history': '回滾歷史',
+        'No rollback history yet.': '還沒有可回滾的記錄。',
+        'Rollback last apply': '回滾上一版套用',
+        'Rollback': '回滾',
+        'Show diff': '查看 diff',
+        'Latest': '最新',
+        'Rollback this applied preset change?': '要回滾這次已套用的預設變更嗎？',
+        'Rolling back...': '正在回滾...',
+        'Rolled back preset to previous applied version.': '已將預設回滾到上一個已套用版本。',
+        'Current live preset no longer matches the latest applied revision. Refresh live before rolling back.': '目前 live 預設已不再匹配最近一次已套用版本。請先重新整理 live 預設後再回滾。',
+        'Applied preset edits: ${0}': '已套用預設修改：${0}',
+        'Rollback diff': '回滾 diff',
+        'Previous version': '回滾前版本',
+        'Applied version': '已套用版本',
         'User': '使用者',
         'Assistant': '助手',
         'System': '系統',
@@ -325,6 +354,7 @@ function createEmptySession() {
         referencePresetName: '',
         messages: [],
         draft: null,
+        history: [],
         updatedAt: Date.now(),
     };
 }
@@ -360,6 +390,23 @@ function sanitizeDraft(rawDraft) {
     };
 }
 
+function sanitizeRollbackEntry(rawEntry) {
+    const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : null;
+    if (!entry) {
+        return null;
+    }
+
+    return {
+        id: String(entry.id || uuidv4()),
+        kind: 'apply',
+        summary: String(entry.summary || '').trim(),
+        createdAt: Number(entry.createdAt || Date.now()),
+        editCount: Math.max(0, toInteger(entry.editCount, 0)),
+        restoreBody: isPlainObject(entry.restoreBody) ? clone(entry.restoreBody, {}) : {},
+        appliedBody: isPlainObject(entry.appliedBody) ? clone(entry.appliedBody, {}) : {},
+    };
+}
+
 function sanitizeSession(rawSession) {
     const session = rawSession && typeof rawSession === 'object' ? rawSession : {};
     const settings = getSettings();
@@ -369,6 +416,9 @@ function sanitizeSession(rawSession) {
         ? session.messages.map(item => sanitizeMessage(item)).slice(-settings.sessionMessageLimit)
         : [];
     next.draft = sanitizeDraft(session.draft);
+    next.history = Array.isArray(session.history)
+        ? session.history.map(item => sanitizeRollbackEntry(item)).filter(Boolean).slice(-ROLLBACK_HISTORY_LIMIT)
+        : [];
     next.updatedAt = Number(session.updatedAt || Date.now());
     return next;
 }
@@ -880,9 +930,14 @@ function renderConversationHtml(session) {
 
 function renderDraftHtml(dialogState) {
     const draft = sanitizeDraft(dialogState.session?.draft);
+    const rollbackHistoryHtml = renderRollbackHistoryHtml(dialogState.session);
     if (!draft) {
         return `
-<div class="cpa_empty">${escapeHtml(i18n('No draft yet. Ask the assistant to propose changes first.'))}</div>`;
+<div class="cpa_empty">${escapeHtml(i18n('No draft yet. Ask the assistant to propose changes first.'))}</div>
+<details class="cpa_history_section">
+    <summary>${escapeHtml(i18n('Rollback history'))}</summary>
+    <div class="cpa_history_list">${rollbackHistoryHtml}</div>
+</details>`;
     }
 
     const diffHtml = renderDeltaHtml(dialogState.liveSnapshot?.body || {}, draft.draftBody || {});
@@ -901,6 +956,10 @@ function renderDraftHtml(dialogState) {
 <details>
     <summary>${escapeHtml(i18n('Change summary'))}</summary>
     <ul>${editItems || `<li>${escapeHtml(i18n('No meaningful changes detected.'))}</li>`}</ul>
+</details>
+<details class="cpa_history_section">
+    <summary>${escapeHtml(i18n('Rollback history'))}</summary>
+    <div class="cpa_history_list">${rollbackHistoryHtml}</div>
 </details>`;
 }
 
@@ -910,6 +969,7 @@ function renderDialogHtml(dialogState) {
     const metaItems = buildDialogMetaItems(dialogState);
     const settings = getSettings();
     const isBusy = Boolean(dialogState.busy);
+    const latestRollbackEntry = getLatestRollbackEntry(dialogState.session);
 
     return `
 <div class="cpa_dialog">
@@ -922,6 +982,7 @@ function renderDialogHtml(dialogState) {
             ${renderSelectOptions(referenceNames, dialogState.session?.referencePresetName || '', true)}
         </select>
         <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Reference diff'))}</div>
+        ${latestRollbackEntry ? `<div class="menu_button menu_button_small" data-cpa-action="rollback-latest">${escapeHtml(i18n('Rollback last apply'))}</div>` : ''}
         <div class="menu_button menu_button_small" data-cpa-action="refresh-live">${escapeHtml(i18n('Refresh live preset'))}</div>
         <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
     </div>
@@ -954,6 +1015,66 @@ function appendSessionMessage(session, message) {
         ...session,
         messages: messages.slice(-settings.sessionMessageLimit),
     };
+}
+
+function appendRollbackEntry(session, entry) {
+    const history = Array.isArray(session?.history) ? session.history.slice() : [];
+    const nextEntry = sanitizeRollbackEntry(entry);
+    if (nextEntry) {
+        history.push(nextEntry);
+    }
+    return {
+        ...session,
+        history: history.slice(-ROLLBACK_HISTORY_LIMIT),
+    };
+}
+
+function getRollbackHistory(session) {
+    return Array.isArray(session?.history)
+        ? session.history.map(item => sanitizeRollbackEntry(item)).filter(Boolean)
+        : [];
+}
+
+function getLatestRollbackEntry(session) {
+    const history = getRollbackHistory(session);
+    return history.length > 0 ? history[history.length - 1] : null;
+}
+
+function describeRollbackEntry(entry) {
+    const safeEntry = sanitizeRollbackEntry(entry);
+    if (!safeEntry) {
+        return '';
+    }
+    if (safeEntry.summary) {
+        return safeEntry.summary;
+    }
+    return i18nFormat('Applied preset edits: ${0}', safeEntry.editCount || 0);
+}
+
+function renderRollbackHistoryHtml(session) {
+    const history = getRollbackHistory(session);
+    const latestEntry = getLatestRollbackEntry(session);
+    if (history.length === 0) {
+        return `<div class="cpa_empty">${escapeHtml(i18n('No rollback history yet.'))}</div>`;
+    }
+
+    return history.slice().reverse().map((entry) => {
+        const isLatest = latestEntry?.id === entry.id;
+        const latestBadge = isLatest
+            ? `<span class="cpa_history_badge">${escapeHtml(i18n('Latest'))}</span>`
+            : '';
+        return `
+<div class="cpa_history_item">
+    <div class="cpa_history_item_main">
+        <div class="cpa_history_item_summary">${escapeHtml(describeRollbackEntry(entry))}${latestBadge}</div>
+        <div class="cpa_history_item_time">${escapeHtml(new Date(Number(entry.createdAt || Date.now())).toLocaleString())}</div>
+    </div>
+    <div class="cpa_history_item_actions">
+        <div class="menu_button menu_button_small" data-cpa-action="show-rollback-diff" data-cpa-history-id="${escapeHtml(entry.id)}">${escapeHtml(i18n('Show diff'))}</div>
+        ${isLatest ? `<div class="menu_button menu_button_small" data-cpa-action="rollback-latest">${escapeHtml(i18n('Rollback'))}</div>` : ''}
+    </div>
+</div>`;
+    }).join('');
 }
 
 async function rerenderDialog(dialogState) {
@@ -1050,6 +1171,26 @@ async function handleReferenceDiff(dialogState) {
     );
 }
 
+function getRollbackEntryById(session, historyId) {
+    const history = getRollbackHistory(session);
+    return history.find(entry => entry.id === String(historyId || '').trim()) || null;
+}
+
+async function handleRollbackDiff(dialogState, historyId) {
+    const entry = getRollbackEntryById(dialogState.session, historyId);
+    if (!entry) {
+        toastr.info(i18n('No rollback history yet.'));
+        return;
+    }
+    await showDiffPopup(
+        i18n('Rollback diff'),
+        i18n('Previous version'),
+        i18n('Applied version'),
+        entry.restoreBody || {},
+        entry.appliedBody || {},
+    );
+}
+
 async function handleDiscardDraft(dialogState, { silent = false } = {}) {
     if (!dialogState.session?.draft) {
         return;
@@ -1115,6 +1256,14 @@ async function handleApplyDraft(dialogState) {
             throw new Error(i18n('Save failed.'));
         }
         await refreshLiveSnapshot(dialogState);
+        dialogState.session = appendRollbackEntry(dialogState.session, {
+            id: uuidv4(),
+            summary: draft.summary || i18nFormat('Applied preset edits: ${0}', draft.edits.length),
+            createdAt: Date.now(),
+            editCount: draft.edits.length,
+            restoreBody: currentLiveSnapshot.body || {},
+            appliedBody: draft.draftBody || {},
+        });
         dialogState.session = appendSessionMessage(dialogState.session, {
             role: 'system',
             text: i18n('Applied draft to preset.'),
@@ -1126,6 +1275,57 @@ async function handleApplyDraft(dialogState) {
     } catch (error) {
         dialogState.status = i18nFormat('AI request failed: ${0}', error?.message || error);
         console.error(`[${MODULE_NAME}] Failed to apply preset draft`, error);
+    } finally {
+        dialogState.busy = false;
+        await rerenderDialog(dialogState);
+    }
+}
+
+async function handleRollbackLatest(dialogState) {
+    const history = getRollbackHistory(dialogState.session);
+    const latestEntry = history.length > 0 ? history[history.length - 1] : null;
+    if (!latestEntry) {
+        toastr.info(i18n('No rollback history yet.'));
+        return;
+    }
+
+    const confirmed = await Popup.show.confirm(i18n('Rollback this applied preset change?'), describeRollbackEntry(latestEntry));
+    if (!confirmed) {
+        return;
+    }
+
+    dialogState.busy = true;
+    dialogState.status = i18n('Rolling back...');
+    await rerenderDialog(dialogState);
+    try {
+        const currentLiveSnapshot = await readValidatedLiveSnapshot(dialogState);
+        if (!areJsonEqual(currentLiveSnapshot.body || {}, latestEntry.appliedBody || {})) {
+            throw new Error(i18n('Current live preset no longer matches the latest applied revision. Refresh live before rolling back.'));
+        }
+        const result = await dialogState.context.presets.save(
+            { collection: 'openai', name: dialogState.targetRef.name },
+            latestEntry.restoreBody || {},
+            { select: true },
+        );
+        if (!result?.ok) {
+            throw new Error(i18n('Save failed.'));
+        }
+        await refreshLiveSnapshot(dialogState);
+        dialogState.session = {
+            ...dialogState.session,
+            history: history.slice(0, -1),
+            draft: null,
+        };
+        dialogState.session = appendSessionMessage(dialogState.session, {
+            role: 'system',
+            text: i18n('Rolled back preset to previous applied version.'),
+            summary: i18n('Rollback'),
+        });
+        dialogState.status = i18n('Rolled back preset to previous applied version.');
+        await persistDialogSession(dialogState);
+    } catch (error) {
+        dialogState.status = i18nFormat('AI request failed: ${0}', error?.message || error);
+        console.error(`[${MODULE_NAME}] Failed to rollback preset draft`, error);
     } finally {
         dialogState.busy = false;
         await rerenderDialog(dialogState);
@@ -1240,6 +1440,12 @@ function bindDialogEvents(dialogState) {
     });
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="show-reference-diff"]', async function () {
         await handleReferenceDiff(dialogState);
+    });
+    dialogState.root.on('click.cpaDialog', '[data-cpa-action="show-rollback-diff"]', async function () {
+        await handleRollbackDiff(dialogState, jQuery(this).attr('data-cpa-history-id'));
+    });
+    dialogState.root.on('click.cpaDialog', '[data-cpa-action="rollback-latest"]', async function () {
+        await handleRollbackLatest(dialogState);
     });
     dialogState.root.on('click.cpaDialog', '[data-cpa-action="refresh-live"]', async function () {
         await handleRefreshLive(dialogState);
