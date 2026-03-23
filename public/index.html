@@ -176,7 +176,7 @@
                                             <span data-i18n="openaipresets">Chat Completion Presets</span>
                                         </strong>
 
-                                        <div class="flex-container gap3px">
+                                        <div class="flex-container flexNoWrap gap3px preset_manager_header_actions">
                                             <div id="import_oai_preset" class="margin0 menu_button menu_button_icon" title="Import preset" data-i18n="[title]Import preset">
                                                 <i class="fa-fw fa-solid fa-file-import"></i>
                                             </div>
@@ -189,7 +189,8 @@
                                         </div>
                                     </div>
 
-                                    <div class="flex-container flexNoGap">
+                                    <div class="flex-container flexNoGap flexNoWrap preset_manager_select_row">
+                                        <input id="openai_preset_import_file" type="file" accept=".json,.settings" hidden />
                                         <select id="settings_preset_openai" class="flex1 text_pole" data-preset-manager-for="openai">
                                             <option value="gui" data-i18n="Default">Default</option>
                                         </select>
@@ -197,8 +198,7 @@
                                             <i class="fa-solid fa-link fa-fw"></i>
                                             <span data-i18n="Character Card Bound">Character Card Bound</span>
                                         </div>
-                                        <div class="flex-container marginLeft5 gap3px">
-                                            <input id="openai_preset_import_file" type="file" accept=".json,.settings" hidden />
+                                        <div class="flex-container flexNoWrap marginLeft5 gap3px preset_manager_select_actions">
                                             <div id="update_oai_preset" class="menu_button menu_button_icon" title="Update current preset" data-i18n="[title]Update current preset">
                                                 <i class="fa-fw fa-solid fa-save"></i>
                                             </div>

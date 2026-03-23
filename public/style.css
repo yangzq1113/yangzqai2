@@ -5873,6 +5873,40 @@ body:not(.movingUI) .drawer-content.maximized {
     align-items: center;
 }
 
+.preset_manager_header_actions {
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+.preset_manager_header_actions .menu_button {
+    margin: 0;
+}
+
+#openai_api-presets .preset_manager_select_row {
+    align-items: center;
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+
+#openai_api-presets .preset_manager_select_row > select,
+#openai_api-presets .preset_manager_select_row > .select2-container {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+#openai_api-presets .preset_manager_select_row > .select2-container {
+    width: auto !important;
+}
+
+#openai_api-presets .preset_manager_select_row > .luker-char-bound-preset-badge,
+#openai_api-presets .preset_manager_select_actions {
+    flex: 0 0 auto;
+}
+
+#openai_api-presets .preset_manager_select_actions {
+    align-items: center;
+}
+
 .openai_restorable .right_menu_button img {
     height: 20px;
 }
