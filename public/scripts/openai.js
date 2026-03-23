@@ -26,10 +26,8 @@ import {
     main_api,
     name1,
     name2,
-    patchSettingsValueDebounced,
     resultCheckStatus,
     saveSettingsDebounced,
-    requestAsyncDiffForNextSettingsSave,
     setOnlineStatus,
     startStatusLoading,
     substituteParams,
@@ -6198,8 +6196,7 @@ async function onDeletePresetClick() {
         }
     }
 
-    requestAsyncDiffForNextSettingsSave();
-    saveSettingsDebounced();
+    saveSettingsDebounced(0, { directSave: true });
 }
 
 async function onLogitBiasPresetDeleteClick() {
@@ -6523,10 +6520,7 @@ async function onSettingsPresetChange(event) {
         }
 
         await syncOpenAIPresetUiAfterApply();
-        patchSettingsValueDebounced('/oai_settings', structuredClone(oai_settings), (error) => {
-            console.error('Failed to persist preset-applied OpenAI settings via targeted patch', error);
-            saveSettingsDebounced();
-        });
+        saveSettingsDebounced(0, { directSave: true });
         scheduleOpenAIPresetChangeNotifications(presetName);
     }
 
@@ -8570,6 +8564,7 @@ export function initOpenAI() {
     $('#update_oai_preset').on('click', async function () {
         const name = oai_settings.preset_settings_openai;
         await saveOpenAIPreset(name, oai_settings, false);
+        saveSettingsDebounced(0, { directSave: true });
         toastr.success(t`Preset updated`);
     });
 

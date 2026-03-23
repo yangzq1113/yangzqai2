@@ -1042,16 +1042,6 @@ export const DEFAULT_SAVE_EDIT_TIMEOUT = debounce_timeout.relaxed;
 export const DEFAULT_PRINT_TIMEOUT = debounce_timeout.quick;
 
 export const saveSettingsDebounced = debounce((loopCounter = 0, options = undefined) => saveSettings(loopCounter, options), DEFAULT_SAVE_EDIT_TIMEOUT);
-export const patchSettingsValueDebounced = debounce((path, value, onError = null) => {
-    patchSettingsValue(path, value).catch((error) => {
-        if (typeof onError === 'function') {
-            onError(error);
-            return;
-        }
-
-        console.error('Failed to patch settings value', { path, error });
-    });
-}, DEFAULT_SAVE_EDIT_TIMEOUT);
 export const saveCharacterDebounced = debounce(() => $('#create_button').trigger('click'), DEFAULT_SAVE_EDIT_TIMEOUT);
 
 /**
@@ -12875,12 +12865,14 @@ function getSettingsSnapshot() {
 function mergeSettingsSaveOptions(baseOptions = null, overrideOptions = null) {
     return {
         asyncDiff: overrideOptions?.asyncDiff ?? baseOptions?.asyncDiff ?? true,
+        directSave: overrideOptions?.directSave ?? baseOptions?.directSave ?? false,
     };
 }
 
 function normalizeSettingsSaveOptions(options = null) {
     const normalized = {
         asyncDiff: options?.asyncDiff !== false && options?.diffMode !== 'sync',
+        directSave: options?.directSave === true,
     };
 
     if (forceAsyncDiffForNextSettingsSave) {
@@ -12936,106 +12928,6 @@ function buildSettingsPayload() {
     });
 }
 
-function prefixJsonPointerPath(basePath, relativePath) {
-    const normalizedBasePath = typeof basePath === 'string' ? basePath.trim() : '';
-    const normalizedRelativePath = typeof relativePath === 'string' ? relativePath.trim() : '';
-
-    if (!normalizedBasePath || !normalizedBasePath.startsWith('/')) {
-        throw new Error('Expected basePath to be a JSON Pointer path.');
-    }
-
-    if (!normalizedRelativePath || normalizedRelativePath === '') {
-        return normalizedBasePath;
-    }
-
-    if (!normalizedRelativePath.startsWith('/')) {
-        throw new Error('Expected relativePath to be a JSON Pointer path.');
-    }
-
-    return `${normalizedBasePath}${normalizedRelativePath}`;
-}
-
-function prefixJsonPatchOperations(basePath, operations) {
-    const sourceOperations = Array.isArray(operations)
-        ? operations.filter(op => op && typeof op === 'object')
-        : [];
-
-    return sourceOperations.map((operation) => {
-        const nextOperation = { ...operation };
-        if (typeof nextOperation.path === 'string') {
-            nextOperation.path = prefixJsonPointerPath(basePath, nextOperation.path);
-        }
-        if (typeof nextOperation.from === 'string') {
-            nextOperation.from = prefixJsonPointerPath(basePath, nextOperation.from);
-        }
-        return nextOperation;
-    });
-}
-
-export async function patchSettingsValue(path, value) {
-    const normalizedPath = typeof path === 'string' ? path.trim() : '';
-    if (!normalizedPath || !normalizedPath.startsWith('/')) {
-        throw new Error('Expected a JSON Pointer path for patchSettingsValue.');
-    }
-
-    const previousSnapshot = getSettingsSnapshot();
-    if (!isPlainObject(previousSnapshot)) {
-        const payload = buildSettingsPayload();
-        const result = await fetch('/api/settings/save', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(payload),
-            cache: 'no-cache',
-        });
-
-        if (!result.ok) {
-            throw new Error(`Failed to save settings: ${result.statusText}`);
-        }
-
-        invalidateSettingsGetResponseCache();
-        settings = payload;
-        rememberSettingsSnapshot(payload);
-        await eventSource.emit(event_types.SETTINGS_UPDATED);
-        return true;
-    }
-
-    const previousValueResult = getJsonPointerValue(previousSnapshot, normalizedPath);
-    const previousValue = previousValueResult.found ? previousValueResult.value : undefined;
-    let operations = [];
-
-    if (isPlainObject(value) && (isPlainObject(previousValue) || previousValue === undefined)) {
-        const subtreeOperations = await buildObjectPatchOperationsAsync(previousValue, value, { maxOperations: 4000 });
-        if (subtreeOperations.length === 0) {
-            return true;
-        }
-        operations = prefixJsonPatchOperations(normalizedPath, subtreeOperations);
-    } else {
-        operations = [{
-            op: previousValueResult.found ? 'replace' : 'add',
-            path: normalizedPath,
-            value: cloneJsonValue(value),
-        }];
-    }
-
-    const result = await fetch('/api/settings/patch', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ operations }),
-        cache: 'no-cache',
-    });
-
-    if (!result.ok) {
-        throw new Error(`Failed to patch settings: ${result.statusText}`);
-    }
-
-    const patchResult = applyJsonPatch(previousSnapshot, operations, true, false);
-    invalidateSettingsGetResponseCache();
-    settings = patchResult.newDocument;
-    rememberSettingsSnapshot(settings);
-    await eventSource.emit(event_types.SETTINGS_UPDATED);
-    return true;
-}
-
 //MARK: saveSettings()
 async function saveSettingsInternal(loopCounter = 0, options = {}) {
     if (!settingsReady) {
@@ -13061,7 +12953,7 @@ async function saveSettingsInternal(loopCounter = 0, options = {}) {
         let saved = false;
         const previousSnapshot = getSettingsSnapshot();
 
-        if (isPlainObject(previousSnapshot)) {
+        if (!options.directSave && isPlainObject(previousSnapshot)) {
             const operations = options.asyncDiff
                 ? await buildObjectPatchOperationsAsync(previousSnapshot, payload, { maxOperations: 4000 })
                 : buildObjectPatchOperations(previousSnapshot, payload, { maxOperations: 4000 });
