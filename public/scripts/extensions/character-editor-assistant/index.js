@@ -36,6 +36,7 @@ const TOOL_NAMES = Object.freeze({
     SET_PRIMARY_BOOK: 'luker_card_set_primary_lorebook',
     UPSERT_ENTRY: 'luker_card_upsert_lorebook_entry',
     DELETE_ENTRY: 'luker_card_delete_lorebook_entry',
+    LIST_ENTRIES: 'luker_card_list_lorebook_entries',
     QUERY_ENTRIES: 'luker_card_query_lorebook_entries',
     GET_ENTRIES: 'luker_card_get_lorebook_entries',
     SIMULATE_PROMPT: 'luker_card_simulate_prompt',
@@ -1451,6 +1452,41 @@ function normalizeCharacterEditorQueryLimit(value, fallback = CHARACTER_EDITOR_Q
     return Math.max(1, Math.min(CHARACTER_EDITOR_QUERY_LIMIT_MAX, numeric));
 }
 
+function normalizeCharacterEditorLorebookUidRange(value) {
+    const text = String(value ?? '').trim();
+    if (!text) {
+        return null;
+    }
+
+    const exact = text.match(/^(\d+)$/);
+    if (exact) {
+        const uid = asFiniteInteger(exact[1], null);
+        if (!Number.isInteger(uid) || uid < 0) {
+            throw new Error(`Invalid lorebook range: ${text}`);
+        }
+        return { start: uid, end: uid };
+    }
+
+    const rangeMatch = text.match(/^(\d+)?\s*(?:~|-|:|\.\.)\s*(\d+)?$/);
+    if (!rangeMatch) {
+        throw new Error(`Invalid lorebook range: ${text}. Use formats like 0~100, 50~, or ~100.`);
+    }
+
+    const startText = String(rangeMatch[1] ?? '').trim();
+    const endText = String(rangeMatch[2] ?? '').trim();
+    const start = startText ? asFiniteInteger(startText, null) : 0;
+    const end = endText ? asFiniteInteger(endText, null) : Number.MAX_SAFE_INTEGER;
+
+    if (!Number.isInteger(start) || start < 0 || !Number.isInteger(end) || end < 0) {
+        throw new Error(`Invalid lorebook range: ${text}`);
+    }
+    if (start > end) {
+        throw new Error(`Invalid lorebook range: ${text}. Range start must be <= end.`);
+    }
+
+    return { start, end };
+}
+
 function normalizeCharacterEditorDetailUids(value) {
     const source = Array.isArray(value) ? value : [];
     const unique = [];
@@ -1489,6 +1525,18 @@ function normalizeCharacterEditorLorebookToolEntry(entry, uid, { includeContent 
         output.content = String(normalized.content || '');
     }
     return output;
+}
+
+function summarizeCharacterEditorLorebookListEntry(entry, uid) {
+    const normalized = normalizeCharacterEditorLorebookToolEntry(entry, uid);
+    const name = clipLorebookDebugText(normalized.comment, 120).trim()
+        || clipLorebookDebugText(normalized.key[0] || '', 120).trim()
+        || `#${normalized.uid}`;
+    return {
+        uid: normalized.uid,
+        name,
+        enabled: normalized.enabled,
+    };
 }
 
 function buildCharacterEditorLorebookStats(entries = {}) {
@@ -1674,6 +1722,36 @@ async function queryCharacterEditorLorebookEntries(context, args = {}, { avatar 
     };
 }
 
+async function listCharacterEditorLorebookEntries(context, args = {}, { avatar = '' } = {}) {
+    const range = normalizeCharacterEditorLorebookUidRange(args?.range);
+    const state = await loadCharacterEditorPrimaryLorebookState(context, { avatar });
+    const entries = state?.lorebookData?.entries && typeof state.lorebookData.entries === 'object'
+        ? state.lorebookData.entries
+        : {};
+    if (!state.bookName) {
+        return {
+            book_name: '',
+            total_entries: 0,
+            returned_entries: 0,
+            range: range ? { start_uid: range.start, end_uid: range.end } : null,
+            entries: [],
+        };
+    }
+
+    const uids = Array.from(collectLorebookEntryUids(entries).values()).sort((a, b) => a - b);
+    const filteredUids = range
+        ? uids.filter(uid => uid >= range.start && uid <= range.end)
+        : uids;
+
+    return {
+        book_name: state.bookName,
+        total_entries: uids.length,
+        returned_entries: filteredUids.length,
+        range: range ? { start_uid: range.start, end_uid: range.end } : null,
+        entries: filteredUids.map((uid) => summarizeCharacterEditorLorebookListEntry(getLorebookEntryByUid(entries, uid), uid)),
+    };
+}
+
 async function getCharacterEditorLorebookEntries(context, args = {}, { avatar = '' } = {}) {
     const uids = normalizeCharacterEditorDetailUids(args?.uids);
     if (uids.length === 0) {
@@ -1714,12 +1792,30 @@ async function getCharacterEditorLorebookEntries(context, args = {}, { avatar = 
 
 function createCharacterEditorLorebookToolApi(context, { avatar = '' } = {}) {
     const toolNames = Object.freeze({
+        LIST: TOOL_NAMES.LIST_ENTRIES,
         QUERY: TOOL_NAMES.QUERY_ENTRIES,
         GET: TOOL_NAMES.GET_ENTRIES,
     });
     return {
         toolNames,
         getToolDefs: () => [
+            {
+                type: 'function',
+                function: {
+                    name: toolNames.LIST,
+                    description: 'List compact lorebook entry index rows for the current primary lorebook. Returns only uid, name, and enabled. Optional range narrows the inclusive UID window, for example 0~100. Omit range to list all entries.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            range: {
+                                type: 'string',
+                                description: 'Optional inclusive UID range such as 0~100, 50~, ~100, or a single uid like 42.',
+                            },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+            },
             {
                 type: 'function',
                 function: {
@@ -1764,11 +1860,14 @@ function createCharacterEditorLorebookToolApi(context, { avatar = '' } = {}) {
         ],
         isToolName: (name) => {
             const normalized = String(name || '').trim();
-            return normalized === toolNames.QUERY || normalized === toolNames.GET;
+            return normalized === toolNames.LIST || normalized === toolNames.QUERY || normalized === toolNames.GET;
         },
         invoke: async (call) => {
             const name = String(call?.name || '').trim();
             const args = call?.args && typeof call.args === 'object' ? call.args : {};
+            if (name === toolNames.LIST) {
+                return await listCharacterEditorLorebookEntries(context, args, { avatar });
+            }
             if (name === toolNames.QUERY) {
                 return await queryCharacterEditorLorebookEntries(context, args, { avatar });
             }
@@ -4083,6 +4182,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         ].filter(Boolean)
         : [];
     const lorebookToolNames = [
+        String(lorebookToolApi?.toolNames?.LIST || '').trim(),
         String(lorebookToolApi?.toolNames?.QUERY || '').trim(),
         String(lorebookToolApi?.toolNames?.GET || '').trim(),
     ].filter(Boolean);
@@ -4092,7 +4192,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         'Continue the conversation naturally, and propose edits only when needed.',
         'Use tool calls for concrete edits.',
         `Available tools: ${availableToolNames.join(', ')}`,
-        `The primary lorebook is not included in full. Use ${lorebookToolNames.join(' and ')} before editing lorebook entries that need entry-level details.`,
+        `The primary lorebook is not included in full. ${lorebookToolNames[0]} returns only uid, name, and enabled as a compact index. Use ${lorebookToolNames[1]} or ${lorebookToolNames[2]} before editing lorebook entries that need entry-level details.`,
         `${simulateToolName} can simulate current prompt assembly with world info and character card included.`,
         `For ${simulateToolName}, prefer the text argument so the tool appends that user text to the current chat. Use the messages array only when the user explicitly supplied structured records/messages.`,
         'If you call any helper tool in a round, do not emit edit tool calls in that same round.',
