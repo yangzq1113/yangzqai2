@@ -20,7 +20,7 @@ import {
 
 const MODULE_NAME = 'memory_graph';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
-const PERSISTED_STORE_VERSION = 7;
+const PERSISTED_STORE_VERSION = 8;
 const UI_BLOCK_ID = 'memory_graph_settings';
 const STYLE_ID = 'memory_graph_style';
 const SHARED_LOREBOOK_NAME = '__MEMORY_GRAPH__';
@@ -1705,13 +1705,7 @@ function getLatestAssistantFloorFromContext(context) {
 
 function getImportedStoreBindingFloor(store) {
     const normalized = normalizeStoreForRuntime(store);
-    return Math.max(
-        0,
-        Math.floor(Number(normalized.loggedSeqTo || 0)),
-        Math.floor(Number(normalized.seqCounter || 0)),
-        Math.floor(Number(normalized.appliedSeqTo || 0)),
-        Math.floor(Number(getSemanticCoverageSeq(normalized) || 0)),
-    );
+    return getStoreCoveredSeqTo(normalized);
 }
 
 function clearImportedStoreTransientState(store) {
@@ -1923,6 +1917,9 @@ function createEmptyStore() {
 function createEmptyPersistedMemoryState() {
     return {
         version: PERSISTED_STORE_VERSION,
+        // Global replay/incremental coverage floor for the whole graph; distinct from node-local seqTo.
+        coveredSeqTo: 0,
+        // Replay source of truth: each entry is one atomic graph mutation batch.
         opLog: [],
         lastRecallTrace: [],
         lastRecallProjection: null,
@@ -2010,12 +2007,10 @@ function normalizeStoreForRuntime(store) {
 
     normalized.appliedSeqTo = Math.max(
         0,
-        Math.min(
-            normalized.seqCounter,
-            Math.floor(Number.isFinite(Number(store.appliedSeqTo)) ? Number(store.appliedSeqTo) : normalized.seqCounter),
-        ),
+        Math.floor(Number.isFinite(Number(store.appliedSeqTo)) ? Number(store.appliedSeqTo) : normalized.seqCounter),
     );
     normalized.loggedSeqTo = Math.max(normalized.loggedSeqTo, normalized.appliedSeqTo);
+    normalized.seqCounter = Math.max(normalized.seqCounter, normalized.loggedSeqTo);
     return normalized;
 }
 
@@ -2040,6 +2035,7 @@ function normalizeMemoryLogEntry(raw) {
     if (!raw || typeof raw !== 'object') {
         return null;
     }
+    // entry.seq gates the whole batch; replay/branch trimming must not split ops inside one entry.
     const seq = Math.max(0, Math.floor(Number(raw.seq || 0)));
     const ops = Array.isArray(raw.ops)
         ? raw.ops.map(normalizeMemoryLogOperation).filter(Boolean)
@@ -2173,6 +2169,22 @@ function getLatestLoggedSeq(stateOrLog) {
     return log.reduce((maxSeq, entry) => Math.max(maxSeq, Math.max(0, Math.floor(Number(entry?.seq || 0)))), 0);
 }
 
+function getPersistedCoveredSeqTo(state) {
+    const rawCoveredSeqTo = Number.isFinite(Number(state?.coveredSeqTo))
+        ? Math.max(0, Math.floor(Number(state.coveredSeqTo)))
+        : 0;
+    return Math.max(rawCoveredSeqTo, getLatestLoggedSeq(state));
+}
+
+function getStoreCoveredSeqTo(store) {
+    return Math.max(
+        0,
+        Math.floor(Number(store?.appliedSeqTo || 0)),
+        Math.floor(Number(store?.loggedSeqTo || 0)),
+        Math.floor(Number(getSemanticCoverageSeq(store) || 0)),
+    );
+}
+
 function normalizePersistedStateBase(raw) {
     const normalized = createEmptyPersistedMemoryState();
     if (!raw || typeof raw !== 'object') {
@@ -2187,6 +2199,10 @@ function normalizePersistedStateBase(raw) {
     normalized.opLog = Array.isArray(raw.opLog)
         ? raw.opLog.map(normalizeMemoryLogEntry).filter(Boolean)
         : [];
+    normalized.coveredSeqTo = getPersistedCoveredSeqTo({
+        coveredSeqTo: raw.coveredSeqTo,
+        opLog: normalized.opLog,
+    });
     return normalized;
 }
 
@@ -2210,16 +2226,8 @@ function buildMemoryLogOpsFromStore(store) {
 }
 
 function buildLegacyMigrationSeq(context, legacyStore) {
-    const currentAssistantCount = Math.max(0, Number(computeChatSourceState(context)?.messageCount || 0));
-    if (currentAssistantCount > 0) {
-        return currentAssistantCount;
-    }
-    return Math.max(
-        0,
-        Number(legacyStore?.sourceMessageCount || 0),
-        Number(legacyStore?.appliedSeqTo || 0),
-        Number(getSemanticCoverageSeq(legacyStore) || 0),
-    );
+    void context;
+    return getStoreCoveredSeqTo(legacyStore);
 }
 
 function buildPersistedStateFromLegacyStore(raw, context) {
@@ -2240,6 +2248,7 @@ function buildPersistedStateFromLegacyStore(raw, context) {
         || Object.keys(normalized.swipeTailCache).length > 0;
     if (hasLegacyPayload) {
         const seq = buildLegacyMigrationSeq(context, legacyStore);
+        normalized.coveredSeqTo = Math.max(0, seq);
         const ops = buildMemoryLogOpsFromStore(legacyStore);
         if (seq > 0 || ops.length > 0) {
             normalized.opLog = [{ seq: Math.max(0, seq), ops }];
@@ -2266,7 +2275,8 @@ function normalizePersistedMemoryState(raw, context) {
 
 function hasPersistedMemoryStatePayload(state) {
     const normalized = normalizePersistedStateBase(state);
-    return normalized.opLog.length > 0
+    return normalized.coveredSeqTo > 0
+        || normalized.opLog.length > 0
         || normalized.lastRecallTrace.length > 0
         || Boolean(normalized.lastRecallProjection)
         || normalized.sourceMessageCount > 0
@@ -2325,7 +2335,7 @@ function applyMemoryLogEntryToStore(store, entry) {
     repairStoreAfterRollback(store);
     store.loggedSeqTo = Math.max(store.loggedSeqTo, Math.max(0, Math.floor(Number(entry.seq || 0))));
     store.seqCounter = Math.max(store.seqCounter, store.loggedSeqTo);
-    store.appliedSeqTo = getSemanticCoverageSeq(store);
+    store.appliedSeqTo = Math.max(store.appliedSeqTo, Math.max(0, Math.floor(Number(entry.seq || 0))));
 }
 
 function buildRuntimeStoreFromPersistedState(state) {
@@ -2334,9 +2344,9 @@ function buildRuntimeStoreFromPersistedState(state) {
     for (const entry of normalizedState.opLog) {
         applyMemoryLogEntryToStore(runtimeStore, entry);
     }
-    runtimeStore.loggedSeqTo = Math.max(runtimeStore.loggedSeqTo, getLatestLoggedSeq(normalizedState));
+    runtimeStore.appliedSeqTo = Math.max(runtimeStore.appliedSeqTo, getPersistedCoveredSeqTo(normalizedState));
+    runtimeStore.loggedSeqTo = Math.max(runtimeStore.loggedSeqTo, getLatestLoggedSeq(normalizedState), runtimeStore.appliedSeqTo);
     runtimeStore.seqCounter = Math.max(runtimeStore.seqCounter, runtimeStore.loggedSeqTo);
-    runtimeStore.appliedSeqTo = getSemanticCoverageSeq(runtimeStore);
     runtimeStore.lastRecallTrace = structuredClone(Array.isArray(normalizedState.lastRecallTrace) ? normalizedState.lastRecallTrace : []);
     runtimeStore.lastRecallProjection = normalizedState.lastRecallProjection && typeof normalizedState.lastRecallProjection === 'object'
         ? structuredClone(normalizedState.lastRecallProjection)
@@ -2344,6 +2354,125 @@ function buildRuntimeStoreFromPersistedState(state) {
     runtimeStore.sourceMessageCount = Math.max(0, Number(normalizedState.sourceMessageCount || 0));
     runtimeStore.swipeTailCache = cloneSwipeTailCache(normalizedState.swipeTailCache);
     return runtimeStore;
+}
+
+function buildBranchStateFromPersistedState(state, branchCutoffSeq) {
+    const normalizedState = normalizePersistedStateBase(state);
+    const cutoffSeq = Math.max(0, Math.floor(Number(branchCutoffSeq || 0)));
+    const nextState = applyStoreMetadataToPersistedState(createEmptyPersistedMemoryState(), normalizedState);
+    nextState.coveredSeqTo = Math.min(getPersistedCoveredSeqTo(normalizedState), cutoffSeq);
+    const branchStore = createEmptyStore();
+    const delayedBackfillNodeIds = new Set();
+    const backfillEntriesBySeq = new Map();
+
+    const appendBackfillOperation = (seq, operation) => {
+        const normalizedSeq = Math.max(0, Math.floor(Number(seq || 0)));
+        if (!normalizedSeq || !operation || typeof operation !== 'object') {
+            return;
+        }
+        if (!backfillEntriesBySeq.has(normalizedSeq)) {
+            backfillEntriesBySeq.set(normalizedSeq, []);
+        }
+        backfillEntriesBySeq.get(normalizedSeq).push(structuredClone(operation));
+    };
+
+    for (const entry of normalizedState.opLog) {
+        const entrySeq = Math.max(0, Math.floor(Number(entry?.seq || 0)));
+        if (entrySeq <= cutoffSeq) {
+            const clonedEntry = normalizeMemoryLogEntry(structuredClone(entry));
+            if (!clonedEntry) {
+                continue;
+            }
+            nextState.opLog.push(clonedEntry);
+            applyMemoryLogEntryToStore(branchStore, clonedEntry);
+        }
+    }
+
+    // Delayed extraction/compression can write old-content nodes after the branch cutoff.
+    for (const entry of normalizedState.opLog) {
+        const entrySeq = Math.max(0, Math.floor(Number(entry?.seq || 0)));
+        if (entrySeq <= cutoffSeq) {
+            continue;
+        }
+        for (const operation of Array.isArray(entry?.ops) ? entry.ops : []) {
+            if (String(operation?.type || '').trim().toLowerCase() !== 'upsert_node') {
+                continue;
+            }
+            const node = cloneRollbackNodeSnapshot(operation?.node);
+            const nodeSeq = Math.max(0, Math.floor(Number(node?.seqTo || 0)));
+            if (!node || nodeSeq <= 0 || nodeSeq > cutoffSeq) {
+                continue;
+            }
+            const currentNode = branchStore.nodes?.[node.id];
+            const currentSeq = Math.max(0, Math.floor(Number(currentNode?.seqTo || 0)));
+            if (!currentNode || nodeSeq >= currentSeq) {
+                applyLoggedNodeSnapshot(branchStore, node);
+                delayedBackfillNodeIds.add(node.id);
+                appendBackfillOperation(nodeSeq, { type: 'upsert_node', node });
+            }
+        }
+    }
+
+    if (delayedBackfillNodeIds.size > 0) {
+        for (const entry of normalizedState.opLog) {
+            const entrySeq = Math.max(0, Math.floor(Number(entry?.seq || 0)));
+            if (entrySeq <= cutoffSeq) {
+                continue;
+            }
+            for (const operation of Array.isArray(entry?.ops) ? entry.ops : []) {
+                if (String(operation?.type || '').trim().toLowerCase() !== 'upsert_edge') {
+                    continue;
+                }
+                const edge = cloneRollbackEdgeSnapshot(operation?.edge);
+                if (!edge) {
+                    continue;
+                }
+                const fromNode = branchStore.nodes?.[edge.from];
+                const toNode = branchStore.nodes?.[edge.to];
+                if (!fromNode || !toNode) {
+                    continue;
+                }
+                if (!delayedBackfillNodeIds.has(edge.from) && !delayedBackfillNodeIds.has(edge.to)) {
+                    continue;
+                }
+                const edgeKey = getRollbackEdgeKey(edge);
+                const hadEdge = Array.isArray(branchStore.edges) && branchStore.edges.some(item => getRollbackEdgeKey(item) === edgeKey);
+                addEdge(branchStore, edge.from, edge.to, edge.type);
+                if (!hadEdge) {
+                    const edgeSeq = Math.max(
+                        0,
+                        Math.floor(Number(fromNode?.seqTo || 0)),
+                        Math.floor(Number(toNode?.seqTo || 0)),
+                    );
+                    appendBackfillOperation(edgeSeq, { type: 'upsert_edge', edge });
+                }
+            }
+        }
+    }
+
+    repairStoreAfterRollback(branchStore);
+    nextState.opLog.push(
+        ...Array.from(backfillEntriesBySeq.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([seq, ops]) => ({ seq, ops })),
+    );
+    branchStore.appliedSeqTo = Math.max(branchStore.appliedSeqTo, nextState.coveredSeqTo);
+    branchStore.loggedSeqTo = Math.max(branchStore.loggedSeqTo, getLatestLoggedSeq(nextState), branchStore.appliedSeqTo);
+    branchStore.seqCounter = Math.max(branchStore.seqCounter, branchStore.loggedSeqTo);
+    branchStore.lastRecallTrace = structuredClone(Array.isArray(normalizedState.lastRecallTrace) ? normalizedState.lastRecallTrace : []);
+    branchStore.lastRecallProjection = normalizedState.lastRecallProjection && typeof normalizedState.lastRecallProjection === 'object'
+        ? structuredClone(normalizedState.lastRecallProjection)
+        : null;
+    branchStore.sourceMessageCount = Math.max(0, Number(normalizedState.sourceMessageCount || 0));
+    branchStore.swipeTailCache = cloneSwipeTailCache(normalizedState.swipeTailCache);
+    nextState.opLog = nextState.opLog
+        .map(entry => normalizeMemoryLogEntry(entry))
+        .filter(Boolean)
+        .sort((a, b) => a.seq - b.seq);
+    return {
+        state: nextState,
+        store: branchStore,
+    };
 }
 
 function getMemoryState(chatKey) {
@@ -2359,6 +2488,7 @@ function getMemoryState(chatKey) {
 
 function updatePersistedStateMetadataFromStore(chatKey, store) {
     const state = getMemoryState(chatKey);
+    state.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(state), getStoreCoveredSeqTo(store));
     state.sourceMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
     state.lastRecallTrace = structuredClone(Array.isArray(store?.lastRecallTrace) ? store.lastRecallTrace : []);
     state.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
@@ -2461,6 +2591,7 @@ function appendPersistedDiffEntry(chatKey, beforeStore, afterStore, seq) {
     }
     const normalizedSeq = Math.max(0, Math.floor(Number(seq || 0)));
     const state = getMemoryState(key);
+    state.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(state), normalizedSeq);
     const ops = buildMemoryLogDiffOps(beforeStore, afterStore);
     if (ops.length === 0) {
         return false;
@@ -2468,9 +2599,9 @@ function appendPersistedDiffEntry(chatKey, beforeStore, afterStore, seq) {
     state.opLog.push({ seq: normalizedSeq, ops });
     const prepared = prepareCommittedStateWithSwipeTailCache(getContext(), state, afterStore, normalizedSeq);
     memoryStateCache.set(key, prepared.state);
-    afterStore.loggedSeqTo = Math.max(Number(afterStore?.loggedSeqTo || 0), getLatestLoggedSeq(prepared.state));
+    afterStore.loggedSeqTo = Math.max(Number(afterStore?.loggedSeqTo || 0), getPersistedCoveredSeqTo(prepared.state));
     const runtimeStore = normalizeStoreForRuntime(prepared.store);
-    runtimeStore.loggedSeqTo = Math.max(getLatestLoggedSeq(prepared.state), runtimeStore.loggedSeqTo);
+    runtimeStore.loggedSeqTo = Math.max(getPersistedCoveredSeqTo(prepared.state), runtimeStore.loggedSeqTo);
     runtimeStore.lastRecallTrace = structuredClone(Array.isArray(prepared.store?.lastRecallTrace) ? prepared.store.lastRecallTrace : []);
     runtimeStore.lastRecallProjection = prepared.store?.lastRecallProjection && typeof prepared.store.lastRecallProjection === 'object'
         ? structuredClone(prepared.store.lastRecallProjection)
@@ -2486,6 +2617,9 @@ function applyStoreMetadataToPersistedState(state, store) {
     const nextState = state && typeof state === 'object'
         ? state
         : createEmptyPersistedMemoryState();
+    nextState.coveredSeqTo = Number.isFinite(Number(store?.coveredSeqTo))
+        ? Math.max(0, Math.floor(Number(store.coveredSeqTo)))
+        : getStoreCoveredSeqTo(store);
     nextState.sourceMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
     nextState.lastRecallTrace = structuredClone(Array.isArray(store?.lastRecallTrace) ? store.lastRecallTrace : []);
     nextState.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
@@ -2520,7 +2654,8 @@ function hasPersistedStoreMetadataChanges(beforeStore, afterStore) {
         : null);
     const beforeSwipeTailCache = JSON.stringify(normalizeSwipeTailCache(beforeStore?.swipeTailCache));
     const afterSwipeTailCache = JSON.stringify(normalizeSwipeTailCache(afterStore?.swipeTailCache));
-    return Math.max(0, Number(beforeStore?.sourceMessageCount || 0)) !== Math.max(0, Number(afterStore?.sourceMessageCount || 0))
+    return getStoreCoveredSeqTo(beforeStore) !== getStoreCoveredSeqTo(afterStore)
+        || Math.max(0, Number(beforeStore?.sourceMessageCount || 0)) !== Math.max(0, Number(afterStore?.sourceMessageCount || 0))
         || beforeTrace !== afterTrace
         || beforeProjection !== afterProjection
         || beforeSwipeTailCache !== afterSwipeTailCache;
@@ -2529,7 +2664,11 @@ function hasPersistedStoreMetadataChanges(beforeStore, afterStore) {
 function prepareCommittedStateWithSwipeTailCache(context, state, store, seq) {
     const normalizedState = normalizePersistedStateBase(state);
     const normalizedStore = normalizeStoreForRuntime(store);
-    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedStore.appliedSeqTo || getSemanticCoverageSeq(normalizedStore) || 0)));
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedStore) || 0)));
+    normalizedState.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(normalizedState), normalizedSeq);
+    normalizedStore.appliedSeqTo = Math.max(getStoreCoveredSeqTo(normalizedStore), normalizedSeq);
+    normalizedStore.loggedSeqTo = Math.max(normalizedStore.loggedSeqTo, normalizedStore.appliedSeqTo);
+    normalizedStore.seqCounter = Math.max(normalizedStore.seqCounter, normalizedStore.loggedSeqTo);
     const settings = getEffectiveSettings(context, getSettings());
     const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
     const descriptor = latestSeq > 0
@@ -2600,6 +2739,10 @@ async function restoreSwipeTailCacheForMessage(context, messageIndex) {
     nextState.opLog = nextState.opLog
         .filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < descriptor.assistantSeq)
         .concat(cacheEntry.tailLog.map(entry => structuredClone(entry)));
+    nextState.coveredSeqTo = Math.max(
+        getLatestLoggedSeq(nextState),
+        Math.min(getPersistedCoveredSeqTo(currentState), Math.max(0, descriptor.assistantSeq)),
+    );
     nextState.sourceMessageCount = Math.max(0, Number(computeChatSourceState(context)?.messageCount || nextState.sourceMessageCount || 0));
     nextState.lastRecallTrace = [];
     nextState.lastRecallProjection = null;
@@ -2659,7 +2802,7 @@ async function persistPreparedMemoryStateByChatKey(context, chatKey, nextState, 
 
 async function commitMemoryStoreReplaceByChatKey(context, chatKey, store, seq, { syncPersistentProjection = false } = {}) {
     const normalizedStore = normalizeStoreForRuntime(store);
-    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedStore.appliedSeqTo || getSemanticCoverageSeq(normalizedStore) || 0)));
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedStore) || 0)));
     const nextState = applyStoreMetadataToPersistedState(createEmptyPersistedMemoryState(), normalizedStore);
     const ops = buildMemoryLogOpsFromStore(normalizedStore);
     nextState.opLog = (normalizedSeq > 0 || ops.length > 0)
@@ -2674,8 +2817,9 @@ async function commitMemoryStoreDiffByChatKey(context, chatKey, beforeStore, aft
     const normalizedBefore = normalizeStoreForRuntime(beforeStore);
     const normalizedAfter = normalizeStoreForRuntime(afterStore);
     const ops = buildMemoryLogDiffOps(normalizedBefore, normalizedAfter);
-    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedAfter.appliedSeqTo || getSemanticCoverageSeq(normalizedAfter) || 0)));
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedAfter) || 0)));
     const nextState = normalizePersistedStateBase(getMemoryState(chatKey));
+    nextState.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(nextState), normalizedSeq);
     if (ops.length > 0) {
         nextState.opLog.push({ seq: normalizedSeq, ops });
     }
@@ -2696,14 +2840,15 @@ function replacePersistedGraphWithStore(chatKey, store, seq) {
     }
     const normalizedStore = normalizeStoreForRuntime(store);
     const state = getMemoryState(key);
-    const normalizedSeq = Math.max(0, Math.floor(Number(seq || normalizedStore.appliedSeqTo || getSemanticCoverageSeq(normalizedStore) || 0)));
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedStore) || 0)));
     const ops = buildMemoryLogOpsFromStore(normalizedStore);
+    state.coveredSeqTo = normalizedSeq;
     state.opLog = (normalizedSeq > 0 || ops.length > 0)
         ? [{ seq: normalizedSeq, ops }]
         : [];
     const prepared = prepareCommittedStateWithSwipeTailCache(getContext(), state, normalizedStore, normalizedSeq);
     memoryStateCache.set(key, prepared.state);
-    store.loggedSeqTo = Math.max(Number(store?.loggedSeqTo || 0), getLatestLoggedSeq(prepared.state));
+    store.loggedSeqTo = Math.max(Number(store?.loggedSeqTo || 0), getPersistedCoveredSeqTo(prepared.state));
     const runtimeStore = buildRuntimeStoreFromPersistedState(prepared.state);
     runtimeStore.lastRecallTrace = structuredClone(Array.isArray(prepared.store.lastRecallTrace) ? prepared.store.lastRecallTrace : []);
     runtimeStore.lastRecallProjection = prepared.store.lastRecallProjection && typeof prepared.store.lastRecallProjection === 'object'
@@ -2822,19 +2967,27 @@ async function inheritMemoryStoreForBranch(context, payload) {
         return;
     }
 
-    const nextState = normalizePersistedStateBase(memoryStateCache.get(sourceChatKey));
-    nextState.opLog = nextState.opLog.filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) <= assistantMessageCount);
+    const sourceState = normalizePersistedStateBase(memoryStateCache.get(sourceChatKey));
+    const branchState = buildBranchStateFromPersistedState(sourceState, assistantMessageCount);
+    const nextState = branchState.state;
+    const branchStore = branchState.store;
+    branchStore.sourceMessageCount = assistantMessageCount;
+    branchStore.lastRecallTrace = [];
+    branchStore.lastRecallProjection = null;
+    branchStore.swipeTailCache = {};
+    branchStore.pendingFullRebuild = false;
+    branchStore.lastExtractionDebug = null;
+    branchStore.appliedSeqTo = Math.max(0, Number(branchStore.appliedSeqTo || 0));
+    branchStore.loggedSeqTo = Math.max(Number(branchStore.loggedSeqTo || 0), Number(branchStore.appliedSeqTo || 0));
+    branchStore.seqCounter = Math.max(branchStore.seqCounter, branchStore.loggedSeqTo);
     nextState.sourceMessageCount = assistantMessageCount;
     nextState.lastRecallTrace = [];
     nextState.lastRecallProjection = null;
     nextState.swipeTailCache = {};
-    const branchStore = buildRuntimeStoreWithPersistedMetadata(nextState, {
-        sourceMessageCount: assistantMessageCount,
-        lastRecallTrace: [],
-        lastRecallProjection: null,
-        swipeTailCache: {},
-    });
-    branchStore.pendingFullRebuild = false;
+    nextState.opLog = nextState.opLog
+        .map(entry => normalizeMemoryLogEntry(entry))
+        .filter(Boolean)
+        .sort((a, b) => a.seq - b.seq);
 
     memoryStoreTargets.set(targetChatKey, targetTarget);
     memoryLoadTasks.delete(targetChatKey);
@@ -3087,6 +3240,7 @@ function cloneRollbackNodeSnapshot(rawNode) {
             : {},
         semanticDepth: Number.isFinite(Number(rawNode.semanticDepth)) ? Number(rawNode.semanticDepth) : 0,
         semanticRollup: Boolean(rawNode.semanticRollup),
+        // Node-local last-touched/visible-through index for sorting/filtering helpers; main replay uses opLog entry.seq.
         seqTo: Number.isFinite(Number(rawNode.seqTo)) ? Math.max(0, Math.floor(Number(rawNode.seqTo))) : undefined,
         archived: Boolean(rawNode.archived),
     };
@@ -3165,6 +3319,7 @@ function captureRollbackSnapshot(store) {
         nodeSeq: Math.max(0, Math.floor(Number(store?.nodeSeq || 0))),
         seqCounter: Math.max(0, Math.floor(Number(store?.seqCounter || 0))),
         appliedSeqTo: Math.max(0, Math.floor(Number(store?.appliedSeqTo || 0))),
+        loggedSeqTo: Math.max(0, Math.floor(Number(store?.loggedSeqTo || 0))),
         nodes,
         edges: Array.isArray(store?.edges)
             ? store.edges.map(cloneRollbackEdgeSnapshot).filter(Boolean)
@@ -3179,6 +3334,7 @@ function restoreStoreFromRollbackSnapshot(store, snapshot) {
     store.nodeSeq = Math.max(0, Math.floor(Number(snapshot.nodeSeq || 0)));
     store.seqCounter = Math.max(0, Math.floor(Number(snapshot.seqCounter || 0)));
     store.appliedSeqTo = Math.max(0, Math.floor(Number(snapshot.appliedSeqTo || 0)));
+    store.loggedSeqTo = Math.max(0, Math.floor(Number(snapshot.loggedSeqTo || snapshot.appliedSeqTo || 0)));
     store.nodes = {};
     for (const [id, node] of Object.entries(snapshot.nodes || {})) {
         const restored = cloneRollbackNodeSnapshot(node);
@@ -3275,7 +3431,8 @@ function buildRollbackEntry(chatKey, beforeSnapshot, store, { seqFrom = 0, seqTo
     });
     const metaChanged = beforeSnapshot.nodeSeq !== afterSnapshot.nodeSeq
         || beforeSnapshot.seqCounter !== afterSnapshot.seqCounter
-        || beforeSnapshot.appliedSeqTo !== afterSnapshot.appliedSeqTo;
+        || beforeSnapshot.appliedSeqTo !== afterSnapshot.appliedSeqTo
+        || beforeSnapshot.loggedSeqTo !== afterSnapshot.loggedSeqTo;
     if (!metaChanged && nodeChangeCount === 0 && addedEdges.length === 0 && removedEdges.length === 0) {
         return null;
     }
@@ -3287,6 +3444,7 @@ function buildRollbackEntry(chatKey, beforeSnapshot, store, { seqFrom = 0, seqTo
             nodeSeq: beforeSnapshot.nodeSeq,
             seqCounter: beforeSnapshot.seqCounter,
             appliedSeqTo: beforeSnapshot.appliedSeqTo,
+            loggedSeqTo: beforeSnapshot.loggedSeqTo,
         },
         nodesBefore,
         addedEdges: addedEdges.map(cloneRollbackEdgeSnapshot).filter(Boolean),
@@ -3335,6 +3493,7 @@ function applyRollbackEntry(store, entry) {
     store.nodeSeq = Math.max(0, Math.floor(Number(entry?.metaBefore?.nodeSeq || 0)));
     store.seqCounter = Math.max(0, Math.floor(Number(entry?.metaBefore?.seqCounter || 0)));
     store.appliedSeqTo = Math.max(0, Math.floor(Number(entry?.metaBefore?.appliedSeqTo || 0)));
+    store.loggedSeqTo = Math.max(0, Math.floor(Number(entry?.metaBefore?.loggedSeqTo || entry?.metaBefore?.appliedSeqTo || 0)));
 }
 
 function rollbackStoreUsingHistory(store, chatKey, fromSeq) {
@@ -3420,7 +3579,7 @@ function findAffectedAssistantSeqFromMessageIndex(context, messageIndex) {
 
 function getStoreSourceSyncState(store, context) {
     const sourceState = computeChatSourceState(context);
-    const storedMessageCount = Math.max(0, Number(store?.loggedSeqTo || 0));
+    const storedMessageCount = getStoreCoveredSeqTo(store);
     const currentMessageCount = Math.max(0, Number(sourceState.messageCount || 0));
     let requiresFullRebuild = false;
     let reason = '';
@@ -6060,7 +6219,7 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
     const safeEnd = Math.max(safeStart, Math.min(source.length - 1, Math.floor(Number(batchEndIndex) || safeStart)));
     const endFrame = source[safeEnd];
     if (!endFrame || typeof endFrame !== 'object') {
-        return false;
+        return { processed: false, changed: false };
     }
     const extractBatch = [];
     const contextTurns = Math.max(1, Math.min(32, Number(settings?.extractContextTurns || 1)));
@@ -6073,7 +6232,7 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
         rebuildCreateOnly: Boolean(options?.rebuildCreateOnly),
     });
     if (operations.length === 0) {
-        return false;
+        return { processed: true, changed: false };
     }
 
     const extractionRefIndex = new Map();
@@ -6183,7 +6342,7 @@ async function processPendingMessageBatchWithLLM(context, store, settings, schem
         );
     }
 
-    return true;
+    return { processed: true, changed: true };
 }
 
 async function runExtractionForStore(context, store, {
@@ -6246,6 +6405,7 @@ async function runExtractionForStore(context, store, {
     );
     const historyChatKey = String(getChatKey(context) || '').trim();
     let extractedAny = false;
+    let processedSeqTo = coveredSeqTo;
     for (let i = beginSeq - 1; i < latestSeq; i += extractBatchTurns) {
         if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
             throw new DOMException('Memory extraction aborted.', 'AbortError');
@@ -6268,7 +6428,7 @@ async function runExtractionForStore(context, store, {
         for (let attempt = 0; attempt <= frameErrorRetries; attempt++) {
             const attemptSnapshot = captureRollbackSnapshot(store);
             try {
-                success = await processPendingMessageBatchWithLLM(
+                const batchResult = await processPendingMessageBatchWithLLM(
                     context,
                     store,
                     settings,
@@ -6282,17 +6442,21 @@ async function runExtractionForStore(context, store, {
                         rebuildCreateOnly: Boolean(rebuildCreateOnly),
                     },
                 );
+                success = Boolean(batchResult?.processed);
                 lastFrameError = null;
                 if (success) {
-                    extractedAny = true;
+                    processedSeqTo = Math.max(processedSeqTo, Number(endFrame?.seq || 0));
                     store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(endFrame?.seq || 0));
-                    const rollbackEntry = buildRollbackEntry(historyChatKey, attemptSnapshot, store, {
-                        kind: 'extract',
-                        seqFrom: Number(startFrame?.seq || 0),
-                        seqTo: Number(endFrame?.seq || 0),
-                    });
-                    if (rollbackEntry) {
-                        recordRollbackEntry(historyChatKey, rollbackEntry);
+                    if (batchResult?.changed) {
+                        extractedAny = true;
+                        const rollbackEntry = buildRollbackEntry(historyChatKey, attemptSnapshot, store, {
+                            kind: 'extract',
+                            seqFrom: Number(startFrame?.seq || 0),
+                            seqTo: Number(endFrame?.seq || 0),
+                        });
+                        if (rollbackEntry) {
+                            recordRollbackEntry(historyChatKey, rollbackEntry);
+                        }
                     }
                 }
                 break;
@@ -6352,15 +6516,16 @@ async function runExtractionForStore(context, store, {
             recordRollbackEntry(historyChatKey, compressionRollbackEntry);
         }
     }
-    store.appliedSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
-    store.seqCounter = store.appliedSeqTo;
+    store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), processedSeqTo);
+    store.loggedSeqTo = Math.max(Number(store.loggedSeqTo || 0), store.appliedSeqTo);
+    store.seqCounter = Math.max(Number(store.seqCounter || 0), store.appliedSeqTo);
     updateStoreSourceState(store, context);
     store.lastExtractionDebug = {
         beginSeq,
         latestSeq,
         coveredSeqTo,
         extracted: extractedAny,
-        reason: extractedAny ? 'ok' : 'no_upserts',
+        reason: extractedAny ? 'ok' : (processedSeqTo > coveredSeqTo ? 'no_graph_changes' : 'no_upserts'),
         compression: compressionStats,
         at: Date.now(),
     };
@@ -7242,7 +7407,7 @@ function getNodeSeqRange(node) {
 }
 
 function getLatestSeqIndex(store) {
-    return Math.max(-1, getSemanticCoverageSeq(store));
+    return Math.max(-1, getStoreCoveredSeqTo(store));
 }
 
 function getRecentMessagesByAssistantTurns(messages, keepAssistantTurns) {
@@ -8007,14 +8172,14 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
                 context,
                 chatKey,
                 rebuilt,
-                Number(roundSeqTo || getSemanticCoverageSeq(rebuilt) || 0),
+                Number(roundSeqTo || getStoreCoveredSeqTo(rebuilt) || 0),
                 { syncPersistentProjection: true },
             );
         },
         rebuildCreateOnly: true,
     });
     const latestSeq = Math.max(0, Number(rebuilt?.lastExtractionDebug?.latestSeq || 0));
-    if (!extracted && latestSeq > 0) {
+    if (!extracted && latestSeq > 0 && String(rebuilt?.lastExtractionDebug?.reason || '') !== 'no_graph_changes') {
         throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
     }
     updateStoreSourceState(rebuilt, context);
@@ -8023,7 +8188,7 @@ async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatc
         context,
         chatKey,
         rebuilt,
-        Number(rebuilt?.lastExtractionDebug?.latestSeq || getSemanticCoverageSeq(rebuilt) || 0),
+        Number(rebuilt?.lastExtractionDebug?.latestSeq || getStoreCoveredSeqTo(rebuilt) || 0),
         { syncPersistentProjection: true },
     );
     return persistedStore;
@@ -8064,6 +8229,7 @@ function rebaseStoreToChatBaseline(store, context) {
         node.seqTo = baselineSeq;
     }
     store.appliedSeqTo = baselineSeq;
+    store.loggedSeqTo = baselineSeq;
     store.seqCounter = baselineSeq;
     store.lastRecallTrace = [];
     store.lastRecallProjection = null;
@@ -8089,7 +8255,7 @@ function computeExtractionWindow(context, store, startSeq = null, settings = nul
     const effectiveSettings = settings || getEffectiveSettings(context, getSettings());
     const frames = buildPlayableFramesFromContext(context);
     const latestSeq = getExtractableLatestSeq(frames.length, effectiveSettings);
-    const coveredSeqTo = Math.min(latestSeq, getSemanticCoverageSeq(store));
+    const coveredSeqTo = Math.min(latestSeq, getStoreCoveredSeqTo(store));
     const hasExplicitStartSeq = startSeq !== null
         && startSeq !== undefined
         && Number.isFinite(Number(startSeq));
@@ -8126,9 +8292,10 @@ function truncateStoreFromSeq(store, fromSeq, chatKey = '') {
         }
     }
     if (removeIds.size === 0) {
-        const covered = getSemanticCoverageSeq(store);
+        const covered = Math.max(0, startSeq - 1);
         store.appliedSeqTo = covered;
-        store.seqCounter = covered;
+        store.loggedSeqTo = covered;
+        store.seqCounter = Math.max(getSemanticCoverageSeq(store), covered);
         return;
     }
 
@@ -8155,9 +8322,10 @@ function truncateStoreFromSeq(store, fromSeq, chatKey = '') {
             return from && to && !removeIds.has(from) && !removeIds.has(to);
         });
     }
-    const covered = getSemanticCoverageSeq(store);
+    const covered = Math.max(0, startSeq - 1);
     store.appliedSeqTo = covered;
-    store.seqCounter = covered;
+    store.loggedSeqTo = covered;
+    store.seqCounter = Math.max(getSemanticCoverageSeq(store), covered);
 }
 
 function alignStoreCoverageToChat(store, context, settings = null) {
@@ -8651,7 +8819,7 @@ function getStoreStats(store) {
     return {
         nodeCount: nodes.length,
         edgeCount: Array.isArray(store.edges) ? store.edges.length : 0,
-        messageCount: getSemanticCoverageSeq(store),
+        messageCount: getStoreCoveredSeqTo(store),
         sourceMessageCount: Number(store.sourceMessageCount || 0),
         levelCount,
         lastRecallSteps: Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace.length : 0,
@@ -9762,11 +9930,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         clearRollbackHistory(chatKey);
         const effectiveSeq = Number.isFinite(Number(seq))
             ? Math.max(0, Math.floor(Number(seq)))
-            : Math.max(
-                0,
-                Math.floor(Number(latest?.loggedSeqTo || 0)),
-                Math.floor(Number(getSemanticCoverageSeq(latest) || 0)),
-            );
+            : getStoreCoveredSeqTo(latest);
         if (replaceGraph) {
             replacePersistedGraphWithStore(chatKey, latest, effectiveSeq);
         } else if (beforeStore) {
@@ -10582,7 +10746,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             replacePersistedGraphWithStore(
                 chatKey,
                 migrated,
-                Math.max(0, Number(migrated?.loggedSeqTo || 0), Number(getSemanticCoverageSeq(migrated) || 0)),
+                getStoreCoveredSeqTo(migrated),
             );
             clearRollbackHistory(chatKey);
             await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
@@ -12988,13 +13152,13 @@ function bindUi() {
                         context,
                         chatKey,
                         workingStore,
-                        Number(roundSeqTo || latestSeq || getSemanticCoverageSeq(workingStore) || 0),
+                        Number(roundSeqTo || latestSeq || getStoreCoveredSeqTo(workingStore) || 0),
                         { syncPersistentProjection: true },
                     );
                 },
             });
             const debug = workingStore.lastExtractionDebug || {};
-            if (!extracted && Number(debug.latestSeq || 0) >= startSeq) {
+            if (!extracted && Number(debug.latestSeq || 0) >= startSeq && String(debug.reason || '') !== 'no_graph_changes') {
                 throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
             }
             const persistedStore = await commitMemoryStoreReplaceByChatKey(
