@@ -120,7 +120,7 @@ export function registerExtensionSlashCommands() {
                 <strong>Example:</strong>
                 <ul>
                     <li>
-                        <pre><code class="language-stscript">/extension-enable Summarize</code></pre>
+                        <pre><code class="language-stscript">/extension-enable Quick Replies</code></pre>
                     </li>
                 </ul>
             </div>
@@ -161,7 +161,7 @@ export function registerExtensionSlashCommands() {
                 <strong>Example:</strong>
                 <ul>
                     <li>
-                        <pre><code class="language-stscript">/extension-disable Summarize</code></pre>
+                        <pre><code class="language-stscript">/extension-disable Quick Replies</code></pre>
                     </li>
                 </ul>
             </div>
@@ -217,10 +217,10 @@ export function registerExtensionSlashCommands() {
                 <strong>Example:</strong>
                 <ul>
                     <li>
-                        <pre><code class="language-stscript">/extension-toggle Summarize</code></pre>
+                        <pre><code class="language-stscript">/extension-toggle Quick Replies</code></pre>
                     </li>
                     <li>
-                        <pre><code class="language-stscript">/extension-toggle Summarize state=true</code></pre>
+                        <pre><code class="language-stscript">/extension-toggle Quick Replies state=true</code></pre>
                     </li>
                 </ul>
             </div>
@@ -256,7 +256,7 @@ export function registerExtensionSlashCommands() {
                 <strong>Example:</strong>
                 <ul>
                     <li>
-                        <pre><code class="language-stscript">/extension-state Summarize</code></pre>
+                        <pre><code class="language-stscript">/extension-state Quick Replies</code></pre>
                     </li>
                 </ul>
             </div>

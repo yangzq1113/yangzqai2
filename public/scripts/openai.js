@@ -1521,7 +1521,6 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
     };
 
     const knownPrompts = [
-        'summary',
         'authorsNote',
         'vectorsMemory',
         'vectorsDataBank',
@@ -1620,15 +1619,6 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
         { role: 'assistant', content: bias, identifier: 'bias' },
     ];
 
-    // Tavern Extras - Summary
-    const summary = extensionPrompts['1_memory'];
-    if (summary && summary.value) systemPrompts.push({
-        role: getPromptRole(summary.role),
-        content: summary.value,
-        identifier: 'summary',
-        position: getPromptPosition(summary.position),
-    });
-
     // Authors Note
     const authorsNote = extensionPrompts['2_floating_prompt'];
     if (authorsNote && authorsNote.value) systemPrompts.push({
@@ -1670,7 +1660,6 @@ async function preparePromptsForChatCompletion({ scenario, charPersonality, name
     }
 
     const knownExtensionPrompts = [
-        '1_memory',
         '2_floating_prompt',
         '3_vectors',
         '4_vectors_data_bank',

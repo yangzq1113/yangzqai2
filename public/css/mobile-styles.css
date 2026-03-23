@@ -317,8 +317,7 @@
 
     }
 
-    #groupCurrentMemberPopoutButton,
-    #summaryExtensionPopoutButton {
+    #groupCurrentMemberPopoutButton {
         display: none;
     }
 

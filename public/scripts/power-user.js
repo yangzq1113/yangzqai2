@@ -2965,7 +2965,6 @@ async function resetMovablePanels(type) {
         'floatingPrompt',
         'expression-holder',
         'groupMemberListPopout',
-        'summaryExtensionPopout',
         'gallery',
         'logprobsViewer',
         'cfgConfig',

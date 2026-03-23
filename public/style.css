@@ -6031,8 +6031,7 @@ body:not(.movingUI) .drawer-content.maximized {
     transition: all var(--animation-duration-2x);
 }
 
-/* #groupMemberListPopout,
-#summaryExtensionPopout {
+/* #groupMemberListPopout {
     aspect-ratio: unset;
     backdrop-filter: blur(var(--SmartThemeBlurStrength));
     background-color: var(--SmartThemeBlurTintColor);
