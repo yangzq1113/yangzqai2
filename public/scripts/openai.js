@@ -93,6 +93,7 @@ import { showUndoToast } from './undo-toast.js';
 import {
     buildFunctionCallRetryAddendum,
     diagnosePlainTextFunctionCallError,
+    isToolCallMandatory,
     PlainTextFunctionCallStreamDetector,
     TOOL_PROTOCOL_STYLE,
     buildPlainTextToolProtocolMessage,
@@ -3517,8 +3518,9 @@ async function attemptPlainTextFunctionCallRetry({
     let currentResponseData = initialResponseData;
     let currentInspection = inspectPlainTextFunctionCallResponse(initialResponseData, runtimeFunctionCallContext);
     const retryConfig = getPlainTextFunctionCallRetryConfig(requestSettings);
+    const requiresToolCall = Boolean(runtimeFunctionCallContext?.requiresToolCall);
 
-    if (!retryConfig.enabled || !currentInspection.error || !currentInspection.hasTrigger || retryConfig.maxAttempts <= 1) {
+    if (!retryConfig.enabled || !currentInspection.error || (!currentInspection.hasTrigger && !requiresToolCall) || retryConfig.maxAttempts <= 1) {
         return { responseData: currentResponseData, inspection: currentInspection };
     }
 
@@ -3570,7 +3572,7 @@ async function attemptPlainTextFunctionCallRetry({
             currentInspection = inspectPlainTextFunctionCallResponse(retryData, runtimeFunctionCallContext);
             currentMessages = retryMessages;
 
-            if (!currentInspection.error || !currentInspection.hasTrigger) {
+            if (!currentInspection.error || (!currentInspection.hasTrigger && !requiresToolCall)) {
                 return { responseData: currentResponseData, inspection: currentInspection };
             }
         } catch (error) {
@@ -3644,6 +3646,10 @@ async function sendOpenAIRequest(type, messages, signal, {
             || normalizedToolChoice?.name
             || '',
         ).trim();
+        const requiresToolCall = isToolCallMandatory({
+            toolChoice: normalizedToolChoice,
+            requiredFunctionName,
+        });
 
         requestMessages = mergeSystemAddendumIntoPromptMessages(
             requestMessages,
@@ -3662,6 +3668,7 @@ async function sendOpenAIRequest(type, messages, signal, {
             triggerSignal,
             tools: normalizedTools,
             requiredFunctionName,
+            requiresToolCall,
         };
     }
 
@@ -3731,6 +3738,7 @@ async function sendOpenAIRequest(type, messages, signal, {
 
                 plainTextToolCallFinalized = true;
                 const finalState = plainTextToolCallDetector.finalize();
+                const requiresToolCall = Boolean(runtimeFunctionCallContext?.requiresToolCall);
                 let changed = false;
 
                 if (finalState.displayDelta) {
@@ -3738,7 +3746,7 @@ async function sendOpenAIRequest(type, messages, signal, {
                     changed = true;
                 }
 
-                if (finalState.detected) {
+                if (finalState.detected || requiresToolCall) {
                     try {
                         const retryOutcome = await attemptPlainTextFunctionCallRetry({
                             initialResponseData: finalState.rawText,
@@ -3757,6 +3765,7 @@ async function sendOpenAIRequest(type, messages, signal, {
                             throw inspection.error;
                         }
 
+                        text = inspection.assistantTextDisplay;
                         toolCalls[0] = inspection.parsedCalls.map((call) => ({
                             id: String(call?.id || `call_${uuidv4().replaceAll('-', '')}`),
                             type: 'function',
@@ -3768,6 +3777,9 @@ async function sendOpenAIRequest(type, messages, signal, {
                         changed = true;
                     } catch (error) {
                         console.warn('[openai] Failed to parse plain-text function calls from streaming response', error);
+                        if (requiresToolCall) {
+                            throw error;
+                        }
                         if (finalState.hiddenText) {
                             text += finalState.hiddenText;
                             changed = true;
@@ -3857,7 +3869,7 @@ async function sendOpenAIRequest(type, messages, signal, {
             data = retryOutcome.responseData;
             const inspection = retryOutcome.inspection;
 
-            if (inspection.error && inspection.hasTrigger) {
+            if (inspection.error && (inspection.hasTrigger || runtimeFunctionCallContext?.requiresToolCall)) {
                 throw inspection.error;
             }
 

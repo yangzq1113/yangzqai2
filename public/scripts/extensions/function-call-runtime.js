@@ -86,6 +86,87 @@ function normalizeSchemaFromTool(tool) {
     return schema && typeof schema === 'object' ? schema : { type: 'object', additionalProperties: true };
 }
 
+function stringifyPromptValue(value) {
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function formatSchemaTypeLabel(typeValue) {
+    if (Array.isArray(typeValue)) {
+        return typeValue.map(item => String(item || '').trim()).filter(Boolean).join(' | ') || 'any';
+    }
+    const normalized = String(typeValue || '').trim();
+    return normalized || 'any';
+}
+
+function buildHumanReadableParameterDetails(schema) {
+    const safeSchema = schema && typeof schema === 'object' ? schema : {};
+    const properties = safeSchema.properties && typeof safeSchema.properties === 'object'
+        ? safeSchema.properties
+        : {};
+    const requiredSet = new Set(
+        Array.isArray(safeSchema.required)
+            ? safeSchema.required.map(item => String(item || '').trim()).filter(Boolean)
+            : [],
+    );
+
+    const lines = [];
+    if (Object.hasOwn(safeSchema, 'additionalProperties')) {
+        lines.push(`Schema rules: additionalProperties=${stringifyPromptValue(safeSchema.additionalProperties)}`);
+    }
+
+    for (const [fieldName, fieldSchemaRaw] of Object.entries(properties)) {
+        const fieldSchema = fieldSchemaRaw && typeof fieldSchemaRaw === 'object' ? fieldSchemaRaw : {};
+        const constraints = {};
+        for (const key of [
+            'minimum',
+            'maximum',
+            'exclusiveMinimum',
+            'exclusiveMaximum',
+            'minLength',
+            'maxLength',
+            'pattern',
+            'format',
+            'minItems',
+            'maxItems',
+            'uniqueItems',
+        ]) {
+            if (Object.hasOwn(fieldSchema, key)) {
+                constraints[key] = fieldSchema[key];
+            }
+        }
+        if (fieldSchema.type === 'array' && fieldSchema.items && typeof fieldSchema.items === 'object' && fieldSchema.items.type) {
+            constraints['items.type'] = fieldSchema.items.type;
+        }
+
+        lines.push(`- ${fieldName}:`);
+        lines.push(`  - type: ${formatSchemaTypeLabel(fieldSchema.type)}`);
+        lines.push(`  - required: ${requiredSet.has(fieldName) ? 'Yes' : 'No'}`);
+        if (fieldSchema.description) {
+            lines.push(`  - description: ${String(fieldSchema.description)}`);
+        }
+        if (Object.hasOwn(fieldSchema, 'enum')) {
+            lines.push(`  - enum: ${stringifyPromptValue(fieldSchema.enum)}`);
+        }
+        if (Object.hasOwn(fieldSchema, 'default')) {
+            lines.push(`  - default: ${stringifyPromptValue(fieldSchema.default)}`);
+        }
+        if (Object.hasOwn(fieldSchema, 'examples')) {
+            lines.push(`  - examples: ${stringifyPromptValue(fieldSchema.examples)}`);
+        } else if (Object.hasOwn(fieldSchema, 'example')) {
+            lines.push(`  - example: ${stringifyPromptValue(fieldSchema.example)}`);
+        }
+        if (Object.keys(constraints).length > 0) {
+            lines.push(`  - constraints: ${stringifyPromptValue(constraints)}`);
+        }
+    }
+
+    return lines.join('\n') || '(no parameter details)';
+}
+
 function escapeXmlText(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -845,12 +926,20 @@ function buildToolRows(tools) {
 
 function buildToolProtocolGuide(rows, style) {
     if (style === TOOL_PROTOCOL_STYLE.JSON_SCHEMA) {
-        return rows.map((row, index) => [
-            `${index + 1}. <tool name="${escapeXmlText(row.name)}">`,
-            `  <description>${escapeXmlText(row.description || '-')}</description>`,
-            `  <parameters_schema>${wrapCdata(JSON.stringify(row.schema))}</parameters_schema>`,
-            '</tool>',
-        ].join('\n')).join('\n\n');
+        return rows.map((row, index) => {
+            const required = row.required.length > 0 ? row.required.join(', ') : '-';
+            const optional = row.optional.length > 0 ? row.optional.join(', ') : '-';
+            const detailBlock = buildHumanReadableParameterDetails(row.schema);
+            return [
+                `${index + 1}. <tool name="${escapeXmlText(row.name)}">`,
+                `   Description: ${row.description || '-'}`,
+                `   Required parameters: ${required}`,
+                `   Optional parameters: ${optional}`,
+                '   Parameter details:',
+                detailBlock,
+                '</tool>',
+            ].join('\n');
+        }).join('\n\n');
     }
 
     return rows.map((row, index) => {
@@ -891,6 +980,10 @@ export function buildToolChoiceConstraintAddendum(toolChoice = 'auto', tools = [
     return `Tool-choice constraint: call ONLY tool '${selectedName}' in this response.`;
 }
 
+export function isToolCallMandatory({ toolChoice = 'auto', requiredFunctionName = '' } = {}) {
+    return String(toolChoice || '').trim() === 'required' || Boolean(normalizeToolName(requiredFunctionName));
+}
+
 export function buildPlainTextToolProtocolMessage(
     tools = [],
     {
@@ -914,6 +1007,7 @@ export function buildPlainTextToolProtocolMessage(
         '',
         'IMPORTANT CONTEXT NOTES:',
         '- You can call MULTIPLE tools in a single response if needed.',
+        '- Even when multiple tools are allowed, you must still follow any later user or prompt constraint that forbids tools, requires a tool, or restricts you to one named tool.',
         '- The conversation context may already contain tool execution results from previous function calls. Review the conversation history carefully to avoid unnecessary duplicate tool calls.',
         '- When tool execution results are present in context, they may be wrapped in <tool_result>...</tool_result>.',
         '- If the current prompt requires a specific preamble format such as <thought>, follow that prompt before you emit the trigger signal.',
@@ -931,6 +1025,7 @@ export function buildPlainTextToolProtocolMessage(
         '',
         'STRICT ARGUMENT KEY RULES:',
         '- You MUST use parameter keys EXACTLY as defined. Do not rename keys or change punctuation.',
+        '- If a key contains punctuation or starts with a hyphen, keep it exactly as defined. Never change "-i" to "i" or "safe_search" to "safeSearch".',
         `- The <${TOOL_TAG}> tag must contain the exact name of a tool from the list. Any other tool name is invalid.`,
         `- The <${ARGS_JSON_TAG}> tag must contain one JSON object with all required arguments for that tool.`,
         `- Wrap the JSON object inside <![CDATA[...]]> within <${ARGS_JSON_TAG}> to avoid XML escaping issues.`,
@@ -941,11 +1036,22 @@ export function buildPlainTextToolProtocolMessage(
         `<${FUNCTION_CALLS_TAG}>`,
         `    <${FUNCTION_CALL_TAG}>`,
         `        <${TOOL_TAG}>FUNCTION_A</${TOOL_TAG}>`,
-        `        <${ARGS_JSON_TAG}><![CDATA[{"arg1":"value"}]]></${ARGS_JSON_TAG}>`,
+        `        <${ARGS_JSON_TAG}><![CDATA[{"arg1":"value","safe_search":"moderate"}]]></${ARGS_JSON_TAG}>`,
         `    </${FUNCTION_CALL_TAG}>`,
         `    <${FUNCTION_CALL_TAG}>`,
         `        <${TOOL_TAG}>FUNCTION_B</${TOOL_TAG}>`,
-        `        <${ARGS_JSON_TAG}><![CDATA[{"arg2":123}]]></${ARGS_JSON_TAG}>`,
+        `        <${ARGS_JSON_TAG}><![CDATA[{"-i":true,"arg2":123}]]></${ARGS_JSON_TAG}>`,
+        `    </${FUNCTION_CALL_TAG}>`,
+        `</${FUNCTION_CALLS_TAG}>`,
+        '',
+        'INCORRECT Example (extra prose after trigger line; do not do this):',
+        '...response content (optional)...',
+        exampleTrigger,
+        'I will call the tools for you now.',
+        `<${FUNCTION_CALLS_TAG}>`,
+        `    <${FUNCTION_CALL_TAG}>`,
+        `        <${TOOL_TAG}>FUNCTION_A</${TOOL_TAG}>`,
+        `        <${ARGS_JSON_TAG}><![CDATA[{"arg1":"value"}]]></${ARGS_JSON_TAG}>`,
         `    </${FUNCTION_CALL_TAG}>`,
         `</${FUNCTION_CALLS_TAG}>`,
         '',
@@ -1010,12 +1116,29 @@ export function buildFunctionCallRetryAddendum({
         `Error details: ${error}`,
         preview ? `Previous response preview:\n\`\`\`\n${preview}\n\`\`\`` : '',
         'Retry now with strictly valid output only.',
+        'Common invalid patterns to avoid:',
+        '- extra prose between the trigger line and <function_calls>',
+        '- renamed or malformed argument keys',
+        '- markdown fences or JSON tool_calls wrappers',
+        '- duplicate trigger lines or multiple <function_calls> wrappers',
         trigger ? `First line must be exactly: ${trigger}` : '',
         plainTextMode
             ? `Then immediately output exactly one <${FUNCTION_CALLS_TAG}> XML block containing one or more <${FUNCTION_CALL_TAG}> children.`
             : 'Then output tool calls only.',
         plainTextMode
             ? `Use <${TOOL_TAG}> for the tool name and <${ARGS_JSON_TAG}><![CDATA[{...}]]></${ARGS_JSON_TAG}> for arguments.`
+            : '',
+        plainTextMode
+            ? [
+                'Correct skeleton:',
+                trigger || '<Function_AB1c_Start/>',
+                `<${FUNCTION_CALLS_TAG}>`,
+                `  <${FUNCTION_CALL_TAG}>`,
+                `    <${TOOL_TAG}>TOOL_NAME</${TOOL_TAG}>`,
+                `    <${ARGS_JSON_TAG}><![CDATA[{"arg":"value"}]]></${ARGS_JSON_TAG}>`,
+                `  </${FUNCTION_CALL_TAG}>`,
+                `</${FUNCTION_CALLS_TAG}>`,
+            ].join('\n')
             : '',
         required ? `Required function name: ${required}.` : '',
         'Do not output any extra prose after the function payload.',
