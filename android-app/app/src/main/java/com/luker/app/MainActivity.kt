@@ -27,6 +27,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
+import android.webkit.HttpAuthHandler
 import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
@@ -81,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingText: TextView
     private lateinit var fullscreenContainer: FrameLayout
     private var endpointDialog: AlertDialog? = null
+    private var httpAuthDialog: AlertDialog? = null
     @Volatile
     private var runtimeFailureDialogShown: Boolean = false
     private var pendingFilePathCallback: ValueCallback<Array<Uri>>? = null
@@ -101,6 +103,7 @@ class MainActivity : AppCompatActivity() {
     private var contentRootBasePaddingBottom: Int = 0
     private var lastAppliedImeOverlapBottom: Int = -1
     private val bootstrapSequence = AtomicInteger(0)
+    private val recentHttpAuthAttempts = mutableMapOf<Pair<String, String>, LukerHttpAuthStore.Credentials>()
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             if (fullscreenCustomView != null) {
@@ -341,7 +344,47 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = false
 
+            override fun onReceivedHttpAuthRequest(
+                view: WebView?,
+                handler: HttpAuthHandler?,
+                host: String?,
+                realm: String?,
+            ) {
+                val safeView = view ?: run {
+                    handler?.cancel()
+                    return
+                }
+                val safeHandler = handler ?: return
+                val authHost = host?.trim().orEmpty().ifBlank {
+                    Uri.parse(safeView.url.orEmpty()).host.orEmpty()
+                }
+                val authRealm = realm?.trim().orEmpty()
+                val authKey = buildHttpAuthKey(authHost, authRealm)
+                val storedCredentials = LukerHttpAuthStore.load(applicationContext, authHost, authRealm)
+                val lastAttemptedCredentials = recentHttpAuthAttempts[authKey]
+
+                if (storedCredentials != null && storedCredentials != lastAttemptedCredentials) {
+                    recentHttpAuthAttempts[authKey] = storedCredentials
+                    safeHandler.proceed(storedCredentials.username, storedCredentials.password)
+                    return
+                }
+
+                if (storedCredentials != null && storedCredentials == lastAttemptedCredentials) {
+                    LukerHttpAuthStore.clear(applicationContext, authHost, authRealm)
+                }
+
+                runOnUiThread {
+                    showHttpAuthDialog(
+                        handler = safeHandler,
+                        host = authHost,
+                        realm = authRealm,
+                        prefill = lastAttemptedCredentials ?: storedCredentials,
+                    )
+                }
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
+                recentHttpAuthAttempts.clear()
                 installBlobDownloadBridge()
                 loadingOverlay.visibility = View.GONE
             }
@@ -1200,6 +1243,113 @@ class MainActivity : AppCompatActivity() {
         return input.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001F]"), "_").trim().ifBlank { fallback }
     }
 
+    private fun buildHttpAuthKey(host: String, realm: String): Pair<String, String> {
+        return host.trim().lowercase(Locale.ROOT) to realm.trim()
+    }
+
+    private fun showHttpAuthDialog(
+        handler: HttpAuthHandler,
+        host: String,
+        realm: String,
+        prefill: LukerHttpAuthStore.Credentials?,
+    ) {
+        if (isFinishing || isDestroyed) {
+            handler.cancel()
+            return
+        }
+
+        httpAuthDialog?.cancel()
+
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, padding, padding, 0)
+        }
+        val descriptionView = TextView(this).apply {
+            text = buildString {
+                append(getString(R.string.http_auth_dialog_message))
+                if (host.isNotBlank()) {
+                    append("\n\n")
+                    append(getString(R.string.http_auth_dialog_host, host))
+                }
+                if (realm.isNotBlank()) {
+                    append('\n')
+                    append(getString(R.string.http_auth_dialog_realm, realm))
+                }
+            }
+        }
+        val usernameInput = EditText(this).apply {
+            hint = getString(R.string.http_auth_dialog_username_hint)
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            setAutofillHints(View.AUTOFILL_HINT_USERNAME)
+            setText(prefill?.username.orEmpty())
+            setSelection(text.length)
+        }
+        val passwordInput = EditText(this).apply {
+            hint = getString(R.string.http_auth_dialog_password_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+            setAutofillHints(View.AUTOFILL_HINT_PASSWORD)
+            setText(prefill?.password.orEmpty())
+            setSelection(text.length)
+        }
+        container.addView(descriptionView)
+        container.addView(
+            usernameInput,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = padding / 2
+            },
+        )
+        container.addView(
+            passwordInput,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = padding / 3
+            },
+        )
+
+        val authKey = buildHttpAuthKey(host, realm)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.http_auth_dialog_title)
+            .setView(container)
+            .setPositiveButton(R.string.http_auth_dialog_login, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val credentials = LukerHttpAuthStore.Credentials(
+                    username = usernameInput.text?.toString().orEmpty(),
+                    password = passwordInput.text?.toString().orEmpty(),
+                )
+                LukerHttpAuthStore.save(applicationContext, host, realm, credentials)
+                recentHttpAuthAttempts[authKey] = credentials
+                dialog.dismiss()
+                handler.proceed(credentials.username, credentials.password)
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                dialog.cancel()
+            }
+        }
+        dialog.setOnCancelListener {
+            handler.cancel()
+        }
+        dialog.setOnDismissListener {
+            if (httpAuthDialog === dialog) {
+                httpAuthDialog = null
+            }
+        }
+
+        httpAuthDialog = dialog
+        dialog.show()
+    }
+
     private fun bootstrapConfiguredEndpoint() {
         val selection = LukerEndpointConfig.load(applicationContext)
         val bootstrapToken = bootstrapSequence.incrementAndGet()
@@ -1506,6 +1656,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         endpointDialog?.dismiss()
         endpointDialog = null
+        httpAuthDialog?.cancel()
+        httpAuthDialog = null
         pendingFilePathCallback?.onReceiveValue(null)
         pendingFilePathCallback = null
         pendingWebPermissionRequest?.deny()

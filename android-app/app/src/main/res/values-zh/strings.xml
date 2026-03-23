@@ -51,6 +51,13 @@
     <string name="download_saved_fallback_name">文件</string>
     <string name="download_in_progress">已有下载保存操作进行中</string>
     <string name="download_default_file_name">下载文件</string>
+    <string name="http_auth_dialog_title">需要登录</string>
+    <string name="http_auth_dialog_message">此端点启用了 HTTP Basic 认证，Luker 需要先完成账号密码验证后才能载入。</string>
+    <string name="http_auth_dialog_host">端点：%1$s</string>
+    <string name="http_auth_dialog_realm">认证域：%1$s</string>
+    <string name="http_auth_dialog_username_hint">用户名</string>
+    <string name="http_auth_dialog_password_hint">密码</string>
+    <string name="http_auth_dialog_login">登录</string>
     <string name="update_download_queued">更新包下载已加入队列</string>
     <string name="update_download_started">开始下载更新包</string>
     <string name="update_download_in_progress">已有更新包下载任务正在进行</string>
