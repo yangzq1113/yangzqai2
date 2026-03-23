@@ -14,6 +14,7 @@ import { applyPatch as applyJsonPatch } from '../../public/scripts/util/fast-jso
 const ENABLE_EXTENSIONS = !!getConfigValue('extensions.enabled', true, 'boolean');
 const ENABLE_EXTENSIONS_AUTO_UPDATE = !!getConfigValue('extensions.autoUpdate', true, 'boolean');
 const ENABLE_ACCOUNTS = !!getConfigValue('enableUserAccounts', false, 'boolean');
+const PRESET_STATE_FILE_MARKER = '.luker-state.';
 
 // 10 minutes
 const AUTOSAVE_INTERVAL = 10 * 60 * 1000;
@@ -44,13 +45,27 @@ function triggerAutoSave(handle) {
 /**
  * Reads and parses files from a directory.
  * @param {string} directoryPath Path to the directory
- * @param {string} fileExtension File extension
+ * @param {object} [options] Read options
+ * @param {string} [options.fileExtension='.json'] File extension
+ * @param {boolean} [options.excludePresetStateSidecars=false] Exclude preset state sidecar files
  * @returns {Array} Parsed files
  */
-function readAndParseFromDirectory(directoryPath, fileExtension = '.json') {
+function readAndParseFromDirectory(directoryPath, options = {}) {
+    const {
+        fileExtension = '.json',
+        excludePresetStateSidecars = false,
+    } = options;
     const files = fs
         .readdirSync(directoryPath)
-        .filter(x => path.parse(x).ext == fileExtension)
+        .filter((fileName) => {
+            if (path.parse(fileName).ext !== fileExtension) {
+                return false;
+            }
+            if (!excludePresetStateSidecars) {
+                return true;
+            }
+            return !isPresetStateSidecarFile(fileName, fileExtension);
+        })
         .sort();
 
     const parsedFiles = [];
@@ -77,6 +92,22 @@ function sortByName(_) {
     return (a, b) => a.localeCompare(b);
 }
 
+function isPresetStateSidecarFile(fileName, fileExtension = '.json') {
+    if (path.parse(fileName).ext !== fileExtension) {
+        return false;
+    }
+
+    const basename = path.parse(fileName).name;
+    const normalizedBasename = basename.toLowerCase();
+    const markerIndex = normalizedBasename.lastIndexOf(PRESET_STATE_FILE_MARKER);
+    if (markerIndex === -1) {
+        return false;
+    }
+
+    const namespace = basename.slice(markerIndex + PRESET_STATE_FILE_MARKER.length);
+    return Boolean(namespace) && /^[a-z0-9._-]+$/i.test(namespace);
+}
+
 /**
  * Gets backup file prefix for user settings.
  * @param {string} handle User handle
@@ -91,9 +122,20 @@ function readPresetsFromDirectory(directoryPath, options = {}) {
         sortFunction,
         removeFileExtension = false,
         fileExtension = '.json',
+        excludePresetStateSidecars = false,
     } = options;
 
-    const files = fs.readdirSync(directoryPath).sort(sortFunction).filter(x => path.parse(x).ext == fileExtension);
+    const files = fs.readdirSync(directoryPath)
+        .sort(sortFunction)
+        .filter((fileName) => {
+            if (path.parse(fileName).ext !== fileExtension) {
+                return false;
+            }
+            if (!excludePresetStateSidecars) {
+                return true;
+            }
+            return !isPresetStateSidecarFile(fileName, fileExtension);
+        });
     const fileContents = [];
     const fileNames = [];
 
@@ -138,24 +180,28 @@ export function buildSettingsResponse(request, { includePresetContents = true, i
         = readPresetsFromDirectory(request.user.directories.novelAI_Settings, {
             sortFunction: sortByName(request.user.directories.novelAI_Settings),
             removeFileExtension: true,
+            excludePresetStateSidecars: true,
         });
 
     const { fileContents: openai_settings, fileNames: openai_setting_names }
         = readPresetsFromDirectory(request.user.directories.openAI_Settings, {
             sortFunction: sortByName(request.user.directories.openAI_Settings),
             removeFileExtension: true,
+            excludePresetStateSidecars: true,
         });
 
     const { fileContents: textgenerationwebui_presets, fileNames: textgenerationwebui_preset_names }
         = readPresetsFromDirectory(request.user.directories.textGen_Settings, {
             sortFunction: sortByName(request.user.directories.textGen_Settings),
             removeFileExtension: true,
+            excludePresetStateSidecars: true,
         });
 
     const { fileContents: koboldai_settings, fileNames: koboldai_setting_names }
         = readPresetsFromDirectory(request.user.directories.koboldAI_Settings, {
             sortFunction: sortByName(request.user.directories.koboldAI_Settings),
             removeFileExtension: true,
+            excludePresetStateSidecars: true,
         });
 
     const world_names = readWorldNames(request.user.directories.worlds);
@@ -164,10 +210,10 @@ export function buildSettingsResponse(request, { includePresetContents = true, i
     const movingUIPresets = readAndParseFromDirectory(request.user.directories.movingUI);
     const quickReplyPresets = includeQuickReplyPresets ? readAndParseFromDirectory(request.user.directories.quickreplies) : [];
 
-    const instruct = readAndParseFromDirectory(request.user.directories.instruct);
-    const context = readAndParseFromDirectory(request.user.directories.context);
-    const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt);
-    const reasoning = readAndParseFromDirectory(request.user.directories.reasoning);
+    const instruct = readAndParseFromDirectory(request.user.directories.instruct, { excludePresetStateSidecars: true });
+    const context = readAndParseFromDirectory(request.user.directories.context, { excludePresetStateSidecars: true });
+    const sysprompt = readAndParseFromDirectory(request.user.directories.sysprompt, { excludePresetStateSidecars: true });
+    const reasoning = readAndParseFromDirectory(request.user.directories.reasoning, { excludePresetStateSidecars: true });
 
     const selectedKoboldPreset = parsedSettings?.kai_settings?.preset_settings ?? parsedSettings?.preset_settings;
     const selectedNovelPreset = parsedSettings?.preset_settings_novel;
