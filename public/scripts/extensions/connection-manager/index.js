@@ -15,6 +15,7 @@ import { collapseSpaces, getUniqueName, isFalseBoolean, uuidv4, waitUntilConditi
 import { t } from '../../i18n.js';
 import { getSecretLabelById } from '../../secrets.js';
 import { applyProxyProfileEntry, getCurrentProxyProfileEntry, oai_settings } from '../../openai.js';
+import { initActionableSingleSelect } from '../../select2-actionable-single.js';
 
 const MODULE_NAME = 'connection-manager';
 const NONE = '<None>';
@@ -411,15 +412,15 @@ async function createConnectionProfile(forceName = null) {
  * Deletes the selected connection profile.
  * @returns {Promise<void>}
  */
-async function deleteConnectionProfile() {
-    const selectedProfile = extension_settings.connectionManager.selectedProfile;
+async function deleteConnectionProfile(profileId = extension_settings.connectionManager.selectedProfile) {
+    const selectedProfile = String(profileId || '');
     if (!selectedProfile) {
-        return;
+        return false;
     }
 
     const index = extension_settings.connectionManager.profiles.findIndex(p => p.id === selectedProfile);
     if (index === -1) {
-        return;
+        return false;
     }
 
     const profile = extension_settings.connectionManager.profiles[index];
@@ -427,14 +428,17 @@ async function deleteConnectionProfile() {
     const confirm = await Popup.show.confirm(t`Are you sure you want to delete the selected profile?`, name);
 
     if (!confirm) {
-        return;
+        return false;
     }
 
     extension_settings.connectionManager.profiles.splice(index, 1);
-    extension_settings.connectionManager.selectedProfile = null;
+    if (extension_settings.connectionManager.selectedProfile === selectedProfile) {
+        extension_settings.connectionManager.selectedProfile = null;
+    }
     saveSettingsDebounced();
 
     await eventSource.emit(event_types.CONNECTION_PROFILE_DELETED, profile);
+    return true;
 }
 
 /**
@@ -552,6 +556,11 @@ function renderConnectionProfiles(profiles) {
         option.selected = profile.id === extension_settings.connectionManager.selectedProfile;
         profiles.appendChild(option);
     }
+
+    profiles.value = extension_settings.connectionManager.selectedProfile || '';
+    if ($(profiles).data('select2')) {
+        $(profiles).trigger('change.select2');
+    }
 }
 
 /**
@@ -625,6 +634,26 @@ async function renderDetailsContent(detailsContent) {
     const plainTextFunctionCallingErrorRetryToggle = document.getElementById('connection_profile_function_calling_plain_text_error_retry');
     const plainTextFunctionCallingRetryAttemptsInput = document.getElementById('connection_profile_function_calling_plain_text_error_retry_max_attempts');
     renderConnectionProfiles(profiles);
+    initActionableSingleSelect(profiles, {
+        searchInputPlaceholder: t`Search...`,
+        deleteButtonTitle: t`Delete connection profile`,
+        canDelete: ({ value }) => Boolean(value),
+        onDelete: async ({ value }) => {
+            const deletedSelected = extension_settings.connectionManager.selectedProfile === value;
+            const deleted = await deleteConnectionProfile(value);
+            if (!deleted) {
+                return;
+            }
+
+            renderConnectionProfiles(profiles);
+            await renderDetailsContent(detailsContent);
+            toggleProfileSpecificButtons();
+
+            if (deletedSelected) {
+                await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, NONE);
+            }
+        },
+    });
 
     /**
      * @returns {ConnectionProfile|null}
@@ -836,7 +865,10 @@ async function renderDetailsContent(detailsContent) {
 
     const deleteButton = document.getElementById('delete_connection_profile');
     deleteButton.addEventListener('click', async () => {
-        await deleteConnectionProfile();
+        const deleted = await deleteConnectionProfile();
+        if (!deleted) {
+            return;
+        }
         renderConnectionProfiles(profiles);
         await renderDetailsContent(detailsContent);
         toggleProfileSpecificButtons();

@@ -23,6 +23,7 @@ import { renderTemplateAsync } from './templates.js';
 import { t, translate } from './i18n.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { getOrCreatePersonaDescriptor, setPersonaDescription, user_avatar } from './personas.js';
+import { initActionableSingleSelect } from './select2-actionable-single.js';
 import { showUndoToast } from './undo-toast.js';
 
 function buildWorldInfoDragHelper(item) {
@@ -536,6 +537,21 @@ function escapeHtmlText(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function getWorldEditorSelectedIndex() {
+    const selectedValue = String($('#world_editor_select').val() ?? '');
+    if (selectedValue === '') {
+        return -1;
+    }
+
+    const selectedIndex = Number.parseInt(selectedValue, 10);
+    return Number.isInteger(selectedIndex) && selectedIndex >= 0 ? selectedIndex : -1;
+}
+
+function getSelectedWorldEditorName() {
+    const selectedIndex = getWorldEditorSelectedIndex();
+    return selectedIndex === -1 ? '' : String(world_names[selectedIndex] || '');
 }
 
 function getActivationTraceScopeKey() {
@@ -1875,6 +1891,7 @@ export function setWorldInfoSettings(settings, data) {
     setWorldInfoSearchAdvancedSyntaxEnabled(getStoredWorldInfoSearchAdvancedSyntaxEnabled());
     updateWorldInfoSearchInputState();
     $('#world_info').trigger('change');
+    $('#world_editor_select').val('');
     $('#world_editor_select').trigger('change');
     renderWorldInfoManager();
     void refreshWorldInfoManagerMetadata();
@@ -1950,7 +1967,7 @@ export function setWorldInfoSettings(settings, data) {
  * @param {boolean} [loadIfNotSelected=false] - Indicates whether to load the file even if it's not currently selected
  */
 export function reloadEditor(file, loadIfNotSelected = false) {
-    const currentIndex = Number($('#world_editor_select').val());
+    const currentIndex = getWorldEditorSelectedIndex();
     const selectedIndex = resolveWorldInfoIndex(file);
     if (selectedIndex !== -1 && (loadIfNotSelected || currentIndex === selectedIndex)) {
         $('#world_editor_select').val(selectedIndex).trigger('change');
@@ -3028,7 +3045,7 @@ export async function updateWorldInfoList() {
 
     if (result.ok) {
         const data = await result.json();
-        const editorSelected = String($('#world_editor_select').find(':selected').text());
+        const editorSelected = getSelectedWorldEditorName();
         worldInfoManagerMetadata.clear();
         world_names = Array.isArray(data)
             ? data
@@ -3050,6 +3067,13 @@ export async function updateWorldInfoList() {
             $('#world_info').append(globalListOption);
             $('#world_editor_select').append(editorListOption);
         });
+
+        const nextEditorIndex = editorSelected ? world_names.indexOf(editorSelected) : -1;
+        $('#world_editor_select').val(nextEditorIndex === -1 ? '' : String(nextEditorIndex));
+        if ($('#world_editor_select').data('select2')) {
+            $('#world_editor_select').trigger('change.select2');
+        }
+
         if (Array.isArray(data)) {
             data.forEach((entry) => {
                 const name = String(entry?.file_id || '').trim();
@@ -7049,8 +7073,7 @@ export async function deleteWorldInfoWithUndo(worldInfoName) {
     }
 
     const worldData = structuredClone(await loadWorldInfo(resolvedWorldInfoName));
-    const worldEditorIndex = Number($('#world_editor_select').val());
-    const worldEditorName = Number.isInteger(worldEditorIndex) && worldEditorIndex >= 0 ? String(world_names[worldEditorIndex] || '') : '';
+    const worldEditorName = getSelectedWorldEditorName();
     const snapshot = {
         worldData,
         selectedWorldInfo: structuredClone(selected_world_info),
@@ -9255,12 +9278,9 @@ export async function moveWorldInfoEntries(sourceName, targetName, uids, { delet
         console.log(`[WI Move] ${movedEntries.length} entr${movedEntries.length === 1 ? 'y' : 'ies'} ${deleteOriginal ? 'moved' : 'copied'} successfully to '${targetName}'.`);
 
         // Check if the currently viewed book in the editor is the source or target and reload it
-        const currentEditorBookIndex = Number($('#world_editor_select').val());
-        if (!isNaN(currentEditorBookIndex)) {
-            const currentEditorBookName = world_names[currentEditorBookIndex];
-            if (currentEditorBookName === sourceName || currentEditorBookName === targetName) {
-                reloadEditor(currentEditorBookName);
-            }
+        const currentEditorBookName = getSelectedWorldEditorName();
+        if (currentEditorBookName === sourceName || currentEditorBookName === targetName) {
+            reloadEditor(currentEditorBookName);
         }
 
         toastr.success(deleteOriginal
@@ -9735,16 +9755,31 @@ export function initWorldInfo() {
 
     $(document).on('click', '.chat_lorebook_button', assignLorebookToChat);
 
-    // Not needed on mobile
-    if (!isMobile()) {
-        $('#world_editor_select').select2({
-            placeholder: t`--- Pick to Edit ---`,
-            searchInputPlaceholder: t`Search...`,
-            allowClear: true,
-            closeOnSelect: true,
-            multiple: false,
-        });
-    }
+    initActionableSingleSelect($('#world_editor_select'), {
+        placeholder: t`--- Pick to Edit ---`,
+        searchInputPlaceholder: t`Search...`,
+        allowClear: true,
+        closeOnSelect: true,
+        deleteButtonTitle: t`Delete lorebook`,
+        canDelete: ({ text }) => Boolean(resolveWorldInfoName(text)),
+        onDelete: async ({ text }) => {
+            const worldName = resolveWorldInfoName(text);
+            if (!worldName) {
+                return;
+            }
+
+            const confirmation = await Popup.show.confirm(
+                `Delete the World/Lorebook: "${worldName}"?`,
+                'This action is irreversible!',
+            );
+
+            if (!confirmation) {
+                return;
+            }
+
+            await deleteWorldInfoWithUndo(worldName);
+        },
+    });
 
     let worldInfoAutocompleteCloseFrame = 0;
     $('#WorldInfo').on('scroll', () => {
