@@ -7908,6 +7908,26 @@ function findAiIterationHistorySession(historyState, sessionId) {
         .find(item => String(item?.id || '') === targetId) || null;
 }
 
+function getAiIterationHistorySessionsByMode(historyState, mode) {
+    const targetMode = normalizeExecutionMode(mode) || ORCH_EXECUTION_MODE_SPEC;
+    return (Array.isArray(historyState?.sessions) ? historyState.sessions : [])
+        .filter(item => (normalizeExecutionMode(item?.mode) || ORCH_EXECUTION_MODE_SPEC) === targetMode);
+}
+
+function findAiIterationHistorySessionByMode(historyState, sessionId, mode) {
+    const targetId = String(sessionId || '').trim();
+    if (!targetId) {
+        return null;
+    }
+    return getAiIterationHistorySessionsByMode(historyState, mode)
+        .find(item => String(item?.id || '') === targetId) || null;
+}
+
+function findLatestAiIterationHistorySessionByMode(historyState, mode) {
+    const sessions = getAiIterationHistorySessionsByMode(historyState, mode);
+    return sessions.length > 0 ? sessions[sessions.length - 1] : null;
+}
+
 async function loadAiIterationHistoryState(context, avatar) {
     const raw = await getCharacterStateSidecar(context, avatar, ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE);
     return normalizeAiIterationHistoryState(raw || createEmptyAiIterationHistoryState());
@@ -8171,8 +8191,8 @@ function renderAiIterationMessageDiffHtml(session, item, messageIndex) {
 </details>`;
 }
 
-function renderAiIterationSessionHistory(historyState, activeSessionId = '') {
-    const sessions = Array.isArray(historyState?.sessions) ? historyState.sessions.slice().reverse() : [];
+function renderAiIterationSessionHistory(historyState, activeSessionId = '', modeFilter = '') {
+    const sessions = getAiIterationHistorySessionsByMode(historyState, modeFilter).slice().reverse();
     if (sessions.length === 0) {
         return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No saved sessions yet.'))}</div>`;
     }
@@ -10778,7 +10798,8 @@ async function openAiIterationStudio(context, settings, root) {
         console.warn(`[${MODULE_NAME}] Failed to load AI iteration history`, error);
     }
     const session = ensureAiIterationSession(context, settings, { forceNew: false });
-    const latestSession = historyState.sessions.length > 0 ? historyState.sessions[historyState.sessions.length - 1] : null;
+    const currentIterationMode = normalizeExecutionMode(session?.mode) || getExecutionMode(settings);
+    const latestSession = findLatestAiIterationHistorySessionByMode(historyState, currentIterationMode);
     if (latestSession) {
         replaceAiIterationSession(session, latestSession);
     } else {
@@ -10836,7 +10857,7 @@ async function openAiIterationStudio(context, settings, root) {
             profileOverride: null,
             previewPending: Boolean(session?.pendingApproval),
         }));
-        popupRoot.find(`#${popupId}_history`).html(renderAiIterationSessionHistory(historyState, session?.id));
+        popupRoot.find(`#${popupId}_history`).html(renderAiIterationSessionHistory(historyState, session?.id, session?.mode));
     };
 
     const setStatus = (text) => {
@@ -10859,7 +10880,8 @@ async function openAiIterationStudio(context, settings, root) {
     };
 
     const loadSessionById = async (sessionId) => {
-        const stored = findAiIterationHistorySession(historyState, sessionId);
+        const currentMode = normalizeExecutionMode(session?.mode) || getExecutionMode(settings);
+        const stored = findAiIterationHistorySessionByMode(historyState, sessionId, currentMode);
         if (!stored) {
             return false;
         }
@@ -10871,6 +10893,11 @@ async function openAiIterationStudio(context, settings, root) {
     };
 
     const deleteSessionById = async (sessionId) => {
+        const currentMode = normalizeExecutionMode(session?.mode) || getExecutionMode(settings);
+        const stored = findAiIterationHistorySessionByMode(historyState, sessionId, currentMode);
+        if (!stored) {
+            return false;
+        }
         historyState = deleteAiIterationHistorySession(historyState, sessionId);
         try {
             await persistAiIterationHistoryStateForScope(context, historyState, {
@@ -10881,9 +10908,8 @@ async function openAiIterationStudio(context, settings, root) {
             console.warn(`[${MODULE_NAME}] Failed to delete AI iteration session`, error);
         }
         if (String(session?.id || '') === String(sessionId || '').trim()) {
-            const fallback = historyState.sessions.length > 0
-                ? historyState.sessions[historyState.sessions.length - 1]
-                : createAiIterationSession(context, settings);
+            const fallback = findLatestAiIterationHistorySessionByMode(historyState, currentMode)
+                || createAiIterationSession(context, settings);
             if (historyScope === 'character') {
                 fallback.sourceAvatar = activeAvatar;
             }
