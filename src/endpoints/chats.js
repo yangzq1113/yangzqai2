@@ -10,7 +10,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import _ from 'lodash';
 
 import validateAvatarUrlMiddleware from '../middleware/validateFileName.js';
-import { acknowledgeGenerationJobsForRequest } from './backends/luker-generation.js';
+import { acknowledgeGenerationJobsForPersistTarget, acknowledgeGenerationJobsForRequest } from './backends/luker-generation.js';
 import {
     getConfigValue,
     humanizedDateTime,
@@ -1223,6 +1223,44 @@ function acknowledgeGenerationIdsFromValue(request, value) {
     return acknowledgeGenerationJobsForRequest(request, generationIds);
 }
 
+function acknowledgeGenerationFromValueOrPersistTarget(request, value, persistTarget) {
+    const explicitAcknowledged = acknowledgeGenerationIdsFromValue(request, value);
+    if (explicitAcknowledged.length > 0 || !persistTarget || typeof persistTarget !== 'object') {
+        return explicitAcknowledged;
+    }
+
+    return acknowledgeGenerationJobsForPersistTarget(request, persistTarget, {
+        statuses: ['awaiting_ack'],
+        maxJobs: 1,
+    });
+}
+
+function buildCharacterPersistTargetHint(request) {
+    const avatarUrl = String(request?.body?.avatar_url || '').trim();
+    const fileName = String(request?.body?.file_name || '').trim();
+    if (!avatarUrl || !fileName) {
+        return null;
+    }
+
+    return {
+        kind: 'character',
+        avatar_url: avatarUrl,
+        file_name: fileName,
+    };
+}
+
+function buildGroupPersistTargetHint(request) {
+    const groupId = String(request?.body?.id || '').trim();
+    if (!groupId) {
+        return null;
+    }
+
+    return {
+        kind: 'group',
+        id: groupId,
+    };
+}
+
 /**
  * Decodes a single JSON Pointer segment.
  * @param {string} segment
@@ -1636,7 +1674,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         if (Array.isArray(chatData)) {
             const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups);
             await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
-            acknowledgeGenerationIdsFromValue(request, chatData);
+            acknowledgeGenerationFromValueOrPersistTarget(request, chatData, buildCharacterPersistTargetHint(request));
             return response.send({ ok: true, integrity });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
@@ -1675,7 +1713,7 @@ router.post('/append', validateAvatarUrlMiddleware, async function (request, res
         });
 
         await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
-        acknowledgeGenerationIdsFromValue(request, messages);
+        acknowledgeGenerationFromValueOrPersistTarget(request, messages, buildCharacterPersistTargetHint(request));
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -1724,7 +1762,7 @@ router.post('/patch', validateAvatarUrlMiddleware, async function (request, resp
         }
 
         await refreshRecentChatIndexEntry(request, chatFilePath, { avatar: String(request.body.avatar_url || '') });
-        acknowledgeGenerationIdsFromValue(request, operations);
+        acknowledgeGenerationFromValueOrPersistTarget(request, operations, buildCharacterPersistTargetHint(request));
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -2357,7 +2395,7 @@ router.post('/group/save', async function (request, response) {
         if (Array.isArray(chatData)) {
             const integrity = await trySaveChat(chatData, chatFilePath, request.body.force, handle, String(id), request.user.directories.backups);
             await refreshRecentChatIndexEntry(request, chatFilePath);
-            acknowledgeGenerationIdsFromValue(request, chatData);
+            acknowledgeGenerationFromValueOrPersistTarget(request, chatData, buildGroupPersistTargetHint(request));
             return response.send({ ok: true, integrity });
         }
         else {
@@ -2400,7 +2438,7 @@ router.post('/group/append', async function (request, response) {
         });
 
         await refreshRecentChatIndexEntry(request, chatFilePath);
-        acknowledgeGenerationIdsFromValue(request, messages);
+        acknowledgeGenerationFromValueOrPersistTarget(request, messages, buildGroupPersistTargetHint(request));
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {
@@ -2452,7 +2490,7 @@ router.post('/group/patch', async function (request, response) {
         }
 
         await refreshRecentChatIndexEntry(request, chatFilePath);
-        acknowledgeGenerationIdsFromValue(request, operations);
+        acknowledgeGenerationFromValueOrPersistTarget(request, operations, buildGroupPersistTargetHint(request));
         return response.send({ ok: true, ...result });
     } catch (error) {
         if (error instanceof IntegrityMismatchError) {

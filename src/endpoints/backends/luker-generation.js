@@ -589,6 +589,46 @@ export function acknowledgeGenerationJobsForRequest(request, generationIds = [])
     return acknowledged;
 }
 
+/**
+ * Acknowledge a single unpersisted generation job for a persist target when
+ * the client saved chat state without forwarding an explicit generation id.
+ * This keeps server-side recovery for true disconnects, while allowing
+ * message-hijack flows to confirm ownership after any successful chat write.
+ * @param {import('express').Request} request
+ * @param {object} persistTarget
+ * @param {{statuses?: string[], maxJobs?: number}} [options]
+ * @returns {string[]}
+ */
+export function acknowledgeGenerationJobsForPersistTarget(request, persistTarget, options = {}) {
+    pruneGenerationJobs();
+    const handle = String(request?.user?.profile?.handle || '');
+    const chatKey = getPersistChatKey(persistTarget);
+    if (!handle || !chatKey) {
+        return [];
+    }
+
+    const statuses = new Set(
+        Array.isArray(options?.statuses) && options.statuses.length
+            ? options.statuses.map(status => String(status || '').trim()).filter(Boolean)
+            : ['awaiting_ack'],
+    );
+    const maxJobs = Math.max(1, Number(options?.maxJobs) || 1);
+
+    const candidates = Array.from(generationJobs.values())
+        .filter(job => job.handle === handle
+            && job.chatKey === chatKey
+            && !job.persisted
+            && !job.persistenceInFlight
+            && statuses.has(String(job.status || '')))
+        .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+
+    if (candidates.length === 0 || candidates.length > maxJobs) {
+        return [];
+    }
+
+    return acknowledgeGenerationJobsForRequest(request, candidates.map(job => job.id));
+}
+
 export async function forwardStreamingWithGenerationJob(fetchResponse, response, request, job, options = {}) {
     const modelName = String(options.modelName || request.body?.model || '');
     let statusCode = fetchResponse.status;
