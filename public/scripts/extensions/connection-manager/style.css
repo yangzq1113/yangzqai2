@@ -1,3 +1,33 @@
+#rm_api_block .connection_profile_toolbar {
+    align-items: center;
+    display: flex;
+    gap: 5px;
+    min-width: 0;
+}
+
+#rm_api_block .connection_profile_picker {
+    flex: 1 1 20rem;
+    min-width: 0;
+}
+
+#rm_api_block .connection_profile_picker #connection_profiles,
+#rm_api_block .connection_profile_picker .select2-container {
+    width: 100% !important;
+}
+
+#rm_api_block .connection_profile_actions {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 5px;
+    margin-left: auto;
+}
+
+#rm_api_block .connection_profile_actions .menu_button {
+    flex: 0 0 auto;
+}
+
 #connection_profile_details_content {
     margin: 5px 0;
 }
