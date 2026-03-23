@@ -731,9 +731,9 @@
 
 .world_entry textarea[name="comment"] {
     field-sizing: content;
-    min-height: 4.5em;
+    min-height: 0;
     overflow-y: hidden;
-    resize: vertical;
+    resize: none;
 }
 
 .world_entry.bulk-selected .wi-card-entry {

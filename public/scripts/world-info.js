@@ -3437,6 +3437,43 @@ function findWorldInfoScrollContainer(startEl) {
     return startEl instanceof HTMLElement ? startEl : document.documentElement;
 }
 
+async function resetWorldInfoTextareaHeight(textarea) {
+    const element = textarea instanceof HTMLElement ? textarea : textarea?.[0];
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    const scrollTargets = [
+        window,
+        document.scrollingElement,
+        document.documentElement,
+        document.body,
+        findWorldInfoScrollContainer(element),
+        document.getElementById('WorldInfo'),
+    ].filter((target, index, array) => target && array.indexOf(target) === index);
+    const scrollSnapshots = scrollTargets.map((target) => target === window
+        ? [target, window.scrollX, window.scrollY]
+        : [target, target.scrollLeft, target.scrollTop]);
+    const restoreScroll = () => {
+        for (const [target, left, top] of scrollSnapshots) {
+            if (target === window) {
+                window.scrollTo(left, top);
+            } else {
+                target.scrollLeft = left;
+                target.scrollTop = top;
+            }
+        }
+    };
+
+    element.style.height = 'auto';
+    element.style.height = `${element.scrollHeight + 3}px`;
+    restoreScroll();
+    await new Promise((resolve) => requestAnimationFrame(() => {
+        restoreScroll();
+        resolve();
+    }));
+}
+
 function getWorldInfoPointerXY(event) {
     const touches = event?.touches;
     if (touches?.length) {
@@ -4872,6 +4909,7 @@ async function renderWorldEntriesPage(worldEntriesList, name, data, page, render
     worldEntriesList.children().not('.world_entry').remove();
     worldEntriesList.append(keywordHeaders);
     worldEntriesList.append(nextBlocks);
+    await Promise.all(worldEntriesList.find('textarea[name="comment"]').toArray().map((element) => resetWorldInfoTextareaHeight(element)));
     worldEntriesList.data('worldEntryPageUids', page.map((entry) => String(entry?.uid ?? '').trim()).filter(Boolean));
     syncWorldInfoEntryBulkToolbar(name, data);
 }
@@ -5991,7 +6029,7 @@ export async function getWorldEntry(name, data, entry) {
     commentInput.on('input', async function (_, { skipReset = false, noSave = false } = {}) {
         const uid = $(this).data('uid');
         const value = $(this).val();
-        !skipReset && await resetScrollHeight(this);
+        !skipReset && await resetWorldInfoTextareaHeight(this);
         data.entries[uid].comment = value;
         setWIOriginalDataValue(data, uid, 'comment', data.entries[uid].comment);
         !noSave && await saveWorldInfo(name, data);
