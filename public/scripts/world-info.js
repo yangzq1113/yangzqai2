@@ -3979,7 +3979,10 @@ function syncWorldInfoEntryBulkToolbar(name = '', data = null) {
     const toolbar = $('#world_entry_bulk_toolbar');
     const selectPageButton = $('#world_entries_select_page');
     const clearSelectionButton = $('#world_entries_clear_selection');
+    const enableSelectedButton = $('#world_entries_enable_selected');
+    const disableSelectedButton = $('#world_entries_disable_selected');
     const moveSelectedButton = $('#world_entries_move_selected');
+    const deleteSelectedButton = $('#world_entries_delete_selected');
     const status = $('#world_entry_bulk_status');
     const worldEntriesList = $('#world_popup_entries_list');
 
@@ -4004,7 +4007,10 @@ function syncWorldInfoEntryBulkToolbar(name = '', data = null) {
     toolbar.removeClass('displayNone');
     selectPageButton.find('span').text(allPageSelected ? t`Deselect Page` : t`Select Page`);
     clearSelectionButton.toggleClass('disabled', selectedCount === 0);
+    enableSelectedButton.toggleClass('disabled', selectedCount === 0);
+    disableSelectedButton.toggleClass('disabled', selectedCount === 0);
     moveSelectedButton.toggleClass('disabled', selectedCount === 0);
+    deleteSelectedButton.toggleClass('disabled', selectedCount === 0);
 
     if (selectedCount > 0) {
         status.text(t`${selectedCount} entries selected`);
@@ -4037,6 +4043,69 @@ function setWorldInfoEntrySelected(name, uid, selected, data = null) {
     }
 
     syncWorldInfoEntryBulkToolbar(name, data);
+}
+
+async function applyBulkWorldInfoEntryEnabledState(name, data, uids, enabled) {
+    const normalizedUids = [...new Set((Array.isArray(uids) ? uids : [])
+        .map((uid) => String(uid ?? '').trim())
+        .filter(Boolean)
+        .filter((uid) => Object.hasOwn(data?.entries || {}, uid)))];
+    if (normalizedUids.length === 0) {
+        return false;
+    }
+
+    let changed = 0;
+    for (const uid of normalizedUids) {
+        const entry = data.entries[uid];
+        if (!entry || Boolean(entry.disable) === !enabled) {
+            continue;
+        }
+
+        entry.disable = !enabled;
+        setWIOriginalDataValue(data, uid, 'enabled', enabled);
+        changed++;
+    }
+
+    if (changed === 0) {
+        return false;
+    }
+
+    await saveWorldInfo(name, data);
+    return true;
+}
+
+async function deleteWorldInfoEntries(data, uids, { silent = false } = {}) {
+    const normalizedUids = [...new Set((Array.isArray(uids) ? uids : [])
+        .map((uid) => String(uid ?? '').trim())
+        .filter(Boolean)
+        .filter((uid) => Object.hasOwn(data?.entries || {}, uid)))];
+    if (normalizedUids.length === 0) {
+        return false;
+    }
+
+    const confirmation = silent || await Popup.show.confirm(
+        normalizedUids.length === 1
+            ? t`Delete the selected entry?`
+            : t`Delete ${normalizedUids.length} selected entries?`,
+        t`This action is irreversible!`,
+    );
+    if (!confirmation) {
+        return false;
+    }
+
+    let deleted = 0;
+    for (const uid of normalizedUids) {
+        const removed = await deleteWorldInfoEntry(data, uid, { silent: true });
+        if (!removed) {
+            continue;
+        }
+
+        deleteWIOriginalDataValue(data, uid);
+        selectedWorldInfoEntryUids.delete(uid);
+        deleted++;
+    }
+
+    return deleted > 0;
 }
 
 async function promptWorldInfoEntryMoveTarget(sourceWorld, {
@@ -4964,7 +5033,10 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         $('#world_duplicate').off('click').on('click', nullWorldInfo);
         $('#world_entries_select_page').off('click');
         $('#world_entries_clear_selection').off('click');
+        $('#world_entries_enable_selected').off('click');
+        $('#world_entries_disable_selected').off('click');
         $('#world_entries_move_selected').off('click');
+        $('#world_entries_delete_selected').off('click');
         worldEntriesList.hide();
         $('#world_info_pagination').html('');
         syncWorldInfoEntryBulkToolbar('', null);
@@ -4976,7 +5048,10 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
     // Regardless of whether success is displayed or not. Make sure the delete button is available.
     // Do not put this code behind.
     $('#world_popup_delete').off('click').on('click', async () => {
-        const confirmation = await Popup.show.confirm(`Delete the World/Lorebook: "${name}"?`, 'This action is irreversible!');
+        const confirmation = await Popup.show.confirm(
+            t`Delete the World/Lorebook: "${name}"?`,
+            t`This action is irreversible!`,
+        );
         if (!confirmation) {
             return;
         }
@@ -5109,6 +5184,32 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         syncWorldInfoEntryBulkToolbar(name, data);
     });
 
+    $('#world_entries_enable_selected').off('click').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const changed = await applyBulkWorldInfoEntryEnabledState(name, data, getSelectedWorldInfoEntryUids(name, data), true);
+        if (!changed) {
+            return;
+        }
+
+        updateEditor(navigation_option.previous);
+    });
+
+    $('#world_entries_disable_selected').off('click').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const changed = await applyBulkWorldInfoEntryEnabledState(name, data, getSelectedWorldInfoEntryUids(name, data), false);
+        if (!changed) {
+            return;
+        }
+
+        updateEditor(navigation_option.previous);
+    });
+
     $('#world_entries_move_selected').off('click').on('click', async function () {
         if ($(this).hasClass('disabled')) {
             return;
@@ -5137,6 +5238,21 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
 
         resetWorldInfoEntrySelection(name);
         syncWorldInfoEntryBulkToolbar(name, data);
+    });
+
+    $('#world_entries_delete_selected').off('click').on('click', async function () {
+        if ($(this).hasClass('disabled')) {
+            return;
+        }
+
+        const deleted = await deleteWorldInfoEntries(data, getSelectedWorldInfoEntryUids(name, data));
+        if (!deleted) {
+            return;
+        }
+
+        await saveWorldInfo(name, data);
+        syncWorldInfoEntryBulkToolbar(name, data);
+        updateEditor(navigation_option.previous);
     });
 
     $('#world_popup_name_button').off('click').on('click', async () => {
@@ -9769,8 +9885,8 @@ export function initWorldInfo() {
             }
 
             const confirmation = await Popup.show.confirm(
-                `Delete the World/Lorebook: "${worldName}"?`,
-                'This action is irreversible!',
+                t`Delete the World/Lorebook: "${worldName}"?`,
+                t`This action is irreversible!`,
             );
 
             if (!confirmation) {

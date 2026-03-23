@@ -4623,6 +4623,14 @@
     "Showing ${0} of ${1} matching entries within the ${2} character display budget. ${3} additional matching entries are hidden.": "在 ${2} 字元顯示預算內，目前顯示 ${1} 筆符合條件日誌中的 ${0} 筆。另有 ${3} 筆符合條件的日誌被隱藏。",
     "Showing ${0} matching entries within the ${1} character display budget.": "在 ${1} 字元顯示預算內，目前顯示 ${0} 筆符合條件的日誌。",
     "Search lorebooks or tags...": "搜尋世界書或標籤...",
+    "Select current page entries": "選擇目前頁面的條目",
+    "Clear selected entries": "清除已選條目",
+    "Enable selected entries": "啟用已選條目",
+    "Disable selected entries": "停用已選條目",
+    "Move or copy selected entries to another lorebook": "將已選條目移動或複製到其他世界書",
+    "Delete selected entries": "刪除已選條目",
+    "Delete the selected entry?": "刪除所選條目嗎？",
+    "Delete ${0} selected entries?": "要刪除已選的 ${0} 個條目嗎？",
     "Search entries/content": "搜尋條目／內容",
     "Advanced syntax": "進階語法",
     "Search entry titles and content across all lorebooks.": "在所有世界書中搜尋條目標題與內容。",
@@ -4707,5 +4715,7 @@
     "Hide Prevent Further Recursion": "隱藏阻止進一步遞迴",
     "Hide Delay Until Recursion": "隱藏延遲到遞迴",
     "Hide Ignore Budget": "隱藏忽略預算",
-    "Hide Legacy Bottom Controls": "隱藏底部舊版控制項"
+    "Hide Legacy Bottom Controls": "隱藏底部舊版控制項",
+    "Delete the World/Lorebook: \"${0}\"?": "刪除世界書「${0}」嗎？",
+    "Delete ${0} selected lorebooks?": "要刪除已選的 ${0} 個世界書嗎？"
 }

@@ -853,6 +853,18 @@
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--SmartThemeQuoteColor) 24%, transparent);
 }
 
+.world_entry.bulk-selected.disabledWIEntry {
+    opacity: 0.68;
+    filter: grayscale(0.55);
+}
+
+.world_entry.bulk-selected.disabledWIEntry .wi-card-entry {
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 88%, var(--SmartThemeBorderColor));
+    box-shadow:
+        0 0 0 2px color-mix(in srgb, var(--SmartThemeQuoteColor) 32%, transparent),
+        0 0 0 4px color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+}
+
 .world_entry_edit {
     display: contents;
 }
