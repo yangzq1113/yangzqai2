@@ -9895,7 +9895,7 @@ export function saveChatDebounced() {
  * @param {object|null} [target] Explicit target override.
  * @returns {object|null} Request target payload or null when no active chat target is available.
  */
-function resolveChatStateTarget(target = null) {
+export function resolveChatStateTarget(target = null) {
     if (target && typeof target === 'object') {
         if (target.is_group) {
             const id = String(target.id || '').trim();

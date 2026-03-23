@@ -2,7 +2,7 @@
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 // Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
 
-import { extension_prompt_roles, extension_prompt_types, saveSettings, saveSettingsDebounced } from '../../../script.js';
+import { extension_prompt_roles, extension_prompt_types, resolveChatStateTarget, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
@@ -1582,45 +1582,73 @@ function normalizeExplicitChatStateTarget(target) {
         : null;
 }
 
-function buildMemoryTargetFromContext(context, explicitTarget = null) {
-    const normalizedExplicit = normalizeExplicitChatStateTarget(explicitTarget);
-    if (normalizedExplicit) {
-        return normalizedExplicit;
+function normalizeResolvedMemoryTarget(target) {
+    if (!target || typeof target !== 'object') {
+        return null;
     }
+    if (target.is_group) {
+        const id = String(target.id || '').trim();
+        return id ? { is_group: true, id } : null;
+    }
+    const avatar = String(target.avatar_url || '').trim();
+    const fileName = String(target.file_name || '').trim();
+    return avatar && fileName
+        ? { is_group: false, avatar_url: avatar, file_name: fileName }
+        : null;
+}
+
+function buildMemoryTargetFromContext(context, explicitTarget = null) {
+    const resolvedTarget = resolveChatStateTarget(explicitTarget);
+    return normalizeResolvedMemoryTarget(resolvedTarget);
+}
+
+function buildLegacyMemoryTargetCandidates(context, canonicalTarget, explicitTarget = null) {
+    if (normalizeExplicitChatStateTarget(explicitTarget)) {
+        return [];
+    }
+    const normalizedCanonical = normalizeResolvedMemoryTarget(canonicalTarget);
+    if (!normalizedCanonical || normalizedCanonical.is_group) {
+        return [];
+    }
+
     const live = getContext();
     const runtime = live && typeof live === 'object' ? live : context;
-    const groupId = runtime?.groupId ?? context?.groupId;
-    const hasGroupId = groupId !== null && groupId !== undefined && String(groupId).trim() !== '';
-    const chatId = String(
+    const candidates = [];
+    const seen = new Set([JSON.stringify(normalizedCanonical)]);
+    const avatar = String(normalizedCanonical.avatar_url || '').trim();
+
+    const pushCandidate = (fileName) => {
+        const normalizedFileName = String(fileName || '').trim();
+        if (!avatar || !normalizedFileName) {
+            return;
+        }
+        const candidate = normalizeExplicitChatStateTarget({
+            is_group: false,
+            avatar_url: avatar,
+            file_name: normalizedFileName,
+        });
+        if (!candidate) {
+            return;
+        }
+        const key = JSON.stringify(candidate);
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        candidates.push(candidate);
+    };
+
+    const currentChatId = String(
         (typeof runtime?.getCurrentChatId === 'function'
             ? runtime.getCurrentChatId()
             : (typeof context?.getCurrentChatId === 'function' ? context.getCurrentChatId() : (runtime?.chatId ?? context?.chatId))) || '',
     ).trim();
-
-    if (hasGroupId) {
-        const groupChatId = chatId;
-        if (!groupChatId) {
-            return null;
-        }
-        return { is_group: true, id: groupChatId };
-    }
-
-    const characterId = runtime?.characterId ?? context?.characterId;
-    const characters = Array.isArray(runtime?.characters)
-        ? runtime.characters
-        : (Array.isArray(context?.characters) ? context.characters : []);
-    const character = characters?.[characterId];
-    const avatar = String(character?.avatar || '').trim();
     const metadataChatId = String(runtime?.chatMetadata?.main_chat || context?.chatMetadata?.main_chat || '').trim();
-    const fileName = String(character?.chat || chatId || metadataChatId || '').trim();
-    if (!avatar || !fileName) {
-        return null;
-    }
-    return {
-        is_group: false,
-        avatar_url: avatar,
-        file_name: fileName,
-    };
+
+    pushCandidate(currentChatId);
+    pushCandidate(metadataChatId);
+
+    return candidates;
 }
 
 function sanitizeMemoryGraphFileNamePart(value, fallback = 'current-chat') {
@@ -2045,6 +2073,15 @@ function normalizePersistedMemoryState(raw, context) {
         state: createEmptyPersistedMemoryState(),
         migrated: false,
     };
+}
+
+function hasPersistedMemoryStatePayload(state) {
+    const normalized = normalizePersistedStateBase(state);
+    return normalized.opLog.length > 0
+        || normalized.lastRecallTrace.length > 0
+        || Boolean(normalized.lastRecallProjection)
+        || normalized.sourceMessageCount > 0
+        || Object.keys(normalized.swipeTailCache).length > 0;
 }
 
 function applyLoggedNodeSnapshot(store, node) {
@@ -2507,10 +2544,37 @@ async function ensureMemoryStoreLoaded(context, { force = false, targetHint = nu
     }
 
     const task = (async () => {
-        const loaded = await loadMemoryStoreByTarget(context, target);
+        let loaded = await loadMemoryStoreByTarget(context, target);
+        let migratedFromTarget = null;
+        if (!hasPersistedMemoryStatePayload(loaded.state)) {
+            for (const legacyTarget of buildLegacyMemoryTargetCandidates(context, target, targetHint)) {
+                const legacyLoaded = await loadMemoryStoreByTarget(context, legacyTarget);
+                if (!hasPersistedMemoryStatePayload(legacyLoaded.state)) {
+                    continue;
+                }
+                loaded = legacyLoaded;
+                migratedFromTarget = legacyTarget;
+                console.info(`[${MODULE_NAME}] Migrating memory graph from legacy target`, {
+                    from: legacyTarget,
+                    to: target,
+                });
+                break;
+            }
+        }
         memoryStateCache.set(chatKey, loaded.state);
         memoryStoreCache.set(chatKey, loaded.store);
-        if (loaded.migrated) {
+        if (migratedFromTarget) {
+            await persistPreparedMemoryStateByChatKey(context, chatKey, loaded.state, loaded.store);
+            try {
+                await deleteMemoryStoreByTarget(context, migratedFromTarget);
+            } catch (error) {
+                console.warn(`[${MODULE_NAME}] Failed to delete migrated legacy memory target`, {
+                    from: migratedFromTarget,
+                    to: target,
+                    error,
+                });
+            }
+        } else if (loaded.migrated) {
             await persistMemoryStoreByChatKey(context, chatKey, loaded.store);
         }
         return loaded.store;
