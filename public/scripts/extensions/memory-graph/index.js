@@ -482,6 +482,20 @@ function registerLocaleData() {
         'Memory graph imported for current chat.': '当前聊天记忆图已导入。',
         'Imported memory graph JSON.': '已导入记忆图 JSON。',
         'Imported memory graph JSON as current chat baseline.': '已将记忆图 JSON 作为当前聊天基线导入。',
+        'Choose how to attach the imported memory graph to assistant floors.': '选择要如何把导入的记忆图绑定到 Assistant 楼层。',
+        'Restore Exported Floor': '恢复导出时楼层',
+        'Bind Latest Floor': '绑定到当前最新楼层',
+        'Bind Specific Floor': '绑定到指定楼层',
+        'Specific assistant floor': '指定 Assistant 楼层',
+        'Imported nodes: ${0} | Edges: ${1} | Exported floor: ${2}': '导入节点：${0} | 边：${1} | 导出楼层：${2}',
+        'Current chat latest assistant floor: ${0}': '当前聊天最新 Assistant 楼层：${0}',
+        'Restore keeps exported floor numbers for same-chat recovery. Bind modes rewrite all imported nodes to the selected floor.': '恢复模式会保留导出时的楼层编号，用于同聊天恢复。绑定模式会把所有导入节点重写到所选楼层。',
+        'Restore requires current chat to have at least ${0} assistant floor(s). Current chat only has ${1}. Choose a bind mode instead.': '恢复模式要求当前聊天至少有 ${0} 个 Assistant 楼层，但当前只有 ${1} 个。请改用绑定模式。',
+        'Current chat has no assistant floors to bind.': '当前聊天没有可绑定的 Assistant 楼层。',
+        'Enter a floor between 1 and ${0}.': '请输入 1 到 ${0} 之间的楼层。',
+        'Imported memory graph and restored exported floor ${0}.': '已导入记忆图，并恢复导出楼层 ${0}。',
+        'Imported memory graph and bound it to latest assistant floor ${0}.': '已导入记忆图，并绑定到当前最新 Assistant 楼层 ${0}。',
+        'Imported memory graph and bound it to assistant floor ${0}.': '已导入记忆图，并绑定到 Assistant 楼层 ${0}。',
         'Memory graph import failed.': '记忆图导入失败。',
         'Memory graph incremental fill completed.': '记忆图增量补全完成。',
         'Memory graph is already up to date.': '记忆图已是最新，无需补全。',
@@ -768,6 +782,20 @@ function registerLocaleData() {
         'Memory graph imported for current chat.': '目前聊天記憶圖已匯入。',
         'Imported memory graph JSON.': '已匯入記憶圖 JSON。',
         'Imported memory graph JSON as current chat baseline.': '已將記憶圖 JSON 作為目前聊天基線匯入。',
+        'Choose how to attach the imported memory graph to assistant floors.': '選擇要如何把導入的記憶圖綁定到 Assistant 樓層。',
+        'Restore Exported Floor': '恢復導出時樓層',
+        'Bind Latest Floor': '綁定到目前最新樓層',
+        'Bind Specific Floor': '綁定到指定樓層',
+        'Specific assistant floor': '指定 Assistant 樓層',
+        'Imported nodes: ${0} | Edges: ${1} | Exported floor: ${2}': '導入節點：${0} | 邊：${1} | 導出樓層：${2}',
+        'Current chat latest assistant floor: ${0}': '目前聊天最新 Assistant 樓層：${0}',
+        'Restore keeps exported floor numbers for same-chat recovery. Bind modes rewrite all imported nodes to the selected floor.': '恢復模式會保留導出時的樓層編號，用於同聊天恢復。綁定模式會把所有導入節點重寫到所選樓層。',
+        'Restore requires current chat to have at least ${0} assistant floor(s). Current chat only has ${1}. Choose a bind mode instead.': '恢復模式要求目前聊天至少有 ${0} 個 Assistant 樓層，但目前只有 ${1} 個。請改用綁定模式。',
+        'Current chat has no assistant floors to bind.': '目前聊天沒有可綁定的 Assistant 樓層。',
+        'Enter a floor between 1 and ${0}.': '請輸入 1 到 ${0} 之間的樓層。',
+        'Imported memory graph and restored exported floor ${0}.': '已導入記憶圖，並恢復導出樓層 ${0}。',
+        'Imported memory graph and bound it to latest assistant floor ${0}.': '已導入記憶圖，並綁定到目前最新 Assistant 樓層 ${0}。',
+        'Imported memory graph and bound it to assistant floor ${0}.': '已導入記憶圖，並綁定到 Assistant 樓層 ${0}。',
         'Memory graph import failed.': '記憶圖匯入失敗。',
         'Memory graph incremental fill completed.': '記憶圖譜增量補全完成。',
         'Memory graph is already up to date.': '記憶圖譜已是最新，無需補全。',
@@ -1671,24 +1699,185 @@ function getMemoryGraphExportFileName(context) {
     return `memory-graph-${sanitizeMemoryGraphFileNamePart(target.file_name)}.json`;
 }
 
+function getLatestAssistantFloorFromContext(context) {
+    return Math.max(0, Math.floor(Number(computeChatSourceState(context)?.messageCount || 0)));
+}
+
+function getImportedStoreBindingFloor(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    return Math.max(
+        0,
+        Math.floor(Number(normalized.loggedSeqTo || 0)),
+        Math.floor(Number(normalized.seqCounter || 0)),
+        Math.floor(Number(normalized.appliedSeqTo || 0)),
+        Math.floor(Number(getSemanticCoverageSeq(normalized) || 0)),
+    );
+}
+
+function clearImportedStoreTransientState(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    normalized.lastRecallTrace = [];
+    normalized.lastRecallProjection = null;
+    normalized.swipeTailCache = {};
+    normalized.lastExtractionDebug = null;
+    return normalized;
+}
+
+function bindImportedStoreToAssistantFloor(store, bindSeq) {
+    const normalized = clearImportedStoreTransientState(store);
+    const targetSeq = Math.max(1, Math.floor(Number(bindSeq || 0)));
+    for (const node of Object.values(normalized.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        node.seqTo = targetSeq;
+    }
+    normalized.appliedSeqTo = targetSeq;
+    normalized.seqCounter = targetSeq;
+    normalized.loggedSeqTo = targetSeq;
+    return normalized;
+}
+
+async function promptMemoryGraphImportMode(context, store) {
+    const normalized = normalizeStoreForRuntime(store);
+    const latestAssistantFloor = getLatestAssistantFloorFromContext(context);
+    const exportedFloor = getImportedStoreBindingFloor(normalized);
+    const specificFloorInputId = 'luker_rpg_memory_import_bind_floor';
+    const defaultSpecificFloor = latestAssistantFloor > 0
+        ? latestAssistantFloor
+        : Math.max(1, exportedFloor || 1);
+    let importMode = null;
+    let bindFloor = null;
+
+    const content = `
+        <div class="flex-container flexFlowColumn gap8">
+            <div>${escapeHtml(i18n('Choose how to attach the imported memory graph to assistant floors.'))}</div>
+            <div>${escapeHtml(i18nFormat(
+                'Imported nodes: ${0} | Edges: ${1} | Exported floor: ${2}',
+                Object.keys(normalized.nodes || {}).length,
+                Array.isArray(normalized.edges) ? normalized.edges.length : 0,
+                exportedFloor,
+            ))}</div>
+            <div>${escapeHtml(i18nFormat('Current chat latest assistant floor: ${0}', latestAssistantFloor))}</div>
+            <div class="opacity70p">${escapeHtml(i18n('Restore keeps exported floor numbers for same-chat recovery. Bind modes rewrite all imported nodes to the selected floor.'))}</div>
+        </div>
+    `;
+
+    const result = await context.callGenericPopup(content, context.POPUP_TYPE.TEXT, '', {
+        okButton: false,
+        cancelButton: i18n('Cancel'),
+        wider: true,
+        defaultResult: context.POPUP_RESULT.CUSTOM1,
+        customInputs: [{
+            id: specificFloorInputId,
+            type: 'text',
+            label: i18n('Specific assistant floor'),
+            defaultState: String(defaultSpecificFloor),
+            tooltip: i18nFormat('Enter a floor between 1 and ${0}.', Math.max(1, latestAssistantFloor)),
+        }],
+        customButtons: [
+            { text: i18n('Restore Exported Floor'), result: context.POPUP_RESULT.CUSTOM1 },
+            { text: i18n('Bind Latest Floor'), result: context.POPUP_RESULT.CUSTOM2 },
+            { text: i18n('Bind Specific Floor'), result: context.POPUP_RESULT.CUSTOM3 },
+        ],
+        onClosing: async (popup) => {
+            if (popup.result === context.POPUP_RESULT.CANCELLED) {
+                return true;
+            }
+
+            if (popup.result === context.POPUP_RESULT.CUSTOM1) {
+                if (exportedFloor > latestAssistantFloor) {
+                    notifyError(i18nFormat(
+                        'Restore requires current chat to have at least ${0} assistant floor(s). Current chat only has ${1}. Choose a bind mode instead.',
+                        exportedFloor,
+                        latestAssistantFloor,
+                    ));
+                    return false;
+                }
+                importMode = 'restore';
+                bindFloor = exportedFloor;
+                return true;
+            }
+
+            if (popup.result === context.POPUP_RESULT.CUSTOM2) {
+                if (latestAssistantFloor <= 0) {
+                    notifyError(i18n('Current chat has no assistant floors to bind.'));
+                    return false;
+                }
+                importMode = 'bind_latest';
+                bindFloor = latestAssistantFloor;
+                return true;
+            }
+
+            if (popup.result === context.POPUP_RESULT.CUSTOM3) {
+                if (latestAssistantFloor <= 0) {
+                    notifyError(i18n('Current chat has no assistant floors to bind.'));
+                    return false;
+                }
+                const rawValue = String(popup.inputResults?.get(specificFloorInputId) ?? '').trim();
+                if (!/^\d+$/.test(rawValue)) {
+                    notifyError(i18nFormat('Enter a floor between 1 and ${0}.', latestAssistantFloor));
+                    return false;
+                }
+                const specificFloor = Number(rawValue);
+                if (!Number.isFinite(specificFloor) || specificFloor < 1 || specificFloor > latestAssistantFloor) {
+                    notifyError(i18nFormat('Enter a floor between 1 and ${0}.', latestAssistantFloor));
+                    return false;
+                }
+                importMode = 'bind_specific';
+                bindFloor = specificFloor;
+                return true;
+            }
+
+            return true;
+        },
+    });
+
+    if (result === context.POPUP_RESULT.CANCELLED || !importMode) {
+        return null;
+    }
+
+    return {
+        importMode,
+        bindFloor,
+        exportedFloor,
+        latestAssistantFloor,
+    };
+}
+
 async function importMemoryGraphStore(context, parsed) {
     const chatKey = getChatKey(context);
     const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
     if (target) {
         memoryStoreTargets.set(chatKey, target);
     }
-    const migrated = normalizeStoreForRuntime(parsed);
-    rebaseStoreToChatBaseline(migrated, context);
-    updateStoreSourceState(migrated, context);
-    replacePersistedGraphWithStore(
+    const imported = normalizeStoreForRuntime(parsed);
+    const importPlan = await promptMemoryGraphImportMode(context, imported);
+    if (!importPlan) {
+        return null;
+    }
+
+    const nextStore = importPlan.importMode === 'restore'
+        ? clearImportedStoreTransientState(imported)
+        : bindImportedStoreToAssistantFloor(imported, importPlan.bindFloor);
+    updateStoreSourceState(nextStore, context);
+    const persistSeq = importPlan.importMode === 'restore'
+        ? importPlan.exportedFloor
+        : Math.max(1, Math.floor(Number(importPlan.bindFloor || 0)));
+    await commitMemoryStoreReplaceByChatKey(
+        context,
         chatKey,
-        migrated,
-        Math.max(0, Number(computeChatSourceState(context)?.messageCount || 0)),
+        nextStore,
+        persistSeq,
+        { syncPersistentProjection: true },
     );
     clearRollbackHistory(chatKey);
     latestRecallSnapshot = null;
-    await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
     refreshUiStats();
+    return {
+        importMode: importPlan.importMode,
+        bindFloor: persistSeq,
+    };
 }
 
 async function loadMemoryStoreByTarget(context, target) {
@@ -12735,9 +12924,18 @@ function bindUi() {
         }
         try {
             const parsed = JSON.parse(await getFileText(file));
-            await importMemoryGraphStore(context, parsed);
+            const imported = await importMemoryGraphStore(context, parsed);
+            if (!imported) {
+                return;
+            }
             notifySuccess(i18n('Memory graph imported for current chat.'));
-            updateUiStatus(i18n('Imported memory graph JSON as current chat baseline.'));
+            if (imported.importMode === 'restore') {
+                updateUiStatus(i18nFormat('Imported memory graph and restored exported floor ${0}.', imported.bindFloor));
+            } else if (imported.importMode === 'bind_latest') {
+                updateUiStatus(i18nFormat('Imported memory graph and bound it to latest assistant floor ${0}.', imported.bindFloor));
+            } else {
+                updateUiStatus(i18nFormat('Imported memory graph and bound it to assistant floor ${0}.', imported.bindFloor));
+            }
         } catch (error) {
             notifyError(i18nFormat('Import failed: ${0}', error?.message || error));
             updateUiStatus(i18n('Memory graph import failed.'));
