@@ -60,6 +60,12 @@ function stylePromptManagerDragPlaceholder(ui) {
     });
 }
 
+function setInjectionDepthOrderDisplay(depthBlock, orderBlock, isVisible) {
+    const display = isVisible ? '' : 'none';
+    depthBlock.style.display = display;
+    orderBlock.style.display = display;
+}
+
 const DEFAULT_DEPTH = 4;
 const DEFAULT_ORDER = 100;
 const TOGGLE_UNDO_WINDOW_MS = 6000;
@@ -689,8 +695,7 @@ class PromptManager {
                 option.selected = false;
             });
             injectionTriggerField.dispatchEvent(new Event('change', { bubbles: true }));
-            depthBlock.style.visibility = prompt.injection_position === INJECTION_POSITION.ABSOLUTE ? 'visible' : 'hidden';
-            orderBlock.style.visibility = prompt.injection_position === INJECTION_POSITION.ABSOLUTE ? 'visible' : 'hidden';
+            setInjectionDepthOrderDisplay(depthBlock, orderBlock, prompt.injection_position === INJECTION_POSITION.ABSOLUTE);
             forbidOverridesField.checked = prompt.forbid_overrides ?? false;
             forbidOverridesBlock.style.visibility = this.overridablePrompts.includes(prompt.identifier) ? 'visible' : 'hidden';
             pluginExtraField.checked = Boolean(prompt.plugin_extra);
@@ -2391,8 +2396,7 @@ class PromptManager {
             option.selected = Array.isArray(prompt.injection_trigger) && prompt.injection_trigger.includes(option.value);
         });
         injectionTriggerField.dispatchEvent(new Event('change', { bubbles: true }));
-        injectionDepthBlock.style.visibility = prompt.injection_position === INJECTION_POSITION.ABSOLUTE ? 'visible' : 'hidden';
-        injectionOrderBlock.style.visibility = prompt.injection_position === INJECTION_POSITION.ABSOLUTE ? 'visible' : 'hidden';
+        setInjectionDepthOrderDisplay(injectionDepthBlock, injectionOrderBlock, prompt.injection_position === INJECTION_POSITION.ABSOLUTE);
         injectionPositionField.removeAttribute('disabled');
         forbidOverridesField.checked = prompt.forbid_overrides ?? false;
         forbidOverridesBlock.style.visibility = this.overridablePrompts.includes(prompt.identifier) ? 'visible' : 'hidden';
@@ -2424,11 +2428,9 @@ class PromptManager {
         const injectionOrderBlock = document.getElementById(this.configuration.prefix + 'prompt_manager_order_block');
         const injectionPosition = Number(event.target.value);
         if (injectionPosition === INJECTION_POSITION.ABSOLUTE) {
-            injectionDepthBlock.style.visibility = 'visible';
-            injectionOrderBlock.style.visibility = 'visible';
+            setInjectionDepthOrderDisplay(injectionDepthBlock, injectionOrderBlock, true);
         } else {
-            injectionDepthBlock.style.visibility = 'hidden';
-            injectionOrderBlock.style.visibility = 'hidden';
+            setInjectionDepthOrderDisplay(injectionDepthBlock, injectionOrderBlock, false);
         }
     }
 
@@ -2520,8 +2522,7 @@ class PromptManager {
         injectionDepthField.value = DEFAULT_DEPTH.toString();
         injectionOrderField.value = DEFAULT_ORDER.toString();
         injectionTriggerField.value = '';
-        injectionDepthBlock.style.visibility = 'unset';
-        injectionOrderBlock.style.visibility = 'unset';
+        setInjectionDepthOrderDisplay(injectionDepthBlock, injectionOrderBlock, true);
         forbidOverridesBlock.style.visibility = 'unset';
         forbidOverridesField.checked = false;
         pluginExtraField.checked = false;

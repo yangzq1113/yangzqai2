@@ -57,9 +57,12 @@
 }
 
 #completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt {
-    align-items: center;
-    padding: 0.5em;
+    align-items: stretch;
     border: 1px solid var(--SmartThemeBorderColor);
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    padding: 0.5em;
+    row-gap: 0.55em;
 }
 
 #completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt .prompt_manager_prompt_controls {
@@ -218,10 +221,11 @@
     align-items: start;
     column-gap: 0.35em;
     display: grid;
+    grid-column: 1 / -1;
     grid-template-columns: auto minmax(0, 1fr);
     line-height: 1.35;
     min-width: 0;
-    padding-right: 0.7em;
+    padding-right: 0;
     row-gap: 0.15em;
 }
 
@@ -275,6 +279,19 @@
 #completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt_name .prompt-manager-inspect-action:hover {
     text-decoration: underline;
 }
+
+#completion_prompt_manager #completion_prompt_manager_list .prompt-manager-actions-cell {
+    align-self: center;
+    grid-column: 1;
+    justify-self: end;
+}
+
+#completion_prompt_manager #completion_prompt_manager_list .prompt-manager-tokens-cell {
+    align-self: center;
+    grid-column: 2;
+    justify-self: end;
+}
+
 
 #completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt_name .prompt-manager-plugin-extra-badge {
     margin-left: 0;
@@ -575,30 +592,6 @@
 @media screen and (max-width: 640px) {
     #completion_prompt_manager_popup .completion_prompt_manager_popup_entry_form_row > .completion_prompt_manager_popup_entry_form_control {
         min-width: 100%;
-    }
-
-    #completion_prompt_manager #completion_prompt_manager_list li.completion_prompt_manager_prompt {
-        align-items: stretch;
-        grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-rows: auto auto;
-        row-gap: 0.55em;
-    }
-
-    #completion_prompt_manager #completion_prompt_manager_list .completion_prompt_manager_prompt_name {
-        grid-column: 1 / -1;
-        padding-right: 0;
-    }
-
-    #completion_prompt_manager #completion_prompt_manager_list .prompt-manager-actions-cell {
-        align-self: center;
-        grid-column: 1;
-        justify-self: end;
-    }
-
-    #completion_prompt_manager #completion_prompt_manager_list .prompt-manager-tokens-cell {
-        align-self: center;
-        grid-column: 2;
-        justify-self: end;
     }
 }
 
