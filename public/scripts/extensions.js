@@ -397,7 +397,7 @@ async function activateExtensions() {
                     .then(() => activeExtensions.add(name))
                     .catch(err => {
                         console.log('Could not activate extension', name, err);
-                        extensionLoadErrors.add(t`Extension "${displayName}" failed to load: ${err}`);
+                        extensionLoadErrors.add(t`Extension "${displayName}" failed to load: ${formatExtensionLoadError(err)}`);
                     });
                 promises.push(promise);
             } catch (error) {
@@ -468,6 +468,47 @@ function notifyUpdatesInputHandler() {
 }
 
 /**
+ * Formats extension loader errors into a readable string.
+ * Module script load failures often surface as plain Event objects.
+ * @param {unknown} err
+ * @param {string} fallbackUrl
+ * @returns {string}
+ */
+function formatExtensionLoadError(err, fallbackUrl = '') {
+    if (err instanceof Error) {
+        return err.message || String(err);
+    }
+
+    if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+        return err.message;
+    }
+
+    if (err instanceof Event) {
+        const target = err.target instanceof Element ? err.target : null;
+        const resourceUrl = target?.getAttribute?.('src') || target?.getAttribute?.('href') || fallbackUrl;
+        const tagName = String(target?.tagName || '').toUpperCase();
+
+        if (tagName === 'SCRIPT') {
+            return resourceUrl
+                ? `Script load error: ${resourceUrl} (or one of its imports)`
+                : 'Script load error';
+        }
+
+        if (tagName === 'LINK') {
+            return resourceUrl
+                ? `Stylesheet load error: ${resourceUrl}`
+                : 'Stylesheet load error';
+        }
+
+        return resourceUrl
+            ? `Resource load error: ${resourceUrl}`
+            : 'Resource load error';
+    }
+
+    return String(err);
+}
+
+/**
  * Adds a CSS file for an extension.
  * @param {string} name Extension name
  * @param {object} manifest Extension manifest
@@ -492,7 +533,7 @@ function addExtensionStyle(name, manifest) {
                 resolve();
             };
             link.onerror = function (e) {
-                reject(e);
+                reject(new Error(formatExtensionLoadError(e, url)));
             };
             document.head.appendChild(link);
         }
@@ -522,7 +563,7 @@ function addExtensionScript(name, manifest) {
             script.src = url;
             script.async = true;
             script.onerror = function (err) {
-                reject(err);
+                reject(new Error(formatExtensionLoadError(err, url)));
             };
             script.onload = function () {
                 if (!ready) {
