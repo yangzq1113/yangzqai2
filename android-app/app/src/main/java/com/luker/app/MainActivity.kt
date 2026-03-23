@@ -70,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private val broadFileChooserExtensions = setOf(
         "byaf",
         "charx",
+        // Some OEM document pickers incorrectly treat exact JSON MIME filters as "open with".
+        "json",
         "jsonl",
         "preset",
         "settings",
