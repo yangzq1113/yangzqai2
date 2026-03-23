@@ -9192,6 +9192,7 @@ function buildGraphCytoscapeElements(store) {
     const scopedNodeList = [...scopedNodeIds]
         .map(id => store.nodes[id])
         .filter(Boolean);
+    const nodeById = new Map(scopedNodeList.map(node => [String(node.id || ''), node]));
     const timelineNodes = scopedNodeList
         .slice()
         .sort((a, b) => {
@@ -9206,9 +9207,12 @@ function buildGraphCytoscapeElements(store) {
             }
             return String(a.id || '').localeCompare(String(b.id || ''));
         });
-    const timelineIndexByNodeId = new Map();
-    timelineNodes.forEach((node, index) => {
-        timelineIndexByNodeId.set(String(node.id || ''), index);
+    // Keep event nodes on the primary horizontal rail, then fan secondary nodes into parallel lanes nearby.
+    const railNodes = timelineNodes.filter(node => String(node.type || '').trim() === 'event');
+    const primaryRailNodes = railNodes.length > 0 ? railNodes : timelineNodes;
+    const railIndexByNodeId = new Map();
+    primaryRailNodes.forEach((node, index) => {
+        railIndexByNodeId.set(String(node.id || ''), index);
     });
 
     const preferredTypeOrder = ['event', 'character_sheet', 'location_state', 'rule_constraint'];
@@ -9222,63 +9226,206 @@ function buildGraphCytoscapeElements(store) {
             }
             return a.localeCompare(b);
         });
-    const rowByType = new Map(types.map((type, index) => [type, index]));
 
-    const count = timelineNodes.length;
-    const colGap = count <= 12 ? 220 : count <= 28 ? 178 : 142;
-    const rowGap = 170;
-    const centerCol = (timelineNodes.length - 1) / 2;
-    const centerRow = (types.length - 1) / 2;
-
-    const buckets = new Map();
-    for (const node of scopedNodeList) {
-        const nodeId = String(node.id || '');
-        const timelineIndex = Number(timelineIndexByNodeId.get(nodeId) ?? 0);
-        const type = String(node.type || 'unknown').trim() || 'unknown';
-        const bucketKey = `${type}|${timelineIndex}`;
-        if (!buckets.has(bucketKey)) {
-            buckets.set(bucketKey, []);
+    const secondaryTypes = types.filter(type => type !== 'event');
+    const preferredLaneSlots = new Map([
+        ['character_sheet', { side: -1, depth: 0 }],
+        ['location_state', { side: 1, depth: 0 }],
+        ['rule_constraint', { side: 1, depth: 1 }],
+    ]);
+    const laneSlotByType = new Map([['event', { side: 0, depth: 0 }]]);
+    let fallbackLaneIndex = 0;
+    for (const type of secondaryTypes) {
+        if (preferredLaneSlots.has(type)) {
+            laneSlotByType.set(type, preferredLaneSlots.get(type));
+            continue;
         }
-        buckets.get(bucketKey).push(node);
+        const depth = 1 + Math.floor((fallbackLaneIndex + 1) / 2);
+        const side = fallbackLaneIndex % 2 === 0 ? -1 : 1;
+        laneSlotByType.set(type, { side, depth });
+        fallbackLaneIndex += 1;
     }
 
-    const offsetsByNodeId = new Map();
-    const getClusterOffset = (index) => {
+    const railCount = Math.max(1, primaryRailNodes.length);
+    const colGap = railCount <= 8 ? 250 : railCount <= 16 ? 220 : railCount <= 28 ? 184 : 152;
+    const railCenter = (railCount - 1) / 2;
+    const laneBaseOffset = 220;
+    const laneDepthGap = 170;
+    const laneFanX = railCount <= 10 ? 92 : railCount <= 24 ? 76 : 64;
+    const laneFanY = 60;
+    const getRailX = (railIndex) => (railIndex - railCenter) * colGap;
+    const getLaneCenterY = (type) => {
+        const slot = laneSlotByType.get(type) || { side: 1, depth: 1 };
+        if (slot.side === 0) {
+            return 0;
+        }
+        return slot.side * (laneBaseOffset + (slot.depth * laneDepthGap));
+    };
+    const getLaneStackOffset = (index, side) => {
         if (index <= 0) {
             return { x: 0, y: 0 };
         }
-        const ring = Math.ceil(index / 6);
-        const slot = (index - 1) % 6;
-        const base = 22 + ((ring - 1) * 12);
-        const pattern = [
-            { x: -base, y: -base },
-            { x: base, y: -base },
-            { x: -base, y: base },
-            { x: base, y: base },
-            { x: 0, y: -(base + 8) },
-            { x: 0, y: base + 8 },
-        ];
-        return pattern[slot] || { x: 0, y: 0 };
+        const layer = Math.floor(index / 3);
+        const slot = index % 3;
+        const xPattern = [0, -laneFanX, laneFanX];
+        const xScale = 1 + (Math.floor(layer / 2) * 0.35);
+        return {
+            x: xPattern[slot] * xScale,
+            y: side * layer * laneFanY,
+        };
     };
-    for (const bucket of buckets.values()) {
-        bucket
-            .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')))
-            .forEach((node, index) => {
-                offsetsByNodeId.set(String(node.id || ''), getClusterOffset(index));
+
+    const scopedEdges = Array.isArray(store.edges)
+        ? store.edges
+            .map((edge, index) => ({ edge, index }))
+            .filter(item => {
+                const from = String(item.edge?.from || '');
+                const to = String(item.edge?.to || '');
+                return from && to && scopedNodeIds.has(from) && scopedNodeIds.has(to);
+            })
+        : [];
+    const adjacency = new Map();
+    const linkAdjacency = (from, to) => {
+        if (!adjacency.has(from)) {
+            adjacency.set(from, new Set());
+        }
+        adjacency.get(from).add(to);
+    };
+    for (const item of scopedEdges) {
+        const from = String(item.edge?.from || '');
+        const to = String(item.edge?.to || '');
+        if (!from || !to) {
+            continue;
+        }
+        linkAdjacency(from, to);
+        linkAdjacency(to, from);
+    }
+
+    const resolveNearestRailIndex = (node) => {
+        const nodeId = String(node?.id || '');
+        if (railIndexByNodeId.has(nodeId)) {
+            return Number(railIndexByNodeId.get(nodeId) ?? 0);
+        }
+        if (primaryRailNodes.length === 0) {
+            return 0;
+        }
+        const nodeSeq = Number(node?.seqTo ?? NaN);
+        let bestIndex = 0;
+        let bestDistance = Number.POSITIVE_INFINITY;
+        primaryRailNodes.forEach((railNode, index) => {
+            const railSeq = Number(railNode?.seqTo ?? NaN);
+            const distance = Number.isFinite(nodeSeq) && Number.isFinite(railSeq)
+                ? Math.abs(nodeSeq - railSeq)
+                : Math.abs(index - ((railCount - 1) / 2));
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIndex = index;
+            }
+        });
+        return bestIndex;
+    };
+    const directEventLinkCountByNodeId = new Map();
+    const anchoredRailIndexByNodeId = new Map();
+    for (const node of scopedNodeList) {
+        const nodeId = String(node.id || '');
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        if (type === 'event' && railIndexByNodeId.has(nodeId)) {
+            anchoredRailIndexByNodeId.set(nodeId, Number(railIndexByNodeId.get(nodeId) ?? 0));
+            directEventLinkCountByNodeId.set(nodeId, Number.MAX_SAFE_INTEGER);
+            continue;
+        }
+
+        const linkedEventIndices = new Set();
+        const linkedNodeIds = adjacency.get(nodeId);
+        if (linkedNodeIds) {
+            for (const linkedNodeId of linkedNodeIds) {
+                const linkedNode = nodeById.get(linkedNodeId);
+                if (String(linkedNode?.type || '').trim() !== 'event') {
+                    continue;
+                }
+                if (railIndexByNodeId.has(linkedNodeId)) {
+                    linkedEventIndices.add(Number(railIndexByNodeId.get(linkedNodeId) ?? 0));
+                }
+            }
+        }
+        const parentId = String(node.parentId || '').trim();
+        if (parentId) {
+            const parentNode = nodeById.get(parentId);
+            if (String(parentNode?.type || '').trim() === 'event' && railIndexByNodeId.has(parentId)) {
+                linkedEventIndices.add(Number(railIndexByNodeId.get(parentId) ?? 0));
+            }
+        }
+
+        const linkedIndices = [...linkedEventIndices];
+        directEventLinkCountByNodeId.set(nodeId, linkedIndices.length);
+        if (linkedIndices.length > 0) {
+            const averageRailIndex = linkedIndices.reduce((sum, value) => sum + value, 0) / linkedIndices.length;
+            anchoredRailIndexByNodeId.set(nodeId, averageRailIndex);
+            continue;
+        }
+        anchoredRailIndexByNodeId.set(nodeId, resolveNearestRailIndex(node));
+    }
+
+    const secondaryBuckets = new Map();
+    for (const node of scopedNodeList) {
+        const nodeId = String(node.id || '');
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        if (type === 'event') {
+            continue;
+        }
+        const anchorRailIndex = Number(anchoredRailIndexByNodeId.get(nodeId) ?? 0);
+        const bucketRailIndex = Math.round(anchorRailIndex * 2) / 2;
+        const bucketKey = `${type}|${bucketRailIndex}`;
+        if (!secondaryBuckets.has(bucketKey)) {
+            secondaryBuckets.set(bucketKey, {
+                type,
+                bucketRailIndex,
+                nodes: [],
             });
+        }
+        secondaryBuckets.get(bucketKey).nodes.push(node);
     }
 
     const positionByNodeId = new Map();
     for (const node of scopedNodeList) {
         const nodeId = String(node.id || '');
-        const timelineIndex = Number(timelineIndexByNodeId.get(nodeId) ?? 0);
         const type = String(node.type || 'unknown').trim() || 'unknown';
-        const rowIndex = Number(rowByType.get(type) ?? 0);
-        const offset = offsetsByNodeId.get(nodeId) || { x: 0, y: 0 };
+        if (type !== 'event') {
+            continue;
+        }
+        const railIndex = Number(anchoredRailIndexByNodeId.get(nodeId) ?? 0);
         positionByNodeId.set(nodeId, {
-            x: ((timelineIndex - centerCol) * colGap) + offset.x,
-            y: ((rowIndex - centerRow) * rowGap) + offset.y,
+            x: getRailX(railIndex),
+            y: 0,
         });
+    }
+    for (const bucket of secondaryBuckets.values()) {
+        const type = String(bucket.type || 'unknown').trim() || 'unknown';
+        const laneSlot = laneSlotByType.get(type) || { side: 1, depth: 1 };
+        const laneSide = laneSlot.side === 0 ? 1 : laneSlot.side;
+        const baseX = getRailX(Number(bucket.bucketRailIndex || 0));
+        const baseY = getLaneCenterY(type);
+        bucket.nodes
+            .sort((a, b) => {
+                const aLinkedCount = Number(directEventLinkCountByNodeId.get(String(a.id || '')) ?? 0);
+                const bLinkedCount = Number(directEventLinkCountByNodeId.get(String(b.id || '')) ?? 0);
+                if (aLinkedCount !== bLinkedCount) {
+                    return bLinkedCount - aLinkedCount;
+                }
+                const aSeq = Number(a?.seqTo ?? 0);
+                const bSeq = Number(b?.seqTo ?? 0);
+                if (aSeq !== bSeq) {
+                    return aSeq - bSeq;
+                }
+                return String(a.id || '').localeCompare(String(b.id || ''));
+            })
+            .forEach((node, index) => {
+                const offset = getLaneStackOffset(index, laneSide);
+                positionByNodeId.set(String(node.id || ''), {
+                    x: baseX + offset.x,
+                    y: baseY + offset.y,
+                });
+            });
     }
 
     const nodes = scopedNodeList
@@ -9294,24 +9441,24 @@ function buildGraphCytoscapeElements(store) {
             position: positionByNodeId.get(String(node.id)) || { x: 0, y: 0 },
         }));
 
-    const edges = Array.isArray(store.edges)
-        ? store.edges
-            .map((edge, index) => ({ edge, index }))
-            .filter(item => {
-                const from = String(item.edge?.from || '');
-                const to = String(item.edge?.to || '');
-                return from && to && scopedNodeIds.has(from) && scopedNodeIds.has(to);
-            })
-            .map(item => ({
+    const edges = scopedEdges
+        .map(item => {
+            const from = String(item.edge?.from || '');
+            const to = String(item.edge?.to || '');
+            const fromType = String(nodeById.get(from)?.type || '').trim();
+            const toType = String(nodeById.get(to)?.type || '').trim();
+            return {
                 data: {
                     id: `edge:${item.index}`,
                     edgeIndex: Number(item.index),
-                    source: `node:${String(item.edge.from)}`,
-                    target: `node:${String(item.edge.to)}`,
+                    source: `node:${from}`,
+                    target: `node:${to}`,
                     type: String(item.edge?.type || 'related'),
+                    eventBridge: (fromType === 'event') !== (toType === 'event') ? 1 : 0,
+                    eventToEvent: fromType === 'event' && toType === 'event' ? 1 : 0,
                 },
-            }))
-        : [];
+            };
+        });
 
     return { nodes, edges };
 }
@@ -9686,6 +9833,20 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                         },
                     },
                     { selector: 'node[level = "semantic"]', style: { 'background-color': '#3c9b7b' } },
+                    {
+                        selector: 'node[type = "event"]',
+                        style: {
+                            'background-color': '#2f74bd',
+                            'border-width': 2,
+                            'border-color': '#8ec6ff',
+                            padding: '18px',
+                            'font-size': 13,
+                            'text-outline-color': '#14283d',
+                        },
+                    },
+                    { selector: 'node[type = "character_sheet"]', style: { 'background-color': '#a55c3f' } },
+                    { selector: 'node[type = "location_state"]', style: { 'background-color': '#2f8c6d' } },
+                    { selector: 'node[type = "rule_constraint"]', style: { 'background-color': '#8b6a24' } },
                     { selector: 'node[archived = true]', style: { opacity: 0.45 } },
                     { selector: 'node.luker-search-match', style: { 'border-width': 2, 'border-color': '#9ed8b3' } },
                     { selector: 'node.luker-search-dimmed', style: { opacity: 0.16 } },
@@ -9694,10 +9855,8 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                         style: {
                             label: '',
                             'font-size': 9,
-                            'curve-style': 'taxi',
-                            'taxi-direction': 'horizontal',
-                            'taxi-turn': 18,
-                            'taxi-turn-min-distance': 12,
+                            'curve-style': 'bezier',
+                            'control-point-step-size': 30,
                             'target-arrow-shape': 'vee',
                             'target-arrow-color': '#8e95a0',
                             'line-color': '#8e95a0',
@@ -9707,6 +9866,24 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
                             'text-outline-width': 2,
                             'text-outline-color': '#20242b',
                             'text-opacity': 0,
+                        },
+                    },
+                    {
+                        selector: 'edge[eventBridge = 1]',
+                        style: {
+                            'curve-style': 'taxi',
+                            'taxi-direction': 'vertical',
+                            'taxi-turn': 34,
+                            'taxi-turn-min-distance': 16,
+                        },
+                    },
+                    {
+                        selector: 'edge[eventToEvent = 1]',
+                        style: {
+                            'curve-style': 'bezier',
+                            'control-point-step-size': 26,
+                            width: 2.6,
+                            'line-opacity': 0.85,
                         },
                     },
                     {
