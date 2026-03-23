@@ -73,7 +73,7 @@ import {
     textValueMatcher,
     uuidv4,
 } from './utils.js';
-import { countTokensOpenAIAsync, getTokenizerModel } from './tokenizers.js';
+import { countTokensOpenAIAsync, countTokensOpenAIItemsAsync, getTokenizerModel } from './tokenizers.js';
 import { isMobile } from './RossAscends-mods.js';
 import { saveLogprobsForActiveMessage } from './logprobs.js';
 import { persistPreset } from './preset-persistence.js';
@@ -1185,17 +1185,57 @@ async function populateChatHistory(messages, prompts, chatCompletion, type = nul
 
     // Insert chat messages as long as there is budget available
     const chatPool = [...messages].reverse();
+    const chatEntries = [];
+    const batchedMessageDefinitions = [];
+
     for (let index = 0; index < chatPool.length; index++) {
         const chatPrompt = chatPool[index];
-
-        // We do not want to mutate the prompt
         const prompt = new Prompt(chatPrompt);
         prompt.identifier = `chatHistory-${messages.length - index}`;
-        const chatMessage = await Message.fromPromptAsync(promptManager.preparePrompt(prompt));
+        const preparedPrompt = promptManager.preparePrompt(prompt);
+        const messageName = promptManager.serviceSettings.names_behavior === character_names_behavior.COMPLETION && prompt.name
+            ? (promptManager.isValidName(prompt.name) ? prompt.name : promptManager.sanitizeName(prompt.name))
+            : undefined;
+        const invocations = canUseTools && Array.isArray(chatPrompt.invocations)
+            ? chatPrompt.invocations
+            : [];
+        const shouldCountSignature = invocations.length > 0 && includeSignature && Boolean(chatPrompt.signature);
+        const chatMessageDefinition = {
+            role: preparedPrompt.role,
+            content: preparedPrompt.content,
+            identifier: preparedPrompt.identifier || prompt.identifier,
+            ...(messageName ? { name: messageName } : {}),
+            ...(invocations.length > 0 ? { tool_calls: Message.formatToolCalls(invocations, includeSignature) } : {}),
+            ...(shouldCountSignature ? { signature: chatPrompt.signature } : {}),
+        };
+        const chatMessageIndex = batchedMessageDefinitions.length;
+        batchedMessageDefinitions.push(chatMessageDefinition);
 
-        if (promptManager.serviceSettings.names_behavior === character_names_behavior.COMPLETION && prompt.name) {
-            const messageName = promptManager.isValidName(prompt.name) ? prompt.name : promptManager.sanitizeName(prompt.name);
-            await chatMessage.setName(messageName);
+        const toolResultStartIndex = batchedMessageDefinitions.length;
+        if (invocations.length > 0) {
+            batchedMessageDefinitions.push(...invocations.slice().reverse().map((invocation) => ({
+                role: 'tool',
+                content: invocation.result || '[No content]',
+                identifier: invocation.id,
+            })));
+        }
+
+        chatEntries.push({
+            chatPrompt,
+            chatMessageIndex,
+            toolResultStartIndex,
+            toolResultCount: invocations.length,
+            postCountSignature: !shouldCountSignature && includeSignature ? chatPrompt.signature : null,
+        });
+    }
+
+    const batchedMessages = await Message.createManyAsync(batchedMessageDefinitions);
+    for (const entry of chatEntries) {
+        const chatMessage = batchedMessages[entry.chatMessageIndex];
+        const toolResultMessages = batchedMessages.slice(entry.toolResultStartIndex, entry.toolResultStartIndex + entry.toolResultCount);
+
+        if (entry.postCountSignature) {
+            chatMessage.signature = entry.postCountSignature;
         }
 
         /**
@@ -1220,26 +1260,19 @@ async function populateChatHistory(messages, prompts, chatCompletion, type = nul
             }
         }
 
-        if (Array.isArray(chatPrompt.media) && chatPrompt.media.length) {
-            if (chatPrompt.mediaDisplay === MEDIA_DISPLAY.LIST) {
-                for (const media of chatPrompt.media) {
+        if (Array.isArray(entry.chatPrompt.media) && entry.chatPrompt.media.length) {
+            if (entry.chatPrompt.mediaDisplay === MEDIA_DISPLAY.LIST) {
+                for (const media of entry.chatPrompt.media) {
                     await inlineMediaAttachment(media);
                 }
             }
-            if (chatPrompt.mediaDisplay === MEDIA_DISPLAY.GALLERY) {
-                const media = chatPrompt.media[chatPrompt.mediaIndex];
+            if (entry.chatPrompt.mediaDisplay === MEDIA_DISPLAY.GALLERY) {
+                const media = entry.chatPrompt.media[entry.chatPrompt.mediaIndex];
                 await inlineMediaAttachment(media);
             }
         }
 
-        if (canUseTools && Array.isArray(chatPrompt.invocations)) {
-            /** @type {import('./tool-calling.js').ToolInvocation[]} */
-            const invocations = chatPrompt.invocations;
-            const toolResultMessages = await Promise.all(invocations.slice().reverse().map((invocation) => Message.createAsync('tool', invocation.result || '[No content]', invocation.id)));
-            if (includeSignature && chatPrompt.signature) {
-                chatMessage.signature = chatPrompt.signature;
-            }
-            await chatMessage.setToolCalls(invocations, includeSignature);
+        if (toolResultMessages.length > 0) {
             if (chatCompletion.canAffordAll([chatMessage, ...toolResultMessages])) {
                 for (const resultMessage of toolResultMessages) {
                     chatCompletion.insertAtStart(resultMessage, 'chatHistory');
@@ -1250,10 +1283,6 @@ async function populateChatHistory(messages, prompts, chatCompletion, type = nul
             }
 
             continue;
-        }
-
-        if (includeSignature && chatPrompt.signature) {
-            chatMessage.signature = chatPrompt.signature;
         }
 
         if (chatCompletion.canAfford(chatMessage)) {
@@ -1297,18 +1326,12 @@ async function populateDialogueExamples(prompts, chatCompletion, messageExamples
         const newExampleChat = await Message.createAsync('system', substituteParams(oai_settings.new_example_chat_prompt), 'newChat');
         for (const dialogue of [...messageExamples]) {
             const dialogueIndex = messageExamples.indexOf(dialogue);
-            const chatMessages = [];
-
-            for (let promptIndex = 0; promptIndex < dialogue.length; promptIndex++) {
-                const prompt = dialogue[promptIndex];
-                const role = 'system';
-                const content = prompt.content || '';
-                const identifier = `dialogueExamples ${dialogueIndex}-${promptIndex}`;
-
-                const chatMessage = await Message.createAsync(role, content, identifier);
-                await chatMessage.setName(prompt.name);
-                chatMessages.push(chatMessage);
-            }
+            const chatMessages = await Message.createManyAsync(dialogue.map((prompt, promptIndex) => ({
+                role: 'system',
+                content: prompt.content || '',
+                identifier: `dialogueExamples ${dialogueIndex}-${promptIndex}`,
+                name: prompt.name,
+            })));
 
             if (!chatCompletion.canAffordAll([newExampleChat, ...chatMessages])) {
                 break;
@@ -1402,8 +1425,13 @@ async function populateChatCompletion(prompts, chatCompletion, { bias, quietProm
                 return;
             }
 
-            for (const [entryIndex, content] of messageContents.entries()) {
-                const message = await Message.createAsync(prompt.role, content, `${source}-${entryIndex + 1}`);
+            const batchedMessages = await Message.createManyAsync(messageContents.map((content, entryIndex) => ({
+                role: prompt.role,
+                content,
+                identifier: `${source}-${entryIndex + 1}`,
+            })));
+
+            for (const message of batchedMessages) {
                 collection.add(message);
             }
         } else {
@@ -4047,9 +4075,14 @@ async function calculateLogitBias() {
 class TokenHandler {
     /**
      * @param {(messages: object[] | object, full?: boolean) => Promise<number>} countTokenAsyncFn Function to count tokens
+     * @param {(messages: object[] | object, full?: boolean) => Promise<number[]>} [countTokenItemsAsyncFn] Function to count tokens per item
      */
-    constructor(countTokenAsyncFn) {
+    constructor(countTokenAsyncFn, countTokenItemsAsyncFn = async (messages, full) => {
+        const normalizedMessages = Array.isArray(messages) ? messages : [messages];
+        return Promise.all(normalizedMessages.map(message => countTokenAsyncFn(message, full)));
+    }) {
         this.countTokenAsyncFn = countTokenAsyncFn;
+        this.countTokenItemsAsyncFn = countTokenItemsAsyncFn;
         this.counts = {
             'start_chat': 0,
             'prompt': 0,
@@ -4087,9 +4120,28 @@ class TokenHandler {
      */
     async countAsync(messages, full, type) {
         const token_count = await this.countTokenAsyncFn(messages, full);
-        this.counts[type] += token_count;
+        if (type && Object.hasOwn(this.counts, type)) {
+            this.counts[type] += token_count;
+        }
 
         return token_count;
+    }
+
+    /**
+     * Count tokens for many items and return the individual counts.
+     * @param {object[]|object} messages Messages to count tokens for
+     * @param {boolean} [full] Count full tokens
+     * @param {string} [type] Identifier for the token count
+     * @returns {Promise<number[]>} The token counts
+     */
+    async countManyAsync(messages, full, type) {
+        const token_counts = await this.countTokenItemsAsyncFn(messages, full);
+
+        if (type && Object.hasOwn(this.counts, type)) {
+            this.counts[type] += token_counts.reduce((total, count) => total + count, 0);
+        }
+
+        return token_counts;
     }
 
     getTokensForIdentifier(identifier) {
@@ -4106,7 +4158,7 @@ class TokenHandler {
 }
 
 
-const tokenHandler = new TokenHandler(countTokensOpenAIAsync);
+const tokenHandler = new TokenHandler(countTokensOpenAIAsync, countTokensOpenAIItemsAsync);
 
 // Thrown by ChatCompletion when a requested prompt couldn't be found.
 class IdentifierNotFoundError extends Error {
@@ -4182,12 +4234,66 @@ class Message {
      */
     static async createAsync(role, content, identifier) {
         const message = new Message(role, content, identifier);
+        await Message.countManyAsync([message]);
+        return message;
+    }
 
-        if (typeof message.content === 'string' && message.content.length > 0) {
-            message.tokens = await tokenHandler.countAsync({ role: message.role, content: message.content });
+    /**
+     * Create many Message instances and count them in a single batch.
+     * @param {{ role: string, content: string|any[], identifier: string, name?: string, tool_calls?: object[], signature?: string|null }[]} definitions
+     * @returns {Promise<Message[]>} Message instances
+     */
+    static async createManyAsync(definitions) {
+        const messages = definitions.map(({ role, content, identifier, name, tool_calls, signature }) => {
+            const message = new Message(role, content, identifier);
+            message.name = name;
+            message.tool_calls = tool_calls;
+            message.signature = signature ?? null;
+            return message;
+        });
+
+        await Message.countManyAsync(messages);
+        return messages;
+    }
+
+    /**
+     * Count many messages in a single batch.
+     * @param {Message[]} messages
+     * @returns {Promise<Message[]>} Counted messages
+     */
+    static async countManyAsync(messages) {
+        const countableMessages = messages.filter(message => message.hasTokenCountPayload());
+        if (countableMessages.length === 0) {
+            return messages;
         }
 
-        return message;
+        const tokenCounts = await tokenHandler.countManyAsync(
+            countableMessages.map(message => message.toTokenCountPayload()),
+        );
+
+        for (let i = 0; i < countableMessages.length; i++) {
+            countableMessages[i].tokens = tokenCounts[i];
+        }
+
+        return messages;
+    }
+
+    /**
+     * Formats tool invocations into the payload expected by the OpenAI API.
+     * @param {import('./tool-calling.js').ToolInvocation[]} invocations
+     * @param {boolean} includeSignature
+     * @returns {object[]} Tool call payloads
+     */
+    static formatToolCalls(invocations, includeSignature) {
+        return invocations.map(i => ({
+            id: i.id,
+            type: 'function',
+            function: {
+                arguments: i.parameters,
+                name: i.name,
+            },
+            ...(includeSignature && i.signature ? { signature: i.signature } : {}),
+        }));
     }
 
     /**
@@ -4197,23 +4303,8 @@ class Message {
      * @returns {Promise<void>}
      */
     async setToolCalls(invocations, includeSignature) {
-        this.tool_calls = invocations.map(i => ({
-            id: i.id,
-            type: 'function',
-            function: {
-                arguments: i.parameters,
-                name: i.name,
-            },
-            ...(includeSignature && i.signature ? { signature: i.signature } : {}),
-        }));
-        const tokenPayload = {
-            role: this.role,
-            tool_calls: JSON.stringify(this.tool_calls),
-            ...(this.content !== undefined ? { content: this.content } : {}),
-            ...(this.name ? { name: this.name } : {}),
-            ...(this.signature ? { signature: this.signature } : {}),
-        };
-        this.tokens = await tokenHandler.countAsync(tokenPayload);
+        this.tool_calls = Message.formatToolCalls(invocations, includeSignature);
+        this.tokens = await tokenHandler.countAsync(this.toTokenCountPayload());
     }
 
     /**
@@ -4223,7 +4314,32 @@ class Message {
      */
     async setName(name) {
         this.name = name;
-        this.tokens = await tokenHandler.countAsync({ role: this.role, content: this.content, name: this.name });
+        this.tokens = await tokenHandler.countAsync(this.toTokenCountPayload());
+    }
+
+    /**
+     * Checks whether the message needs tokenizer work.
+     * @returns {boolean} Whether tokenization is required.
+     */
+    hasTokenCountPayload() {
+        return (typeof this.content === 'string' && this.content.length > 0)
+            || Array.isArray(this.content)
+            || Array.isArray(this.tool_calls)
+            || Boolean(this.name);
+    }
+
+    /**
+     * Builds the tokenizer payload for the current message state.
+     * @returns {object} Tokenizer payload.
+     */
+    toTokenCountPayload() {
+        return {
+            role: this.role,
+            ...(Array.isArray(this.tool_calls) ? { tool_calls: JSON.stringify(this.tool_calls) } : {}),
+            ...(this.content !== undefined ? { content: this.content } : {}),
+            ...(this.name ? { name: this.name } : {}),
+            ...(this.signature ? { signature: this.signature } : {}),
+        };
     }
 
     /**

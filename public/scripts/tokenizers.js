@@ -563,6 +563,16 @@ function counterWrapperOpenAIAsync(text) {
     return countTokensOpenAIAsync(message, true);
 }
 
+/**
+ * Gets the token counts for strings using the OpenAI tokenizer.
+ * @param {string[]} texts Texts to tokenize.
+ * @returns {Promise<number[]>} Token counts.
+ */
+async function counterWrapperOpenAIMultiAsync(texts) {
+    const messages = texts.map(text => ({ role: 'system', content: text }));
+    return countTokensOpenAIItemsAsync(messages, true);
+}
+
 export function getTokenizerModel() {
     // OpenAI models always provide their own tokenizer
     if (oai_settings.chat_completion_source == chat_completion_sources.OPENAI) {
@@ -838,13 +848,12 @@ export function countTokensOpenAI(messages, full = false) {
 }
 
 /**
- * Returns the token count for a message using the OpenAI tokenizer.
+ * Gets cached or fetched raw OpenAI token counts for one or more messages.
  * @param {object[]|object} messages
- * @param {boolean} full
- * @returns {Promise<number>} Token count.
+ * @param {string} model
+ * @returns {Promise<{ rawCounts: number[], totalRawCount: number }>} Raw token counts.
  */
-export async function countTokensOpenAIAsync(messages, full = false) {
-    const model = getTokenizerModel();
+async function getOpenAITokenCountsRawAsync(messages, model) {
     const tokenizerEndpoint = `/api/tokenizers/openai/count?model=${model}`;
     const tokenizerBatchEndpoint = `/api/tokenizers/openai/count-batch?model=${model}`;
     const cacheObject = getTokenCacheObject();
@@ -853,24 +862,22 @@ export async function countTokensOpenAIAsync(messages, full = false) {
         messages = [messages];
     }
 
-    let token_count = -1;
+    const rawCounts = new Array(messages.length).fill(0);
     const uncachedMessages = [];
+    const uncachedIndices = [];
     const uncachedCacheKeys = [];
 
-    for (const message of messages) {
-        if (model === 'claude') {
-            full = true;
-        }
-
+    for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
         const hash = getStringHash(JSON.stringify(message));
         const cacheKey = `${model}-${hash}`;
         const cachedCount = cacheObject[cacheKey];
 
         if (typeof cachedCount === 'number') {
-            token_count += cachedCount;
-        }
-        else {
+            rawCounts[i] = cachedCount;
+        } else {
             uncachedMessages.push(message);
+            uncachedIndices.push(i);
             uncachedCacheKeys.push(cacheKey);
         }
     }
@@ -892,7 +899,7 @@ export async function countTokensOpenAIAsync(messages, full = false) {
 
             for (let i = 0; i < uncachedMessages.length; i++) {
                 const count = Number(batchData.token_counts[i]);
-                token_count += count;
+                rawCounts[uncachedIndices[i]] = count;
                 cacheObject[uncachedCacheKeys[i]] = count;
             }
         } catch (error) {
@@ -909,15 +916,94 @@ export async function countTokensOpenAIAsync(messages, full = false) {
                 });
 
                 const count = Number(data.token_count);
-                token_count += count;
+                rawCounts[uncachedIndices[i]] = count;
                 cacheObject[uncachedCacheKeys[i]] = count;
             }
         }
     }
 
-    if (!full) token_count -= 2;
+    return {
+        rawCounts,
+        totalRawCount: rawCounts.reduce((sum, count) => sum + Number(count || 0), 0),
+    };
+}
 
-    return token_count;
+/**
+ * Normalizes a raw OpenAI token count into the externally expected count.
+ * @param {number} count Raw token count.
+ * @param {boolean} full Whether to include the full wrapper tokens.
+ * @returns {number} Normalized token count.
+ */
+function normalizeOpenAITokenCount(count, full) {
+    return Number(count) - (full ? 1 : 3);
+}
+
+/**
+ * Returns the per-item OpenAI token counts for messages.
+ * @param {object[]|object} messages
+ * @param {boolean} full
+ * @returns {Promise<number[]>} Token counts for each message as if counted individually.
+ */
+export async function countTokensOpenAIItemsAsync(messages, full = false) {
+    const model = getTokenizerModel();
+    const effectiveFull = full || model === 'claude';
+    const { rawCounts } = await getOpenAITokenCountsRawAsync(messages, model);
+
+    return rawCounts.map(count => normalizeOpenAITokenCount(count, effectiveFull));
+}
+
+/**
+ * Returns the token count for a message using the OpenAI tokenizer.
+ * @param {object[]|object} messages
+ * @param {boolean} full
+ * @returns {Promise<number>} Token count.
+ */
+export async function countTokensOpenAIAsync(messages, full = false) {
+    const model = getTokenizerModel();
+    const effectiveFull = full || model === 'claude';
+    const { totalRawCount } = await getOpenAITokenCountsRawAsync(messages, model);
+
+    return totalRawCount - (effectiveFull ? 1 : 3);
+}
+
+/**
+ * Gets the token counts for strings using the current model tokenizer.
+ * @param {string[]} values Strings to tokenize.
+ * @param {number | undefined} padding Optional padding tokens. Defaults to 0.
+ * @returns {Promise<number[]>} Token counts.
+ */
+export async function getTokenCountsAsync(values, padding = undefined) {
+    if (!Array.isArray(values) || values.length === 0) {
+        return [];
+    }
+
+    const counts = new Array(values.length).fill(0);
+    const validValues = [];
+    const validIndices = [];
+
+    for (let i = 0; i < values.length; i++) {
+        const value = values[i];
+        if (typeof value !== 'string' || !value.length) {
+            continue;
+        }
+
+        validValues.push(value);
+        validIndices.push(i);
+    }
+
+    if (validValues.length === 0) {
+        return counts;
+    }
+
+    const validCounts = (main_api === 'openai' && padding !== power_user.token_padding)
+        ? await counterWrapperOpenAIMultiAsync(validValues)
+        : await Promise.all(validValues.map(value => getTokenCountAsync(value, padding)));
+
+    for (let i = 0; i < validIndices.length; i++) {
+        counts[validIndices[i]] = validCounts[i];
+    }
+
+    return counts;
 }
 
 /**
