@@ -23,6 +23,7 @@ import android.text.InputType
 import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
@@ -35,6 +36,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -77,6 +79,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var loadingText: TextView
+    private lateinit var fullscreenContainer: FrameLayout
     private var endpointDialog: AlertDialog? = null
     @Volatile
     private var runtimeFailureDialogShown: Boolean = false
@@ -89,6 +92,9 @@ class MainActivity : AppCompatActivity() {
     private var pendingApkDownloadId: Long? = null
     private var apkDownloadReceiverRegistered = false
     private var immersiveModeEnabled: Boolean = false
+    private var immersiveModeEnabledBeforeCustomView: Boolean = false
+    private var fullscreenCustomView: View? = null
+    private var fullscreenCustomViewCallback: WebChromeClient.CustomViewCallback? = null
     private var contentRootBasePaddingLeft: Int = 0
     private var contentRootBasePaddingTop: Int = 0
     private var contentRootBasePaddingRight: Int = 0
@@ -97,6 +103,11 @@ class MainActivity : AppCompatActivity() {
     private val bootstrapSequence = AtomicInteger(0)
     private val backPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
+            if (fullscreenCustomView != null) {
+                hideCustomFullscreenView()
+                return
+            }
+
             if (immersiveModeEnabled) {
                 applyImmersiveMode(false)
                 syncWebImmersiveMode(false)
@@ -217,6 +228,7 @@ class MainActivity : AppCompatActivity() {
         webView = findViewById(R.id.lukerWebView)
         loadingOverlay = findViewById(R.id.loadingOverlay)
         loadingText = findViewById(R.id.loadingText)
+        fullscreenContainer = findViewById(R.id.fullscreenContainer)
 
         webView.settings.apply {
             javaScriptEnabled = true
@@ -232,6 +244,18 @@ class MainActivity : AppCompatActivity() {
         installImeInsetsHandling()
         webView.addJavascriptInterface(LukerAndroidBridge(), "LukerAndroid")
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                if (view == null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+                showCustomFullscreenView(view, callback)
+            }
+
+            override fun onHideCustomView() {
+                hideCustomFullscreenView()
+            }
+
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
@@ -678,6 +702,60 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun showCustomFullscreenView(view: View, callback: WebChromeClient.CustomViewCallback?) {
+        if (!this::fullscreenContainer.isInitialized) {
+            callback?.onCustomViewHidden()
+            return
+        }
+
+        if (fullscreenCustomView != null) {
+            hideCustomFullscreenView()
+        }
+
+        (view.parent as? ViewGroup)?.removeView(view)
+
+        immersiveModeEnabledBeforeCustomView = immersiveModeEnabled
+        fullscreenCustomView = view
+        fullscreenCustomViewCallback = callback
+
+        fullscreenContainer.removeAllViews()
+        fullscreenContainer.addView(
+            view,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        fullscreenContainer.visibility = View.VISIBLE
+        fullscreenContainer.bringToFront()
+        webView.visibility = View.GONE
+        applyImmersiveMode(true)
+        ViewCompat.requestApplyInsets(fullscreenContainer)
+    }
+
+    private fun hideCustomFullscreenView() {
+        val callback = fullscreenCustomViewCallback
+        if (fullscreenCustomView == null) {
+            callback?.onCustomViewHidden()
+            fullscreenCustomViewCallback = null
+            return
+        }
+
+        fullscreenCustomView = null
+        fullscreenCustomViewCallback = null
+        fullscreenContainer.removeAllViews()
+        fullscreenContainer.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+
+        val restoreImmersiveMode = immersiveModeEnabledBeforeCustomView
+        immersiveModeEnabledBeforeCustomView = false
+        applyImmersiveMode(restoreImmersiveMode)
+        syncWebImmersiveMode(restoreImmersiveMode)
+        ViewCompat.requestApplyInsets(contentRoot)
+
+        callback?.onCustomViewHidden()
+    }
+
     private fun applyImmersiveMode(enabled: Boolean) {
         immersiveModeEnabled = enabled
         setKeyboardModeForImmersive(enabled)
@@ -733,6 +811,9 @@ class MainActivity : AppCompatActivity() {
         if (hasFocus && immersiveModeEnabled) {
             applyImmersiveMode(true)
         }
+        if (hasFocus && this::fullscreenContainer.isInitialized && fullscreenContainer.visibility == View.VISIBLE) {
+            ViewCompat.requestApplyInsets(fullscreenContainer)
+        }
         if (hasFocus && this::contentRoot.isInitialized) {
             ViewCompat.requestApplyInsets(contentRoot)
         }
@@ -748,6 +829,10 @@ class MainActivity : AppCompatActivity() {
             if (this::contentRoot.isInitialized) {
                 ViewCompat.requestApplyInsets(contentRoot)
                 contentRoot.requestLayout()
+            }
+            if (this::fullscreenContainer.isInitialized && fullscreenContainer.visibility == View.VISIBLE) {
+                ViewCompat.requestApplyInsets(fullscreenContainer)
+                fullscreenContainer.requestLayout()
             }
             if (this::webView.isInitialized) {
                 webView.requestLayout()
