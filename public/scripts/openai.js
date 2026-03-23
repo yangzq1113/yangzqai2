@@ -26,6 +26,7 @@ import {
     main_api,
     name1,
     name2,
+    patchSettingsValueDebounced,
     resultCheckStatus,
     saveSettingsDebounced,
     requestAsyncDiffForNextSettingsSave,
@@ -6533,7 +6534,10 @@ async function onSettingsPresetChange(event) {
         }
 
         await syncOpenAIPresetUiAfterApply();
-        saveSettingsDebounced();
+        patchSettingsValueDebounced('/oai_settings', structuredClone(oai_settings), (error) => {
+            console.error('Failed to persist preset-applied OpenAI settings via targeted patch', error);
+            saveSettingsDebounced();
+        });
         scheduleOpenAIPresetChangeNotifications(presetName);
     }
 
