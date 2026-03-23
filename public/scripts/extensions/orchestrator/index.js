@@ -1116,7 +1116,20 @@ let latestOrchestrationRuntimeTrace = null;
 let loadedChatStateKey = '';
 
 function cloneDefault(value) {
-    return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
+    return Array.isArray(value) || typeof value === 'object' ? cloneJsonCompatible(value) : value;
+}
+
+function cloneJsonCompatible(value) {
+    if (value === undefined) {
+        return undefined;
+    }
+
+    try {
+        return structuredClone(value);
+    } catch {
+        const serialized = JSON.stringify(value);
+        return serialized === undefined ? undefined : JSON.parse(serialized);
+    }
 }
 
 function normalizeNodeType(value) {
@@ -6835,7 +6848,7 @@ async function persistOrchestratorCharacterExtension(context, characterIndex, mo
         return false;
     }
 
-    const nextExtensions = structuredClone(character?.data?.extensions ?? {});
+    const nextExtensions = cloneJsonCompatible(character?.data?.extensions ?? {});
     if (modulePayload && typeof modulePayload === 'object') {
         nextExtensions[MODULE_NAME] = modulePayload;
     } else {
