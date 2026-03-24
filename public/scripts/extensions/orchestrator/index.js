@@ -613,6 +613,8 @@ function registerLocaleData() {
         'Max total agent runs': '最大 Agent 调用总数',
         'Copy Spec Agents To Agenda': '复制 Spec Agents 到 Agenda',
         'Copied spec agents into agenda as a starting point.': '已将 Spec agents 复制到 Agenda，作为初始参考。',
+        'Copy Agenda Agents To Spec': '复制 Agenda Agents 到 Spec',
+        'Copied agenda agents into spec presets and rebuilt stages as a starting point.': '已将 Agenda Agents 复制到 Spec，并重建阶段作为初始参考。',
         'Agenda Agents': 'Agenda Agents',
         'View Last Run': '查看最近一轮',
         'View Runtime Trace': '查看运行态轨迹',
@@ -894,6 +896,8 @@ function registerLocaleData() {
         'Max total agent runs': '最大 Agent 呼叫總數',
         'Copy Spec Agents To Agenda': '複製 Spec Agents 到 Agenda',
         'Copied spec agents into agenda as a starting point.': '已將 Spec agents 複製到 Agenda，作為初始參考。',
+        'Copy Agenda Agents To Spec': '複製 Agenda Agents 到 Spec',
+        'Copied agenda agents into spec presets and rebuilt stages as a starting point.': '已將 Agenda Agents 複製到 Spec，並重建階段作為初始參考。',
         'Agenda Agents': 'Agenda Agents',
         'View Last Run': '查看最近一輪',
         'View Runtime Trace': '查看執行態軌跡',
@@ -6251,6 +6255,133 @@ function getAgendaScopeFromElement(element, context, settings) {
     return scope === 'character' ? 'character' : 'global';
 }
 
+function buildBestEffortSpecFromAgendaAgents(agents, finalAgentId) {
+    const normalizedAgents = sanitizePresetMap(agents);
+    const agentIds = Object.keys(normalizedAgents);
+    const fallbackFinalAgentId = agentIds[0] || 'finalizer';
+    const resolvedFinalAgentId = normalizedAgents[finalAgentId]
+        ? String(finalAgentId)
+        : fallbackFinalAgentId;
+    const nonFinalAgentIds = agentIds.filter(id => id !== resolvedFinalAgentId);
+    const distillerId = nonFinalAgentIds.find(id => {
+        const normalizedId = String(id || '').trim().toLowerCase();
+        return normalizedId === 'distiller' || normalizedId.includes('distill');
+    }) || null;
+    const reviewAgentIds = nonFinalAgentIds.filter(id => {
+        if (id === distillerId) {
+            return false;
+        }
+        const normalizedId = String(id || '').trim().toLowerCase();
+        return normalizedId === 'critic'
+            || normalizedId.includes('critic')
+            || normalizedId.includes('review')
+            || normalizedId.includes('audit');
+    });
+    const remainingWorkerIds = nonFinalAgentIds.filter(id => id !== distillerId && !reviewAgentIds.includes(id));
+    const groundingAgentIds = remainingWorkerIds.filter(id => {
+        const normalizedId = String(id || '').trim().toLowerCase();
+        return normalizedId.includes('lore')
+            || normalizedId.includes('ground')
+            || normalizedId.includes('constraint')
+            || normalizedId.includes('recall')
+            || normalizedId.includes('memory');
+    });
+    const reasoningAgentIds = remainingWorkerIds.filter(id => {
+        if (groundingAgentIds.includes(id)) {
+            return false;
+        }
+        const normalizedId = String(id || '').trim().toLowerCase();
+        return normalizedId.includes('plan')
+            || normalizedId.includes('scene')
+            || normalizedId.includes('progress')
+            || normalizedId.includes('writer')
+            || normalizedId.includes('draft');
+    });
+    const supportAgentIds = remainingWorkerIds.filter(id => !groundingAgentIds.includes(id) && !reasoningAgentIds.includes(id));
+    const stages = [];
+
+    if (distillerId) {
+        stages.push({
+            id: 'distill',
+            mode: 'serial',
+            nodes: [distillerId],
+        });
+    }
+
+    if (groundingAgentIds.length > 0) {
+        stages.push({
+            id: 'grounding',
+            mode: groundingAgentIds.length > 1 ? 'parallel' : 'serial',
+            nodes: groundingAgentIds,
+        });
+    }
+
+    if (reasoningAgentIds.length > 0) {
+        stages.push({
+            id: 'reason',
+            mode: reasoningAgentIds.length > 1 ? 'parallel' : 'serial',
+            nodes: reasoningAgentIds,
+        });
+    }
+
+    if (supportAgentIds.length > 0) {
+        stages.push({
+            id: 'workers',
+            mode: supportAgentIds.length > 1 ? 'parallel' : 'serial',
+            nodes: supportAgentIds,
+        });
+    }
+
+    if (reviewAgentIds.length > 0) {
+        stages.push({
+            id: 'review',
+            mode: reviewAgentIds.length > 1 ? 'parallel' : 'serial',
+            nodes: reviewAgentIds.map(id => ({
+                id,
+                preset: id,
+                type: ORCH_NODE_TYPE_REVIEW,
+            })),
+        });
+    }
+
+    stages.push({
+        id: 'finalize',
+        mode: 'serial',
+        nodes: [resolvedFinalAgentId],
+    });
+
+    return sanitizeSpec({ stages });
+}
+
+function copySpecPresetsIntoAgendaEditor(sourceEditor, agendaEditor) {
+    ensureEditorIntegrity(sourceEditor);
+    ensureAgendaEditorIntegrity(agendaEditor);
+    agendaEditor.agents = sanitizePresetMap(sourceEditor.presets);
+    if (agendaEditor.agents.synthesizer) {
+        agendaEditor.agents.finalizer = structuredClone(agendaEditor.agents.synthesizer);
+        delete agendaEditor.agents.synthesizer;
+    }
+    if (Object.keys(agendaEditor.agents).length === 0) {
+        agendaEditor.agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
+    }
+    agendaEditor.finalAgentId = agendaEditor.agents.finalizer
+        ? 'finalizer'
+        : (Object.keys(agendaEditor.agents)[0] || 'finalizer');
+}
+
+function copyAgendaAgentsIntoSpecEditor(agendaEditor, specEditor) {
+    ensureAgendaEditorIntegrity(agendaEditor);
+    ensureEditorIntegrity(specEditor);
+    const copiedPresets = sanitizePresetMap(agendaEditor.agents);
+    const fallbackFinalAgentId = Object.keys(copiedPresets)[0] || 'finalizer';
+    const finalAgentId = copiedPresets[agendaEditor.finalAgentId]
+        ? sanitizeIdentifierToken(agendaEditor.finalAgentId, fallbackFinalAgentId)
+        : fallbackFinalAgentId;
+    specEditor.presets = copiedPresets;
+    specEditor.spec = buildBestEffortSpecFromAgendaAgents(copiedPresets, finalAgentId);
+    ensureEditorIntegrity(specEditor);
+}
+
 function renderPresetOptions(presets, selectedPreset) {
     const selected = String(selectedPreset || '');
     const ids = Object.keys(presets || {});
@@ -6552,6 +6683,7 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
             <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
             <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
             <div class="menu_button" data-luker-action="agenda-copy-from-spec" data-scope="${scope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+            <div class="menu_button" data-luker-action="spec-copy-from-agenda" data-scope="${scope}">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
             <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
             <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
             ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
@@ -6593,6 +6725,8 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
             <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
             <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
             <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
+            <div class="menu_button" data-luker-action="agenda-copy-from-spec" data-scope="${scope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+            <div class="menu_button" data-luker-action="spec-copy-from-agenda" data-scope="${scope}">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
             <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
             <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
             ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
@@ -11552,20 +11686,18 @@ function bindUi() {
             const agendaScope = scope === 'character' ? 'character' : getAgendaScopeFromElement(this, context, settings);
             const agendaEditor = getAgendaEditorByScope(agendaScope);
             const sourceEditor = getEditorByScope(agendaScope);
-            ensureAgendaEditorIntegrity(agendaEditor);
-            ensureEditorIntegrity(sourceEditor);
-            agendaEditor.agents = sanitizePresetMap(sourceEditor.presets);
-            if (agendaEditor.agents.synthesizer) {
-                agendaEditor.agents.finalizer = structuredClone(agendaEditor.agents.synthesizer);
-                delete agendaEditor.agents.synthesizer;
-            }
-            if (Object.keys(agendaEditor.agents).length === 0) {
-                agendaEditor.agents.finalizer = structuredClone(defaultAgendaAgents.finalizer);
-            }
-            agendaEditor.finalAgentId = agendaEditor.agents.finalizer
-                ? 'finalizer'
-                : (Object.keys(agendaEditor.agents)[0] || 'finalizer');
+            copySpecPresetsIntoAgendaEditor(sourceEditor, agendaEditor);
             notifySuccess(i18n('Copied spec agents into agenda as a starting point.'));
+            renderDynamicPanels(root, context);
+            return;
+        }
+
+        if (action === 'spec-copy-from-agenda') {
+            const agendaScope = scope === 'character' ? 'character' : getAgendaScopeFromElement(this, context, settings);
+            const agendaEditor = getAgendaEditorByScope(agendaScope);
+            const targetEditor = getEditorByScope(agendaScope);
+            copyAgendaAgentsIntoSpecEditor(agendaEditor, targetEditor);
+            notifySuccess(i18n('Copied agenda agents into spec presets and rebuilt stages as a starting point.'));
             renderDynamicPanels(root, context);
             return;
         }
@@ -13196,6 +13328,8 @@ function ensureUi() {
                 </div>
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
+                    <div class="menu_button" data-luker-action="agenda-copy-from-spec">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+                    <div class="menu_button" data-luker-action="spec-copy-from-agenda">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
                     <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
                     <div class="menu_button" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
@@ -13211,6 +13345,7 @@ function ensureUi() {
                 <div class="flex-container">
                     <div class="menu_button" data-luker-action="open-orch-editor">${escapeHtml(i18n('Open Orchestration Editor'))}</div>
                     <div class="menu_button" data-luker-action="agenda-copy-from-spec">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+                    <div class="menu_button" data-luker-action="spec-copy-from-agenda">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
                     <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
                     <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
                     <div class="menu_button" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
