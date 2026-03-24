@@ -764,6 +764,15 @@ function toStoredV2Character(character) {
         character.data.extensions = {};
     }
 
+    if (_.isPlainObject(character.data.character_book)) {
+        if (!Array.isArray(character.data.character_book.entries)) {
+            character.data.character_book.entries = [];
+        }
+        if (!_.isPlainObject(character.data.character_book.extensions)) {
+            character.data.character_book.extensions = {};
+        }
+    }
+
     for (const [field, spec] of Object.entries(legacyCharacterStorageFieldSpecs)) {
         if (!Object.prototype.hasOwnProperty.call(character, field)) {
             continue;
@@ -912,8 +921,8 @@ function syncCharacterBookFromWorldInfo(char, directories, worldInfoName) {
  * @param {object} entries Entries object
  */
 function convertWorldInfoToCharacterBook(name, entries) {
-    /** @type {{ entries: object[]; name: string }} */
-    const result = { entries: [], name };
+    /** @type {{ entries: object[]; name: string; extensions: object }} */
+    const result = { entries: [], name, extensions: {} };
 
     for (const index in entries) {
         const entry = entries[index];
@@ -1487,7 +1496,7 @@ router.post('/edit-attribute', validateAvatarUrlMiddleware, async function (requ
             return;
         }
         _.set(char, targetPath, request.body.value);
-        const newCharJSON = JSON.stringify(toStoredV2Character(char));
+        const newCharJSON = JSON.stringify(getStoredCharaCardV2(char, request.user.directories, false));
         const targetFile = (request.body.avatar_url).replace('.png', '');
         const writeOk = await writeCharacterData(
             avatarPath,
@@ -1536,7 +1545,7 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
         _.unset(update, 'json_data');
         _.unset(character, 'json_data');
 
-        character = toStoredV2Character(deepMerge(character, update));
+        character = getStoredCharaCardV2(deepMerge(character, update), request.user.directories, false);
 
         const validator = new TavernCardValidator(character);
         const targetImg = (update.avatar).replace('.png', '');
@@ -1557,7 +1566,6 @@ router.post('/merge-attributes', getFileNameValidationFunction('avatar'), async 
             }
             response.sendStatus(200);
         } else {
-            console.warn(validator.lastValidationError);
             response.status(400).send({ message: `Validation failed for ${_.get(character, 'data.name', character.name)}`, error: validator.lastValidationError });
         }
     } catch (exception) {
