@@ -272,19 +272,7 @@ class MainActivity : AppCompatActivity() {
                 pendingFilePathCallback?.onReceiveValue(null)
                 pendingFilePathCallback = filePathCallback
 
-                val chooserIntent = if (fileChooserParams?.isCaptureEnabled == true) {
-                    try {
-                        fileChooserParams.createIntent()
-                    } catch (t: Throwable) {
-                        Log.w(tag, "Failed to create capture file chooser intent", t)
-                        null
-                    } ?: buildFileChooserIntent(fileChooserParams)
-                } else {
-                    buildFileChooserIntent(fileChooserParams)
-                }
-                chooserIntent.addCategory(Intent.CATEGORY_OPENABLE)
-                chooserIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                chooserIntent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                val chooserIntent = buildFileChooserIntent(fileChooserParams)
 
                 return try {
                     fileChooserLauncher.launch(chooserIntent)
@@ -405,23 +393,75 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildFileChooserIntent(fileChooserParams: WebChromeClient.FileChooserParams?): Intent {
         val mimeSelection = resolveAcceptedMimeTypes(fileChooserParams)
-        return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, fileChooserParams?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
+        val chooserIntent = try {
+            fileChooserParams?.createIntent()
+        } catch (t: Throwable) {
+            Log.w(tag, "Failed to create system file chooser intent", t)
+            null
+        } ?: buildFallbackFileChooserIntent()
 
-            when {
-                mimeSelection.requiresBroadFilter || mimeSelection.mimeTypes.isEmpty() -> {
-                    // Non-standard extensions such as .jsonl are frequently exposed as generic files by Android providers.
-                    type = "*/*"
-                }
-                mimeSelection.mimeTypes.size == 1 -> {
-                    type = mimeSelection.mimeTypes.first()
-                }
-                else -> {
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_MIME_TYPES, mimeSelection.mimeTypes.toTypedArray())
-                }
+        return normalizeFileChooserIntent(chooserIntent, fileChooserParams, mimeSelection)
+    }
+
+    private fun buildFallbackFileChooserIntent(): Intent {
+        return Intent(Intent.ACTION_GET_CONTENT)
+    }
+
+    private fun normalizeFileChooserIntent(
+        chooserIntent: Intent,
+        fileChooserParams: WebChromeClient.FileChooserParams?,
+        mimeSelection: MimeSelection,
+    ): Intent {
+        val targetIntent = extractFileChooserTargetIntent(chooserIntent) ?: chooserIntent
+        targetIntent.addCategory(Intent.CATEGORY_OPENABLE)
+        targetIntent.putExtra(
+            Intent.EXTRA_ALLOW_MULTIPLE,
+            fileChooserParams?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE,
+        )
+        targetIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+        if (targetIntent.action == Intent.ACTION_OPEN_DOCUMENT) {
+            targetIntent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+
+        when {
+            mimeSelection.requiresBroadFilter || mimeSelection.mimeTypes.isEmpty() -> {
+                // Non-standard extensions such as .jsonl are frequently exposed as generic files by Android providers.
+                targetIntent.type = "*/*"
+                targetIntent.removeExtra(Intent.EXTRA_MIME_TYPES)
             }
+            mimeSelection.mimeTypes.size == 1 -> {
+                targetIntent.type = mimeSelection.mimeTypes.first()
+                targetIntent.removeExtra(Intent.EXTRA_MIME_TYPES)
+            }
+            else -> {
+                targetIntent.type = "*/*"
+                targetIntent.putExtra(Intent.EXTRA_MIME_TYPES, mimeSelection.mimeTypes.toTypedArray())
+            }
+        }
+
+        chooserIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (targetIntent.action == Intent.ACTION_OPEN_DOCUMENT || chooserIntent.action == Intent.ACTION_OPEN_DOCUMENT) {
+            chooserIntent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+
+        if (targetIntent !== chooserIntent) {
+            chooserIntent.putExtra(Intent.EXTRA_INTENT, targetIntent)
+        }
+
+        return chooserIntent
+    }
+
+    @Suppress("DEPRECATION")
+    private fun extractFileChooserTargetIntent(chooserIntent: Intent): Intent? {
+        if (chooserIntent.action != Intent.ACTION_CHOOSER) {
+            return chooserIntent
+        }
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            chooserIntent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+        } else {
+            chooserIntent.getParcelableExtra(Intent.EXTRA_INTENT)
         }
     }
 
