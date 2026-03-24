@@ -1,7 +1,15 @@
 import { describe, test, expect } from '@jest/globals';
 import path from 'node:path';
 import { CHAT_COMPLETION_SOURCES } from '../src/constants';
-import { deepMerge, findNameMatch, flattenSchema, normalizeLookupText, resolvePathWithinParent } from '../src/util';
+import {
+    buildGeminiFunctionDeclaration,
+    convertGeminiToolChoice,
+    deepMerge,
+    findNameMatch,
+    flattenSchema,
+    normalizeLookupText,
+    resolvePathWithinParent,
+} from '../src/util';
 
 describe('flattenSchema', () => {
     test('should return the schema if it is not an object', () => {
@@ -104,6 +112,100 @@ describe('flattenSchema', () => {
             },
         };
         expect(flattenSchema(schema, 'some-other-api')).toEqual(expected);
+    });
+});
+
+describe('buildGeminiFunctionDeclaration', () => {
+    test('should normalize nested function parameters for Gemini', () => {
+        const declaration = buildGeminiFunctionDeclaration({
+            name: 'memory_graph_upsert',
+            description: 'Upsert memory graph nodes',
+            parameters: {
+                $schema: 'https://json-schema.org/draft/2020-12/schema',
+                properties: {
+                    nodes: {
+                        type: 'array',
+                        items: {
+                            $defs: {
+                                node: {
+                                    properties: {
+                                        id: { type: ['string', 'null'] },
+                                        label: { type: 'string', default: 'fallback' },
+                                        weight: { type: 'number', exclusiveMinimum: 0 },
+                                    },
+                                    required: ['id'],
+                                    additionalProperties: false,
+                                },
+                            },
+                            $ref: '#/$defs/node',
+                        },
+                    },
+                },
+                required: ['nodes'],
+                additionalProperties: false,
+            },
+        });
+
+        expect(declaration).toEqual({
+            name: 'memory_graph_upsert',
+            description: 'Upsert memory graph nodes',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    nodes: {
+                        type: 'ARRAY',
+                        items: {
+                            type: 'OBJECT',
+                            properties: {
+                                id: {
+                                    type: 'STRING',
+                                    nullable: true,
+                                },
+                                label: {
+                                    type: 'STRING',
+                                    default: 'fallback',
+                                },
+                                weight: {
+                                    type: 'NUMBER',
+                                },
+                            },
+                            required: ['id'],
+                        },
+                    },
+                },
+                required: ['nodes'],
+            },
+        });
+    });
+
+    test('should omit empty parameters for Gemini functions', () => {
+        expect(buildGeminiFunctionDeclaration({
+            name: 'ping',
+            parameters: {
+                type: 'object',
+                properties: {},
+            },
+        })).toEqual({ name: 'ping' });
+    });
+});
+
+describe('convertGeminiToolChoice', () => {
+    test('should convert OpenAI tool choice modes to Gemini', () => {
+        expect(convertGeminiToolChoice('none')).toEqual({ mode: 'NONE' });
+        expect(convertGeminiToolChoice('required')).toEqual({ mode: 'ANY' });
+        expect(convertGeminiToolChoice('auto')).toEqual({ mode: 'AUTO' });
+    });
+
+    test('should convert a specific function selection to Gemini', () => {
+        expect(convertGeminiToolChoice({
+            type: 'function',
+            function: {
+                name: 'memory_graph_upsert',
+            },
+        })).toEqual({
+            mode: 'ANY',
+            allowedFunctionNames: ['memory_graph_upsert'],
+        });
     });
 });
 

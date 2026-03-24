@@ -27,6 +27,8 @@ import {
     color,
     trimTrailingSlash,
     flattenSchema,
+    buildGeminiFunctionDeclaration,
+    convertGeminiToolChoice,
 } from '../../util.js';
 import {
     convertClaudeMessages,
@@ -551,19 +553,32 @@ async function sendMakerSuiteRequest(request, response) {
             const customTools = [];
             for (const tool of request.body.tools) {
                 if (tool.type === 'function') {
-                    if (tool.function.parameters?.$schema) {
-                        delete tool.function.parameters.$schema;
+                    const functionDeclaration = buildGeminiFunctionDeclaration(tool.function);
+                    if (functionDeclaration) {
+                        functionDeclarations.push(functionDeclaration);
                     }
-                    if (tool.function.parameters?.properties && Object.keys(tool.function.parameters.properties).length === 0) {
-                        delete tool.function.parameters;
-                    }
-                    functionDeclarations.push(tool.function);
                 } else if (tool[tool.type]) {
-                    customTools.push({ [tool.type]: tool[tool.type] });
+                    switch (tool.type) {
+                        case 'google_search':
+                        case 'googleSearch':
+                            customTools.push({ googleSearch: tool[tool.type] });
+                            break;
+                        case 'code_execution':
+                        case 'codeExecution':
+                            customTools.push({ codeExecution: tool[tool.type] });
+                            break;
+                        case 'url_context':
+                        case 'urlContext':
+                            customTools.push({ urlContext: tool[tool.type] });
+                            break;
+                        default:
+                            customTools.push({ [tool.type]: tool[tool.type] });
+                            break;
+                    }
                 }
             }
             if (functionDeclarations.length > 0) {
-                tools.push({ function_declarations: functionDeclarations });
+                tools.push({ functionDeclarations });
             }
             // Custom tools are only supported when no function calling is present
             if (functionDeclarations.length === 0 && customTools.length > 0) {
@@ -573,8 +588,8 @@ async function sendMakerSuiteRequest(request, response) {
 
         if (enableWebSearch && !enableImageModality && !isGemma && !isLearnLM && !noSearchModels.includes(model)) {
             // Tool use with function calling is unsupported
-            if (!tools.some(t => t.function_declarations)) {
-                tools.push({ google_search: {} });
+            if (!tools.some(t => Array.isArray(t.functionDeclarations) && t.functionDeclarations.length > 0)) {
+                tools.push({ googleSearch: {} });
             }
         }
 
@@ -612,31 +627,12 @@ async function sendMakerSuiteRequest(request, response) {
         if (tools.length) {
             body.tools = tools;
 
-            const toolChoice = request.body.tool_choice;
-            let functionCallingConfig;
+            const hasFunctionDeclarations = tools.some(tool => Array.isArray(tool.functionDeclarations) && tool.functionDeclarations.length > 0);
+            const functionCallingConfig = hasFunctionDeclarations
+                ? convertGeminiToolChoice(request.body.tool_choice)
+                : null;
 
-            // Translate OpenAI's `tool_choice` to Gemini's `functionCallingConfig`
-            if (typeof toolChoice === 'string') {
-                switch (toolChoice) {
-                    case 'none':
-                        functionCallingConfig = { mode: 'NONE' };
-                        break;
-                    case 'required':
-                        functionCallingConfig = { mode: 'ANY' };
-                        break;
-                    case 'auto':
-                        functionCallingConfig = { mode: 'AUTO' };
-                        break;
-                }
-            } else if (typeof toolChoice === 'object' && toolChoice?.function?.name) {
-                // Force a specific function call
-                functionCallingConfig = {
-                    mode: 'ANY',
-                    allowedFunctionNames: [toolChoice.function.name],
-                };
-            }
-
-            if (functionCallingConfig) {
+            if (hasFunctionDeclarations && functionCallingConfig) {
                 body.toolConfig = { functionCallingConfig };
             }
         }

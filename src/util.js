@@ -1634,49 +1634,281 @@ export function flattenSchema(schema, api) {
         return schema;
     }
 
-    const schemaCopy = structuredClone(schema);
     const isGoogleApi = [CHAT_COMPLETION_SOURCES.VERTEXAI, CHAT_COMPLETION_SOURCES.MAKERSUITE].includes(api);
+    const flattenedSchema = resolveSchemaReferences(
+        schema,
+        isGoogleApi ? { dropKeys: ['default', 'additionalProperties', 'exclusiveMinimum', 'propertyNames'] } : {},
+    );
+    delete flattenedSchema.$schema;
+    return flattenedSchema;
+}
 
-    const definitions = schemaCopy.$defs || {};
-    delete schemaCopy.$defs;
+const GEMINI_FUNCTION_SCHEMA_ALLOWED_FIELDS = new Set([
+    'anyOf',
+    'default',
+    'description',
+    'enum',
+    'example',
+    'format',
+    'items',
+    'maxItems',
+    'maxLength',
+    'maxProperties',
+    'maximum',
+    'minItems',
+    'minLength',
+    'minProperties',
+    'minimum',
+    'nullable',
+    'pattern',
+    'properties',
+    'propertyOrdering',
+    'required',
+    'title',
+    'type',
+]);
 
-    function resolve(obj, parents = []) {
+const GEMINI_FUNCTION_SCHEMA_MAX_DEPTH = 64;
+
+function resolveSchemaReferences(schema, { dropKeys = [] } = {}) {
+    if (!schema || typeof schema !== 'object') {
+        return schema;
+    }
+
+    const schemaCopy = structuredClone(schema);
+    const droppedKeys = new Set(dropKeys);
+
+    function resolve(obj, definitions = {}, parents = []) {
         if (!obj || typeof obj !== 'object') {
             return obj;
         }
         if (Array.isArray(obj)) {
-            return obj.map(item => resolve(item, parents));
+            return obj.map(item => resolve(item, definitions, parents));
         }
 
-        // 1. Resolve $refs first
+        const localDefinitions = obj.$defs && typeof obj.$defs === 'object' && !Array.isArray(obj.$defs)
+            ? { ...definitions, ...obj.$defs }
+            : definitions;
+
         if (obj.$ref?.startsWith('#/$defs/')) {
             const defName = obj.$ref.split('/').pop();
-            if (parents.includes(defName)) return {}; // Prevent infinite recursion
-            if (definitions[defName]) {
-                return resolve(structuredClone(definitions[defName]), [...parents, defName]);
+            if (parents.includes(defName)) {
+                return {};
             }
-            return {}; // Broken reference
+            if (localDefinitions[defName]) {
+                return resolve(structuredClone(localDefinitions[defName]), localDefinitions, [...parents, defName]);
+            }
+            return {};
         }
 
-        // 2. Process the object's properties
         const result = {};
-        for (const key in obj) {
-            if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
-
-            // For Google, filter unsupported top-level keywords
-            if (isGoogleApi && ['default', 'additionalProperties', 'exclusiveMinimum', 'propertyNames'].includes(key)) {
+        for (const key of Object.keys(obj)) {
+            if (key === '$defs' || droppedKeys.has(key)) {
                 continue;
             }
-
-            result[key] = resolve(obj[key], parents);
+            result[key] = resolve(obj[key], localDefinitions, parents);
         }
 
         return result;
     }
 
-    const flattenedSchema = resolve(schemaCopy);
-    delete flattenedSchema.$schema;
-    return flattenedSchema;
+    return resolve(schemaCopy);
+}
+
+function normalizeGeminiSchemaTypeAndNullable(schema) {
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+        return;
+    }
+
+    const normalizeType = (value) => {
+        switch (String(value || '').trim().toLowerCase()) {
+            case 'object':
+                return { type: 'OBJECT', nullable: false };
+            case 'array':
+                return { type: 'ARRAY', nullable: false };
+            case 'string':
+                return { type: 'STRING', nullable: false };
+            case 'integer':
+                return { type: 'INTEGER', nullable: false };
+            case 'number':
+                return { type: 'NUMBER', nullable: false };
+            case 'boolean':
+                return { type: 'BOOLEAN', nullable: false };
+            case 'null':
+                return { type: '', nullable: true };
+            default:
+                return { type: String(value || '').trim(), nullable: false };
+        }
+    };
+
+    if (typeof schema.type === 'string') {
+        const normalized = normalizeType(schema.type);
+        if (normalized.nullable) {
+            schema.nullable = true;
+            delete schema.type;
+        } else if (normalized.type) {
+            schema.type = normalized.type;
+        }
+    } else if (Array.isArray(schema.type)) {
+        let chosenType = '';
+        let nullable = false;
+
+        for (const item of schema.type) {
+            const normalized = normalizeType(item);
+            if (normalized.nullable) {
+                nullable = true;
+                continue;
+            }
+            if (!chosenType && normalized.type) {
+                chosenType = normalized.type;
+            }
+        }
+
+        if (nullable) {
+            schema.nullable = true;
+        }
+        if (chosenType) {
+            schema.type = chosenType;
+        } else {
+            delete schema.type;
+        }
+    }
+
+    const properties = schema.properties;
+    if (!schema.type && properties && typeof properties === 'object' && !Array.isArray(properties) && Object.keys(properties).length > 0) {
+        schema.type = 'OBJECT';
+    }
+
+    if (!schema.type && schema.items !== undefined) {
+        schema.type = 'ARRAY';
+    }
+}
+
+function cleanGeminiFunctionParametersWithDepth(params, depth = 0) {
+    if (params === null || params === undefined) {
+        return null;
+    }
+
+    if (depth >= GEMINI_FUNCTION_SCHEMA_MAX_DEPTH) {
+        return Array.isArray(params) ? [] : {};
+    }
+
+    if (Array.isArray(params)) {
+        return params.map(item => cleanGeminiFunctionParametersWithDepth(item, depth + 1));
+    }
+
+    if (typeof params !== 'object') {
+        return params;
+    }
+
+    const cleaned = {};
+    for (const [key, value] of Object.entries(params)) {
+        if (!GEMINI_FUNCTION_SCHEMA_ALLOWED_FIELDS.has(key)) {
+            continue;
+        }
+        cleaned[key] = value;
+    }
+
+    normalizeGeminiSchemaTypeAndNullable(cleaned);
+
+    if (cleaned.properties && typeof cleaned.properties === 'object' && !Array.isArray(cleaned.properties)) {
+        const properties = {};
+        for (const [key, value] of Object.entries(cleaned.properties)) {
+            properties[key] = cleanGeminiFunctionParametersWithDepth(value, depth + 1);
+        }
+        cleaned.properties = properties;
+    }
+
+    if (cleaned.items && typeof cleaned.items === 'object' && !Array.isArray(cleaned.items)) {
+        cleaned.items = cleanGeminiFunctionParametersWithDepth(cleaned.items, depth + 1);
+    } else if (Array.isArray(cleaned.items)) {
+        cleaned.items = cleaned.items.length > 0
+            ? cleanGeminiFunctionParametersWithDepth(cleaned.items[0], depth + 1)
+            : undefined;
+    }
+
+    if (Array.isArray(cleaned.anyOf)) {
+        cleaned.anyOf = cleaned.anyOf.map(item => cleanGeminiFunctionParametersWithDepth(item, depth + 1));
+    }
+
+    normalizeGeminiSchemaTypeAndNullable(cleaned);
+
+    if (Array.isArray(cleaned.required) && cleaned.required.length === 0) {
+        delete cleaned.required;
+    }
+
+    if (cleaned.items === undefined) {
+        delete cleaned.items;
+    }
+
+    return cleaned;
+}
+
+function hasGeminiParameterProperties(schema) {
+    const properties = schema?.properties;
+    return Boolean(properties && typeof properties === 'object' && !Array.isArray(properties) && Object.keys(properties).length > 0);
+}
+
+/**
+ * Converts an OpenAI-style function definition into a Gemini function declaration.
+ * @param {object} fn Function definition.
+ * @returns {object|null} Gemini-compatible function declaration.
+ */
+export function buildGeminiFunctionDeclaration(fn) {
+    const name = String(fn?.name || '').trim();
+    if (!name) {
+        return null;
+    }
+
+    const declaration = { name };
+    const description = String(fn?.description || '').trim();
+    if (description) {
+        declaration.description = description;
+    }
+
+    const resolvedParameters = resolveSchemaReferences(fn?.parameters ?? null);
+    const cleanedParameters = cleanGeminiFunctionParametersWithDepth(resolvedParameters, 0);
+    if (cleanedParameters && typeof cleanedParameters === 'object' && hasGeminiParameterProperties(cleanedParameters)) {
+        declaration.parameters = cleanedParameters;
+    }
+
+    return declaration;
+}
+
+/**
+ * Converts OpenAI tool choice to Gemini functionCallingConfig.
+ * @param {any} toolChoice OpenAI-style tool choice.
+ * @returns {object|null} Gemini-compatible functionCallingConfig.
+ */
+export function convertGeminiToolChoice(toolChoice) {
+    if (toolChoice === null || toolChoice === undefined) {
+        return null;
+    }
+
+    if (typeof toolChoice === 'string') {
+        switch (toolChoice) {
+            case 'none':
+                return { mode: 'NONE' };
+            case 'required':
+                return { mode: 'ANY' };
+            case 'auto':
+                return { mode: 'AUTO' };
+            default:
+                return null;
+        }
+    }
+
+    if (typeof toolChoice === 'object') {
+        const selectedName = String(toolChoice?.function?.name || toolChoice?.name || '').trim();
+        if (selectedName) {
+            return {
+                mode: 'ANY',
+                allowedFunctionNames: [selectedName],
+            };
+        }
+    }
+
+    return null;
 }
 
 /**
