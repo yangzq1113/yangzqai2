@@ -784,14 +784,7 @@ async function renderDetailsContent(detailsContent) {
     }
 
     profiles.addEventListener('change', async function () {
-        const selectedProfile = profiles.selectedOptions[0];
-        if (!selectedProfile) {
-            // Safety net for preventing the command getting stuck
-            await eventSource.emit(event_types.CONNECTION_PROFILE_LOADED, NONE);
-            return;
-        }
-
-        const profileId = selectedProfile.value;
+        const profileId = String(profiles.value || '');
         extension_settings.connectionManager.selectedProfile = profileId;
         saveSettingsDebounced();
         await renderDetailsContent(detailsContent);
