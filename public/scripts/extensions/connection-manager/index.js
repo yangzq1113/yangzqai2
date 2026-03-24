@@ -783,7 +783,7 @@ async function renderDetailsContent(detailsContent) {
         });
     }
 
-    profiles.addEventListener('change', async function () {
+    $(profiles).on('change', async function () {
         const profileId = String(profiles.value || '');
         extension_settings.connectionManager.selectedProfile = profileId;
         saveSettingsDebounced();
