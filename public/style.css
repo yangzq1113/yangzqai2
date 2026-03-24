@@ -5884,14 +5884,15 @@ body:not(.movingUI) .drawer-content.maximized {
 
 #openai_api-presets .preset_manager_select_row {
     align-items: center;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+    row-gap: 6px;
     min-width: 0;
 }
 
 #openai_api-presets .preset_manager_select_row > select,
 #openai_api-presets .preset_manager_select_row > .select2-container {
-    flex: 1 1 0;
-    min-width: 0;
+    flex: 1 1 16rem;
+    min-width: min(100%, 16rem);
 }
 
 #openai_api-presets .preset_manager_select_row > .select2-container {
@@ -5905,6 +5906,7 @@ body:not(.movingUI) .drawer-content.maximized {
 
 #openai_api-presets .preset_manager_select_actions {
     align-items: center;
+    margin-left: auto;
 }
 
 .openai_restorable .right_menu_button img {
@@ -5913,6 +5915,30 @@ body:not(.movingUI) .drawer-content.maximized {
 
 #openai_api-presets {
     flex-direction: column;
+    container-type: inline-size;
+}
+
+@container (max-width: 27rem) {
+    #openai_api-presets .preset_manager_select_row > select,
+    #openai_api-presets .preset_manager_select_row > .select2-container {
+        flex-basis: 100%;
+    }
+
+    #openai_api-presets .preset_manager_select_row > .select2-container {
+        width: 100% !important;
+    }
+
+    #openai_api-presets .preset_manager_select_row > .luker-char-bound-preset-badge {
+        margin-left: 0;
+        max-width: 100%;
+    }
+
+    #openai_api-presets .preset_manager_select_actions {
+        flex: 0 0 100%;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        margin-left: 0;
+    }
 }
 
 #ReverseProxyWarningMessage {

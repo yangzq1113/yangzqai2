@@ -398,6 +398,9 @@ function registerPresetManagers() {
                 onDelete: async ({ text }) => {
                     await primaryManager.deletePresetInteractive(text);
                 },
+                select2Options: {
+                    width: '100%',
+                },
             });
         }
     });

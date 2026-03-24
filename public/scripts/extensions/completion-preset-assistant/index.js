@@ -3539,7 +3539,7 @@ async function openAssistantPopup({ targetRef: explicitTargetRef = null, liveSna
 }
 
 function ensureOpenAiToolbarButton() {
-    const toolbar = jQuery('#openai_api-presets .flex-container.marginLeft5.gap3px').first();
+    const toolbar = jQuery('#openai_api-presets .preset_manager_select_actions').first();
     if (!toolbar.length || toolbar.find(`#${OPENAI_BUTTON_ID}`).length) {
         return;
     }
