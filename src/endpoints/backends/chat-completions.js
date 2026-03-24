@@ -19,16 +19,18 @@ import {
 } from '../../constants.js';
 import {
     forwardFetchResponse,
+    buildClaudeTool,
+    buildGeminiFunctionDeclaration,
+    color,
+    convertClaudeToolChoice,
+    convertGeminiToolChoice,
+    excludeKeysByYaml,
     getConfigValue,
+    mergeObjectWithYaml,
+    flattenSchema,
+    trimTrailingSlash,
     tryParse,
     uuidv4,
-    mergeObjectWithYaml,
-    excludeKeysByYaml,
-    color,
-    trimTrailingSlash,
-    flattenSchema,
-    buildGeminiFunctionDeclaration,
-    convertGeminiToolChoice,
 } from '../../util.js';
 import {
     convertClaudeMessages,
@@ -306,28 +308,38 @@ async function sendClaudeRequest(request, response) {
         } else {
             delete requestBody.system;
         }
-        if (useTools) {
-            betaHeaders.push('tools-2024-05-16');
-            requestBody.tool_choice = { type: request.body.tool_choice };
-            requestBody.tools = request.body.tools
-                .filter(tool => tool.type === 'function')
-                .map(tool => tool.function)
-                .map(fn => ({ name: fn.name, description: fn.description, input_schema: flattenSchema(fn.parameters, request.body.chat_completion_source) }));
 
-            if (enableSystemPromptCache && requestBody.tools.length) {
-                requestBody.tools[requestBody.tools.length - 1]['cache_control'] = { type: 'ephemeral', ttl: cacheTTL };
+        const functionTools = useTools
+            ? request.body.tools
+                .filter(tool => tool.type === 'function')
+                .map(tool => buildClaudeTool(tool))
+                .filter(Boolean)
+            : [];
+
+        if (enableSystemPromptCache && functionTools.length) {
+            functionTools[functionTools.length - 1]['cache_control'] = { type: 'ephemeral', ttl: cacheTTL };
+        }
+
+        if (functionTools.length) {
+            requestBody.tools = functionTools;
+
+            const toolChoice = convertClaudeToolChoice(request.body.tool_choice, request.body.parallel_tool_calls);
+            if (toolChoice) {
+                requestBody.tool_choice = toolChoice;
             }
         }
 
         // Structured output is a forced tool
         if (request.body.json_schema) {
-            const jsonTool = {
+            const jsonTool = buildClaudeTool({
                 name: request.body.json_schema.name,
                 description: request.body.json_schema.description || 'Well-formed JSON object',
-                input_schema: request.body.json_schema.value,
-            };
-            requestBody.tools = [...(requestBody.tools || []), jsonTool];
-            requestBody.tool_choice = { type: 'tool', name: request.body.json_schema.name };
+                parameters: request.body.json_schema.value,
+            });
+            if (jsonTool) {
+                requestBody.tools = [...(requestBody.tools || []), jsonTool];
+                requestBody.tool_choice = { type: 'tool', name: jsonTool.name };
+            }
         }
 
         if (useWebSearch) {
@@ -336,6 +348,10 @@ async function sendClaudeRequest(request, response) {
                 'name': 'web_search',
             }];
             requestBody.tools = [...webSearchTool, ...(requestBody.tools || [])];
+        }
+
+        if (requestBody.tools?.length) {
+            betaHeaders.push('tools-2024-05-16');
         }
 
         if (cachingAtDepth !== -1) {

@@ -2,7 +2,9 @@ import { describe, test, expect } from '@jest/globals';
 import path from 'node:path';
 import { CHAT_COMPLETION_SOURCES } from '../src/constants';
 import {
+    buildClaudeTool,
     buildGeminiFunctionDeclaration,
+    convertClaudeToolChoice,
     convertGeminiToolChoice,
     deepMerge,
     findNameMatch,
@@ -205,6 +207,88 @@ describe('convertGeminiToolChoice', () => {
         })).toEqual({
             mode: 'ANY',
             allowedFunctionNames: ['memory_graph_upsert'],
+        });
+    });
+});
+
+describe('buildClaudeTool', () => {
+    test('should normalize Claude tool schemas and remove empty required', () => {
+        const tool = buildClaudeTool({
+            type: 'function',
+            function: {
+                name: 'memory_graph_upsert',
+                description: 'Upsert memory graph nodes',
+                parameters: {
+                    $schema: 'https://json-schema.org/draft/2020-12/schema',
+                    $defs: {
+                        node_id: { type: 'string' },
+                    },
+                    properties: {
+                        id: { $ref: '#/$defs/node_id' },
+                        metadata: {
+                            properties: {
+                                weight: { type: 'number' },
+                            },
+                        },
+                    },
+                    additionalProperties: false,
+                    required: [],
+                },
+            },
+        });
+
+        expect(tool).toEqual({
+            name: 'memory_graph_upsert',
+            description: 'Upsert memory graph nodes',
+            input_schema: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' },
+                    metadata: {
+                        type: 'object',
+                        properties: {
+                            weight: { type: 'number' },
+                        },
+                    },
+                },
+                additionalProperties: false,
+            },
+        });
+    });
+
+    test('should default Claude tools to an empty object schema', () => {
+        expect(buildClaudeTool({
+            name: 'ping',
+        })).toEqual({
+            name: 'ping',
+            input_schema: {
+                type: 'object',
+                properties: {},
+            },
+        });
+    });
+});
+
+describe('convertClaudeToolChoice', () => {
+    test('should convert Claude tool choice modes and parallel control', () => {
+        expect(convertClaudeToolChoice('auto')).toEqual({ type: 'auto' });
+        expect(convertClaudeToolChoice('required', false)).toEqual({
+            type: 'any',
+            disable_parallel_tool_use: true,
+        });
+        expect(convertClaudeToolChoice('none', false)).toEqual({ type: 'none' });
+    });
+
+    test('should convert a specific Claude function selection', () => {
+        expect(convertClaudeToolChoice({
+            type: 'function',
+            function: {
+                name: 'memory_graph_upsert',
+            },
+        }, true)).toEqual({
+            type: 'tool',
+            name: 'memory_graph_upsert',
+            disable_parallel_tool_use: false,
         });
     });
 });

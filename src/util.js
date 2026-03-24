@@ -1911,6 +1911,141 @@ export function convertGeminiToolChoice(toolChoice) {
     return null;
 }
 
+function buildClaudeInputSchema(parameters) {
+    const resolvedSchema = resolveSchemaReferences(parameters ?? { type: 'object', properties: {} });
+    const schema = resolvedSchema && typeof resolvedSchema === 'object' && !Array.isArray(resolvedSchema)
+        ? resolvedSchema
+        : { type: 'object', properties: {} };
+
+    delete schema.$schema;
+    normalizeClaudeSchemaTypes(schema);
+
+    if (!schema.type && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+        schema.type = 'object';
+    }
+
+    if (!schema.properties || typeof schema.properties !== 'object' || Array.isArray(schema.properties)) {
+        schema.properties = {};
+    }
+
+    if (!Array.isArray(schema.required) || schema.required.length === 0) {
+        delete schema.required;
+    }
+
+    return schema;
+}
+
+function normalizeClaudeSchemaTypes(schema) {
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+        return;
+    }
+
+    if (!schema.type && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+        schema.type = 'object';
+    }
+
+    if (!schema.type && schema.items !== undefined) {
+        schema.type = 'array';
+    }
+
+    if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+        for (const value of Object.values(schema.properties)) {
+            normalizeClaudeSchemaTypes(value);
+        }
+    }
+
+    if (schema.items && typeof schema.items === 'object') {
+        if (Array.isArray(schema.items)) {
+            for (const item of schema.items) {
+                normalizeClaudeSchemaTypes(item);
+            }
+        } else {
+            normalizeClaudeSchemaTypes(schema.items);
+        }
+    }
+
+    for (const key of ['anyOf', 'allOf', 'oneOf']) {
+        if (Array.isArray(schema[key])) {
+            for (const item of schema[key]) {
+                normalizeClaudeSchemaTypes(item);
+            }
+        }
+    }
+
+    if (Array.isArray(schema.required) && schema.required.length === 0) {
+        delete schema.required;
+    }
+}
+
+/**
+ * Converts an OpenAI-style function definition into a Claude tool definition.
+ * @param {object} fnOrTool Function or tool definition.
+ * @returns {object|null} Claude-compatible tool definition.
+ */
+export function buildClaudeTool(fnOrTool) {
+    const fn = fnOrTool?.function && typeof fnOrTool.function === 'object' ? fnOrTool.function : fnOrTool;
+    const name = String(fn?.name || '').trim();
+    if (!name) {
+        return null;
+    }
+
+    const tool = {
+        name,
+        input_schema: buildClaudeInputSchema(fn?.parameters),
+    };
+
+    const description = String(fn?.description || '').trim();
+    if (description) {
+        tool.description = description;
+    }
+
+    return tool;
+}
+
+/**
+ * Converts OpenAI tool choice to Anthropic Claude tool_choice.
+ * @param {any} toolChoice OpenAI-style tool choice.
+ * @param {boolean|null|undefined} parallelToolCalls Whether parallel tool calls are allowed.
+ * @returns {object|null} Claude-compatible tool choice.
+ */
+export function convertClaudeToolChoice(toolChoice, parallelToolCalls = undefined) {
+    let claudeToolChoice = null;
+
+    if (typeof toolChoice === 'string') {
+        switch (toolChoice) {
+            case 'auto':
+                claudeToolChoice = { type: 'auto' };
+                break;
+            case 'required':
+                claudeToolChoice = { type: 'any' };
+                break;
+            case 'none':
+                claudeToolChoice = { type: 'none' };
+                break;
+        }
+    } else if (toolChoice && typeof toolChoice === 'object') {
+        const selectedName = String(toolChoice?.function?.name || toolChoice?.name || '').trim();
+        if (selectedName) {
+            claudeToolChoice = {
+                type: 'tool',
+                name: selectedName,
+            };
+        }
+    }
+
+    if (parallelToolCalls !== undefined && parallelToolCalls !== null) {
+        if (!claudeToolChoice) {
+            claudeToolChoice = { type: 'auto' };
+        }
+
+        if (claudeToolChoice.type !== 'none') {
+            claudeToolChoice.disable_parallel_tool_use = !Boolean(parallelToolCalls);
+        }
+    }
+
+    return claudeToolChoice;
+}
+
 /**
  * Writes to a file, creating it's parent directories if needed.
  * @param {string} filePath
