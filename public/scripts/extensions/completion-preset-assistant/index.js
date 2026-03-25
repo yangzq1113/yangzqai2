@@ -38,7 +38,6 @@ const SESSION_VERSION = 3;
 const SESSION_STORE_VERSION = 1;
 const JOURNAL_VERSION = 1;
 const TOOL_CALL_RETRY_MAX = 10;
-const HELPER_TOOL_CHAIN_HARD_LIMIT = 4;
 const SESSION_MESSAGE_LIMIT_MIN = 8;
 const SESSION_MESSAGE_LIMIT_MAX = 48;
 const JSON_TEXTDIFF_MIN_LENGTH = 80;
@@ -2128,7 +2127,7 @@ async function requestPresetAssistantReply(dialogState, userText, {
     const helperTurnMessages = [];
     let lastAssistantText = '';
 
-    for (let round = 1; round <= HELPER_TOOL_CHAIN_HARD_LIMIT; round += 1) {
+    for (let round = 1; ; round += 1) {
         throwIfAborted(abortSignal, 'Preset assistant request aborted.');
         const promptMessages = await buildPresetAwareMessages(
             dialogState.context,
@@ -2208,7 +2207,6 @@ async function requestPresetAssistantReply(dialogState, userText, {
         }));
     }
 
-    throw new Error(`Preset assistant helper chain exceeded internal safety limit (${HELPER_TOOL_CHAIN_HARD_LIMIT}).`);
 }
 
 async function requestToolCallsWithRetry(settings, promptMessages, {

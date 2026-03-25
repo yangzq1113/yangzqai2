@@ -41,7 +41,6 @@ const TOOL_NAMES = Object.freeze({
     GET_ENTRIES: 'luker_card_get_lorebook_entries',
     SIMULATE_PROMPT: 'luker_card_simulate_prompt',
 });
-const CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT = 12;
 const CHARACTER_EDITOR_QUERY_LIMIT_DEFAULT = 10;
 const CHARACTER_EDITOR_QUERY_LIMIT_MAX = 20;
 const CHARACTER_EDITOR_DETAIL_LIMIT_MAX = 10;
@@ -4212,7 +4211,7 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
     const helperTurnMessages = [];
     let lastAssistantText = '';
 
-    for (let round = 1; round <= CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT; round++) {
+    for (let round = 1; ; round++) {
         throwIfAborted(abortSignal, 'Character editor request aborted.');
         const userPrompt = [
             'Character editor conversation payload:',
@@ -4306,7 +4305,6 @@ async function requestModelCharacterEditorConversationReply(context, conversatio
         appendStandardToolRoundMessages(runtimeToolMessages, executedHelperCalls, lastAssistantText);
     }
 
-    throw new Error(`Character editor search chain exceeded internal safety limit (${CHARACTER_EDITOR_SEARCH_CHAIN_HARD_LIMIT}).`);
 }
 
 function buildCharacterFieldsDiffPreview(operation, draftCharacter) {

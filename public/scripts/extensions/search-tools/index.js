@@ -26,7 +26,6 @@ const MANAGED_COMMENT_PREFIX = 'SEARCH_TOOLS';
 const SEARCH_CHAT_STATE_NAMESPACE = 'luker_search_tools_state';
 const SEARCH_CHAT_STATE_VERSION = 3;
 const SEARCH_CHAT_CONTENT_NAMESPACE_PREFIX = `${SEARCH_CHAT_STATE_NAMESPACE}_anchor_`;
-const AGENT_TOOL_CHAIN_HARD_LIMIT = 12;
 const ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
 const REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
 const TOOL_NAMES = Object.freeze({
@@ -2750,10 +2749,6 @@ async function runPreRequestSearchAgent(context, settings, payload) {
 
         if (!isFinalStage && hasSourceGatheringCalls && !hasLorebookMutationCalls) {
             helperOnlyChainSteps += 1;
-            if (helperOnlyChainSteps >= AGENT_TOOL_CHAIN_HARD_LIMIT) {
-                console.warn(`[${MODULE_NAME}] Search agent helper chain exceeded internal safety limit (${AGENT_TOOL_CHAIN_HARD_LIMIT}). Forcing final stage.`);
-                phaseIndex = searchRoundCount + 1;
-            }
             continue;
         }
 
