@@ -118,51 +118,83 @@ function buildHumanReadableParameterDetails(schema) {
         lines.push(`Schema rules: additionalProperties=${stringifyPromptValue(safeSchema.additionalProperties)}`);
     }
 
-    for (const [fieldName, fieldSchemaRaw] of Object.entries(properties)) {
-        const fieldSchema = fieldSchemaRaw && typeof fieldSchemaRaw === 'object' ? fieldSchemaRaw : {};
-        const constraints = {};
-        for (const key of [
-            'minimum',
-            'maximum',
-            'exclusiveMinimum',
-            'exclusiveMaximum',
-            'minLength',
-            'maxLength',
-            'pattern',
-            'format',
-            'minItems',
-            'maxItems',
-            'uniqueItems',
-        ]) {
-            if (Object.hasOwn(fieldSchema, key)) {
-                constraints[key] = fieldSchema[key];
+    const appendPropertyDetails = (currentProperties, currentRequiredSet, pathPrefix = '') => {
+        for (const [fieldName, fieldSchemaRaw] of Object.entries(currentProperties || {})) {
+            const fieldSchema = fieldSchemaRaw && typeof fieldSchemaRaw === 'object' ? fieldSchemaRaw : {};
+            const fullPath = pathPrefix ? `${pathPrefix}.${fieldName}` : fieldName;
+            const constraints = {};
+            for (const key of [
+                'minimum',
+                'maximum',
+                'exclusiveMinimum',
+                'exclusiveMaximum',
+                'minLength',
+                'maxLength',
+                'pattern',
+                'format',
+                'minItems',
+                'maxItems',
+                'uniqueItems',
+            ]) {
+                if (Object.hasOwn(fieldSchema, key)) {
+                    constraints[key] = fieldSchema[key];
+                }
+            }
+            const itemSchema = fieldSchema.items && typeof fieldSchema.items === 'object'
+                ? fieldSchema.items
+                : null;
+            if (fieldSchema.type === 'array' && itemSchema?.type) {
+                constraints['items.type'] = itemSchema.type;
+            }
+
+            lines.push(`- ${fullPath}:`);
+            lines.push(`  - type: ${formatSchemaTypeLabel(fieldSchema.type)}`);
+            lines.push(`  - required: ${currentRequiredSet.has(fieldName) ? 'Yes' : 'No'}`);
+            if (fieldSchema.description) {
+                lines.push(`  - description: ${String(fieldSchema.description)}`);
+            }
+            if (Object.hasOwn(fieldSchema, 'enum')) {
+                lines.push(`  - enum: ${stringifyPromptValue(fieldSchema.enum)}`);
+            }
+            if (Object.hasOwn(fieldSchema, 'default')) {
+                lines.push(`  - default: ${stringifyPromptValue(fieldSchema.default)}`);
+            }
+            if (Object.hasOwn(fieldSchema, 'examples')) {
+                lines.push(`  - examples: ${stringifyPromptValue(fieldSchema.examples)}`);
+            } else if (Object.hasOwn(fieldSchema, 'example')) {
+                lines.push(`  - example: ${stringifyPromptValue(fieldSchema.example)}`);
+            }
+            if (Object.keys(constraints).length > 0) {
+                lines.push(`  - constraints: ${stringifyPromptValue(constraints)}`);
+            }
+
+            const nestedProperties = fieldSchema.properties && typeof fieldSchema.properties === 'object'
+                ? fieldSchema.properties
+                : null;
+            if (nestedProperties) {
+                const nestedRequiredSet = new Set(
+                    Array.isArray(fieldSchema.required)
+                        ? fieldSchema.required.map(item => String(item || '').trim()).filter(Boolean)
+                        : [],
+                );
+                appendPropertyDetails(nestedProperties, nestedRequiredSet, fullPath);
+            }
+
+            const itemProperties = itemSchema?.properties && typeof itemSchema.properties === 'object'
+                ? itemSchema.properties
+                : null;
+            if (fieldSchema.type === 'array' && itemProperties) {
+                const nestedRequiredSet = new Set(
+                    Array.isArray(itemSchema.required)
+                        ? itemSchema.required.map(item => String(item || '').trim()).filter(Boolean)
+                        : [],
+                );
+                appendPropertyDetails(itemProperties, nestedRequiredSet, `${fullPath}[]`);
             }
         }
-        if (fieldSchema.type === 'array' && fieldSchema.items && typeof fieldSchema.items === 'object' && fieldSchema.items.type) {
-            constraints['items.type'] = fieldSchema.items.type;
-        }
+    };
 
-        lines.push(`- ${fieldName}:`);
-        lines.push(`  - type: ${formatSchemaTypeLabel(fieldSchema.type)}`);
-        lines.push(`  - required: ${requiredSet.has(fieldName) ? 'Yes' : 'No'}`);
-        if (fieldSchema.description) {
-            lines.push(`  - description: ${String(fieldSchema.description)}`);
-        }
-        if (Object.hasOwn(fieldSchema, 'enum')) {
-            lines.push(`  - enum: ${stringifyPromptValue(fieldSchema.enum)}`);
-        }
-        if (Object.hasOwn(fieldSchema, 'default')) {
-            lines.push(`  - default: ${stringifyPromptValue(fieldSchema.default)}`);
-        }
-        if (Object.hasOwn(fieldSchema, 'examples')) {
-            lines.push(`  - examples: ${stringifyPromptValue(fieldSchema.examples)}`);
-        } else if (Object.hasOwn(fieldSchema, 'example')) {
-            lines.push(`  - example: ${stringifyPromptValue(fieldSchema.example)}`);
-        }
-        if (Object.keys(constraints).length > 0) {
-            lines.push(`  - constraints: ${stringifyPromptValue(constraints)}`);
-        }
-    }
+    appendPropertyDetails(properties, requiredSet);
 
     return lines.join('\n') || '(no parameter details)';
 }
