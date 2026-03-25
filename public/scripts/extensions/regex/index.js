@@ -2194,9 +2194,24 @@ function notifyReloadCurrentChat(presetName) {
         });
 }
 
-async function checkPresetEmbeddedRegexScripts() {
+async function checkPresetEmbeddedRegexScripts(event = {}) {
     const apiId = getCurrentPresetAPI();
     const name = getCurrentPresetName();
+    const eventApiId = String(event?.apiId || '').trim();
+    const eventName = String(event?.name || '').trim();
+
+    if (eventApiId) {
+        if (!apiId || !equalsIgnoreCaseAndAccents(eventApiId, apiId)) {
+            return;
+        }
+    }
+
+    if (eventName) {
+        if (!name || !equalsIgnoreCaseAndAccents(eventName, name)) {
+            return;
+        }
+    }
+
     const scripts = getScriptsByType(SCRIPT_TYPES.PRESET);
 
     if (Array.isArray(scripts) && scripts.length > 0) {

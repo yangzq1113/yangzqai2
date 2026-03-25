@@ -1,6 +1,6 @@
 import { DOMPurify, Fuse } from '../../../lib.js';
 
-import { event_types, eventSource, main_api, online_status, saveSettingsDebounced } from '../../../script.js';
+import { CONNECT_API_MAP, event_types, eventSource, main_api, online_status, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from '../../popup.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
@@ -52,7 +52,6 @@ const CC_COMMANDS = [
     'custom-exclude-body',
     'custom-include-headers',
     'secret-id',
-    'regex-preset',
 ];
 
 const TC_COMMANDS = [
@@ -70,7 +69,6 @@ const TC_COMMANDS = [
     'start-reply-with',
     'reasoning-template',
     'secret-id',
-    'regex-preset',
 ];
 
 const FANCY_NAMES = {
@@ -96,7 +94,6 @@ const FANCY_NAMES = {
     'custom-exclude-body': 'Exclude Body Parameters',
     'custom-include-headers': 'Include Request Headers',
     'secret-id': 'Secret',
-    'regex-preset': 'Regex Preset',
 };
 
 /**
@@ -195,7 +192,6 @@ const profilesProvider = () => [
  * @property {string} [sysprompt-state] Use System Prompt
  * @property {string} [api-url] Server URL
  * @property {string} [secret-id] Secret ID
- * @property {string} [regex-preset] Regex Preset ID
  * @property {string[]} [exclude] Commands to exclude
  */
 
@@ -259,6 +255,82 @@ function parseProfileInteger(value) {
     return Math.min(Math.max(Math.round(numeric), 1), 10);
 }
 
+function getCommandsForMode(mode) {
+    return mode === 'cc' ? CC_COMMANDS : TC_COMMANDS;
+}
+
+function resolveProfileMode(profile) {
+    const explicitMode = String(profile?.mode || '').trim().toLowerCase();
+    if (explicitMode === 'cc' || explicitMode === 'tc') {
+        return explicitMode;
+    }
+
+    const apiAlias = String(profile?.api || '').trim().toLowerCase();
+    const selectedApi = String(CONNECT_API_MAP?.[apiAlias]?.selected || '').trim().toLowerCase();
+    if (selectedApi === 'openai') {
+        return 'cc';
+    }
+    if (selectedApi) {
+        return 'tc';
+    }
+
+    return main_api === 'openai' ? 'cc' : 'tc';
+}
+
+function normalizeConnectionProfile(profile) {
+    if (!profile || typeof profile !== 'object') {
+        return false;
+    }
+
+    let mutated = false;
+    const nextMode = resolveProfileMode(profile);
+    if (profile.mode !== nextMode) {
+        profile.mode = nextMode;
+        mutated = true;
+    }
+
+    if (profile['stop-strings'] === '') {
+        delete profile['stop-strings'];
+        mutated = true;
+    }
+
+    if (Object.hasOwn(profile, 'regex-preset')) {
+        delete profile['regex-preset'];
+        mutated = true;
+    }
+
+    const activeCommands = new Set(getCommandsForMode(nextMode));
+    const opposingCommands = (nextMode === 'cc' ? TC_COMMANDS : CC_COMMANDS)
+        .filter(command => !activeCommands.has(command));
+
+    for (const command of opposingCommands) {
+        if (Object.hasOwn(profile, command)) {
+            delete profile[command];
+            mutated = true;
+        }
+    }
+
+    if (!Array.isArray(profile.exclude)) {
+        if (profile.exclude !== undefined) {
+            profile.exclude = [];
+            mutated = true;
+        }
+        return mutated;
+    }
+
+    const nextExclude = profile.exclude.filter(command => activeCommands.has(command));
+    if (nextExclude.length !== profile.exclude.length) {
+        profile.exclude = nextExclude;
+        mutated = true;
+    }
+
+    return mutated;
+}
+
+function getCommandsForProfile(profile) {
+    return getCommandsForMode(resolveProfileMode(profile));
+}
+
 /**
  * Clamps the plain-text retry attempts value.
  * @param {unknown} value
@@ -290,7 +362,7 @@ function setProfileCommandValue(profile, command, value) {
  * @param {boolean} [cleanUp] Whether to clean up the profile
  */
 async function readProfileFromCommands(mode, profile, cleanUp = false) {
-    const commands = mode === 'cc' ? CC_COMMANDS : TC_COMMANDS;
+    const commands = getCommandsForMode(mode);
     const opposingCommands = mode === 'cc' ? TC_COMMANDS : CC_COMMANDS;
     const excludeList = Array.isArray(profile.exclude) ? profile.exclude : [];
     for (const command of commands) {
@@ -465,14 +537,6 @@ function makeFancyProfile(profile) {
             }
         }
 
-        if (key === 'regex-preset') {
-            const label = extension_settings.regex_presets?.find(p => p.id === profile[key])?.name;
-            if (label) {
-                acc[value] = label;
-                return acc;
-            }
-        }
-
         acc[value] = profile[key];
         return acc;
     }, {});
@@ -488,11 +552,16 @@ async function applyConnectionProfile(profile) {
         return;
     }
 
+    const normalized = normalizeConnectionProfile(profile);
+    if (normalized) {
+        saveSettingsDebounced();
+    }
+
     // Abort any ongoing profile application
     ConnectionManagerSpinner.abort();
 
-    const mode = profile.mode;
-    const commands = mode === 'cc' ? CC_COMMANDS : TC_COMMANDS;
+    const mode = resolveProfileMode(profile);
+    const commands = getCommandsForMode(mode);
     const spinner = new ConnectionManagerSpinner();
     spinner.start();
 
@@ -596,25 +665,12 @@ async function renderDetailsContent(detailsContent) {
         }
     }
 
-    // Luker: fully decouple CC API profiles from chat-completion prompt presets.
-    // Existing CC profiles might still carry legacy `preset`; strip it once at startup.
+    // Luker: fully decouple connection profiles from chat-completion presets and regex presets.
+    // Legacy profiles might still carry stale fields or invalid mode metadata.
     let migrated = false;
     if (Array.isArray(extension_settings.connectionManager.profiles)) {
         for (const profile of extension_settings.connectionManager.profiles) {
-            if (!profile || typeof profile !== 'object') {
-                continue;
-            }
-            if (profile.mode === 'cc' && Object.hasOwn(profile, 'preset')) {
-                delete profile.preset;
-                migrated = true;
-            }
-            // `stop-strings` already has an explicit empty representation: `[]`.
-            // Clean up older profiles that recorded an empty string and would otherwise
-            // clear the global setting to `[]` when applied.
-            if (profile['stop-strings'] === '') {
-                delete profile['stop-strings'];
-                migrated = true;
-            }
+            migrated = normalizeConnectionProfile(profile) || migrated;
         }
     }
     if (migrated) {
@@ -671,14 +727,15 @@ async function renderDetailsContent(detailsContent) {
         const globalValue = Boolean(oai_settings.function_calling_plain_text);
         const globalRetryValue = Boolean(oai_settings.function_calling_plain_text_error_retry);
         const globalRetryAttempts = clampPlainTextRetryAttempts(oai_settings.function_calling_plain_text_error_retry_max_attempts);
-        const supported = !profile || profile.mode === 'cc';
-        const parsed = profile?.mode === 'cc'
+        const profileMode = profile ? resolveProfileMode(profile) : '';
+        const supported = !profile || profileMode === 'cc';
+        const parsed = profileMode === 'cc'
             ? parseProfileBoolean(profile['function-calling-plain-text'])
             : null;
-        const parsedRetry = profile?.mode === 'cc'
+        const parsedRetry = profileMode === 'cc'
             ? parseProfileBoolean(profile['function-calling-plain-text-error-retry'])
             : null;
-        const parsedRetryAttempts = profile?.mode === 'cc'
+        const parsedRetryAttempts = profileMode === 'cc'
             ? parseProfileInteger(profile['function-calling-plain-text-error-retry-max-attempts'])
             : null;
         const plainTextEnabled = parsed ?? globalValue;
@@ -694,7 +751,7 @@ async function renderDetailsContent(detailsContent) {
 
     async function applySelectedProfileMutation(mutator) {
         const profile = getSelectedProfile();
-        if (!profile || profile.mode !== 'cc') {
+        if (!profile || resolveProfileMode(profile) !== 'cc') {
             syncPlainTextFunctionCallingControls();
             return false;
         }
@@ -733,7 +790,7 @@ async function renderDetailsContent(detailsContent) {
                 syncPlainTextFunctionCallingControls();
                 return;
             }
-            if (profile.mode !== 'cc') {
+            if (resolveProfileMode(profile) !== 'cc') {
                 syncPlainTextFunctionCallingControls();
                 return;
             }
@@ -751,7 +808,7 @@ async function renderDetailsContent(detailsContent) {
                 syncPlainTextFunctionCallingControls();
                 return;
             }
-            if (profile.mode !== 'cc') {
+            if (resolveProfileMode(profile) !== 'cc') {
                 syncPlainTextFunctionCallingControls();
                 return;
             }
@@ -772,7 +829,7 @@ async function renderDetailsContent(detailsContent) {
                 syncPlainTextFunctionCallingControls();
                 return;
             }
-            if (profile.mode !== 'cc') {
+            if (resolveProfileMode(profile) !== 'cc') {
                 syncPlainTextFunctionCallingControls();
                 return;
             }
@@ -882,7 +939,7 @@ async function renderDetailsContent(detailsContent) {
 
         let saveChanges = false;
         const sortByViewOrder = (a, b) => Object.keys(FANCY_NAMES).indexOf(a) - Object.keys(FANCY_NAMES).indexOf(b);
-        const commands = profile.mode === 'cc' ? CC_COMMANDS : TC_COMMANDS;
+        const commands = getCommandsForProfile(profile);
         const settings = commands.slice().sort(sortByViewOrder).reduce((acc, command) => {
             const fancyName = FANCY_NAMES[command];
             acc[fancyName] = !profile.exclude.includes(command);
