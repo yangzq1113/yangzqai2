@@ -91,6 +91,11 @@ const DEFAULT_AGENDA_PLANNER_PROMPT = [
     '- Parallelize truly independent work such as per-character analysis.',
     '- Do not branch for its own sake; if one good analysis is enough, keep the plan simple.',
     '- Reuse prior agent runs whenever they already cover the need.',
+    '',
+    '## Output Contract',
+    '- Normal planner steps should return dispatches for the next useful agent runs. Include todo_ops only when the board needs updating.',
+    '- Finalization should happen only once, at the end. When you are done, return finalize with a concise reason/summary.',
+    '- Do not include dispatches in the same step that includes finalize.',
 ].join('\n');
 const TEMPLATE_PLACEHOLDER_VARS = ['recent_chat', 'last_user', 'previous_outputs', 'distiller'];
 const AUTO_INJECTED_CONTEXT_VARS = ['previous_orchestration'];
@@ -4930,8 +4935,10 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
             '- Dispatch only agent ids listed in available_agents.',
             '- Dispatch only the next useful agent calls. Parallelize only truly independent work.',
             '- Read complete prior run outputs before adding new work.',
-            '- If final guidance is ready, set finalize.ready=true and do not dispatch more agents.',
-            '- If work remains, set finalize.ready=false.',
+            '- Normal planner steps should include dispatches. todo_ops is optional.',
+            '- Only the final planner step should include finalize.',
+            '- finalize must be a concise reason/summary string.',
+            '- Do not include dispatches in the same step that includes finalize.',
         ].join('\n'),
     ].filter(Boolean).join('\n\n');
     const promptMessages = await buildPresetAwareMessages(
@@ -4951,9 +4958,13 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
     );
     return requestToolCallWithRetry(settings, promptMessages, {
         functionName: AGENDA_PLANNER_TOOL,
-        functionDescription: 'Update agenda todos, dispatch the next agent calls, or finalize when ready.',
+        functionDescription: 'Update agenda todos and dispatch the next agent calls. Use finalize only once on the last planner step, with a concise reason/summary.',
         parameters: {
             type: 'object',
+            anyOf: [
+                { required: ['dispatches'] },
+                { required: ['finalize'] },
+            ],
             properties: {
                 todo_ops: {
                     type: 'array',
@@ -4971,6 +4982,7 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
                 },
                 dispatches: {
                     type: 'array',
+                    minItems: 1,
                     items: {
                         type: 'object',
                         properties: {
@@ -4987,16 +4999,11 @@ async function runAgendaPlannerStep(context, payload, messages, profile, state, 
                     },
                 },
                 finalize: {
-                    type: 'object',
-                    properties: {
-                        ready: { type: 'boolean' },
-                        reason: { type: 'string' },
-                    },
-                    required: ['ready', 'reason'],
-                    additionalProperties: false,
+                    type: 'string',
+                    minLength: 1,
+                    description: 'Use only on the final planner step. Provide a concise reason/summary and do not include dispatches.',
                 },
             },
-            required: ['todo_ops', 'dispatches', 'finalize'],
             additionalProperties: false,
         },
         llmPresetName,
@@ -5154,8 +5161,13 @@ async function runAgendaOrchestration(context, payload, messages, profile) {
         });
         applyAgendaPlannerOps(state, plannerStep);
         const dispatches = normalizeAgendaDispatches(state, plannerStep, profile, settings);
-        if (Array.isArray(plannerStep?.dispatches) && plannerStep.dispatches.length > 0 && dispatches.length === 0 && !Boolean(plannerStep?.finalize?.ready)) {
+        const finalizeReasonText = String(plannerStep?.finalize || '').trim();
+        const finalizeRequested = Boolean(finalizeReasonText);
+        if (Array.isArray(plannerStep?.dispatches) && plannerStep.dispatches.length > 0 && dispatches.length === 0 && !finalizeRequested) {
             throw new Error('Agenda planner dispatched no valid agents. Check available agent ids and selected prior run ids.');
+        }
+        if (finalizeRequested && dispatches.length > 0) {
+            throw new Error('Agenda planner cannot dispatch agents and finalize in the same step.');
         }
         for (const dispatch of dispatches) {
             const todo = state.todos.find(item => String(item?.id || '') === String(dispatch.todoId || ''));
@@ -5164,12 +5176,12 @@ async function runAgendaOrchestration(context, payload, messages, profile) {
             }
         }
         syncAgendaTrace(trace, state);
-        if (Boolean(plannerStep?.finalize?.ready) && dispatches.length === 0) {
-            finalizeReason = String(plannerStep?.finalize?.reason || '').trim();
+        if (finalizeRequested) {
+            finalizeReason = finalizeReasonText;
             break;
         }
         if (dispatches.length === 0) {
-            finalizeReason = String(plannerStep?.finalize?.reason || '').trim() || 'Planner produced no further dispatches.';
+            finalizeReason = finalizeReasonText || 'Planner produced no further dispatches.';
             break;
         }
         const newRuns = await Promise.all(dispatches.map(async (dispatch, dispatchIndex) => {
@@ -7412,7 +7424,7 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             },
             finalize: {
                 function: 'luker_orch_finalize_profile',
-                shape: { ok: true, summary: 'optional string' },
+                shape: { summary: 'optional string' },
             },
         },
     });
@@ -7499,11 +7511,10 @@ async function runAiCharacterProfileBuild(context, settings, { abortSignal = nul
             type: 'function',
             function: {
                 name: 'luker_orch_finalize_profile',
-                description: 'Finalize the incremental profile construction.',
+                description: 'Finalize the incremental profile construction. Optionally include a concise summary.',
                 parameters: {
                     type: 'object',
                     properties: {
-                        ok: { type: 'boolean' },
                         summary: { type: 'string' },
                     },
                     additionalProperties: false,
