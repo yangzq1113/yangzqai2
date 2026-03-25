@@ -1,5 +1,6 @@
 import { characters, saveSettingsDebounced, substituteParams, substituteParamsExtended, this_chid } from '../../../script.js';
 import { extension_settings, writeExtensionField } from '../../extensions.js';
+import { t } from '../../i18n.js';
 import { getPresetManager } from '../../preset-manager.js';
 import { regexFromString } from '../../utils.js';
 import { lodash } from '../../../lib.js';
@@ -41,6 +42,124 @@ const REGEX_SCRIPT_TYPE_LABELS = Object.freeze({
 });
 const warnedInvalidPlacementScripts = new Set();
 let shownInvalidPlacementToast = false;
+const pendingPersistedRegexScriptCleanups = new Set();
+
+function isPersistedRegexScriptRecord(script) {
+    return Boolean(script) && typeof script === 'object' && !Array.isArray(script);
+}
+
+function filterValidPersistedRegexScripts(scripts) {
+    return Array.isArray(scripts) ? scripts.filter(isPersistedRegexScriptRecord) : [];
+}
+
+function getPersistedRegexScriptCleanupKey(scriptType) {
+    switch (scriptType) {
+        case SCRIPT_TYPES.GLOBAL:
+            return 'global';
+        case SCRIPT_TYPES.SCOPED:
+            return `scoped:${String(characters?.[this_chid]?.avatar || '').trim()}`;
+        case SCRIPT_TYPES.PRESET:
+            return `preset:${String(getCurrentPresetAPI?.() || '').trim()}:${String(getCurrentPresetName?.() || '').trim()}`;
+        default:
+            return '';
+    }
+}
+
+function getPersistedRegexScriptCleanupToastMessage(scriptType) {
+    switch (scriptType) {
+        case SCRIPT_TYPES.GLOBAL:
+            return t`Global regex entries contained invalid data. Invalid entries were removed automatically. Check the browser console for details.`;
+        case SCRIPT_TYPES.SCOPED:
+            return t`Character-scoped regex entries contained invalid data. Invalid entries were removed automatically. Check the browser console for details.`;
+        case SCRIPT_TYPES.PRESET:
+            return t`Preset regex entries contained invalid data. Invalid entries were removed automatically. Check the browser console for details.`;
+        default:
+            return t`Some regex scripts contained invalid data. Invalid entries were removed automatically. Check the browser console for details.`;
+    }
+}
+
+function schedulePersistedRegexScriptCleanup(scriptType, scripts) {
+    const cleanupKey = getPersistedRegexScriptCleanupKey(scriptType);
+    if (!cleanupKey || pendingPersistedRegexScriptCleanups.has(cleanupKey)) {
+        return;
+    }
+
+    const nextScripts = structuredClone(filterValidPersistedRegexScripts(scripts));
+    const targetChid = Number(this_chid);
+    const targetPresetApiId = String(getCurrentPresetAPI?.() || '').trim();
+    const targetPresetName = String(getCurrentPresetName?.() || '').trim();
+    pendingPersistedRegexScriptCleanups.add(cleanupKey);
+
+    if (typeof toastr !== 'undefined') {
+        toastr.error(getPersistedRegexScriptCleanupToastMessage(scriptType), t`Regex script error`);
+    }
+
+    queueMicrotask(() => {
+        void (async () => {
+            try {
+                switch (scriptType) {
+                    case SCRIPT_TYPES.GLOBAL:
+                        extension_settings.regex = nextScripts;
+                        saveSettingsDebounced();
+                        break;
+                    case SCRIPT_TYPES.SCOPED: {
+                        if (!Number.isInteger(targetChid)) {
+                            return;
+                        }
+                        await writeExtensionField(targetChid, 'regex_scripts', nextScripts);
+                        break;
+                    }
+                    case SCRIPT_TYPES.PRESET: {
+                        if (!targetPresetApiId || !targetPresetName) {
+                            return;
+                        }
+                        const presetManager = getPresetManager(targetPresetApiId);
+                        if (!presetManager) {
+                            return;
+                        }
+                        await presetManager.writePresetExtensionField({ name: targetPresetName, path: 'regex_scripts', value: nextScripts });
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            } catch (error) {
+                console.warn('[Regex] Failed to persist sanitized regex scripts', {
+                    scriptType: REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType),
+                    cleanupKey,
+                    error,
+                });
+            } finally {
+                pendingPersistedRegexScriptCleanups.delete(cleanupKey);
+            }
+        })();
+    });
+}
+
+function sanitizePersistedRegexScriptList(scripts, scriptType) {
+    if (!Array.isArray(scripts)) {
+        return [];
+    }
+
+    const invalidEntries = [];
+    for (let index = scripts.length - 1; index >= 0; index--) {
+        if (isPersistedRegexScriptRecord(scripts[index])) {
+            continue;
+        }
+        invalidEntries.push({ index, type: scripts[index] === null ? 'null' : typeof scripts[index] });
+        scripts.splice(index, 1);
+    }
+
+    if (invalidEntries.length > 0) {
+        console.warn('[Regex] Removed invalid persisted regex entries', {
+            scriptType: REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType),
+            invalidEntries,
+        });
+        schedulePersistedRegexScriptCleanup(scriptType, scripts);
+    }
+
+    return scripts;
+}
 
 function summarizeRegexScriptForLog(script) {
     if (!script || typeof script !== 'object') {
@@ -437,13 +556,13 @@ export function getScriptsByType(scriptType, { allowedOnly } = DEFAULT_GET_REGEX
         case SCRIPT_TYPE_UNKNOWN:
             return [];
         case SCRIPT_TYPES.GLOBAL:
-            return extension_settings.regex ?? [];
+            return sanitizePersistedRegexScriptList(extension_settings.regex ?? [], SCRIPT_TYPES.GLOBAL);
         case SCRIPT_TYPES.SCOPED: {
             if (allowedOnly && !extension_settings?.character_allowed_regex?.includes(characters?.[this_chid]?.avatar)) {
                 return [];
             }
             const scopedScripts = characters[this_chid]?.data?.extensions?.regex_scripts;
-            return Array.isArray(scopedScripts) ? scopedScripts : [];
+            return sanitizePersistedRegexScriptList(scopedScripts, SCRIPT_TYPES.SCOPED);
         }
         case SCRIPT_TYPES.PRESET: {
             if (allowedOnly && !extension_settings?.preset_allowed_regex?.[getCurrentPresetAPI()]?.includes(getCurrentPresetName())) {
@@ -451,7 +570,7 @@ export function getScriptsByType(scriptType, { allowedOnly } = DEFAULT_GET_REGEX
             }
             const presetManager = getPresetManager();
             const presetScripts = presetManager?.readPresetExtensionField({ path: 'regex_scripts' });
-            return Array.isArray(presetScripts) ? presetScripts : [];
+            return sanitizePersistedRegexScriptList(presetScripts, SCRIPT_TYPES.PRESET);
         }
         default:
             console.warn(`getScriptsByType: Invalid script type ${scriptType}`);
@@ -466,7 +585,7 @@ export function getScriptsByType(scriptType, { allowedOnly } = DEFAULT_GET_REGEX
  * @returns {Promise<void>}
  */
 export async function saveScriptsByType(scripts, scriptType) {
-    const normalizedScripts = Array.isArray(scripts) ? scripts : [];
+    const normalizedScripts = filterValidPersistedRegexScripts(scripts);
     const character = characters?.[this_chid];
     const context = {
         scriptType: REGEX_SCRIPT_TYPE_LABELS[scriptType] || String(scriptType),

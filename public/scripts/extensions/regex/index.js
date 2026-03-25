@@ -2244,10 +2244,9 @@ async function onMainApiChanged({ apiId }) {
         return;
     }
     const presetName = presetManager.getSelectedPresetName();
-    const presetScripts = presetManager.readPresetExtensionField({ path: 'regex_scripts' }) ?? [];
+    const presetScripts = getScriptsByType(SCRIPT_TYPES.PRESET);
     if (getCurrentChatId() &&
         isPresetScriptsAllowed(apiId, presetName) &&
-        Array.isArray(presetScripts) &&
         presetScripts.filter(script => !script.disabled).length > 0) {
         notifyReloadCurrentChat(presetName);
     }
