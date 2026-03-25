@@ -3461,39 +3461,85 @@ function findWorldInfoScrollContainer(startEl) {
     return startEl instanceof HTMLElement ? startEl : document.documentElement;
 }
 
-async function resetWorldInfoTextareaHeight(textarea) {
-    const element = textarea instanceof HTMLElement ? textarea : textarea?.[0];
-    if (!(element instanceof HTMLElement)) {
-        return;
-    }
+function getWorldInfoTextareaElements(textareas) {
+    const input = Array.isArray(textareas) ? textareas : [textareas];
+    return input
+        .map((textarea) => textarea instanceof HTMLElement ? textarea : textarea?.[0])
+        .filter((element) => element instanceof HTMLElement);
+}
 
+function getWorldInfoScrollSnapshots(textareas) {
+    const elements = getWorldInfoTextareaElements(textareas);
     const scrollTargets = [
         window,
         document.scrollingElement,
         document.documentElement,
         document.body,
-        findWorldInfoScrollContainer(element),
         document.getElementById('WorldInfo'),
+        ...elements.map((element) => findWorldInfoScrollContainer(element)),
     ].filter((target, index, array) => target && array.indexOf(target) === index);
-    const scrollSnapshots = scrollTargets.map((target) => target === window
+
+    return scrollTargets.map((target) => target === window
         ? [target, window.scrollX, window.scrollY]
         : [target, target.scrollLeft, target.scrollTop]);
-    const restoreScroll = () => {
-        for (const [target, left, top] of scrollSnapshots) {
-            if (target === window) {
-                window.scrollTo(left, top);
-            } else {
-                target.scrollLeft = left;
-                target.scrollTop = top;
-            }
-        }
-    };
+}
 
-    element.style.height = 'auto';
+function restoreWorldInfoScrollSnapshots(scrollSnapshots) {
+    for (const [target, left, top] of scrollSnapshots) {
+        if (target === window) {
+            window.scrollTo(left, top);
+        } else {
+            target.scrollLeft = left;
+            target.scrollTop = top;
+        }
+    }
+}
+
+function resizeWorldInfoTextarea(element) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    element.style.height = '0px';
     element.style.height = `${element.scrollHeight + 3}px`;
-    restoreScroll();
+}
+
+async function resetWorldInfoTextareaHeight(textarea, { preserveScroll = true } = {}) {
+    const [element] = getWorldInfoTextareaElements(textarea);
+    if (!element) {
+        return;
+    }
+
+    if (!preserveScroll) {
+        resizeWorldInfoTextarea(element);
+        return;
+    }
+
+    const scrollSnapshots = getWorldInfoScrollSnapshots([element]);
+    resizeWorldInfoTextarea(element);
+    restoreWorldInfoScrollSnapshots(scrollSnapshots);
     await new Promise((resolve) => requestAnimationFrame(() => {
-        restoreScroll();
+        restoreWorldInfoScrollSnapshots(scrollSnapshots);
+        resolve();
+    }));
+}
+
+async function resetWorldInfoTextareaHeights(textareas, { preserveScroll = true } = {}) {
+    const elements = getWorldInfoTextareaElements(textareas);
+    if (elements.length === 0) {
+        return;
+    }
+
+    if (!preserveScroll) {
+        elements.forEach(resizeWorldInfoTextarea);
+        return;
+    }
+
+    const scrollSnapshots = getWorldInfoScrollSnapshots(elements);
+    elements.forEach(resizeWorldInfoTextarea);
+    restoreWorldInfoScrollSnapshots(scrollSnapshots);
+    await new Promise((resolve) => requestAnimationFrame(() => {
+        restoreWorldInfoScrollSnapshots(scrollSnapshots);
         resolve();
     }));
 }
@@ -5002,7 +5048,7 @@ async function renderWorldEntriesPage(worldEntriesList, name, data, page, render
     worldEntriesList.children().not('.world_entry').remove();
     worldEntriesList.append(keywordHeaders);
     worldEntriesList.append(nextBlocks);
-    await Promise.all(worldEntriesList.find('textarea[name="comment"]').toArray().map((element) => resetWorldInfoTextareaHeight(element)));
+    await resetWorldInfoTextareaHeights(worldEntriesList.find('textarea[name="comment"]').toArray());
     worldEntriesList.data('worldEntryPageUids', page.map((entry) => String(entry?.uid ?? '').trim()).filter(Boolean));
     syncWorldInfoEntryBulkToolbar(name, data);
 }
@@ -5126,11 +5172,6 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
         },
         afterSizeSelectorChange: function (e) {
             accountStorage.setItem(storageKey, e.target.value);
-        },
-        afterPaging: function () {
-            $('#world_popup_entries_list textarea[name="comment"]').each(function () {
-                initScrollHeight($(this));
-            });
         },
     });
 
