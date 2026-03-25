@@ -6322,6 +6322,23 @@ function getAgendaScopeFromElement(element, context, settings) {
     return getScopeFromElementOrMode(element, context, settings, ORCH_EXECUTION_MODE_AGENDA);
 }
 
+function getExplicitScopeFromElement(element) {
+    const scope = String(
+        jQuery(element).data('scope')
+        || jQuery(element).closest('[data-luker-scope-root]').data('luker-scope-root')
+        || '',
+    );
+    return scope === 'character' ? 'character' : (scope === 'global' ? 'global' : '');
+}
+
+function getCopyScopeFromElement(element, context) {
+    const explicitScope = getExplicitScopeFromElement(element);
+    if (explicitScope) {
+        return explicitScope;
+    }
+    return String(getCurrentAvatar(context) || '').trim() ? 'character' : 'global';
+}
+
 function getDisplayedScopeLabel(isCharacterScope, hasPersistedOverride, isEnabled) {
     if (!isCharacterScope) {
         return i18n('Global profile (no character override for current card)');
@@ -7071,6 +7088,67 @@ async function persistCharacterAgendaEditor(context, settings, avatar, {
         override: normalizeCharacterOverrideMode(overridePayload),
     };
     return await persistOrchestratorCharacterExtension(context, characterIndex, nextPayload);
+}
+
+async function persistCopiedProfileTarget(context, settings, mode, scope) {
+    const normalizedMode = normalizeExecutionMode(mode);
+    const normalizedScope = scope === 'character' ? 'character' : 'global';
+    const avatar = String(getCurrentAvatar(context) || '').trim();
+
+    if (normalizedMode === ORCH_EXECUTION_MODE_AGENDA) {
+        if (normalizedScope === 'character') {
+            if (!avatar) {
+                notifyError(i18n('No character selected.'));
+                return false;
+            }
+            const ok = await persistCharacterAgendaEditor(context, settings, avatar, {
+                editor: uiState.characterAgendaEditor,
+                forceEnabled: true,
+            });
+            if (!ok) {
+                notifyError(i18n('Failed to persist character override.'));
+                return false;
+            }
+            uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
+            ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+            setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'character');
+            updateUiStatus(i18nFormat('Saved to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+            return true;
+        }
+        await persistGlobalAgendaEditorFrom(settings, uiState.globalAgendaEditor);
+        uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
+        ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+        setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'global');
+        updateUiStatus(i18n('Saved to global profile.'));
+        return true;
+    }
+
+    if (normalizedScope === 'character') {
+        if (!avatar) {
+            notifyError(i18n('No character selected.'));
+            return false;
+        }
+        const ok = await persistCharacterEditor(context, settings, avatar, {
+            editor: uiState.characterEditor,
+            forceEnabled: true,
+        });
+        if (!ok) {
+            notifyError(i18n('Failed to persist character override.'));
+            return false;
+        }
+        uiState.characterEditor = loadCharacterEditorState(context, avatar);
+        ensureEditorIntegrity(uiState.characterEditor);
+        setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'character');
+        updateUiStatus(i18nFormat('Saved to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
+        return true;
+    }
+
+    await persistGlobalEditorFrom(settings, uiState.globalEditor);
+    uiState.globalEditor = loadGlobalEditorState();
+    ensureEditorIntegrity(uiState.globalEditor);
+    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'global');
+    updateUiStatus(i18n('Saved to global profile.'));
+    return true;
 }
 
 async function persistOrchestratorCharacterExtension(context, characterIndex, modulePayload) {
@@ -11778,24 +11856,37 @@ function bindUi() {
         const presetId = String(jQuery(this).data('preset-id') || '');
         const editor = getEditorByScope(scope);
         ensureEditorIntegrity(editor);
+        const explicitScope = getExplicitScopeFromElement(this);
 
         if (action === 'agenda-copy-from-spec') {
-            const copyScope = getScopeFromElementOrMode(this, context, settings, getExecutionMode(settings));
+            const copyScope = getCopyScopeFromElement(this, context);
             const agendaEditor = getAgendaEditorByScope(copyScope);
             const sourceEditor = getEditorByScope(copyScope);
             copySpecPresetsIntoAgendaEditor(sourceEditor, agendaEditor);
             setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, copyScope);
+            if (!explicitScope) {
+                const persisted = await persistCopiedProfileTarget(context, settings, ORCH_EXECUTION_MODE_AGENDA, copyScope);
+                if (!persisted) {
+                    return;
+                }
+            }
             notifySuccess(i18n('Copied spec agents into agenda as a starting point.'));
             renderDynamicPanels(root, context);
             return;
         }
 
         if (action === 'spec-copy-from-agenda') {
-            const copyScope = getScopeFromElementOrMode(this, context, settings, getExecutionMode(settings));
+            const copyScope = getCopyScopeFromElement(this, context);
             const agendaEditor = getAgendaEditorByScope(copyScope);
             const targetEditor = getEditorByScope(copyScope);
             copyAgendaAgentsIntoSpecEditor(agendaEditor, targetEditor);
             setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, copyScope);
+            if (!explicitScope) {
+                const persisted = await persistCopiedProfileTarget(context, settings, ORCH_EXECUTION_MODE_SPEC, copyScope);
+                if (!persisted) {
+                    return;
+                }
+            }
             notifySuccess(i18n('Copied agenda agents into spec presets and rebuilt stages as a starting point.'));
             renderDynamicPanels(root, context);
             return;
