@@ -11587,8 +11587,8 @@ export async function patchChatMessages(operations, retryCount = 0) {
 }
 
 function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undefined, mesId = undefined } = {}) {
-    const target = resolveChatStateTarget();
-    if (!target) {
+    const activeTarget = resolveChatStateTarget();
+    if (!activeTarget) {
         return null;
     }
 
@@ -11602,7 +11602,8 @@ function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undef
         ...baseMetadata,
         ...metadataPatch,
     };
-    const chatIdSnapshot = String(getCurrentChatId() || '').trim() || null;
+    const requestedChatId = String(chatName || '').trim();
+    const chatIdSnapshot = requestedChatId || String(getCurrentChatId() || '').trim() || null;
     const endIndex = Number.isInteger(mesId) && Number(mesId) >= 0 && Number(mesId) < chat.length
         ? Number(mesId) + 1
         : chat.length;
@@ -11611,7 +11612,7 @@ function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undef
         ? (cloneJsonValue(itemizedPrompts) ?? itemizedPrompts)
         : [];
 
-    if (target.is_group) {
+    if (activeTarget.is_group) {
         const groupId = String(selected_group || '').trim();
         const group = groups.find(x => String(x?.id || '') === groupId);
         if (!groupId || !group?.chat_id) {
@@ -11620,7 +11621,7 @@ function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undef
 
         return {
             kind: 'group',
-            target,
+            target: activeTarget,
             groupId,
             chatIdSnapshot,
             metadataSnapshot,
@@ -11630,16 +11631,16 @@ function buildActiveChatSaveContext({ withMetadata = undefined, chatName = undef
     }
 
     const characterId = this_chid;
-    const avatarUrl = String(target.avatar_url || '').trim();
-    const fileName = String(chatName ?? target.file_name ?? '').trim();
-    const charName = String(target.char_name || getCharacterName(characters[characterId]) || '').trim();
+    const avatarUrl = String(activeTarget.avatar_url || '').trim();
+    const fileName = requestedChatId || String(activeTarget.file_name || '').trim();
+    const charName = String(activeTarget.char_name || getCharacterName(characters[characterId]) || '').trim();
     if (characterId === undefined || !avatarUrl || !fileName || !charName) {
         return null;
     }
 
     return {
         kind: 'character',
-        target: { ...target, char_name: charName },
+        target: { is_group: false, avatar_url: avatarUrl, file_name: fileName, char_name: charName },
         characterId,
         avatarUrl,
         fileName,
@@ -11855,7 +11856,10 @@ async function saveChatInternal({ chatName, withMetadata, mesId, force = false, 
     };
 
     try {
-        const writeTarget = target ?? { is_group: false, avatar_url: avatar, file_name: fileName, char_name: charName };
+        // "Save as branch/checkpoint" writes to a different chat file, so snapshot keys must follow the destination file.
+        const writeTarget = target?.is_group
+            ? target
+            : { is_group: false, avatar_url: avatar, file_name: fileName, char_name: charName };
         const previousMessages = chatMessageSnapshotCache.get(getChatMessageSnapshotKey(writeTarget));
 
         if (!force && Array.isArray(previousMessages)) {
