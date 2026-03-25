@@ -11,6 +11,7 @@ import { debounce_timeout } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
 import { t } from './i18n.js';
+import { showUndoToast } from './undo-toast.js';
 
 function debouncePromise(func, delay) {
     let timeoutId;
@@ -722,24 +723,60 @@ class PromptManager {
         };
 
         // Delete selected prompt from list form and close edit form
-        this.handleDeletePrompt = async (event) => {
-            Popup.show.confirm(t`Are you sure you want to delete this prompt?`, null).then((userChoice) => {
-                if (!userChoice) return;
-                const appendPromptFooter = /** @type {HTMLSelectElement} */(document.getElementById(this.configuration.prefix + 'prompt_manager_footer_append_prompt'));
-                const promptID = appendPromptFooter.value;
-                const prompt = this.getPromptById(promptID);
+        this.handleDeletePrompt = async () => {
+            const userChoice = await Popup.show.confirm(t`Are you sure you want to delete this prompt?`, null);
+            if (!userChoice) {
+                return;
+            }
 
-                if (prompt && true === this.isPromptDeletionAllowed(prompt)) {
-                    const promptIndex = this.getPromptIndexById(promptID);
-                    this.serviceSettings.prompts.splice(Number(promptIndex), 1);
+            const appendPromptFooter = /** @type {HTMLSelectElement|null} */(document.getElementById(this.configuration.prefix + 'prompt_manager_footer_append_prompt'));
+            const promptID = appendPromptFooter?.value;
+            const prompt = this.getPromptById(promptID);
 
-                    this.log('Deleted prompt: ' + prompt.identifier);
+            if (!prompt || true !== this.isPromptDeletionAllowed(prompt)) {
+                return;
+            }
 
-                    this.hidePopup();
-                    this.clearEditForm();
-                    this.render();
-                    this.saveServiceSettings();
-                }
+            const promptIndex = this.getPromptIndexById(promptID);
+            if (!Number.isInteger(promptIndex) || promptIndex < 0) {
+                return;
+            }
+
+            const promptSnapshot = structuredClone(prompt);
+            this.serviceSettings.prompts.splice(promptIndex, 1);
+
+            try {
+                this.log('Deleted prompt: ' + prompt.identifier);
+
+                this.hidePopup();
+                this.clearEditForm();
+                this.render();
+                await this.saveServiceSettings();
+            } catch (error) {
+                this.serviceSettings.prompts.splice(promptIndex, 0, promptSnapshot);
+                this.render();
+                console.error('Failed to delete prompt', error);
+                toastr.error(t`Failed to delete prompt.`);
+                return;
+            }
+
+            showUndoToast({
+                message: t`Prompt deleted.`,
+                onUndo: async () => {
+                    try {
+                        if (!this.getPromptById(promptSnapshot.identifier)) {
+                            const restoreIndex = Math.max(0, Math.min(promptIndex, this.serviceSettings.prompts.length));
+                            this.serviceSettings.prompts.splice(restoreIndex, 0, structuredClone(promptSnapshot));
+                        }
+
+                        this.log('Restored prompt: ' + promptSnapshot.identifier);
+                        this.render();
+                        await this.saveServiceSettings();
+                    } catch (error) {
+                        console.error('Failed to restore deleted prompt', error);
+                        toastr.error(t`Failed to restore prompt.`);
+                    }
+                },
             });
         };
 

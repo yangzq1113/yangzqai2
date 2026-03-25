@@ -4154,6 +4154,200 @@ async function deleteWorldInfoEntries(data, uids, { silent = false } = {}) {
     return deleted > 0;
 }
 
+function restoreDeletedWorldInfoEntries(data, snapshot) {
+    if (!data || typeof data !== 'object' || !snapshot || typeof snapshot !== 'object') {
+        return;
+    }
+
+    const currentEntries = data.entries && typeof data.entries === 'object' && !Array.isArray(data.entries)
+        ? data.entries
+        : {};
+    const currentEntriesByUid = new Map(Object.entries(currentEntries)
+        .map(([uid, entry]) => [String(uid ?? '').trim(), entry])
+        .filter(([uid]) => uid));
+    const deletedEntriesByUid = new Map((Array.isArray(snapshot.deletedEntries) ? snapshot.deletedEntries : [])
+        .map((entry) => [String(entry?.uid ?? '').trim(), structuredClone(entry)])
+        .filter(([uid]) => uid));
+    const restoredEntries = {};
+    const seenEntryUids = new Set();
+
+    for (const uid of Array.isArray(snapshot.entryOrder) ? snapshot.entryOrder : []) {
+        if (currentEntriesByUid.has(uid)) {
+            restoredEntries[uid] = currentEntriesByUid.get(uid);
+            seenEntryUids.add(uid);
+            continue;
+        }
+
+        if (deletedEntriesByUid.has(uid)) {
+            restoredEntries[uid] = deletedEntriesByUid.get(uid);
+            seenEntryUids.add(uid);
+        }
+    }
+
+    for (const [uid, entry] of currentEntriesByUid.entries()) {
+        if (!seenEntryUids.has(uid)) {
+            restoredEntries[uid] = entry;
+            seenEntryUids.add(uid);
+        }
+    }
+
+    for (const [uid, entry] of deletedEntriesByUid.entries()) {
+        if (!seenEntryUids.has(uid)) {
+            restoredEntries[uid] = entry;
+        }
+    }
+
+    data.entries = restoredEntries;
+
+    const shouldRestoreOriginalEntries = (Array.isArray(snapshot.originalEntryOrder) && snapshot.originalEntryOrder.length > 0)
+        || (Array.isArray(snapshot.deletedOriginalEntries) && snapshot.deletedOriginalEntries.length > 0);
+    if (!shouldRestoreOriginalEntries) {
+        return;
+    }
+
+    if (!data.originalData || typeof data.originalData !== 'object' || Array.isArray(data.originalData)) {
+        data.originalData = {};
+    }
+
+    const currentOriginalEntries = Array.isArray(data.originalData.entries) ? data.originalData.entries : [];
+    const currentOriginalEntriesByUid = new Map(currentOriginalEntries
+        .map((entry) => [String(entry?.uid ?? '').trim(), entry])
+        .filter(([uid]) => uid));
+    const deletedOriginalEntriesByUid = new Map((Array.isArray(snapshot.deletedOriginalEntries) ? snapshot.deletedOriginalEntries : [])
+        .map((entry) => [String(entry?.uid ?? '').trim(), structuredClone(entry)])
+        .filter(([uid]) => uid));
+    const restoredOriginalEntries = [];
+    const seenOriginalUids = new Set();
+
+    for (const uid of Array.isArray(snapshot.originalEntryOrder) ? snapshot.originalEntryOrder : []) {
+        if (currentOriginalEntriesByUid.has(uid)) {
+            restoredOriginalEntries.push(currentOriginalEntriesByUid.get(uid));
+            seenOriginalUids.add(uid);
+            continue;
+        }
+
+        if (deletedOriginalEntriesByUid.has(uid)) {
+            restoredOriginalEntries.push(deletedOriginalEntriesByUid.get(uid));
+            seenOriginalUids.add(uid);
+        }
+    }
+
+    for (const entry of currentOriginalEntries) {
+        const uid = String(entry?.uid ?? '').trim();
+        if (!uid || seenOriginalUids.has(uid)) {
+            continue;
+        }
+
+        restoredOriginalEntries.push(entry);
+        seenOriginalUids.add(uid);
+    }
+
+    for (const [uid, entry] of deletedOriginalEntriesByUid.entries()) {
+        if (!seenOriginalUids.has(uid)) {
+            restoredOriginalEntries.push(entry);
+        }
+    }
+
+    data.originalData.entries = restoredOriginalEntries;
+}
+
+async function deleteWorldInfoEntriesWithUndo(name, data, uids) {
+    const normalizedName = String(name || '').trim();
+    const normalizedUids = [...new Set((Array.isArray(uids) ? uids : [])
+        .map((uid) => String(uid ?? '').trim())
+        .filter(Boolean)
+        .filter((uid) => Object.hasOwn(data?.entries || {}, uid)))];
+    if (!normalizedName || normalizedUids.length === 0) {
+        return false;
+    }
+
+    const originalEntries = Array.isArray(data?.originalData?.entries) ? data.originalData.entries : [];
+    const snapshot = {
+        entryOrder: Object.keys(data?.entries || {}).map((uid) => String(uid ?? '').trim()).filter(Boolean),
+        deletedEntries: normalizedUids
+            .map((uid) => data?.entries?.[uid])
+            .filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+            .map((entry) => structuredClone(entry)),
+        originalEntryOrder: originalEntries.map((entry) => String(entry?.uid ?? '').trim()).filter(Boolean),
+        deletedOriginalEntries: originalEntries
+            .filter((entry) => normalizedUids.includes(String(entry?.uid ?? '').trim()))
+            .map((entry) => structuredClone(entry)),
+        selectedUids: normalizedUids.filter((uid) => selectedWorldInfoEntryUids.has(uid)),
+    };
+    if (snapshot.deletedEntries.length === 0) {
+        return false;
+    }
+
+    const deleted = await deleteWorldInfoEntries(data, normalizedUids);
+    if (!deleted) {
+        return false;
+    }
+
+    const deleteErrorMessage = snapshot.deletedEntries.length === 1
+        ? t`Failed to delete world info entry.`
+        : t`Failed to delete world info entries.`;
+    const restoreErrorMessage = snapshot.deletedEntries.length === 1
+        ? t`Failed to restore world info entry.`
+        : t`Failed to restore world info entries.`;
+    const successMessage = snapshot.deletedEntries.length === 1
+        ? t`World info entry deleted.`
+        : t`World info entries deleted.`;
+
+    try {
+        await saveWorldInfo(normalizedName, data, true);
+    } catch (error) {
+        restoreDeletedWorldInfoEntries(data, snapshot);
+        if (areLookupNamesEqual(getSelectedWorldEditorName(), normalizedName)) {
+            ensureWorldInfoEntrySelectionContext(normalizedName);
+            for (const uid of snapshot.selectedUids) {
+                selectedWorldInfoEntryUids.add(uid);
+            }
+            const restoreNavigation = snapshot.deletedEntries.length === 1
+                ? snapshot.deletedEntries[0].uid
+                : navigation_option.previous;
+            updateEditor(restoreNavigation, false);
+        }
+        console.error('Failed to delete world info entries', error);
+        toastr.error(deleteErrorMessage);
+        return false;
+    }
+
+    if (areLookupNamesEqual(getSelectedWorldEditorName(), normalizedName)) {
+        syncWorldInfoEntryBulkToolbar(normalizedName, data);
+        updateEditor(navigation_option.previous);
+    }
+
+    showUndoToast({
+        message: successMessage,
+        onUndo: async () => {
+            try {
+                restoreDeletedWorldInfoEntries(data, snapshot);
+
+                if (areLookupNamesEqual(getSelectedWorldEditorName(), normalizedName)) {
+                    ensureWorldInfoEntrySelectionContext(normalizedName);
+                    for (const uid of snapshot.selectedUids) {
+                        selectedWorldInfoEntryUids.add(uid);
+                    }
+                }
+
+                await saveWorldInfo(normalizedName, data, true);
+
+                if (areLookupNamesEqual(getSelectedWorldEditorName(), normalizedName)) {
+                    const restoreNavigation = snapshot.deletedEntries.length === 1
+                        ? snapshot.deletedEntries[0].uid
+                        : navigation_option.previous;
+                    updateEditor(restoreNavigation, false);
+                }
+            } catch (error) {
+                console.error('Failed to restore deleted world info entries', error);
+                toastr.error(restoreErrorMessage);
+            }
+        },
+    });
+
+    return true;
+}
+
 async function promptWorldInfoEntryMoveTarget(sourceWorld, {
     count = 1,
     previewName = '',
@@ -5286,14 +5480,10 @@ async function displayWorldEntries(name, data, navigation = navigation_option.no
             return;
         }
 
-        const deleted = await deleteWorldInfoEntries(data, getSelectedWorldInfoEntryUids(name, data));
+        const deleted = await deleteWorldInfoEntriesWithUndo(name, data, getSelectedWorldInfoEntryUids(name, data));
         if (!deleted) {
             return;
         }
-
-        await saveWorldInfo(name, data);
-        syncWorldInfoEntryBulkToolbar(name, data);
-        updateEditor(navigation_option.previous);
     });
 
     $('#world_popup_name_button').off('click').on('click', async () => {
@@ -6294,13 +6484,8 @@ export async function getWorldEntry(name, data, entry) {
     headerTemplate.find('.delete_entry_button').data('uid', entry.uid).on('click', async function (e) {
         e.stopPropagation();
         const uid = $(this).data('uid');
-        const deleted = await deleteWorldInfoEntry(data, uid);
+        const deleted = await deleteWorldInfoEntriesWithUndo(name, data, [uid]);
         if (!deleted) return;
-        deleteWIOriginalDataValue(data, uid);
-        selectedWorldInfoEntryUids.delete(String(uid));
-        await saveWorldInfo(name, data);
-        syncWorldInfoEntryBulkToolbar(name, data);
-        updateEditor(navigation_option.previous);
     });
     headerTemplate.find('.move_entry_button').attr('data-uid', entry.uid).attr('data-current-world', name).on('click', async function (e) {
         e.stopPropagation();
