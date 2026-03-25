@@ -8966,24 +8966,78 @@ function renderGraphInspectorHtml(store, options = {}) {
     const searchModel = getMemoryGraphSearchModel(store, options.searchState);
     const nodes = searchModel.visibleNodes;
     const edges = searchModel.visibleEdges;
+    const activeTab = String(options.activeTab || 'graph');
+    const isSearchOpen = Boolean(options.isSearchOpen);
 
-    const rows = nodes.map(node => `
+    // --- Node table rows (desktop) ---
+    const nodeTableRows = nodes.map(node => `
 <tr>
 <td>${escapeHtml(String(node.id || ''))}</td>
-<td>${escapeHtml(String(node.level || ''))}</td>
 <td>${escapeHtml(String(node.type || ''))}</td>
 <td>${escapeHtml(String(node.title || ''))}</td>
-<td>${escapeHtml(String(getNodeSummary(node) || ''))}</td>
-<td>${Array.isArray(node.childrenIds) ? node.childrenIds.length : 0}</td>
+<td class="luker-graph-td-summary">${escapeHtml(clipMemoryGraphText(getNodeSummary(node), 120))}</td>
 <td>${node.seqTo ?? ''}</td>
 <td>
-    <div class="flex-container">
-        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('View'))}</div>
-        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('Form Edit'))}</div>
-        <div class="menu_button menu_button_small luker-rpg-memory-node-delete" data-node-id="${escapeHtml(node.id)}">${escapeHtml(i18n('Delete'))}</div>
+    <div class="luker-graph-row-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-node" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('View'))}"><i class="fa-solid fa-eye fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('Form Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-delete" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('Delete'))}"><i class="fa-solid fa-trash fa-fw"></i></div>
     </div>
 </td>
 </tr>`).join('');
+
+    // --- Node card list (mobile) ---
+    const nodeCardList = nodes.map(node => {
+        const nodeId = escapeHtml(String(node.id || ''));
+        const summary = clipMemoryGraphText(getNodeSummary(node), 140);
+        return `
+<div class="luker-graph-card" data-node-id="${nodeId}">
+    <div class="luker-graph-card-head">
+        <span class="luker-graph-card-title">${escapeHtml(String(node.title || node.id || ''))}</span>
+        <span class="luker-graph-card-type">${escapeHtml(String(node.type || ''))}</span>
+    </div>
+    <div class="luker-graph-card-meta">#${nodeId} · seq ${escapeHtml(String(node.seqTo ?? ''))}</div>
+    ${summary ? `<div class="luker-graph-card-body">${escapeHtml(summary)}</div>` : ''}
+    <div class="luker-graph-card-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-node" data-node-id="${nodeId}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${nodeId}" title="${escapeHtml(i18n('View'))}"><i class="fa-solid fa-eye fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${nodeId}" title="${escapeHtml(i18n('Form Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-delete" data-node-id="${nodeId}" title="${escapeHtml(i18n('Delete'))}"><i class="fa-solid fa-trash fa-fw"></i></div>
+    </div>
+</div>`;
+    }).join('');
+
+    // --- Edge table rows (desktop) ---
+    const edgeTableRows = edges.map(edge => `
+<tr>
+<td>${escapeHtml(String(edge.from || ''))}</td>
+<td>${escapeHtml(String(edge.to || ''))}</td>
+<td>${escapeHtml(String(edge.type || ''))}</td>
+<td>${Number(edge._index)}</td>
+<td>
+    <div class="luker-graph-row-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-edge" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+    </div>
+</td>
+</tr>`).join('');
+
+    // --- Edge card list (mobile) ---
+    const edgeCardList = edges.map(edge => `
+<div class="luker-graph-card">
+    <div class="luker-graph-card-head">
+        <span class="luker-graph-card-title">${escapeHtml(String(edge.from || ''))} → ${escapeHtml(String(edge.to || ''))}</span>
+        <span class="luker-graph-card-type">${escapeHtml(String(edge.type || ''))}</span>
+    </div>
+    <div class="luker-graph-card-meta">#${Number(edge._index)}</div>
+    <div class="luker-graph-card-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-edge" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+    </div>
+</div>`).join('');
+
+    // --- Search filter chips ---
     const searchFilterHtml = searchModel.typeOptions.map(option => `
 <button
     type="button"
@@ -8993,6 +9047,8 @@ function renderGraphInspectorHtml(store, options = {}) {
     <span>${escapeHtml(option.label)}</span>
     <span class="luker-rpg-memory-graph-search-filter-count">${option.count}</span>
 </button>`).join('');
+
+    // --- Search result cards ---
     const searchResultsHtml = searchModel.previewNodes.length > 0
         ? searchModel.previewNodes.map(item => {
             const node = item.node;
@@ -9018,71 +9074,119 @@ function renderGraphInspectorHtml(store, options = {}) {
     <small>${escapeHtml(searchModel.emptyHint)}</small>
 </div>`;
 
+    // --- Tab helper ---
+    const tabClass = (name) => `luker-graph-tab${activeTab === name ? ' is-active' : ''}`;
+    const panelClass = (name) => `luker-graph-tab-panel${activeTab === name ? ' is-active' : ''}`;
+
     return `
-<div class="flex-container flexFlowColumn luker-rpg-memory-graph-popup-inner">
-    <h3 class="margin0">${escapeHtml(i18n('Memory Graph'))}</h3>
-    <div>${escapeHtml(i18nFormat('Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}', stats.nodeCount, stats.edgeCount, stats.messageCount, stats.sourceMessageCount))}</div>
-    <div>${escapeHtml(i18nFormat('semantic=${0}', stats.levelCount.semantic))}</div>
-    <div>${escapeHtml(i18nFormat('Last recall steps: ${0}', stats.lastRecallSteps))}</div>
-    <div class="luker-rpg-memory-graph-search-shell">
-        <div class="luker-rpg-memory-graph-search-title">${escapeHtml(i18n('Search Graph'))}</div>
-        <div class="luker-rpg-memory-graph-search-head">
-            <label class="luker-rpg-memory-graph-search-input-wrap">
-                <i class="fa-solid fa-magnifying-glass"></i>
-                <input
-                    type="search"
-                    class="text_pole luker-rpg-memory-graph-search-input"
-                    placeholder="${escapeHtml(i18n('Search graph nodes, summaries, IDs, or fields...'))}"
-                    value="${escapeHtml(searchModel.query)}"
-                />
-            </label>
-            <div class="luker-rpg-memory-graph-search-actions">
-                <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-prev"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'}>${escapeHtml(i18n('Prev Result'))}</button>
-                <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-next"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'}>${escapeHtml(i18n('Next Result'))}</button>
-                <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-clear"${searchModel.active ? '' : ' disabled'}>${escapeHtml(i18n('Clear Search'))}</button>
+<div class="luker-rpg-memory-graph-popup-inner">
+    <!-- HEADER -->
+    <div class="luker-graph-header">
+        <div class="luker-graph-header-left">
+            <h3 class="luker-graph-title">${escapeHtml(i18n('Memory Graph'))}</h3>
+            <div class="luker-graph-stats">
+                <span class="luker-graph-stat">${escapeHtml(i18n('Nodes'))} <b>${stats.nodeCount}</b></span>
+                <span class="luker-graph-stat">${escapeHtml(i18n('Edges'))} <b>${stats.edgeCount}</b></span>
+                <span class="luker-graph-stat">${escapeHtml(i18n('Turns'))} <b>${stats.messageCount}</b></span>
+                <span class="luker-graph-stat">${escapeHtml(i18n('Recall'))} <b>${stats.lastRecallSteps}</b></span>
             </div>
         </div>
-        <div class="luker-rpg-memory-graph-search-meta">
-            <div class="luker-rpg-memory-graph-search-filters">${searchFilterHtml}</div>
-            <small class="luker-rpg-memory-graph-search-summary">${escapeHtml(searchModel.summaryText)}</small>
+        <button type="button" class="luker-graph-search-toggle${isSearchOpen ? ' is-active' : ''}" title="${escapeHtml(i18n('Search'))}">
+            <i class="fa-solid fa-magnifying-glass"></i>
+        </button>
+    </div>
+
+    <!-- SEARCH (collapsible) -->
+    <div class="luker-graph-search-collapsible${isSearchOpen ? ' is-open' : ''}">
+        <div class="luker-rpg-memory-graph-search-shell">
+            <div class="luker-rpg-memory-graph-search-head">
+                <label class="luker-rpg-memory-graph-search-input-wrap">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input
+                        type="search"
+                        class="text_pole luker-rpg-memory-graph-search-input"
+                        placeholder="${escapeHtml(i18n('Search nodes, summaries, IDs...'))}"
+                        value="${escapeHtml(searchModel.query)}"
+                    />
+                </label>
+                <div class="luker-rpg-memory-graph-search-actions">
+                    <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-prev"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'} title="${escapeHtml(i18n('Prev Result'))}"><i class="fa-solid fa-chevron-up fa-fw"></i></button>
+                    <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-next"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'} title="${escapeHtml(i18n('Next Result'))}"><i class="fa-solid fa-chevron-down fa-fw"></i></button>
+                    <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-clear"${searchModel.active ? '' : ' disabled'} title="${escapeHtml(i18n('Clear Search'))}"><i class="fa-solid fa-xmark fa-fw"></i></button>
+                </div>
+            </div>
+            <div class="luker-rpg-memory-graph-search-meta">
+                <div class="luker-rpg-memory-graph-search-filters">${searchFilterHtml}</div>
+                <small class="luker-rpg-memory-graph-search-summary">${escapeHtml(searchModel.summaryText)}</small>
+            </div>
+            <div class="luker-rpg-memory-graph-search-results">${searchResultsHtml}</div>
         </div>
-        <div class="luker-rpg-memory-graph-search-results">${searchResultsHtml}</div>
     </div>
-    <div class="luker-rpg-memory-graph-workspace">
-        <div class="luker-rpg-memory-graph-canvas-wrap">
-            <div class="luker-rpg-memory-graph-cy"></div>
-            <small class="luker-rpg-memory-graph-selection">${escapeHtml(i18n('Visual graph ready. Click a node or edge to select it for editing.'))}</small>
+
+    <!-- TAB BAR -->
+    <div class="luker-graph-tab-bar">
+        <button type="button" class="${tabClass('graph')}" data-tab="graph"><i class="fa-solid fa-diagram-project fa-fw"></i><span>${escapeHtml(i18n('Graph'))}</span></button>
+        <button type="button" class="${tabClass('nodes')}" data-tab="nodes"><i class="fa-solid fa-circle-nodes fa-fw"></i><span>${escapeHtml(i18n('Nodes'))}</span></button>
+        <button type="button" class="${tabClass('edges')}" data-tab="edges"><i class="fa-solid fa-arrows-left-right fa-fw"></i><span>${escapeHtml(i18n('Edges'))}</span></button>
+        <button type="button" class="${tabClass('recall')}" data-tab="recall"><i class="fa-solid fa-file-lines fa-fw"></i><span>${escapeHtml(i18n('Recall'))}</span></button>
+    </div>
+
+    <!-- TAB: Graph -->
+    <div class="${panelClass('graph')}" data-panel="graph">
+        <div class="luker-rpg-memory-graph-workspace">
+            <div class="luker-rpg-memory-graph-canvas-wrap">
+                <div class="luker-rpg-memory-graph-cy"></div>
+                <div class="luker-graph-canvas-toolbar">
+                    <div class="menu_button menu_button_small luker-rpg-memory-graph-fit" title="${escapeHtml(i18n('Fit View'))}"><i class="fa-solid fa-expand fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-edge-add" title="${escapeHtml(i18n('Add Edge'))}"><i class="fa-solid fa-plus fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-edge-edit" title="${escapeHtml(i18n('Edit Selected Edge'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-node-delete" title="${escapeHtml(i18n('Delete Selected Node'))}"><i class="fa-solid fa-trash fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-edge-delete" title="${escapeHtml(i18n('Delete Selected Edge'))}"><i class="fa-solid fa-link-slash fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-graph-raw-view" title="${escapeHtml(i18n('JSON View'))}"><i class="fa-solid fa-code fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-graph-raw-edit" title="${escapeHtml(i18n('JSON Edit'))}"><i class="fa-solid fa-file-code fa-fw"></i></div>
+                </div>
+                <small class="luker-rpg-memory-graph-selection">${escapeHtml(i18n('Click a node or edge to inspect.'))}</small>
+            </div>
+            <div class="luker-rpg-memory-graph-sidepanel">
+                <div class="luker-graph-inspector-header">
+                    <h4 class="margin0">${escapeHtml(i18n('Inspector'))}</h4>
+                    <button type="button" class="luker-graph-inspector-toggle" title="${escapeHtml(i18n('Toggle Inspector'))}"><i class="fa-solid fa-chevron-down fa-fw"></i></button>
+                </div>
+                <small class="luker-rpg-memory-graph-sidehint">${escapeHtml(i18n('Select a node or edge to edit.'))}</small>
+                <div class="luker-rpg-memory-graph-editor-slot"></div>
+            </div>
         </div>
-        <div class="luker-rpg-memory-graph-sidepanel">
-            <h4 class="margin0">${escapeHtml(i18n('Inspector'))}</h4>
-            <small class="luker-rpg-memory-graph-sidehint">${escapeHtml(i18n('Select a node or edge to edit.'))}</small>
-            <div class="luker-rpg-memory-graph-editor-slot"></div>
+    </div>
+
+    <!-- TAB: Nodes -->
+    <div class="${panelClass('nodes')}" data-panel="nodes">
+        <div class="luker-rpg-memory-graph-table-wrap luker-graph-desktop-only">
+            <table class="table luker-graph-table">
+                <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Seq'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+                <tbody>${nodeTableRows}</tbody>
+            </table>
         </div>
+        <div class="luker-graph-card-list luker-graph-mobile-only">${nodeCardList}</div>
     </div>
-    <div class="flex-container luker-rpg-memory-graph-toolbar">
-        <div class="menu_button luker-rpg-memory-graph-fit">${escapeHtml(i18n('Fit View'))}</div>
-        <div class="menu_button luker-rpg-memory-edge-add">${escapeHtml(i18n('Add Edge'))}</div>
-        <div class="menu_button luker-rpg-memory-edge-edit">${escapeHtml(i18n('Edit Selected Edge'))}</div>
-        <div class="menu_button luker-rpg-memory-node-delete">${escapeHtml(i18n('Delete Selected Node'))}</div>
-        <div class="menu_button luker-rpg-memory-edge-delete">${escapeHtml(i18n('Delete Selected Edge'))}</div>
-        <div class="menu_button luker-rpg-memory-graph-raw-view">${escapeHtml(i18n('Advanced JSON View'))}</div>
-        <div class="menu_button luker-rpg-memory-graph-raw-edit">${escapeHtml(i18n('Advanced JSON Edit'))}</div>
+
+    <!-- TAB: Edges -->
+    <div class="${panelClass('edges')}" data-panel="edges">
+        <div class="luker-graph-edges-toolbar">
+            <div class="menu_button menu_button_small luker-rpg-memory-edge-add" title="${escapeHtml(i18n('Add Edge'))}"><i class="fa-solid fa-plus fa-fw"></i> ${escapeHtml(i18n('Add Edge'))}</div>
+        </div>
+        <div class="luker-rpg-memory-graph-table-wrap luker-graph-desktop-only">
+            <table class="table luker-graph-table">
+                <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+                <tbody>${edgeTableRows}</tbody>
+            </table>
+        </div>
+        <div class="luker-graph-card-list luker-graph-mobile-only">${edgeCardList}</div>
     </div>
-    <div class="luker-rpg-memory-graph-table-wrap">
-    <table class="table" style="font-size:12px; margin-top:8px;">
-        <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Level'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Children'))}</th><th>${escapeHtml(i18n('Sequence'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
-        <tbody>${rows}</tbody>
-    </table>
+
+    <!-- TAB: Recall -->
+    <div class="${panelClass('recall')}" data-panel="recall">
+        ${buildLastRecallCorePacketHtml(store, { showHeader: true })}
     </div>
-    <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Recent Edges'))}</h4>
-    <div class="luker-rpg-memory-graph-table-wrap">
-    <table class="table" style="font-size:12px; margin-top:6px;">
-        <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
-        <tbody>${edges.map(edge => `<tr><td>${escapeHtml(String(edge.from || ''))}</td><td>${escapeHtml(String(edge.to || ''))}</td><td>${escapeHtml(String(edge.type || ''))}</td><td>${Number(edge._index)}</td><td><div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}">${escapeHtml(i18n('Edit'))}</div></td></tr>`).join('')}</tbody>
-    </table>
-    </div>
-    <h4 class="margin0" style="margin-top:10px;">${escapeHtml(i18n('Last Projection'))}</h4>
-    ${buildLastRecallCorePacketHtml(store, { showHeader: false })}
 </div>`;
 }
 
@@ -9708,10 +9812,14 @@ async function openGraphInspectorPopup(context) {
     let searchType = MEMORY_GRAPH_SEARCH_ALL_TYPE;
     let activeSearchNodeId = '';
     let isSearchComposing = false;
+    let currentTab = 'graph';
+    let isSearchOpen = false;
     let runLayout = null;
     let mountRetryTimer = null;
     const popupHtml = `<div id="${popupId}" class="luker-rpg-memory-graph-popup">${renderGraphInspectorHtml(store, {
         searchState: { query: searchQuery, type: searchType, activeNodeId: activeSearchNodeId },
+        activeTab: currentTab,
+        isSearchOpen,
     })}</div>`;
 
     const popupPromise = context.callGenericPopup(
@@ -9745,7 +9853,7 @@ async function openGraphInspectorPopup(context) {
         activeSearchNodeId = initialModel.matchNodeIds[0] || '';
         return getSearchModel(currentStore);
     };
-    const getDefaultSelectionText = () => i18n('Visual graph ready. Click a node or edge to select it for editing.');
+    const getDefaultSelectionText = () => i18n('Click a node or edge to inspect.');
     const updateSelectionText = (text = '') => {
         const popupRoot = getPopupRoot();
         if (!popupRoot.length) {
@@ -9842,8 +9950,13 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (!nodeElement || !nodeElement.length) {
             return;
         }
+        const connectedEdges = nodeElement.connectedEdges();
+        const neighborhood = nodeElement.union(connectedEdges.connectedNodes()).union(connectedEdges);
         cy.animate({
-            center: { eles: nodeElement },
+            fit: {
+                eles: neighborhood.length > 1 ? neighborhood : nodeElement,
+                padding: 120,
+            },
             duration: 180,
         });
     };
@@ -10186,20 +10299,26 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
             cy = null;
         }
         syncSearchState(latest);
-        popupRoot.html(renderGraphInspectorHtml(latest, { searchState: getSearchState() }));
+        popupRoot.html(renderGraphInspectorHtml(latest, {
+            searchState: getSearchState(),
+            activeTab: currentTab,
+            isSearchOpen: isSearchOpen || Boolean(searchQuery),
+        }));
         if (!latest.edges?.[selectedEdgeIndex]) {
             selectedEdgeIndex = -1;
         }
         if (!latest.nodes?.[selectedNodeId]) {
             selectedNodeId = '';
         }
-        await mountGraphWithRetry();
-        if (cy && selectedNodeId && latest.nodes?.[selectedNodeId]) {
-            cy.$id(`node:${selectedNodeId}`).select();
-        } else if (cy && selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
-            cy.$id(`edge:${selectedEdgeIndex}`).select();
+        if (currentTab === 'graph') {
+            await mountGraphWithRetry();
+            if (cy && selectedNodeId && latest.nodes?.[selectedNodeId]) {
+                cy.$id(`node:${selectedNodeId}`).select();
+            } else if (cy && selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
+                cy.$id(`edge:${selectedEdgeIndex}`).select();
+            }
+            applySearchGraphState();
         }
-        applySearchGraphState();
         if (selectedNodeId && latest.nodes?.[selectedNodeId]) {
             updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', selectedNodeId));
         } else if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
@@ -10495,6 +10614,89 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
     };
 
     jQuery(document).off(namespace);
+
+    // --- Tab switching ---
+    const switchToTab = async (tabName) => {
+        if (tabName === currentTab) {
+            return;
+        }
+        currentTab = tabName;
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find('.luker-graph-tab').each(function () {
+            jQuery(this).toggleClass('is-active', String(jQuery(this).data('tab') || '') === tabName);
+        });
+        popupRoot.find('.luker-graph-tab-panel').each(function () {
+            jQuery(this).toggleClass('is-active', String(jQuery(this).data('panel') || '') === tabName);
+        });
+        if (tabName === 'graph') {
+            if (cy) {
+                requestAnimationFrame(() => {
+                    if (cy) {
+                        cy.resize();
+                        cy.fit(cy.elements(), 20);
+                    }
+                });
+            } else {
+                await mountGraphWithRetry();
+                applySearchGraphState();
+                updateInspectorPanel();
+            }
+        }
+    };
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-tab`, async function () {
+        await switchToTab(String(jQuery(this).data('tab') || 'graph'));
+    });
+
+    // --- Locate node/edge in graph ---
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-locate-node`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        if (!nodeId) return;
+        await switchToTab('graph');
+        selectNodeForInspection(nodeId, { focusGraph: true });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-locate-edge`, async function () {
+        const edgeIndex = Number(jQuery(this).data('edge-index'));
+        if (!Number.isInteger(edgeIndex) || edgeIndex < 0) return;
+        await switchToTab('graph');
+        selectEdgeForInspection(edgeIndex, { focusGraph: true });
+    });
+
+    // --- Search toggle ---
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-search-toggle`, function () {
+        isSearchOpen = !isSearchOpen;
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        jQuery(this).toggleClass('is-active', isSearchOpen);
+        popupRoot.find('.luker-graph-search-collapsible').toggleClass('is-open', isSearchOpen);
+        if (isSearchOpen) {
+            const input = popupRoot.find('.luker-rpg-memory-graph-search-input');
+            if (input.length) {
+                input.trigger('focus');
+            }
+        }
+    });
+
+    // --- Inspector toggle (mobile) ---
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-inspector-toggle`, function () {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const panel = popupRoot.find('.luker-rpg-memory-graph-sidepanel');
+        panel.toggleClass('is-collapsed');
+        const icon = jQuery(this).find('i');
+        if (panel.hasClass('is-collapsed')) {
+            icon.removeClass('fa-chevron-down').addClass('fa-chevron-up');
+        } else {
+            icon.removeClass('fa-chevron-up').addClass('fa-chevron-down');
+        }
+    });
+
     jQuery(document).on(`compositionstart${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, function () {
         isSearchComposing = true;
     });
@@ -10568,6 +10770,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
 
     jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-edit`, async function () {
         const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        await switchToTab('graph');
         selectNodeForInspection(nodeId, { focusGraph: true });
         return;
     });
@@ -10643,6 +10846,7 @@ ${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
         if (!Number.isInteger(edgeIndex) || edgeIndex < 0) {
             return;
         }
+        await switchToTab('graph');
         selectEdgeForInspection(edgeIndex, { focusGraph: true });
     });
 
@@ -11089,8 +11293,19 @@ function ensureStyles() {
     max-width: min(96vw, 1480px) !important;
 }
 
+.popup:has(.luker-rpg-memory-graph-popup) .popup-body {
+    min-height: 0;
+}
+
 .popup:has(.luker-rpg-memory-graph-popup) .popup-content {
-    overflow: auto !important;
+    overflow: hidden !important;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) .popup-controls {
+    margin-top: 6px;
 }
 
 .luker-rpg-schema-popup .luker-schema-topbar {
@@ -11304,23 +11519,342 @@ function ensureStyles() {
 }
 
 .luker-rpg-memory-graph-popup {
-    width: min(1380px, calc(100vw - 48px));
-    max-width: min(1380px, calc(100vw - 48px));
+    width: min(1380px, calc(100vw - 32px));
+    max-width: min(1380px, calc(100vw - 32px));
     min-width: 0;
     box-sizing: border-box;
-    overflow-x: auto;
+    overflow-x: hidden;
 }
 
 .luker-rpg-memory-graph-popup-inner {
-    gap: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
     align-items: stretch;
     text-align: left;
     width: 100%;
     max-width: 100%;
     min-width: 0;
     box-sizing: border-box;
-    overflow-x: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    max-height: calc(100vh - 170px);
+    max-height: calc(100dvh - 170px);
 }
+
+/* --- Header --- */
+.luker-graph-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 2px 10px;
+}
+
+.luker-graph-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.luker-graph-title {
+    margin: 0;
+    font-size: 1.1em;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.luker-graph-stats {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-graph-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 0.82em;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.luker-graph-stat b {
+    font-weight: 700;
+    color: rgba(180, 220, 200, 0.95);
+}
+
+.luker-graph-search-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.luker-graph-search-toggle:hover {
+    border-color: rgba(140, 205, 168, 0.5);
+}
+
+.luker-graph-search-toggle.is-active {
+    border-color: rgba(140, 205, 168, 0.8);
+    background: rgba(40, 86, 68, 0.5);
+}
+
+/* --- Search collapsible --- */
+.luker-graph-search-collapsible {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease, padding 0.25s ease;
+    padding: 0;
+}
+
+.luker-graph-search-collapsible.is-open {
+    max-height: 600px;
+    overflow: visible;
+    padding: 0 0 8px;
+}
+
+/* --- Tab bar --- */
+.luker-graph-tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    margin-bottom: 0;
+}
+
+.luker-graph-tab {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 8px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.9em;
+    opacity: 0.7;
+    transition: opacity 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    white-space: nowrap;
+}
+
+.luker-graph-tab:hover {
+    opacity: 0.9;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.luker-graph-tab.is-active {
+    opacity: 1;
+    border-bottom-color: rgba(140, 205, 168, 0.85);
+    background: rgba(40, 86, 68, 0.15);
+}
+
+.luker-graph-tab i {
+    font-size: 1em;
+}
+
+/* --- Tab panels --- */
+.luker-graph-tab-panel {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.luker-graph-tab-panel.is-active {
+    display: flex;
+}
+
+/* --- Canvas toolbar (icon buttons) --- */
+.luker-graph-canvas-toolbar {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    padding: 4px 0 2px;
+}
+
+.luker-graph-canvas-toolbar .menu_button,
+.luker-graph-canvas-toolbar .menu_button_small {
+    width: 34px;
+    height: 34px;
+    min-width: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+}
+
+/* --- Inspector header with toggle --- */
+.luker-graph-inspector-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.luker-graph-inspector-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+/* --- Edges toolbar --- */
+.luker-graph-edges-toolbar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+/* --- Row actions (icon buttons in tables) --- */
+.luker-graph-row-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.luker-graph-row-actions .menu_button,
+.luker-graph-row-actions .menu_button_small {
+    width: 30px;
+    height: 30px;
+    min-width: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+}
+
+/* --- Table styles --- */
+.luker-graph-table {
+    font-size: 12px;
+    width: 100%;
+    table-layout: fixed;
+}
+
+.luker-graph-td-summary {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* --- Card list (mobile) --- */
+.luker-graph-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 65vh;
+    overflow-y: auto;
+    padding: 2px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.luker-graph-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.28));
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+}
+
+.luker-graph-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+}
+
+.luker-graph-card-title {
+    font-weight: 600;
+    font-size: 0.95em;
+    line-height: 1.3;
+    min-width: 0;
+    word-break: break-word;
+    flex: 1;
+}
+
+.luker-graph-card-type {
+    flex-shrink: 1;
+    min-width: 0;
+    font-size: 0.74em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(83, 133, 176, 0.18);
+    color: rgba(223, 239, 255, 0.96);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 50%;
+}
+
+.luker-graph-card-meta {
+    font-size: 0.78em;
+    opacity: 0.65;
+}
+
+.luker-graph-card-body {
+    font-size: 0.88em;
+    line-height: 1.4;
+    opacity: 0.88;
+}
+
+.luker-graph-card-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.luker-graph-card-actions .menu_button,
+.luker-graph-card-actions .menu_button_small {
+    width: 30px;
+    height: 30px;
+    min-width: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+}
+
+/* --- Desktop/mobile visibility --- */
+.luker-graph-desktop-only { display: block; }
+.luker-graph-mobile-only { display: none; }
 
 .luker-rpg-memory-graph-search-shell {
     display: flex;
@@ -11336,14 +11870,6 @@ function ensureStyles() {
     background:
         radial-gradient(circle at top left, rgba(63, 166, 111, 0.18), transparent 42%),
         linear-gradient(140deg, rgba(20, 24, 33, 0.9), rgba(11, 14, 20, 0.72));
-}
-
-.luker-rpg-memory-graph-search-title {
-    font-size: 0.78em;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(205, 239, 221, 0.92);
 }
 
 .luker-rpg-memory-graph-search-head {
@@ -11524,29 +12050,12 @@ function ensureStyles() {
 
 .luker-rpg-memory-graph-workspace {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
     gap: 10px;
     align-items: stretch;
     width: 100%;
     max-width: 100%;
     min-width: 0;
-}
-
-.luker-rpg-memory-graph-toolbar {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 8px;
-    margin-top: 6px;
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
-}
-
-.luker-rpg-memory-graph-toolbar .menu_button,
-.luker-rpg-memory-graph-toolbar .menu_button_small {
-    width: 100%;
-    text-align: center;
 }
 
 .luker-rpg-memory-graph-canvas-wrap {
@@ -11561,7 +12070,8 @@ function ensureStyles() {
 
 .luker-rpg-memory-graph-cy {
     width: 100%;
-    height: min(62vh, 640px);
+    height: min(58vh, 580px);
+    height: min(58dvh, 580px);
     border-radius: 8px;
     background: rgba(10, 12, 16, 0.5);
     cursor: grab;
@@ -11581,7 +12091,8 @@ function ensureStyles() {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-height: min(62vh, 640px);
+    max-height: min(58vh, 580px);
+    max-height: min(58dvh, 580px);
     overflow: auto;
 }
 
@@ -11647,12 +12158,6 @@ function ensureStyles() {
 .luker-rpg-memory-graph-table-wrap td {
     word-break: break-word;
     overflow-wrap: anywhere;
-}
-
-@media (min-width: 1500px) {
-    .luker-rpg-memory-graph-workspace {
-        grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
-    }
 }
 
 .luker-rpg-memory-node-form {
@@ -11738,8 +12243,19 @@ function ensureStyles() {
     gap: 4px;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1000px) {
+    .popup:has(.luker-rpg-memory-graph-popup) {
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    .popup:has(.luker-rpg-memory-graph-popup) .popup-content {
+        padding: 0 2px;
+    }
     .luker-rpg-schema-popup {
+        width: 100%;
+        max-width: 100%;
+    }
+    .luker-rpg-memory-graph-popup {
         width: 100%;
         max-width: 100%;
     }
@@ -11766,11 +12282,83 @@ function ensureStyles() {
         flex-direction: column;
         align-items: stretch;
     }
+    /* Graph workspace: single column on mobile */
     .luker-rpg-memory-graph-workspace {
         grid-template-columns: minmax(0, 1fr);
     }
+    .luker-rpg-memory-graph-cy {
+        height: min(55vh, 420px);
+    }
+    /* Inspector: bottom panel on mobile */
     .luker-rpg-memory-graph-sidepanel {
-        max-height: none;
+        max-height: 40vh;
+        border-top: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    }
+    .luker-rpg-memory-graph-sidepanel.is-collapsed {
+        max-height: 38px;
+        overflow: hidden;
+    }
+    .luker-graph-inspector-toggle {
+        display: inline-flex;
+    }
+    /* Show mobile card lists, hide desktop tables */
+    .luker-graph-desktop-only { display: none !important; }
+    .luker-graph-mobile-only { display: flex !important; }
+    .luker-graph-tab-panel {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+    .luker-graph-card-list {
+        padding: 0;
+    }
+    .luker-graph-card {
+        padding: 10px 8px;
+    }
+    .luker-graph-card-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+    }
+    .luker-graph-card-type {
+        justify-self: start;
+        max-width: 100%;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        overflow-wrap: anywhere;
+    }
+    /* Header: stack title and stats */
+    .luker-graph-header-left {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+    /* Search actions: compact */
+    .luker-rpg-memory-graph-search-actions {
+        gap: 4px;
+    }
+    .luker-rpg-memory-graph-search-results {
+        grid-template-columns: 1fr;
+    }
+    /* Node form grid: 2 columns on mobile */
+    .luker-rpg-memory-node-form-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 480px) {
+    /* Tab labels: icon only on very small screens */
+    .luker-graph-tab span {
+        display: none;
+    }
+    .luker-graph-tab {
+        gap: 0;
+        padding: 10px 6px;
+    }
+    .luker-graph-stat {
+        font-size: 0.75em;
+        padding: 2px 7px;
     }
 }
 </style>`);
