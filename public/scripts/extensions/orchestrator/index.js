@@ -764,9 +764,11 @@ function registerLocaleData() {
         'User Prompt Template': '用户提示词模板',
         'new_preset_id': 'new_preset_id',
         'Character Override: ${0}': '角色卡覆写：${0}',
+        'Character Draft: ${0}': '角色卡草稿：${0}',
         'Global Orchestration Profile': '全局编排配置',
         'Character override (enabled)': '角色卡覆写（已启用）',
         'Character override (configured, currently disabled)': '角色卡覆写（已配置，当前禁用）',
+        'Character draft (not saved yet)': '角色卡草稿（尚未保存）',
         'Global profile (no character override for current card)': '全局配置（当前角色卡无覆写）',
         'Preset ID cannot be empty.': '预设 ID 不能为空。',
         'Preset \'${0}\' already exists.': '预设 \'${0}\' 已存在。',
@@ -1047,9 +1049,11 @@ function registerLocaleData() {
         'User Prompt Template': '使用者提示詞模板',
         'new_preset_id': 'new_preset_id',
         'Character Override: ${0}': '角色卡覆寫：${0}',
+        'Character Draft: ${0}': '角色卡草稿：${0}',
         'Global Orchestration Profile': '全域編排設定',
         'Character override (enabled)': '角色卡覆寫（已啟用）',
         'Character override (configured, currently disabled)': '角色卡覆寫（已設定，當前停用）',
+        'Character draft (not saved yet)': '角色卡草稿（尚未儲存）',
         'Global profile (no character override for current card)': '全域設定（目前角色卡無覆寫）',
         'Preset ID cannot be empty.': '預設 ID 不能為空。',
         'Preset \'${0}\' already exists.': '預設 \'${0}\' 已存在。',
@@ -1110,6 +1114,8 @@ const uiState = {
     characterEditor: null,
     globalAgendaEditor: null,
     characterAgendaEditor: null,
+    specDisplayedScope: 'global',
+    agendaDisplayedScope: 'global',
     aiIterationSession: null,
     orchEditorPopupContentId: '',
 };
@@ -6222,6 +6228,7 @@ function initializeUiState(context) {
     ensureEditorIntegrity(uiState.characterEditor);
     ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
     ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+    syncDisplayedScopesFromStoredState(context, getSettings());
 }
 
 function syncCharacterEditorWithActiveAvatar(context) {
@@ -6235,19 +6242,63 @@ function syncCharacterEditorWithActiveAvatar(context) {
     uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
     ensureEditorIntegrity(uiState.characterEditor);
     ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+    syncDisplayedScopesFromStoredState(context, getSettings());
 }
 
 function hasCharacterOverride(context, avatar) {
     return hasCharacterSpecOverride(context, avatar);
 }
 
-function getDisplayedScope(context, settings) {
-    const mode = getExecutionMode(settings);
+function getScopePreferenceStateKey(mode = ORCH_EXECUTION_MODE_SPEC) {
+    return normalizeExecutionMode(mode) === ORCH_EXECUTION_MODE_AGENDA
+        ? 'agendaDisplayedScope'
+        : 'specDisplayedScope';
+}
+
+function getStoredDisplayedScopeForMode(context, settings, mode = ORCH_EXECUTION_MODE_SPEC) {
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
-    if (mode === ORCH_EXECUTION_MODE_AGENDA) {
+    if (normalizeExecutionMode(mode) === ORCH_EXECUTION_MODE_AGENDA) {
         return hasCharacterAgendaOverride(context, activeAvatar) ? 'character' : 'global';
     }
     return hasCharacterSpecOverride(context, activeAvatar) ? 'character' : 'global';
+}
+
+function setDisplayedScopeForMode(context, settings, mode = ORCH_EXECUTION_MODE_SPEC, scope = '') {
+    const key = getScopePreferenceStateKey(mode);
+    const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+    if (scope === 'character' && activeAvatar) {
+        uiState[key] = 'character';
+        return uiState[key];
+    }
+    if (scope === 'global') {
+        uiState[key] = 'global';
+        return uiState[key];
+    }
+    uiState[key] = getStoredDisplayedScopeForMode(context, settings, mode);
+    return uiState[key];
+}
+
+function syncDisplayedScopesFromStoredState(context, settings) {
+    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC);
+    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA);
+}
+
+function getDisplayedScopeForMode(context, settings, mode = ORCH_EXECUTION_MODE_SPEC) {
+    const key = getScopePreferenceStateKey(mode);
+    const preferredScope = String(uiState[key] || '');
+    const storedScope = getStoredDisplayedScopeForMode(context, settings, mode);
+    if (storedScope === 'character') {
+        return 'character';
+    }
+    const activeAvatar = String(getCurrentAvatar(context) || '').trim();
+    if (preferredScope === 'character' && activeAvatar) {
+        return 'character';
+    }
+    return 'global';
+}
+
+function getDisplayedScope(context, settings) {
+    return getDisplayedScopeForMode(context, settings, getExecutionMode(settings));
 }
 
 function getEditorByScope(scope) {
@@ -6258,13 +6309,51 @@ function getAgendaEditorByScope(scope) {
     return scope === 'character' ? uiState.characterAgendaEditor : uiState.globalAgendaEditor;
 }
 
-function getAgendaScopeFromElement(element, context, settings) {
+function getScopeFromElementOrMode(element, context, settings, mode = ORCH_EXECUTION_MODE_SPEC) {
     const scope = String(
         jQuery(element).data('scope')
         || jQuery(element).closest('[data-luker-scope-root]').data('luker-scope-root')
-        || getDisplayedScope(context, settings),
+        || getDisplayedScopeForMode(context, settings, mode),
     );
     return scope === 'character' ? 'character' : 'global';
+}
+
+function getAgendaScopeFromElement(element, context, settings) {
+    return getScopeFromElementOrMode(element, context, settings, ORCH_EXECUTION_MODE_AGENDA);
+}
+
+function getDisplayedScopeLabel(isCharacterScope, hasPersistedOverride, isEnabled) {
+    if (!isCharacterScope) {
+        return i18n('Global profile (no character override for current card)');
+    }
+    if (!hasPersistedOverride) {
+        return i18n('Character draft (not saved yet)');
+    }
+    return isEnabled
+        ? i18n('Character override (enabled)')
+        : i18n('Character override (configured, currently disabled)');
+}
+
+function getPopupEditingLabel(isCharacterScope, hasPersistedOverride, isEnabled) {
+    if (!isCharacterScope) {
+        return i18n('Global profile');
+    }
+    if (!hasPersistedOverride) {
+        return i18n('Character draft (not saved yet)');
+    }
+    return isEnabled
+        ? i18n('Current character override')
+        : i18n('Character override (configured, currently disabled)');
+}
+
+function getProfileTitleForScope(context, activeAvatar, isCharacterScope, hasPersistedOverride) {
+    if (!isCharacterScope) {
+        return i18n('Global Orchestration Profile');
+    }
+    const displayName = getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar;
+    return hasPersistedOverride
+        ? i18nFormat('Character Override: ${0}', displayName)
+        : i18nFormat('Character Draft: ${0}', displayName);
 }
 
 function buildBestEffortSpecFromAgendaAgents(agents, finalAgentId) {
@@ -6621,8 +6710,12 @@ function renderDynamicPanels(root, context) {
     const activeAvatar = String(getCurrentAvatar(context) || '').trim();
     const override = activeAvatar ? getCharacterOverrideByAvatar(context, activeAvatar) : null;
     const agendaOverride = activeAvatar ? getCharacterAgendaOverrideByAvatar(context, activeAvatar) : null;
-    const scope = getDisplayedScope(context, settings);
-    const isCharacterScope = scope === 'character';
+    const specScope = getDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC);
+    const agendaScope = getDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA);
+    const isSpecCharacterScope = specScope === 'character';
+    const isAgendaCharacterScope = agendaScope === 'character';
+    const hasSpecCharacterOverride = hasCharacterSpecOverride(context, activeAvatar);
+    const hasAgendaCharacterOverride = hasCharacterAgendaOverride(context, activeAvatar);
     const isOverrideEnabled = Boolean(override?.enabled);
     const isAgendaOverrideEnabled = Boolean(agendaOverride?.enabled);
     root.find('#luker_orch_profile_target').text(
@@ -6631,9 +6724,7 @@ function renderDynamicPanels(root, context) {
             : i18n('(No character card)'),
     );
     root.find('#luker_orch_profile_mode').text(
-        isCharacterScope
-            ? (isOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
-            : i18n('Global profile (no character override for current card)'),
+        getDisplayedScopeLabel(isSpecCharacterScope, hasSpecCharacterOverride, isOverrideEnabled),
     );
     root.find('#luker_orch_agenda_profile_target').text(
         activeAvatar
@@ -6641,9 +6732,7 @@ function renderDynamicPanels(root, context) {
             : i18n('(No character card)'),
     );
     root.find('#luker_orch_agenda_profile_mode').text(
-        isCharacterScope
-            ? (isAgendaOverrideEnabled ? i18n('Character override (enabled)') : i18n('Character override (configured, currently disabled)'))
-            : i18n('Global profile (no character override for current card)'),
+        getDisplayedScopeLabel(isAgendaCharacterScope, hasAgendaCharacterOverride, isAgendaOverrideEnabled),
     );
     const hasLastRun = Boolean(getLatestOrchestrationEntry(context));
     root.find('[data-luker-action="view-last-run"]').toggleClass('luker_orch_button_disabled', !hasLastRun);
@@ -6667,12 +6756,9 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
         const editor = getAgendaEditorByScope(scope);
         const agendaOverride = activeAvatar ? getCharacterAgendaOverrideByAvatar(context, activeAvatar) : null;
         const isCharacterScope = scope === 'character';
-        const editingLabel = isCharacterScope
-            ? (agendaOverride?.enabled ? i18n('Current character override') : i18n('Character override (configured, currently disabled)'))
-            : i18n('Global profile');
-        const profileTitle = isCharacterScope
-            ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
-            : i18n('Global Orchestration Profile');
+        const hasAgendaCharacterOverride = hasCharacterAgendaOverride(context, activeAvatar);
+        const editingLabel = getPopupEditingLabel(isCharacterScope, hasAgendaCharacterOverride, Boolean(agendaOverride?.enabled));
+        const profileTitle = getProfileTitleForScope(context, activeAvatar, isCharacterScope, hasAgendaCharacterOverride);
         return `
 <div class="luker_orch_editor_popup">
     <div class="luker_orch_board">
@@ -6713,16 +6799,16 @@ function buildOrchestrationEditorPopupPanelHtml(context, settings) {
     const scope = getDisplayedScope(context, settings);
     const editor = getEditorByScope(scope);
     const isCharacterScope = scope === 'character';
-    const profileTitle = isCharacterScope
-        ? i18nFormat('Character Override: ${0}', getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar)
-        : i18n('Global Orchestration Profile');
+    const override = activeAvatar ? getCharacterOverrideByAvatar(context, activeAvatar) : null;
+    const hasSpecCharacterOverride = hasCharacterSpecOverride(context, activeAvatar);
+    const profileTitle = getProfileTitleForScope(context, activeAvatar, isCharacterScope, hasSpecCharacterOverride);
     return `
 <div class="luker_orch_editor_popup">
     <div class="luker_orch_board">
         <div class="luker_orch_character_row">
             <div>
                 <small>${escapeHtml(i18n('Current card:'))} <span>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</span></small><br />
-                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(isCharacterScope ? i18n('Current character override') : i18n('Global profile'))}</span></small>
+                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(getPopupEditingLabel(isCharacterScope, hasSpecCharacterOverride, Boolean(override?.enabled)))}</span></small>
             </div>
             <div>
                 <label>${escapeHtml(i18n('AI build goal (optional)'))}</label>
@@ -11694,20 +11780,22 @@ function bindUi() {
         ensureEditorIntegrity(editor);
 
         if (action === 'agenda-copy-from-spec') {
-            const agendaScope = scope === 'character' ? 'character' : getAgendaScopeFromElement(this, context, settings);
-            const agendaEditor = getAgendaEditorByScope(agendaScope);
-            const sourceEditor = getEditorByScope(agendaScope);
+            const copyScope = getScopeFromElementOrMode(this, context, settings, getExecutionMode(settings));
+            const agendaEditor = getAgendaEditorByScope(copyScope);
+            const sourceEditor = getEditorByScope(copyScope);
             copySpecPresetsIntoAgendaEditor(sourceEditor, agendaEditor);
+            setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, copyScope);
             notifySuccess(i18n('Copied spec agents into agenda as a starting point.'));
             renderDynamicPanels(root, context);
             return;
         }
 
         if (action === 'spec-copy-from-agenda') {
-            const agendaScope = scope === 'character' ? 'character' : getAgendaScopeFromElement(this, context, settings);
-            const agendaEditor = getAgendaEditorByScope(agendaScope);
-            const targetEditor = getEditorByScope(agendaScope);
+            const copyScope = getScopeFromElementOrMode(this, context, settings, getExecutionMode(settings));
+            const agendaEditor = getAgendaEditorByScope(copyScope);
+            const targetEditor = getEditorByScope(copyScope);
             copyAgendaAgentsIntoSpecEditor(agendaEditor, targetEditor);
+            setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, copyScope);
             notifySuccess(i18n('Copied agenda agents into spec presets and rebuilt stages as a starting point.'));
             renderDynamicPanels(root, context);
             return;
@@ -11870,10 +11958,12 @@ function bindUi() {
                 if (hasCharacterAgendaOverride(context, activeAvatar)) {
                     uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
                     ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+                    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'character');
                     updateUiStatus(i18nFormat('Reloaded character override for ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar) || 'N/A'));
                 } else {
                     uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
                     ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+                    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'global');
                     updateUiStatus(i18n('Reloaded global profile from settings.'));
                 }
                 renderDynamicPanels(root, context);
@@ -11884,10 +11974,12 @@ function bindUi() {
             if (hasCharacterOverride(context, activeAvatar)) {
                 uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
                 ensureEditorIntegrity(uiState.characterEditor);
+                setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'character');
                 updateUiStatus(i18nFormat('Reloaded character override for ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar) || 'N/A'));
             } else {
                 uiState.globalEditor = loadGlobalEditorState();
                 ensureEditorIntegrity(uiState.globalEditor);
+                setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'global');
                 updateUiStatus(i18n('Reloaded global profile from settings.'));
             }
             renderDynamicPanels(root, context);
@@ -12029,6 +12121,7 @@ function bindUi() {
                         await saveSettings();
                         uiState.globalAgendaEditor = loadGlobalAgendaEditorState();
                         ensureAgendaEditorIntegrity(uiState.globalAgendaEditor);
+                        setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'global');
                         notifySuccess(i18n('Imported to global profile.'));
                         updateUiStatus(i18n('Imported to global profile.'));
                     } else {
@@ -12061,6 +12154,7 @@ function bindUi() {
                         }
                         uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
                         ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+                        setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'character');
                         notifySuccess(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
                         updateUiStatus(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
                     }
@@ -12070,6 +12164,7 @@ function bindUi() {
                     await saveSettings();
                     uiState.globalEditor = loadGlobalEditorState();
                     ensureEditorIntegrity(uiState.globalEditor);
+                    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'global');
                     notifySuccess(i18n('Imported to global profile.'));
                     updateUiStatus(i18n('Imported to global profile.'));
                 } else {
@@ -12094,6 +12189,7 @@ function bindUi() {
                     }
                     uiState.characterEditor = loadCharacterEditorState(context, avatar);
                     ensureEditorIntegrity(uiState.characterEditor);
+                    setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'character');
                     notifySuccess(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
                     updateUiStatus(i18nFormat('Imported to character override: ${0}.', getCharacterDisplayNameByAvatar(context, avatar)));
                 }
@@ -12128,9 +12224,11 @@ function bindUi() {
             if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
                 uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, activeAvatar);
                 ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+                setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'character');
             } else {
                 uiState.characterEditor = loadCharacterEditorState(context, activeAvatar);
                 ensureEditorIntegrity(uiState.characterEditor);
+                setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'character');
             }
             notifySuccess(i18n('Character orchestration override saved.'));
             updateUiStatus(i18nFormat('Saved to character override: ${0}.', getCharacterDisplayNameByAvatar(context, activeAvatar)));
@@ -12188,9 +12286,11 @@ function bindUi() {
             if (getExecutionMode(settings) === ORCH_EXECUTION_MODE_AGENDA) {
                 uiState.characterAgendaEditor = loadCharacterAgendaEditorState(context, avatar);
                 ensureAgendaEditorIntegrity(uiState.characterAgendaEditor);
+                setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_AGENDA, 'global');
             } else {
                 uiState.characterEditor = loadCharacterEditorState(context, avatar);
                 ensureEditorIntegrity(uiState.characterEditor);
+                setDisplayedScopeForMode(context, settings, ORCH_EXECUTION_MODE_SPEC, 'global');
             }
             renderDynamicPanels(root, context);
             notifyInfo(i18n('Character orchestration override removed.'));
