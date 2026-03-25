@@ -1,0 +1,14002 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
+// Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
+
+import { extension_prompt_roles, extension_prompt_types, resolveChatStateTarget, saveSettings, saveSettingsDebounced } from '../../../script.js';
+import { extension_settings, getContext } from '../../extensions.js';
+import { addLocaleData, translate } from '../../i18n.js';
+import { sendOpenAIRequest } from '../../openai.js';
+import { performFuzzySearch } from '../../power-user.js';
+import { download, getFileText, getStringHash } from '../../utils.js';
+import { newWorldInfoEntryTemplate, setGlobalWorldInfoSelection, world_info_position } from '../../world-info.js';
+import { registerManagedRegexProvider, regex_placement, substitute_find_regex } from '../regex/engine.js';
+import { getChatCompletionConnectionProfiles, resolveChatCompletionRequestProfile } from '../connection-manager/profile-resolver.js';
+import {
+    TOOL_PROTOCOL_STYLE,
+    extractAllFunctionCalls,
+    mergeUserAddendumIntoPromptMessages,
+    validateParsedToolCalls,
+} from '../function-call-runtime.js';
+import {
+    buildAdvancedSettingsPopupHtml,
+    buildManualCompressionPopupHtml,
+    buildMemoryGraphSettingsHtml,
+    buildSchemaEditorPopupHtml,
+} from './ui-templates.js';
+
+const MODULE_NAME = 'memory_graph';
+const CHAT_STATE_NAMESPACE = MODULE_NAME;
+const PERSISTED_STORE_VERSION = 8;
+const UI_BLOCK_ID = 'memory_graph_settings';
+const STYLE_ID = 'memory_graph_style';
+const SHARED_LOREBOOK_NAME = '__MEMORY_GRAPH__';
+const RUNTIME_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_RUNTIME';
+const PERSISTENT_LOREBOOK_COMMENT_PREFIX = 'MEMORY_GRAPH_PERSISTENT';
+const RECALL_ALLOWED_GENERATION_TYPES = new Set(['normal', 'continue', 'regenerate', 'swipe', 'impersonate']);
+const RECALL_REUSE_GENERATION_TYPES = new Set(['continue', 'regenerate', 'swipe']);
+const CHARACTER_SCHEMA_OVERRIDE_KEY = 'schemaOverride';
+const CHARACTER_ADVANCED_OVERRIDE_KEY = 'advancedOverride';
+const MEMORY_GRAPH_SEARCH_ALL_TYPE = '__all__';
+const MEMORY_GRAPH_SEARCH_RESULT_PREVIEW_LIMIT = 10;
+const SWIPE_TAIL_CACHE_MAX_ENTRIES = 12;
+const GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID = `${MODULE_NAME}_generation_visible_history`;
+const GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID = `${MODULE_NAME}_generation_visible_history_runtime_script`;
+const RECALL_INJECT_POSITION_SCHEMA_VERSION = 2;
+const SUPPORTED_WORLD_INFO_POSITIONS = Object.freeze([
+    world_info_position.before,
+    world_info_position.after,
+    world_info_position.ANTop,
+    world_info_position.ANBottom,
+    world_info_position.EMTop,
+    world_info_position.EMBottom,
+    world_info_position.atDepth,
+]);
+
+const LEVEL = {
+    SEMANTIC: 'semantic',
+};
+
+const DEFAULT_EVENT_SUMMARY_COLUMN_HINT = 'Start with "时间：<time>；" using an explicit full in-world date/time or date span, then give a concise event abstraction with causality and outcome.';
+const DEFAULT_EVENT_KEY_SENTENCES_COLUMN_HINT = 'Key sentences in this event from characters involved in. Start with characters name and seperated by semicolons.';
+const DEFAULT_EVENT_EXTRACT_HINT = 'Critical plot events, turning points, commitments, betrayals, irreversible outcomes, and their explicit in-world time/time span written at the start of summary.';
+const DEFAULT_EVENT_COMPRESSION_INSTRUCTION = 'Compress event nodes into high-value storyline milestones. Preserve explicit in-world time/time span by writing it at the start of summary, along with causality, irreversible outcomes, and unresolved hooks. Keep each summary focused and compact, target within 150 Chinese characters (soft limit). Hallucinate is not allowed except continuity-consistent inference for missing event time. You shall only compress and summary instead of continuing any story. Output time as explicit full in-world time/time span, never placeholders. Summary must start with "时间：<time>；". Output key_sentences as a few core lines, each prefixed by character name and separated by semicolons.';
+const EVENT_SUMMARY_TIME_EXTRACT_PROMPT_LINES = [
+    'Event summary time hard rule: every event row must put an explicit full in-world date/time or date span at the start of summary, formatted as "时间：<time>；<summary>".',
+    'Event summary time completeness rule: use complete year/month/day-style precision when the world supports it; for non-real-world settings, use that world\'s full calendar/date notation instead of modern placeholders.',
+    'Event summary time inference rule: when dialogue/context does not state a concrete time, infer or invent one plausible full in-world timestamp/span from chronology, world info, and continuity. This constructive inference is allowed only for the summary time prefix, and it must stay consistent with known facts.',
+    'Event summary time placeholder ban: never use placeholders or vague substitutes such as x年x月x日, X年X月X日, 某年某月某日, 未知时间, 待定时间.',
+    'Event summary prefix rule: after the time prefix, continue with concise causal summary text.',
+];
+
+const defaultNodeTypeSchema = [
+    {
+        id: 'event',
+        label: 'Event',
+        tableName: 'event_table',
+        tableColumns: ['summary', 'key_sentences'],
+        columnHints: {
+            summary: DEFAULT_EVENT_SUMMARY_COLUMN_HINT,
+            key_sentences: DEFAULT_EVENT_KEY_SENTENCES_COLUMN_HINT,
+        },
+        requiredColumns: ['summary'],
+        forceUpdate: true,
+        editable: false,
+        level: LEVEL.SEMANTIC,
+        extractHint: DEFAULT_EVENT_EXTRACT_HINT,
+        keywords: ['battle', 'reveal', 'deal', 'betrayal', 'event', 'outcome'],
+        alwaysInject: true,
+        latestOnly: false,
+        primaryKeyColumns: [],
+        compression: {
+            mode: 'hierarchical',
+            threshold: 9,
+            fanIn: 3,
+            maxDepth: 10,
+            keepRecentLeaves: 6,
+            summarizeInstruction: DEFAULT_EVENT_COMPRESSION_INSTRUCTION,
+        },
+    },
+    {
+        id: 'character_sheet',
+        label: 'Character Sheet',
+        tableName: 'character_table',
+        tableColumns: ['name', 'aliases', 'traits', 'identity', 'state', 'goal', 'inventory', 'language_sample', 'core_note', 'addressing_user'],
+        columnHints: {
+            name: 'Canonical character name only. Do not include aliases, English names, titles, translations, or any parenthetical/bracketed clarification here.',
+            aliases: 'Nicknames, aliases, titles, English names, translated names, or alternative names used in dialogue. Store them here instead of appending them to name.',
+            traits: 'Stable character traits, personality tendencies, and notable appearance/style markers.',
+            identity: 'Stable identity/background facts.',
+            state: 'Current condition or stance.',
+            goal: 'Current objective or motivation.',
+            inventory: 'Key carried or owned items.',
+            language_sample: 'Representative current speech style sample.',
+            core_note: 'Stable critical notes worth persistent recall.',
+            addressing_user: 'How this character addresses the user.',
+        },
+        requiredColumns: ['name'],
+        forceUpdate: false,
+        editable: true,
+        level: LEVEL.SEMANTIC,
+        extractHint: 'Stable character facts and evolving state. Prefer structured JSON-like content: aliases/traits/identity/status/goal/inventory/core notes.',
+        keywords: ['character', 'alias', 'traits', 'personality', 'status', 'relationship', 'inventory', 'goal', 'core note'],
+        alwaysInject: false,
+        latestOnly: true,
+        primaryKeyColumns: ['name', 'aliases'],
+        compression: {
+            mode: 'none',
+            threshold: 2,
+            fanIn: 2,
+            maxDepth: 1,
+            keepRecentLeaves: 1,
+            summarizeInstruction: '',
+        },
+    },
+    {
+        id: 'location_state',
+        label: 'Location State',
+        tableName: 'location_table',
+        tableColumns: ['name', 'aliases', 'controller', 'danger', 'resources', 'state'],
+        columnHints: {
+            name: 'Canonical location name only. Do not include aliases, English names, translations, or any parenthetical/bracketed clarification here.',
+            aliases: 'Alternative location names, English names, translated names, short names, or colloquial references. Store them here instead of appending them to name.',
+            controller: 'Current owner/controller of the location.',
+            danger: 'Current danger level or threat profile.',
+            resources: 'Important available resources/services/features.',
+            state: 'Current location condition.',
+        },
+        requiredColumns: ['name'],
+        forceUpdate: false,
+        editable: true,
+        level: LEVEL.SEMANTIC,
+        extractHint: 'Location status, aliases, ownership/control, danger level, and environmental/resource changes. Prefer structured JSON-like content.',
+        keywords: ['location', 'alias', 'control', 'danger', 'resource', 'region', 'base'],
+        alwaysInject: false,
+        latestOnly: true,
+        primaryKeyColumns: ['name', 'aliases'],
+        compression: {
+            mode: 'none',
+            threshold: 2,
+            fanIn: 2,
+            maxDepth: 1,
+            keepRecentLeaves: 1,
+            summarizeInstruction: '',
+        },
+    },
+    {
+        id: 'rule_constraint',
+        label: 'Rule Constraint',
+        tableName: 'rule_table',
+        tableColumns: ['title', 'constraint', 'scope', 'status'],
+        columnHints: {
+            title: 'Short rule name.',
+            constraint: 'Non-negotiable rule text.',
+            scope: 'Where/when this rule applies.',
+            status: 'Current validity or enforcement state.',
+        },
+        requiredColumns: ['title', 'constraint'],
+        forceUpdate: false,
+        editable: true,
+        level: LEVEL.SEMANTIC,
+        extractHint: 'World rules, magic limits, taboos, hard constraints, and never-break conditions.',
+        keywords: ['rule', 'constraint', 'law', 'taboo', 'limit'],
+        alwaysInject: true,
+        latestOnly: false,
+        primaryKeyColumns: [],
+        compression: {
+            mode: 'none',
+            threshold: 2,
+            fanIn: 2,
+            maxDepth: 1,
+            keepRecentLeaves: 1,
+            summarizeInstruction: '',
+        },
+    },
+];
+
+const DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT = [
+    'You are a memory recall planner focused on relevance, continuity, and efficiency.',
+    'You must output exactly one short <thought>...</thought> before tool call to explain your plan.',
+    'Input format: XML blocks (recall_query_context, candidate_nodes, always_inject_node_ids, schema_overview, selection_constraints). Read all blocks before deciding.',
+    'First, extract a compact query profile from recall_query_context: active entities, locations, goals, unresolved commitments, relationship/emotion shifts, and causal constraints.',
+    'Do not rely on keywords only. Use semantic cues, intent, and causal context from recent dialogue.',
+    'Primary goal: pick the smallest high-value set that best supports the CURRENT scene and next reply.',
+    'Apply layered relevance explicitly: (1) direct relevance to this turn, (2) indirect continuity support, (3) background context with clear potential impact.',
+    'Rank candidates by practical usefulness now: direct event support, causality continuity, unresolved commitments/constraints, and key character/location/rule grounding.',
+    'Use edge_summary to follow relation chains and avoid isolated picks.',
+    'Return action="finalize" if current candidates are sufficient.',
+    'Return action="drill" only when extra expansion is clearly needed for missing context.',
+    'When drilling, expand around high-value seeds instead of broad expansion.',
+    'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
+    'Do not fabricate missing facts. If grounded evidence is weak or absent, prefer conservative selection or empty selection and explain briefly in reason.',
+    'Be honest: if no grounded memory should be recalled, return finalize with empty selected_node_ids.',
+    'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one <thought>...</thought>; (2) function call output only.',
+    'Do not output any narrative/body text, markdown, code fences, XML blocks (except <thought>), comments, or any extra JSON payload.',
+    'After function call output, stop immediately.',
+].join('\n');
+
+const DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT = [
+    'You are finalizing memory recall node selection after optional drill expansion.',
+    'You must output exactly one short <thought>...</thought> before tool call to explain your final tradeoff.',
+    'Input format: XML blocks (recall_query_context, candidate_nodes, always_inject_node_ids, route_result, selection_constraints). Read all blocks before deciding.',
+    'Before selecting, extract the key information needs of this turn from context: who/where/what is active, what must stay continuous, and what unknowns matter now.',
+    'Do not rely on keywords only. Use semantic intent and causal continuity.',
+    'Select nodes that maximize practical value for the immediate next reply.',
+    'Keep storyline continuity first, then add essential support nodes (character/location/rule) only when they materially improve correctness.',
+    'Apply layered relevance in final ranking: direct > indirect > background-potential.',
+    'Output selected_node_ids in priority order (highest value first).',
+    'Prefer a compact set (typically 3-8 when available) instead of selecting everything.',
+    'Always-inject nodes are already injected separately. Never include them in selected_node_ids.',
+    'If no candidate is grounded and useful, return an empty list rather than forcing weak picks or inventing links.',
+    'Be explicit and honest when returning empty selection.',
+    'Never hallucinate facts not grounded in candidates.',
+    'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one <thought>...</thought>; (2) function call output only.',
+    'Do not output any narrative/body text, markdown, code fences, XML blocks (except <thought>), comments, or any extra JSON payload.',
+    'After function call output, stop immediately.',
+].join('\n');
+
+const EXTRACT_PROMPT_NODE_DEDUP_LINES = [
+    'Thought dedup rule: in section [2] and section [3], explicitly inspect graph_data.nodes for existing candidate character/location nodes before any create decision, and explain the matched node_id or the no-match reason.',
+    'Duplicate prevention hard rule: never create a second character/location node merely because one form uses a canonical name and another form uses an alias, title, short name, translated name, or English name. Reuse one node and store alternate forms in aliases.',
+    'Create-gate rule for character/location nodes: only create when you have explicitly checked existing graph_data nodes by canonical name and alias overlap and found no plausible match.',
+    'Name format hard rule: for character/location nodes, name must be canonical plain name only.',
+    'Parenthesis prohibition: never use parentheses, brackets, slashes, bilingual pairs, or appended explanations inside name. Forbidden examples: 张三(John), Alice（爱丽丝）, London(伦敦).',
+    'Alias format rule: English names, translated names, nicknames, titles, short names, and alternative spellings belong in aliases only, not in name.',
+];
+
+const CANONICAL_EXTRACT_RELATION_TYPES = ['related', 'involved_in', 'occurred_at', 'mentions', 'evidence', 'updates', 'advances'];
+const CANONICAL_EXTRACT_RELATION_TYPES_TEXT = CANONICAL_EXTRACT_RELATION_TYPES.join(', ');
+const EXTRACT_PROMPT_EDGE_TYPE_LINES = [
+    `Relation vocabulary hard rule: only use these canonical relation types for semantic links: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}.`,
+    'Thought relation review rule: in section [5], explicitly inspect graph_data edges and reuse existing canonical relation labels when the meaning matches. Do not invent a new synonym, translation, or near-duplicate relation label.',
+    'Relation normalization rule: if the meaning is "entity/character participates in or is materially involved in an event", always use involved_in.',
+    'Relation normalization rule: if the meaning is "an event takes place at a location", always use occurred_at.',
+    'Relation normalization rule: if the meaning is simple weak association and no sharper canonical type fits, use related.',
+    'Forbidden relation drift: do not mix Chinese and English variants or near-synonyms for the same meaning. Forbidden examples include 参与者 / 涉及主角 / participant / main_character when involved_in fits, and 发生地 / 发生在 / 发生地点 / 发生于 / occurred_at / happened_at / location / located_at / happened_in / occurs_at for the same event-location meaning.',
+    'Internal edge prohibition: do not create contains or semantic_contains via extraction tools; hierarchy edges are managed by the graph system, not by semantic extraction.',
+];
+
+const DEFAULT_EXTRACT_SYSTEM_PROMPT = [
+    'Extract structured memory nodes from dialogue messages into a high-utility memory graph.',
+    'Before tool calls, output one VERY detailed <thought>...</thought> analysis. Do not output plain JSON text.',
+    'Do not skip reasoning. Do not jump directly to tool calls.',
+    'Hard output format for <thought> (must follow exactly this order):',
+    '<thought>',
+    '[0] Batch scope and chronology: this batch covered seq range, what changed vs previous memory.',
+    '[1] Event decision (event/event_table): create or skip, and why.',
+    '[2] Character decision (character_sheet/character_table): create/edit/delete/skip with evidence.',
+    '[3] Location decision (location_state/location_table): create/edit/delete/skip with evidence.',
+    '[4] Rule decision (rule_constraint/rule_table): create/edit/delete/skip with evidence.',
+    '[5] Link plan: exact relation edges to add (from -> relation -> target), locator method per edge (target_node_id vs target_ref), or explicit no-link reason.',
+    '[6] Planned tool calls: full call list in execution order (done last), including ref declarations before any link that depends on them.',
+    '</thought>',
+    'If <thought> misses any required section above, treat your own response as invalid and regenerate fully.',
+    'Thought depth rule: each section must include (a) decision, (b) evidence seq(s), (c) field-level update plan.',
+    'Thought anti-lazy rule: no one-line vague claims like "no update needed" without evidence.',
+    'If the active schema contains additional custom types, append extra per-type analysis after section [4].',
+    'For each type, explicitly check whether optional columns can be updated from evidence in this batch.',
+    'Tool set is dynamic. Semantic types expose create/edit/delete tools as needed; some types can be create-only. Treat tool descriptions as the source of truth.',
+    'Call type tools to emit concrete updates, then call luker_rpg_extract_done as the final call.',
+    'Hard rule: one response must contain COMPLETE extraction tool calls; do not stop after a single tool call.',
+    'Hard rule: return at least 2 tool calls in one response: >=1 type tool call + 1 luker_rpg_extract_done (done must be last).',
+    'Type tools are split by intent: create / edit / delete (if available for that type).',
+    'Use create for new nodes, edit for existing node_id patch updates, delete for explicit removals.',
+    'Create tool uses flattened top-level table columns. Edit tool uses set_fields for sparse patch updates.',
+    'Node edit rule: when updating an existing node, set node_id explicitly using an id present in graph_data.nodes.',
+    'Edit payload rule: put only changed columns in set_fields; do not resend the full row unless needed.',
+    'Never fabricate node_id. If no suitable existing node is listed, create a new node without node_id.',
+    'If an existing node clearly matches, prefer node_id update over duplicate creation.',
+    'Delete rule: use delete tool only when a listed node is clearly wrong/duplicate/stale and must be removed.',
+    'Coverage goal: when evidence exists for a semantic type in this batch, actively update that type instead of only emitting minimal name-only skeletons.',
+    'Hard coverage rule: if a type has grounded evidence and there are editable nodes or clear new facts, you MUST emit create/edit calls for that type in this batch.',
+    'Never output lazy rationale such as "non-required type so can skip" when grounded evidence is present.',
+    'Alias quality rule: when dialogue uses nicknames/short names/titles, fill aliases for character/location nodes.',
+    ...EXTRACT_PROMPT_NODE_DEDUP_LINES,
+    ...EXTRACT_PROMPT_EDGE_TYPE_LINES,
+    'Fill optional columns whenever evidence is present; if unknown, omit conservatively.',
+    'Respect required columns and force-update types declared in tool descriptions.',
+    'If a type is marked force-update, emit at least one grounded node for it in this batch.',
+    'Character consistency hard rule: for any mentioned character grounded by card/world-info baseline, if no character_sheet node exists, create one; if an existing character_sheet conflicts with baseline facts, emit edit to align it.',
+    'Grounding rule: do not hallucinate. Every field should be inferable from the batch or stable continuity.',
+    'Coverage rule: avoid event-only outputs when other schema types have clear evidence; update them in the same batch.',
+    'State quality rule: keep state/status fields updated when progression changes (e.g. ongoing/resolved/blocked).',
+    'Editability rule: only types listed in graph_data.editable_type_ids may use edit/delete tools. For non-editable types, use create tools only.',
+    'Event strict policy: each extraction batch may create AT MOST ONE event node.',
+    'If multiple sub-events happened in one batch, merge them into one coherent event summary instead of creating multiple event rows.',
+    'If no meaningful event progression occurred, do not fabricate an event; explain the skip clearly in section [1].',
+    ...EVENT_SUMMARY_TIME_EXTRACT_PROMPT_LINES,
+    'Relation modeling rule: encode cross-node relations (who/where linkage) via links, not by stuffing relation lists into node row columns.',
+    'Never store relationship linkage text inside node fields when links can represent it.',
+    'Link quality rule: include links for involved entities/locations when evidence exists.',
+    'Event linking priority: when an event clearly involves participants/locations, include links for those relations.',
+    'If relation-worthy nodes are updated but links are missing, your response is incomplete.',
+    'If you decide not to add links in this batch, explain why in <thought> section [5] with explicit evidence.',
+    'Link locator rule: use target_ref (same-batch temporary reference) or target_node_id (existing node id). Do not use title/type matching.',
+    'Link locator decision policy: if target already exists in graph_data.nodes, use target_node_id.',
+    'Link locator decision policy: if target will be created in this batch, assign ref in its create call and use target_ref.',
+    'Link locator decision policy: if you cannot locate by node_id and target is missing, create target first (with ref), then link by target_ref.',
+    'Never skip a grounded relation only because locator is missing; create/ref it first, then link.',
+    'In <thought> section [5], for each planned edge, explicitly state locator choice and why (existing node_id vs same-batch ref).',
+    'Create-time linking rule: if a node needs links now, include links in that create call instead of deferring.',
+    'Post-update linking rule: when only relations change, use luker_rpg_extract_link_upsert.',
+    'For each create call, you may set optional ref to name this new node for later same-batch links.',
+    'Event strict link rule: event create must include links. If truly no relation can be grounded, set links: [] and provide no_link_reason.',
+    'Summary rule: summary is abstraction, not raw text copy.',
+    'Summary quality: emphasize causality, turning points, commitments, outcomes, and unresolved hooks.',
+    'Length guide for summary: target around 300 Chinese characters (soft limit).',
+    'Never paste long dialogue, narration, or quotes into summary.',
+    'If information is large, split into multiple focused create/edit operations instead of one oversized summary.',
+    'For non-event types, summary is optional unless schema requires it.',
+    'Title policy: non-event nodes should use short stable human-readable titles.',
+    'Reuse the exact same title for the same ongoing entity/location to keep updates merged.',
+    'Type-specific titles: when a type does not define title column in tool schema, omit title.',
+    'FINAL OUTPUT CONTRACT (ABSOLUTE): return EXACTLY two parts in order: (1) one complete <thought>...</thought>; (2) extraction function calls only.',
+    'Do not output any narrative/body text, markdown, code fences, comments, or XML blocks except <thought>.',
+    'Forbidden examples: <maintext>, <overall>, <UpdateVariable>, <StatusPlaceHolderImpl/>, duplicate JSON payloads.',
+    'After function call output, stop immediately.',
+].join('\n');
+
+
+const defaultSettings = {
+    enabled: false,
+    updateEvery: 1,
+    maxTurns: 900,
+    recallEnabled: true,
+    recallInjectPosition: world_info_position.atDepth,
+    recallInjectDepth: 9999,
+    recallInjectRole: extension_prompt_roles.SYSTEM,
+    recallApiPresetName: '',
+    recallPresetName: '',
+    includeWorldInfoWithPreset: true,
+    toolCallRetryMax: 2,
+    recallMaxIterations: 3,
+    recallRouteSystemPrompt: DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
+    recallFinalizeSystemPrompt: DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT,
+    extractApiPresetName: '',
+    extractPresetName: '',
+    extractSystemPrompt: DEFAULT_EXTRACT_SYSTEM_PROMPT,
+    extractBatchTurns: 1,
+    extractContextTurns: 2,
+    extractExcludeRecentTurns: 0,
+    recallQueryMessages: 2,
+    recentRawTurns: 2,
+    llmVisibleRecentMessages: 5,
+    lorebookNameOverride: '',
+    lorebookEntryOrderBase: 9800,
+    nodeTypeSchema: defaultNodeTypeSchema,
+};
+
+function i18n(text) {
+    return translate(String(text || ''));
+}
+
+function i18nFormat(key, ...values) {
+    return i18n(key).replace(/\$\{(\d+)\}/g, (_, index) => String(values[Number(index)] ?? ''));
+}
+
+function normalizeExtractExcludeRecentTurns(value) {
+    return Math.max(0, Math.floor(Number(value) || 0));
+}
+
+function getExtractableLatestSeq(totalTurns, settings = null) {
+    const total = Math.max(0, Math.floor(Number(totalTurns || 0)));
+    const excludedRecentTurns = normalizeExtractExcludeRecentTurns(
+        settings?.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns,
+    );
+    return Math.max(0, total - excludedRecentTurns);
+}
+
+function registerLocaleData() {
+    addLocaleData('zh-cn', {
+        'Memory': '记忆',
+        'Enabled': '启用',
+        'Enable recall injection': '启用记忆召回注入',
+        'Injection position': '注入位置',
+        'Before Character Definitions': '角色定义前',
+        'After Character Definitions': '角色定义后',
+        "Before Author's Note": '作者注释前',
+        "After Author's Note": '作者注释后',
+        'Before Example Messages': '示例消息前',
+        'After Example Messages': '示例消息后',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（仅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（仅聊天深度位置）',
+        'System': 'System',
+        'User': 'User',
+        'Assistant': 'Assistant',
+        'Recall API preset (Connection profile, empty = current)': '召回 API 预设（连接配置，留空=当前）',
+        'Recall preset (params + prompt, empty = current)': '召回提示词预设（参数+提示词，留空=当前）',
+        'Extract API preset (Connection profile, empty = current)': '生成图 API 预设（连接配置，留空=当前）',
+        'Extract preset (params + prompt, empty = current)': '生成图提示词预设（参数+提示词，留空=当前）',
+        'Include world info': '包含世界书信息',
+        'Exclude latest N assistant turns from memory injection': '记忆注入时排除最近 N 条 Assistant 回复',
+        'Recall max iterations': '召回最大轮数',
+        'Extract context assistant turns': '生成图时参考最近 Assistant 回复条数',
+        'Recall query recent assistant turns': '召回查询使用最近 Assistant 回复条数',
+        'Visible recent message layers for generation (0 = disabled)': '创作 LLM 仅可见最近 N 条消息（0=不裁剪）',
+        'Extract batch assistant turns': '每次生成图处理的 Assistant 回复条数',
+        'Exclude latest N assistant turns from graph extraction': '生成图时排除最近 N 条 Assistant 回复',
+        'Tool-call retries': '工具调用重试次数',
+        'Plain-text function-call mode': '纯文本函数调用模式',
+        'Extract Table Fill Prompt': '生成图提示词',
+        'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
+        'Recall Stage 2 Prompt (Finalize)': '召回阶段2提示词（最终选择）',
+        'Advanced Settings': '高级设置',
+        'Open Advanced Settings': '打开高级设置',
+        'Save Advanced Settings': '保存高级设置',
+        'Reset Advanced Settings': '重置高级设置',
+        'Advanced settings saved.': '高级设置已保存。',
+        'Saved advanced settings.': '已保存高级设置。',
+        'Advanced settings saved to global settings.': '高级设置已保存到全局设置。',
+        'Save Advanced to Global': '将高级设置保存到全局',
+        'Save Advanced to Character': '将高级设置保存到角色卡',
+        'Clear Character Advanced Override': '清除角色卡高级设置覆写',
+        'Advanced scope: character override (${0})': '高级设置作用域：角色卡覆写（${0}）',
+        'Advanced scope: global': '高级设置作用域：全局',
+        'Advanced settings saved to character override: ${0}.': '高级设置已保存到角色卡覆写：${0}。',
+        'Failed to persist character advanced override.': '角色卡高级设置覆写保存失败。',
+        'Failed to clear character advanced override.': '清除角色卡高级设置覆写失败。',
+        'Cleared character advanced override: ${0}.': '已清除角色卡高级设置覆写：${0}。',
+        'Advanced settings reset to defaults in editor.': '高级设置已在编辑器中重置为默认值。',
+        'Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.': '确认将高级设置编辑器重置为默认？这会覆盖当前未保存的编辑。',
+        'Update every N assistant turns': '每 N 条 Assistant 回复自动生成图',
+        'Node Type Schema (Visual Editor)': '节点类型 Schema（可视化编辑）',
+        'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在弹窗里配置记忆节点类型、生成图提示与压缩策略。',
+        'Schema scope: character override (${0})': 'Schema 作用域：角色卡覆写（${0}）',
+        'Schema scope: global': 'Schema 作用域：全局',
+        'Open Schema Editor': '打开 Schema 编辑器',
+        'Save Schema to Global': '将 Schema 保存到全局',
+        'Save Schema to Character': '将 Schema 保存到角色卡',
+        'Clear Character Schema Override': '清除角色卡 Schema 覆写',
+        'Schema saved to global settings.': 'Schema 已保存到全局设置。',
+        'No active character selected.': '当前未选择角色卡。',
+        'Schema saved to character override: ${0}.': 'Schema 已保存到角色卡覆写：${0}。',
+        'Failed to persist character schema override.': '角色卡 Schema 覆写保存失败。',
+        'Failed to clear character schema override.': '清除角色卡 Schema 覆写失败。',
+        'Cleared character schema override: ${0}.': '已清除角色卡 Schema 覆写：${0}。',
+        'Save Settings': '保存设置',
+        'View Graph': '查看图',
+        'Fill Graph (Incremental)': '生成图（仅增量）',
+        'Rebuild From Chat': '从聊天重建',
+        'Rebuild Recent N Assistant Turns': '重建最近 N 条 Assistant 回复',
+        'Rebuild recent assistant turns: enter N (1-${0}).': '重建最近 Assistant 回复：请输入 N（1-${0}）。',
+        'Rebuild Recent': '重建最近范围',
+        'Please enter a valid integer between 1 and ${0}.': '请输入 1 到 ${0} 之间的整数。',
+        'No assistant turns available to rebuild.': '当前没有可重建的 Assistant 回复。',
+        'Memory graph rebuilt for recent ${0} assistant turn(s).': '已完成最近 ${0} 条 Assistant 回复的记忆图重建。',
+        'Rebuilt recent memory graph range: seq ${0}-${1}.': '已重建最近范围：楼层 ${0}-${1}。',
+        'Manual Compress': '手动压缩',
+        'Reset Current Chat': '重置当前聊天',
+        'Export Current Chat Graph': '导出当前聊天图',
+        'Import Current Chat Graph': '导入当前聊天图',
+        'Recall debug query': '召回调试查询',
+        'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遗迹发生了什么？',
+        'Run Recall Debug': '运行召回调试',
+        'View Last Injection': '查看最近注入',
+        'Injection Content': '注入内容',
+        'Injection content is empty.': '注入内容为空。',
+        'No recall injection result yet.': '当前还没有召回注入结果。',
+        'Memory recall running...': '记忆召回进行中...',
+        'Memory graph update running...': '记忆图更新进行中...',
+        'Memory graph update running... seq ${0}-${1} / latest ${2}': '记忆图更新进行中... 楼层 ${0}-${1} / 最新 ${2}',
+        'No active chat selected.': '未选择有效聊天。',
+        'Paste memory graph JSON for current chat.': '为当前聊天粘贴记忆图 JSON。',
+        'Memory graph exported for current chat.': '当前聊天记忆图已导出。',
+        'Downloaded memory graph file: ${0}': '已下载记忆图文件：${0}',
+        'Import': '导入',
+        'Cancel': '取消',
+        'Delete': '删除',
+        'Memory graph imported for current chat.': '当前聊天记忆图已导入。',
+        'Imported memory graph JSON.': '已导入记忆图 JSON。',
+        'Imported memory graph JSON as current chat baseline.': '已将记忆图 JSON 作为当前聊天基线导入。',
+        'Choose how to attach the imported memory graph to assistant floors.': '选择要如何把导入的记忆图绑定到 Assistant 楼层。',
+        'Restore Exported Floor': '恢复导出时楼层',
+        'Bind Latest Floor': '绑定到当前最新楼层',
+        'Bind Specific Floor': '绑定到指定楼层',
+        'Specific assistant floor': '指定 Assistant 楼层',
+        'Imported nodes: ${0} | Edges: ${1} | Exported floor: ${2}': '导入节点：${0} | 边：${1} | 导出楼层：${2}',
+        'Current chat latest assistant floor: ${0}': '当前聊天最新 Assistant 楼层：${0}',
+        'Restore keeps exported floor numbers for same-chat recovery. Bind modes rewrite all imported nodes to the selected floor.': '恢复模式会保留导出时的楼层编号，用于同聊天恢复。绑定模式会把所有导入节点重写到所选楼层。',
+        'Restore requires current chat to have at least ${0} assistant floor(s). Current chat only has ${1}. Choose a bind mode instead.': '恢复模式要求当前聊天至少有 ${0} 个 Assistant 楼层，但当前只有 ${1} 个。请改用绑定模式。',
+        'Current chat has no assistant floors to bind.': '当前聊天没有可绑定的 Assistant 楼层。',
+        'Enter a floor between 1 and ${0}.': '请输入 1 到 ${0} 之间的楼层。',
+        'Imported memory graph and restored exported floor ${0}.': '已导入记忆图，并恢复导出楼层 ${0}。',
+        'Imported memory graph and bound it to latest assistant floor ${0}.': '已导入记忆图，并绑定到当前最新 Assistant 楼层 ${0}。',
+        'Imported memory graph and bound it to assistant floor ${0}.': '已导入记忆图，并绑定到 Assistant 楼层 ${0}。',
+        'Memory graph import failed.': '记忆图导入失败。',
+        'Memory graph incremental fill completed.': '记忆图增量补全完成。',
+        'Memory graph is already up to date.': '记忆图已是最新，无需补全。',
+        'Import failed: ${0}': '导入失败：${0}',
+        'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '类型：${0} | 常驻注入：${1} | 强制更新：${2} | 分层压缩：${3}',
+        'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}': '类型：${0} | 可编辑：${1} | 常驻注入：${2} | 强制更新：${3} | 分层压缩：${4}',
+        '(Current preset)': '（当前预设）',
+        '(Current API config)': '（当前 API 配置）',
+        '(missing)': '（缺失）',
+        '(none)': '（无）',
+        '(select node)': '（选择节点）',
+        '(unset)': '（未设置）',
+        '(new)': '（新建）',
+        'Memory Graph': '记忆图',
+        'Inspector': '检查器',
+        'Select a node or edge to edit.': '点击节点或边以编辑。',
+        'Apply Changes': '应用修改',
+        'No node selected. Click a node in graph first.': '未选择节点。请先在图中点击一个节点。',
+        'Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}': '节点：${0} | 边：${1} | Assistant 楼层：${2} | 源楼层：${3}',
+        'semantic=${0}': 'semantic=${0}',
+        'Last recall steps: ${0}': '最近召回步数：${0}',
+        'Visual graph ready. Click a node or edge to select it for editing.': '可视化图已就绪。点击节点或边可选择并编辑。',
+        'Search Graph': '搜索图谱',
+        'Search graph nodes, summaries, IDs, or fields...': '搜索节点、摘要、ID 或字段……',
+        'All types': '全部类型',
+        'Clear Search': '清空搜索',
+        'Prev Result': '上一个结果',
+        'Next Result': '下一个结果',
+        'Start typing to search the graph.': '开始输入以搜索图谱。',
+        'No nodes match the current search.': '当前搜索没有匹配节点。',
+        'Try a different keyword or type filter.': '请尝试其他关键词或类型筛选。',
+        'Showing ${0} of ${1} matching nodes.': '显示 ${1} 个匹配节点中的 ${0} 个。',
+        'Select a result to focus it in graph.': '选择一个结果以在图中定位。',
+        'Fit View': '适配视图',
+        'Add Edge': '新增边',
+        'Edit Selected Edge': '编辑所选边',
+        'Delete Selected Node': '删除所选节点',
+        'Delete Selected Edge': '删除所选边',
+        'Advanced JSON View': '高级 JSON 查看',
+        'Advanced JSON Edit': '高级 JSON 编辑',
+        'ID': 'ID',
+        'Level': '层级',
+        'Type': '类型',
+        'Title': '标题',
+        'Summary': '摘要',
+        'Children': '子节点',
+        'SeqRange': '序列范围',
+        'Actions': '操作',
+        'Recent Edges': '最近边',
+        'From': '起点',
+        'To': '终点',
+        'Edit': '编辑',
+        'Last Projection': '最近投影',
+        'View': '查看',
+        'Form Edit': '表单编辑',
+        'Form editor for one node. Parent/child relationships and graph persistence are applied automatically.': '单节点表单编辑器。父子关系和图持久化会自动处理。',
+        'Node ID': '节点 ID',
+        'Parent Node': '父节点',
+        'Sequence': '序号',
+        'From Sequence': '起始序号',
+        'To Sequence': '结束序号',
+        'Archived': '已归档',
+        'Fields (one key=value per line)': '字段（每行一个 key=value）',
+        'Edge ${0}: configure relation between two nodes.': '边 ${0}：配置两个节点之间的关系。',
+        'From Node': '起点节点',
+        'To Node': '终点节点',
+        'Edge not found: #${0}': '未找到边：#${0}',
+        'Apply Edge': '应用边',
+        'Create Edge': '创建边',
+        'Edge form not found': '未找到边表单',
+        'From/To node is required': '起点/终点节点必填',
+        'From/To node does not exist': '起点/终点节点不存在',
+        'From and To cannot be the same node': '起点和终点不能是同一节点',
+        'Edge updated (#${0})': '边已更新（#${0}）',
+        'Updated edge #${0}.': '已更新边 #${0}。',
+        'Edge created.': '边已创建。',
+        'Created edge #${0}.': '已创建边 #${0}。',
+        'Edge edit failed: ${0}': '边编辑失败：${0}',
+        'Node not found: ${0}': '未找到节点：${0}',
+        'Apply Node': '应用节点',
+        'Node form not found': '未找到节点表单',
+        'Parent node does not exist: ${0}': '父节点不存在：${0}',
+        'Parent node cannot be itself': '父节点不能是自身',
+        'Parent selection would create a cycle': '当前父节点选择会产生环',
+        'Updated node ${0}.': '已更新节点 ${0}。',
+        'Node updated: ${0}': '节点已更新：${0}',
+        'Node edit failed: ${0}': '节点编辑失败：${0}',
+        'Fitted graph view.': '图视图已适配。',
+        'No edge selected. Click an edge in graph first.': '未选择边。请先在图中点击一条边。',
+        'Delete edge #${0}: ${1} -> ${2} [${3}]?': '删除边 #${0}：${1} -> ${2} [${3}]？',
+        'Deleted edge #${0}.': '已删除边 #${0}。',
+        'Deleted selected edge.': '已删除所选边。',
+        'Delete node ${0}: ${1}? This will remove its subtree and related edges.': '删除节点 ${0}: ${1}？这会删除其子树和相关边。',
+        'Deleted node ${0}.': '已删除节点 ${0}。',
+        'Deleted selected node.': '已删除所选节点。',
+        'Advanced: edit full memory graph JSON for current chat.': '高级：编辑当前聊天的完整记忆图 JSON。',
+        'Apply Graph': '应用图',
+        'Applied raw graph JSON edit.': '已应用原始图 JSON 编辑。',
+        'Memory graph JSON updated.': '记忆图 JSON 已更新。',
+        'Graph edit failed: ${0}': '图编辑失败：${0}',
+        'Memory disabled, cleared memory lorebook injections.': '记忆已禁用，已清理记忆图世界书注入。',
+        'Memory store unavailable for current chat.': '当前聊天的记忆存储不可用。',
+        'Recall ready. selected=${0}': '召回就绪。selected=${0}',
+        'Recall injection failed (${0}): ${1}': '召回注入失败（${0}）：${1}',
+        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
+        'Memory Node Schema Editor': '记忆节点 Schema 编辑器',
+        'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定义节点表、生成图提示和压缩策略。这会控制记忆图存储内容及其随时间压缩方式。',
+        'Hierarchical Compression': '分层压缩',
+        'Latest-only Merge': 'Latest-only 合并',
+        'Always Inject': '常驻注入',
+        'Current type count: ${0}': '当前类型数量：${0}',
+        'Add Type': '新增类型',
+        'Reset to Default Schema': '重置为默认 Schema',
+        'Schema reset to default in editor.': '已在编辑器中重置为默认 Schema。',
+        'Reset schema editor content to default? This will overwrite current unsaved schema edits.': '确认将 Schema 编辑器重置为默认？这会覆盖当前未保存的编辑。',
+        'table: ${0}': '表：${0}',
+        'mode: ${0}': '模式：${0}',
+        'always inject': '常驻注入',
+        'Type ID': '类型 ID',
+        'Label': '标签',
+        'Table Name': '表名',
+        'Table Columns (comma separated)': '表列（逗号分隔）',
+        'Required Columns (comma separated)': '必填列（逗号分隔）',
+        'Column Hints (one per line: column=meaning)': '列含义（每行一个：列名=含义）',
+        'Keywords (comma separated)': '关键词（逗号分隔）',
+        'Force Update (must appear each extraction batch)': '强制更新（每次生成图必须出现）',
+        'Latest Only Upsert': 'Latest-only 覆写',
+        'Editable': '可编辑',
+        'Create-only': '仅创建',
+        'Editable (enable edit/delete tools and graph edit context)': '可编辑（启用编辑/删除工具与图编辑上下文）',
+        'Primary Key Columns': '主键列',
+        'Extract Hint': '生成图提示',
+        'Enable Hierarchical Compression': '启用层级压缩',
+        'none': 'none',
+        'hierarchical': 'hierarchical',
+        'Threshold': '阈值',
+        'Fan-In': '扇入',
+        'Max Depth': '最大深度',
+        'Keep Recent Leaves': '保留最近叶子',
+        'Compression Rule (optional)': '压缩规则（可选）',
+        'Filter nodes eligible for compression. One condition per line or use &&. Examples: status in resolved,dropped ; semantic_rollup=false': '过滤可参与压缩的节点。每行一条条件，或使用 && 连接。示例：status in resolved,dropped ; semantic_rollup=false',
+        'Invalid compression rule for type ${0}: ${1}': '类型 ${0} 的压缩规则无效：${1}',
+        'Summarize Instruction': '摘要指令',
+        'Duplicate Type': '复制类型',
+        'Remove Type': '删除类型',
+        'Apply Schema': '应用 Schema',
+        'Memory schema updated.': '记忆 Schema 已更新。',
+        'Applied memory schema from popup editor.': '已应用弹窗编辑器中的记忆 Schema。',
+        'Saved memory settings.': '记忆设置已保存。',
+        'Invalid schema settings: ${0}': 'Schema 设置无效：${0}',
+        'Memory settings save failed.': '记忆设置保存失败。',
+        'Memory graph rebuilt from current chat.': '已从当前聊天重建记忆图。',
+        'Rebuilt memory graph and compression from chat.': '已从聊天重建记忆图并完成压缩。',
+        'Manual Compression': '手动压缩',
+        'Compression scope': '压缩范围',
+        'All nodes': '全图节点',
+        'Older nodes only (exclude recent N assistant turns)': '仅旧节点（排除最近 N 条 Assistant 回复）',
+        'Exclude recent assistant turns': '排除最近 Assistant 回复条数',
+        'Compression mode': '压缩模式',
+        'Use schema thresholds': '按 Schema 阈值压缩',
+        'Force compress (ignore threshold)': '强制压缩（忽略阈值）',
+        'Max rounds per type': '每种类型最大轮数',
+        'Types to compress': '要压缩的类型',
+        'Apply Manual Compression': '执行手动压缩',
+        'No compressible types in current schema.': '当前 Schema 没有可压缩类型。',
+        'Select at least one type to compress.': '请至少选择一种要压缩的类型。',
+        'No nodes are eligible for the selected scope.': '当前范围内没有可压缩节点。',
+        'Manual compression completed. Created=${0}, archived=${1}': '手动压缩完成。新建=${0}，归档=${1}',
+        'Manual compression made no changes.': '手动压缩未产生变化。',
+        'Event compression completed: ${0} round(s).': '事件压缩完成：本次 ${0} 轮。',
+        'Current chat memory graph reset.': '已重置当前聊天记忆图。',
+        'Reset memory graph for current chat.': '已重置当前聊天的记忆图。',
+        'Reset current chat memory graph? This cannot be undone.': '确认重置当前聊天记忆图吗？此操作不可撤销。',
+        'Visual graph unavailable: failed to load Cytoscape.': '可视化图不可用：加载 Cytoscape 失败。',
+        'Selected node: ${0}. Tip: click an edge to edit relation.': '已选择节点：${0}。提示：点击边可编辑关系。',
+        'Selected edge index ${0} (missing).': '已选择边索引 ${0}（缺失）。',
+        'Selected edge #${0}: ${1} -> ${2} [${3}]': '已选择边 #${0}：${1} -> ${2} [${3}]',
+        'Chat mutation detected. Memory graph will re-sync on next generation.': '检测到聊天变更。记忆图会在下次生成时重新同步。',
+        'Chat changes interrupted memory graph update. It will re-sync on next generation.': '聊天消息发生变化，记忆图更新已中断，将在下次生成时重新同步。',
+        'Generation aborted. Skipped memory recall.': '生成已中断，已跳过记忆召回。',
+        'Memory recall cancelled by user.': '记忆召回已由用户终止。',
+        'Memory graph update cancelled by user.': '记忆图更新已由用户终止。',
+        'Stop': '终止',
+    });
+    addLocaleData('zh-tw', {
+        'Memory': '記憶',
+        'Enabled': '啟用',
+        'Enable recall injection': '啟用記憶召回注入',
+        'Injection position': '注入位置',
+        'Before Character Definitions': '角色定義前',
+        'After Character Definitions': '角色定義後',
+        "Before Author's Note": '作者註釋前',
+        "After Author's Note": '作者註釋後',
+        'Before Example Messages': '示例訊息前',
+        'After Example Messages': '示例訊息後',
+        'At Chat Depth': '聊天深度',
+        'Injection depth (At Chat Depth only)': '注入深度（僅聊天深度位置）',
+        'Injection role (At Chat Depth only)': '注入角色（僅聊天深度位置）',
+        'System': 'System',
+        'User': 'User',
+        'Assistant': 'Assistant',
+        'Recall API preset (Connection profile, empty = current)': '召回 API 預設（連線設定，留空=目前）',
+        'Recall preset (params + prompt, empty = current)': '召回提示詞預設（參數+提示詞，留空=目前）',
+        'Extract API preset (Connection profile, empty = current)': '生成圖 API 預設（連線設定，留空=目前）',
+        'Extract preset (params + prompt, empty = current)': '生成圖提示詞預設（參數+提示詞，留空=目前）',
+        'Include world info': '包含世界書資訊',
+        'Exclude latest N assistant turns from memory injection': '記憶注入時排除最近 N 條 Assistant 回覆',
+        'Recall max iterations': '召回最大輪數',
+        'Extract context assistant turns': '生成圖時參考最近 Assistant 回覆條數',
+        'Recall query recent assistant turns': '召回查詢使用最近 Assistant 回覆條數',
+        'Visible recent message layers for generation (0 = disabled)': '創作 LLM 僅可見最近 N 條訊息（0=不裁切）',
+        'Extract batch assistant turns': '每次生成圖處理的 Assistant 回覆條數',
+        'Exclude latest N assistant turns from graph extraction': '生成圖時排除最近 N 條 Assistant 回覆',
+        'Tool-call retries': '工具呼叫重試次數',
+        'Plain-text function-call mode': '純文字函式呼叫模式',
+        'Extract Table Fill Prompt': '生成圖提示詞',
+        'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
+        'Recall Stage 2 Prompt (Finalize)': '召回階段2提示詞（最終選擇）',
+        'Advanced Settings': '進階設定',
+        'Open Advanced Settings': '打開進階設定',
+        'Save Advanced Settings': '儲存進階設定',
+        'Reset Advanced Settings': '重置進階設定',
+        'Advanced settings saved.': '進階設定已儲存。',
+        'Saved advanced settings.': '已儲存進階設定。',
+        'Advanced settings saved to global settings.': '進階設定已儲存到全域設定。',
+        'Save Advanced to Global': '將進階設定儲存到全域',
+        'Save Advanced to Character': '將進階設定儲存到角色卡',
+        'Clear Character Advanced Override': '清除角色卡進階設定覆寫',
+        'Advanced scope: character override (${0})': '進階設定作用域：角色卡覆寫（${0}）',
+        'Advanced scope: global': '進階設定作用域：全域',
+        'Advanced settings saved to character override: ${0}.': '進階設定已儲存到角色卡覆寫：${0}。',
+        'Failed to persist character advanced override.': '角色卡進階設定覆寫儲存失敗。',
+        'Failed to clear character advanced override.': '清除角色卡進階設定覆寫失敗。',
+        'Cleared character advanced override: ${0}.': '已清除角色卡進階設定覆寫：${0}。',
+        'Advanced settings reset to defaults in editor.': '進階設定已在編輯器中重設為預設值。',
+        'Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.': '確認將進階設定編輯器重設為預設？這會覆蓋目前未儲存的編輯。',
+        'Update every N assistant turns': '每 N 條 Assistant 回覆自動生成圖',
+        'Node Type Schema (Visual Editor)': '節點類型 Schema（視覺化編輯）',
+        'Configure memory table types, extraction hints, and compression strategy in a popup editor.': '在彈窗中配置記憶節點類型、生成圖提示與壓縮策略。',
+        'Schema scope: character override (${0})': 'Schema 作用域：角色卡覆寫（${0}）',
+        'Schema scope: global': 'Schema 作用域：全域',
+        'Open Schema Editor': '開啟 Schema 編輯器',
+        'Save Schema to Global': '將 Schema 儲存到全域',
+        'Save Schema to Character': '將 Schema 儲存到角色卡',
+        'Clear Character Schema Override': '清除角色卡 Schema 覆寫',
+        'Schema saved to global settings.': 'Schema 已儲存到全域設定。',
+        'No active character selected.': '目前未選擇角色卡。',
+        'Schema saved to character override: ${0}.': 'Schema 已儲存到角色卡覆寫：${0}。',
+        'Failed to persist character schema override.': '角色卡 Schema 覆寫儲存失敗。',
+        'Failed to clear character schema override.': '清除角色卡 Schema 覆寫失敗。',
+        'Cleared character schema override: ${0}.': '已清除角色卡 Schema 覆寫：${0}。',
+        'Save Settings': '儲存設定',
+        'View Graph': '查看圖譜',
+        'Fill Graph (Incremental)': '生成圖（僅增量）',
+        'Rebuild From Chat': '從聊天重建',
+        'Rebuild Recent N Assistant Turns': '重建最近 N 條 Assistant 回覆',
+        'Rebuild recent assistant turns: enter N (1-${0}).': '重建最近 Assistant 回覆：請輸入 N（1-${0}）。',
+        'Rebuild Recent': '重建最近範圍',
+        'Please enter a valid integer between 1 and ${0}.': '請輸入 1 到 ${0} 之間的整數。',
+        'No assistant turns available to rebuild.': '目前沒有可重建的 Assistant 回覆。',
+        'Memory graph rebuilt for recent ${0} assistant turn(s).': '已完成最近 ${0} 條 Assistant 回覆的記憶圖重建。',
+        'Rebuilt recent memory graph range: seq ${0}-${1}.': '已重建最近範圍：樓層 ${0}-${1}。',
+        'Manual Compress': '手動壓縮',
+        'Reset Current Chat': '重設目前聊天',
+        'Export Current Chat Graph': '匯出目前聊天圖',
+        'Import Current Chat Graph': '匯入目前聊天圖',
+        'Recall debug query': '召回除錯查詢',
+        'e.g. what happened at the ruins with Mira?': '例如：和 Mira 在遺跡發生了什麼？',
+        'Run Recall Debug': '執行召回除錯',
+        'View Last Injection': '查看最近注入',
+        'Injection Content': '注入內容',
+        'Injection content is empty.': '注入內容為空。',
+        'No recall injection result yet.': '目前還沒有召回注入結果。',
+        'Memory recall running...': '記憶召回進行中...',
+        'Memory graph update running...': '記憶圖更新進行中...',
+        'Memory graph update running... seq ${0}-${1} / latest ${2}': '記憶圖更新進行中... 樓層 ${0}-${1} / 最新 ${2}',
+        'No active chat selected.': '未選擇有效聊天。',
+        'Paste memory graph JSON for current chat.': '請貼上目前聊天的記憶圖 JSON。',
+        'Memory graph exported for current chat.': '目前聊天記憶圖已匯出。',
+        'Downloaded memory graph file: ${0}': '已下載記憶圖檔案：${0}',
+        'Import': '匯入',
+        'Cancel': '取消',
+        'Delete': '刪除',
+        'Memory graph imported for current chat.': '目前聊天記憶圖已匯入。',
+        'Imported memory graph JSON.': '已匯入記憶圖 JSON。',
+        'Imported memory graph JSON as current chat baseline.': '已將記憶圖 JSON 作為目前聊天基線匯入。',
+        'Choose how to attach the imported memory graph to assistant floors.': '選擇要如何把導入的記憶圖綁定到 Assistant 樓層。',
+        'Restore Exported Floor': '恢復導出時樓層',
+        'Bind Latest Floor': '綁定到目前最新樓層',
+        'Bind Specific Floor': '綁定到指定樓層',
+        'Specific assistant floor': '指定 Assistant 樓層',
+        'Imported nodes: ${0} | Edges: ${1} | Exported floor: ${2}': '導入節點：${0} | 邊：${1} | 導出樓層：${2}',
+        'Current chat latest assistant floor: ${0}': '目前聊天最新 Assistant 樓層：${0}',
+        'Restore keeps exported floor numbers for same-chat recovery. Bind modes rewrite all imported nodes to the selected floor.': '恢復模式會保留導出時的樓層編號，用於同聊天恢復。綁定模式會把所有導入節點重寫到所選樓層。',
+        'Restore requires current chat to have at least ${0} assistant floor(s). Current chat only has ${1}. Choose a bind mode instead.': '恢復模式要求目前聊天至少有 ${0} 個 Assistant 樓層，但目前只有 ${1} 個。請改用綁定模式。',
+        'Current chat has no assistant floors to bind.': '目前聊天沒有可綁定的 Assistant 樓層。',
+        'Enter a floor between 1 and ${0}.': '請輸入 1 到 ${0} 之間的樓層。',
+        'Imported memory graph and restored exported floor ${0}.': '已導入記憶圖，並恢復導出樓層 ${0}。',
+        'Imported memory graph and bound it to latest assistant floor ${0}.': '已導入記憶圖，並綁定到目前最新 Assistant 樓層 ${0}。',
+        'Imported memory graph and bound it to assistant floor ${0}.': '已導入記憶圖，並綁定到 Assistant 樓層 ${0}。',
+        'Memory graph import failed.': '記憶圖匯入失敗。',
+        'Memory graph incremental fill completed.': '記憶圖譜增量補全完成。',
+        'Memory graph is already up to date.': '記憶圖譜已是最新，無需補全。',
+        'Import failed: ${0}': '匯入失敗：${0}',
+        'Types: ${0} | Always Inject: ${1} | Force Update: ${2} | Hierarchical: ${3}': '類型：${0} | 常駐注入：${1} | 強制更新：${2} | 分層壓縮：${3}',
+        'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}': '類型：${0} | 可編輯：${1} | 常駐注入：${2} | 強制更新：${3} | 分層壓縮：${4}',
+        '(Current preset)': '（目前預設）',
+        '(Current API config)': '（目前 API 設定）',
+        '(missing)': '（缺失）',
+        '(none)': '（無）',
+        '(select node)': '（選擇節點）',
+        '(unset)': '（未設定）',
+        '(new)': '（新建）',
+        'Memory Graph': '記憶圖',
+        'Inspector': '檢視器',
+        'Select a node or edge to edit.': '點擊節點或邊以編輯。',
+        'Apply Changes': '套用修改',
+        'No node selected. Click a node in graph first.': '未選擇節點。請先在圖中點擊一個節點。',
+        'Nodes: ${0} | Edges: ${1} | Assistant turns: ${2} | Source turns: ${3}': '節點：${0} | 邊：${1} | Assistant 樓層：${2} | 來源樓層：${3}',
+        'semantic=${0}': 'semantic=${0}',
+        'Last recall steps: ${0}': '最近召回步數：${0}',
+        'Visual graph ready. Click a node or edge to select it for editing.': '視覺化圖已就緒。點擊節點或邊可選取並編輯。',
+        'Search Graph': '搜尋圖譜',
+        'Search graph nodes, summaries, IDs, or fields...': '搜尋節點、摘要、ID 或欄位……',
+        'All types': '全部類型',
+        'Clear Search': '清空搜尋',
+        'Prev Result': '上一個結果',
+        'Next Result': '下一個結果',
+        'Start typing to search the graph.': '開始輸入以搜尋圖譜。',
+        'No nodes match the current search.': '目前搜尋沒有符合的節點。',
+        'Try a different keyword or type filter.': '請嘗試其他關鍵字或類型篩選。',
+        'Showing ${0} of ${1} matching nodes.': '顯示 ${1} 個符合節點中的 ${0} 個。',
+        'Select a result to focus it in graph.': '選擇一個結果以在圖中定位。',
+        'Fit View': '適配視圖',
+        'Add Edge': '新增邊',
+        'Edit Selected Edge': '編輯所選邊',
+        'Delete Selected Node': '刪除所選節點',
+        'Delete Selected Edge': '刪除所選邊',
+        'Advanced JSON View': '進階 JSON 檢視',
+        'Advanced JSON Edit': '進階 JSON 編輯',
+        'ID': 'ID',
+        'Level': '層級',
+        'Type': '類型',
+        'Title': '標題',
+        'Summary': '摘要',
+        'Children': '子節點',
+        'SeqRange': '序列範圍',
+        'Actions': '操作',
+        'Recent Edges': '最近邊',
+        'From': '起點',
+        'To': '終點',
+        'Edit': '編輯',
+        'Last Projection': '最近投影',
+        'View': '查看',
+        'Form Edit': '表單編輯',
+        'Form editor for one node. Parent/child relationships and graph persistence are applied automatically.': '單節點表單編輯器。父子關係與圖持久化會自動處理。',
+        'Node ID': '節點 ID',
+        'Parent Node': '父節點',
+        'Sequence': '序號',
+        'From Sequence': '起始序號',
+        'To Sequence': '結束序號',
+        'Archived': '已封存',
+        'Fields (one key=value per line)': '字段（每行一個 key=value）',
+        'Edge ${0}: configure relation between two nodes.': '邊 ${0}：設定兩個節點之間的關係。',
+        'From Node': '起點節點',
+        'To Node': '終點節點',
+        'Edge not found: #${0}': '找不到邊：#${0}',
+        'Apply Edge': '套用邊',
+        'Create Edge': '建立邊',
+        'Edge form not found': '找不到邊表單',
+        'From/To node is required': '起點/終點節點為必填',
+        'From/To node does not exist': '起點/終點節點不存在',
+        'From and To cannot be the same node': '起點與終點不能是同一節點',
+        'Edge updated (#${0})': '邊已更新（#${0}）',
+        'Updated edge #${0}.': '已更新邊 #${0}。',
+        'Edge created.': '邊已建立。',
+        'Created edge #${0}.': '已建立邊 #${0}。',
+        'Edge edit failed: ${0}': '邊編輯失敗：${0}',
+        'Node not found: ${0}': '找不到節點：${0}',
+        'Apply Node': '套用節點',
+        'Node form not found': '找不到節點表單',
+        'Parent node does not exist: ${0}': '父節點不存在：${0}',
+        'Parent node cannot be itself': '父節點不能是自己',
+        'Parent selection would create a cycle': '目前父節點選擇會形成循環',
+        'Updated node ${0}.': '已更新節點 ${0}。',
+        'Node updated: ${0}': '節點已更新：${0}',
+        'Node edit failed: ${0}': '節點編輯失敗：${0}',
+        'Fitted graph view.': '圖視圖已適配。',
+        'No edge selected. Click an edge in graph first.': '未選擇邊。請先在圖中點擊一條邊。',
+        'Delete edge #${0}: ${1} -> ${2} [${3}]?': '刪除邊 #${0}：${1} -> ${2} [${3}]？',
+        'Deleted edge #${0}.': '已刪除邊 #${0}。',
+        'Deleted selected edge.': '已刪除所選邊。',
+        'Delete node ${0}: ${1}? This will remove its subtree and related edges.': '刪除節點 ${0}: ${1}？這會刪除其子樹與相關邊。',
+        'Deleted node ${0}.': '已刪除節點 ${0}。',
+        'Deleted selected node.': '已刪除所選節點。',
+        'Advanced: edit full memory graph JSON for current chat.': '進階：編輯目前聊天的完整記憶圖 JSON。',
+        'Apply Graph': '套用圖',
+        'Applied raw graph JSON edit.': '已套用原始圖 JSON 編輯。',
+        'Memory graph JSON updated.': '記憶圖 JSON 已更新。',
+        'Graph edit failed: ${0}': '圖編輯失敗：${0}',
+        'Memory disabled, cleared memory lorebook injections.': '記憶已停用，已清理記憶圖世界書注入。',
+        'Memory store unavailable for current chat.': '目前聊天的記憶儲存不可用。',
+        'Recall ready. selected=${0}': '召回就緒。selected=${0}',
+        'Recall injection failed (${0}): ${1}': '召回注入失敗（${0}）：${1}',
+        'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}': 'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
+        'Memory Node Schema Editor': '記憶節點 Schema 編輯器',
+        'Define node tables, extraction hints, and compression strategy. This controls what your memory graph stores and how it compacts over time.': '定義節點資料表、生成圖提示與壓縮策略。這會控制記憶圖儲存內容及其隨時間壓縮方式。',
+        'Hierarchical Compression': '分層壓縮',
+        'Latest-only Merge': 'Latest-only 合併',
+        'Always Inject': '常駐注入',
+        'Current type count: ${0}': '目前類型數量：${0}',
+        'Add Type': '新增類型',
+        'Reset to Default Schema': '重設為預設 Schema',
+        'Schema reset to default in editor.': '已在編輯器中重設為預設 Schema。',
+        'Reset schema editor content to default? This will overwrite current unsaved schema edits.': '確認將 Schema 編輯器重設為預設？這會覆蓋目前未儲存的編輯。',
+        'table: ${0}': '表：${0}',
+        'mode: ${0}': '模式：${0}',
+        'always inject': '常駐注入',
+        'Type ID': '類型 ID',
+        'Label': '標籤',
+        'Table Name': '表名',
+        'Table Columns (comma separated)': '表欄位（逗號分隔）',
+        'Required Columns (comma separated)': '必填欄位（逗號分隔）',
+        'Column Hints (one per line: column=meaning)': '欄位說明（每行一個：欄位=說明）',
+        'Keywords (comma separated)': '關鍵字（逗號分隔）',
+        'Force Update (must appear each extraction batch)': '強制更新（每次生成圖必須出現）',
+        'Latest Only Upsert': 'Latest-only 覆寫',
+        'Editable': '可編輯',
+        'Create-only': '僅建立',
+        'Editable (enable edit/delete tools and graph edit context)': '可編輯（啟用編輯/刪除工具與圖編輯上下文）',
+        'Primary Key Columns': '主鍵列',
+        'Extract Hint': '生成圖提示',
+        'Enable Hierarchical Compression': '啟用分層壓縮',
+        'none': 'none',
+        'hierarchical': 'hierarchical',
+        'Threshold': '閾值',
+        'Fan-In': '扇入',
+        'Max Depth': '最大深度',
+        'Keep Recent Leaves': '保留最近葉節點',
+        'Compression Rule (optional)': '壓縮規則（可選）',
+        'Filter nodes eligible for compression. One condition per line or use &&. Examples: status in resolved,dropped ; semantic_rollup=false': '過濾可參與壓縮的節點。每行一條條件，或使用 && 連接。示例：status in resolved,dropped ; semantic_rollup=false',
+        'Invalid compression rule for type ${0}: ${1}': '類型 ${0} 的壓縮規則無效：${1}',
+        'Summarize Instruction': '摘要指令',
+        'Duplicate Type': '複製類型',
+        'Remove Type': '移除類型',
+        'Apply Schema': '套用 Schema',
+        'Memory schema updated.': '記憶 Schema 已更新。',
+        'Applied memory schema from popup editor.': '已套用彈窗編輯器中的記憶 Schema。',
+        'Saved memory settings.': '記憶設定已儲存。',
+        'Invalid schema settings: ${0}': 'Schema 設定無效：${0}',
+        'Memory settings save failed.': '記憶設定儲存失敗。',
+        'Memory graph rebuilt from current chat.': '已從目前聊天重建記憶圖。',
+        'Rebuilt memory graph and compression from chat.': '已從聊天重建記憶圖並完成壓縮。',
+        'Manual Compression': '手動壓縮',
+        'Compression scope': '壓縮範圍',
+        'All nodes': '全圖節點',
+        'Older nodes only (exclude recent N assistant turns)': '僅舊節點（排除最近 N 條 Assistant 回覆）',
+        'Exclude recent assistant turns': '排除最近 Assistant 回覆條數',
+        'Compression mode': '壓縮模式',
+        'Use schema thresholds': '按 Schema 閾值壓縮',
+        'Force compress (ignore threshold)': '強制壓縮（忽略閾值）',
+        'Max rounds per type': '每種類型最大輪數',
+        'Types to compress': '要壓縮的類型',
+        'Apply Manual Compression': '執行手動壓縮',
+        'No compressible types in current schema.': '目前 Schema 沒有可壓縮類型。',
+        'Select at least one type to compress.': '請至少選擇一種要壓縮的類型。',
+        'No nodes are eligible for the selected scope.': '目前範圍內沒有可壓縮節點。',
+        'Manual compression completed. Created=${0}, archived=${1}': '手動壓縮完成。新建=${0}，歸檔=${1}',
+        'Manual compression made no changes.': '手動壓縮未產生變化。',
+        'Event compression completed: ${0} round(s).': '事件壓縮完成：本次 ${0} 輪。',
+        'Current chat memory graph reset.': '已重設目前聊天記憶圖。',
+        'Reset memory graph for current chat.': '已重設目前聊天記憶圖。',
+        'Reset current chat memory graph? This cannot be undone.': '確認重設目前聊天記憶圖嗎？此操作不可撤銷。',
+        'Visual graph unavailable: failed to load Cytoscape.': '視覺化圖不可用：載入 Cytoscape 失敗。',
+        'Selected node: ${0}. Tip: click an edge to edit relation.': '已選擇節點：${0}。提示：點擊邊可編輯關係。',
+        'Selected edge index ${0} (missing).': '已選擇邊索引 ${0}（缺失）。',
+        'Selected edge #${0}: ${1} -> ${2} [${3}]': '已選擇邊 #${0}：${1} -> ${2} [${3}]',
+        'Chat mutation detected. Memory graph will re-sync on next generation.': '偵測到聊天變更。記憶圖會在下次生成時重新同步。',
+        'Chat changes interrupted memory graph update. It will re-sync on next generation.': '聊天訊息發生變化，記憶圖更新已中斷，將在下次生成時重新同步。',
+        'Generation aborted. Skipped memory recall.': '生成已中斷，已跳過記憶召回。',
+        'Memory recall cancelled by user.': '記憶召回已由使用者終止。',
+        'Memory graph update cancelled by user.': '記憶圖更新已由使用者終止。',
+        'Stop': '終止',
+    });
+}
+
+const extractionTimers = new Map();
+const memoryStoreCache = new Map();
+const memoryStateCache = new Map();
+const memoryStoreTargets = new Map();
+const memoryLoadTasks = new Map();
+const rollbackHistoryCache = new Map();
+const pendingMutationInvalidations = new Map();
+const scheduledExtractionSingleFlightStates = new Map();
+let activeRuntimeInfoToast = null;
+let activePersistentRuntimeNoticeToast = null;
+let activeRecallAbortController = null;
+let activeExtractionAbortController = null;
+let activeRecallRunToken = 0;
+let nextActiveRecallRequestId = 0;
+const activeRecallRequestStates = new Map();
+let cytoscapeLoadPromise = null;
+let lastKnownChatKey = '';
+let latestRecallSnapshot = null;
+let generationInProgress = false;
+let generationVisibleHistoryRegexProvider = null;
+function getGenerationVisibleHistoryRuntimeRegexScripts() {
+    const context = getContext();
+    const settings = getEffectiveSettings(context, getSettings());
+    if (!settings?.enabled) {
+        return [];
+    }
+    const visibleLayers = Math.max(0, Math.min(200, Math.floor(Number(settings?.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages))));
+    if (visibleLayers <= 0) {
+        return [];
+    }
+    const suffix = visibleLayers > 0 ? ` (${visibleLayers})` : '';
+
+    return [{
+        id: GENERATION_VISIBLE_HISTORY_REGEX_SCRIPT_ID,
+        scriptName: `Memory Graph Visible Message Window${suffix}`,
+        findRegex: '/[\\s\\S]*/g',
+        replaceString: '',
+        trimStrings: [],
+        placement: [regex_placement.USER_INPUT, regex_placement.AI_OUTPUT],
+        disabled: false,
+        markdownOnly: false,
+        promptOnly: true,
+        runOnEdit: false,
+        substituteRegex: substitute_find_regex.NONE,
+        minDepth: visibleLayers,
+        maxDepth: null,
+    }];
+}
+
+function syncGenerationVisibleHistoryRuntimeRegexScripts(options = {}) {
+    generationVisibleHistoryRegexProvider?.setScripts(getGenerationVisibleHistoryRuntimeRegexScripts(), options);
+}
+
+function cloneDefault(value) {
+    return Array.isArray(value) || typeof value === 'object' ? structuredClone(value) : value;
+}
+
+function normalizeNodeTypeSchema(schema) {
+    const list = Array.isArray(schema) ? schema : defaultNodeTypeSchema;
+    const normalizeCompressionMode = (mode) => {
+        const value = String(mode || '').trim().toLowerCase();
+        return ['none', 'hierarchical'].includes(value) ? value : 'none';
+    };
+    const normalized = list
+        .filter(item => item && typeof item === 'object')
+        .map((item, index) => {
+            const rawId = String(item.id || `custom_${index + 1}`).trim().toLowerCase().replace(/[^a-z0-9_\-]/g, '_');
+            if (rawId === 'thread') {
+                return null;
+            }
+            const defaultRequired = rawId === 'event' ? ['summary'] : [];
+            const requiredColumns = Array.isArray(item.requiredColumns)
+                ? item.requiredColumns.map(x => String(x || '').trim()).filter(Boolean)
+                : defaultRequired;
+            const columnHints = item.columnHints && typeof item.columnHints === 'object' && !Array.isArray(item.columnHints)
+                ? Object.fromEntries(
+                    Object.entries(item.columnHints)
+                        .map(([key, value]) => [String(key || '').trim(), String(value || '').trim()])
+                        .filter(([key, value]) => key && value),
+                )
+                : {};
+            const forceUpdate = item.forceUpdate === undefined
+                ? rawId === 'event'
+                : Boolean(item.forceUpdate);
+            const editable = item.editable === undefined
+                ? rawId !== 'event'
+                : Boolean(item.editable);
+            const rawCompressionMode = String(item?.compression?.mode || '').trim().toLowerCase();
+            const defaultCompressionRule = '';
+            const tableColumns = Array.isArray(item.tableColumns)
+                ? item.tableColumns.map(x => String(x || '').trim()).filter(Boolean)
+                : ['title'];
+            const requestedLatestOnly = Boolean(item.latestOnly);
+            const rawPrimaryKeyColumns = Array.isArray(item.primaryKeyColumns)
+                ? item.primaryKeyColumns
+                : [];
+            const allowedKeyColumns = new Set(tableColumns);
+            const primaryKeyColumns = Array.from(new Set(
+                rawPrimaryKeyColumns
+                    .map(x => String(x || '').trim())
+                    .filter(Boolean)
+                    .filter(column => allowedKeyColumns.has(column)),
+            ));
+            const latestOnly = requestedLatestOnly;
+            return {
+                id: rawId,
+                label: String(item.label || item.id || `Type ${index + 1}`).trim(),
+                tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
+                tableColumns,
+                level: String(item.level || LEVEL.SEMANTIC),
+                extractHint: String(item.extractHint || '').trim(),
+                keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
+                columnHints,
+                requiredColumns,
+                forceUpdate,
+                editable,
+                alwaysInject: Boolean(item.alwaysInject),
+                latestOnly,
+                primaryKeyColumns,
+                compression: {
+                    mode: normalizeCompressionMode(rawCompressionMode),
+                    threshold: Math.max(2, Number(item?.compression?.threshold) || 6),
+                    fanIn: Math.max(2, Number(item?.compression?.fanIn) || 3),
+                    maxDepth: Math.max(1, Number(item?.compression?.maxDepth) || 6),
+                    keepRecentLeaves: Math.max(0, Number(item?.compression?.keepRecentLeaves) || 0),
+                    rule: String(item?.compression?.rule ?? defaultCompressionRule).trim(),
+                    summarizeInstruction: String(item?.compression?.summarizeInstruction || '').trim(),
+                },
+            };
+        })
+        .filter(item => item && item.id);
+
+    const deduped = [];
+    const seenIds = new Set();
+    for (const item of normalized) {
+        let id = String(item.id || '').trim();
+        if (!id) {
+            continue;
+        }
+        if (seenIds.has(id)) {
+            let suffix = 2;
+            while (seenIds.has(`${id}_${suffix}`)) {
+                suffix += 1;
+            }
+            id = `${id}_${suffix}`;
+        }
+        seenIds.add(id);
+        deduped.push({ ...item, id });
+    }
+
+    return deduped.length > 0 ? deduped : structuredClone(defaultNodeTypeSchema);
+}
+
+function normalizeRecallInjectPosition(value) {
+    const numeric = Number(value);
+    return SUPPORTED_WORLD_INFO_POSITIONS.includes(numeric) ? numeric : world_info_position.atDepth;
+}
+
+function migrateLegacyRecallInjectPosition(value) {
+    switch (Number(value)) {
+        case extension_prompt_types.BEFORE_PROMPT:
+            return world_info_position.before;
+        case extension_prompt_types.IN_PROMPT:
+            return world_info_position.after;
+        case extension_prompt_types.IN_CHAT:
+            return world_info_position.atDepth;
+        default:
+            return world_info_position.atDepth;
+    }
+}
+
+function normalizeRecallInjectDepth(value) {
+    return Math.max(0, Math.min(10000, Math.floor(Number(value) || 0)));
+}
+
+function normalizeRecallInjectRole(value) {
+    const allowed = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT];
+    const numeric = Number(value);
+    return allowed.includes(numeric) ? numeric : extension_prompt_roles.SYSTEM;
+}
+
+function ensureSettings() {
+    if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
+        extension_settings[MODULE_NAME] = {};
+    }
+    const hasRecallInjectPositionSchemaVersion = Object.prototype.hasOwnProperty.call(
+        extension_settings[MODULE_NAME],
+        'recallInjectPositionSchemaVersion',
+    );
+
+    for (const [key, value] of Object.entries(defaultSettings)) {
+        if (extension_settings[MODULE_NAME][key] === undefined) {
+            extension_settings[MODULE_NAME][key] = cloneDefault(value);
+        }
+    }
+
+    extension_settings[MODULE_NAME].toolCallRetryMax = Math.max(
+        0,
+        Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
+    );
+    if (!hasRecallInjectPositionSchemaVersion) {
+        extension_settings[MODULE_NAME].recallInjectPosition = migrateLegacyRecallInjectPosition(
+            extension_settings[MODULE_NAME].recallInjectPosition,
+        );
+    }
+    extension_settings[MODULE_NAME].recallInjectPosition = normalizeRecallInjectPosition(extension_settings[MODULE_NAME].recallInjectPosition);
+    extension_settings[MODULE_NAME].recallInjectPositionSchemaVersion = RECALL_INJECT_POSITION_SCHEMA_VERSION;
+    extension_settings[MODULE_NAME].recallInjectDepth = normalizeRecallInjectDepth(extension_settings[MODULE_NAME].recallInjectDepth);
+    extension_settings[MODULE_NAME].recallInjectRole = normalizeRecallInjectRole(extension_settings[MODULE_NAME].recallInjectRole);
+    delete extension_settings[MODULE_NAME].plainTextFunctionCallMode;
+    extension_settings[MODULE_NAME].updateEvery = Math.max(
+        1,
+        Math.floor(Number(extension_settings[MODULE_NAME].updateEvery) || defaultSettings.updateEvery),
+    );
+    extension_settings[MODULE_NAME].recallMaxIterations = Math.max(
+        2,
+        Math.min(6, Math.floor(Number(extension_settings[MODULE_NAME].recallMaxIterations) || defaultSettings.recallMaxIterations)),
+    );
+    const extractBatchTurnsRaw = Number(extension_settings[MODULE_NAME].extractBatchTurns);
+    const extractContextTurnsRaw = Number(extension_settings[MODULE_NAME].extractContextTurns);
+    const extractExcludeRecentTurnsRaw = Number(extension_settings[MODULE_NAME].extractExcludeRecentTurns);
+    const recallQueryMessagesRaw = Number(extension_settings[MODULE_NAME].recallQueryMessages);
+    const recentRawTurnsRaw = Number(extension_settings[MODULE_NAME].recentRawTurns);
+    const llmVisibleRecentMessagesRaw = Number(extension_settings[MODULE_NAME].llmVisibleRecentMessages);
+    extension_settings[MODULE_NAME].extractBatchTurns = Math.max(
+        1,
+        Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : defaultSettings.extractBatchTurns),
+    );
+    extension_settings[MODULE_NAME].extractContextTurns = Math.max(
+        1,
+        Math.min(32, Math.floor(Number.isFinite(extractContextTurnsRaw) ? extractContextTurnsRaw : defaultSettings.extractContextTurns)),
+    );
+    extension_settings[MODULE_NAME].extractExcludeRecentTurns = normalizeExtractExcludeRecentTurns(
+        Number.isFinite(extractExcludeRecentTurnsRaw) ? extractExcludeRecentTurnsRaw : defaultSettings.extractExcludeRecentTurns,
+    );
+    extension_settings[MODULE_NAME].recallQueryMessages = Math.max(
+        1,
+        Math.min(64, Math.floor(Number.isFinite(recallQueryMessagesRaw) ? recallQueryMessagesRaw : defaultSettings.recallQueryMessages)),
+    );
+    extension_settings[MODULE_NAME].recentRawTurns = Math.max(
+        0,
+        Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : defaultSettings.recentRawTurns),
+    );
+    extension_settings[MODULE_NAME].llmVisibleRecentMessages = Math.max(
+        0,
+        Math.min(200, Math.floor(Number.isFinite(llmVisibleRecentMessagesRaw) ? llmVisibleRecentMessagesRaw : defaultSettings.llmVisibleRecentMessages)),
+    );
+    extension_settings[MODULE_NAME].includeWorldInfoWithPreset = extension_settings[MODULE_NAME].includeWorldInfoWithPreset !== false;
+    extension_settings[MODULE_NAME].extractSystemPrompt = String(extension_settings[MODULE_NAME].extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT;
+    extension_settings[MODULE_NAME].recallRouteSystemPrompt = String(extension_settings[MODULE_NAME].recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
+    extension_settings[MODULE_NAME].recallFinalizeSystemPrompt = String(extension_settings[MODULE_NAME].recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
+    extension_settings[MODULE_NAME].nodeTypeSchema = normalizeNodeTypeSchema(extension_settings[MODULE_NAME].nodeTypeSchema);
+}
+
+function getSettings() {
+    return extension_settings[MODULE_NAME];
+}
+
+function normalizeAdvancedSettings(source = null, fallbackSource = null) {
+    const base = fallbackSource && typeof fallbackSource === 'object' ? fallbackSource : defaultSettings;
+    const input = source && typeof source === 'object' ? source : {};
+    const extractBatchTurnsRaw = Number(input.extractBatchTurns);
+    const extractContextTurnsRaw = Number(input.extractContextTurns);
+    const extractExcludeRecentTurnsRaw = Number(input.extractExcludeRecentTurns);
+    const recallQueryMessagesRaw = Number(input.recallQueryMessages);
+    const recentRawTurnsRaw = Number(input.recentRawTurns);
+    const llmVisibleRecentMessagesRaw = Number(input.llmVisibleRecentMessages);
+    const recallIterationsRaw = Number(input.recallMaxIterations);
+    const toolRetryRaw = Number(input.toolCallRetryMax);
+    return {
+        recentRawTurns: Math.max(
+            0,
+            Math.floor(Number.isFinite(recentRawTurnsRaw) ? recentRawTurnsRaw : Number(base.recentRawTurns ?? defaultSettings.recentRawTurns)),
+        ),
+        llmVisibleRecentMessages: Math.max(
+            0,
+            Math.min(200, Math.floor(Number.isFinite(llmVisibleRecentMessagesRaw) ? llmVisibleRecentMessagesRaw : Number(base.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages))),
+        ),
+        recallMaxIterations: Math.max(
+            2,
+            Math.min(6, Math.floor(Number.isFinite(recallIterationsRaw) ? recallIterationsRaw : Number(base.recallMaxIterations || defaultSettings.recallMaxIterations))),
+        ),
+        toolCallRetryMax: Math.max(
+            0,
+            Math.min(10, Math.floor(Number.isFinite(toolRetryRaw) ? toolRetryRaw : Number(base.toolCallRetryMax || defaultSettings.toolCallRetryMax))),
+        ),
+        extractExcludeRecentTurns: normalizeExtractExcludeRecentTurns(
+            Number.isFinite(extractExcludeRecentTurnsRaw)
+                ? extractExcludeRecentTurnsRaw
+                : Number(base.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns),
+        ),
+        extractContextTurns: Math.max(
+            1,
+            Math.min(32, Math.floor(Number.isFinite(extractContextTurnsRaw) ? extractContextTurnsRaw : Number(base.extractContextTurns || defaultSettings.extractContextTurns))),
+        ),
+        recallQueryMessages: Math.max(
+            1,
+            Math.min(64, Math.floor(Number.isFinite(recallQueryMessagesRaw) ? recallQueryMessagesRaw : Number(base.recallQueryMessages || defaultSettings.recallQueryMessages))),
+        ),
+        extractBatchTurns: Math.max(
+            1,
+            Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : Number(base.extractBatchTurns || defaultSettings.extractBatchTurns)),
+        ),
+        extractSystemPrompt: String(input.extractSystemPrompt || '').trim() || String(base.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT),
+        recallRouteSystemPrompt: String(input.recallRouteSystemPrompt || '').trim() || String(base.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT),
+        recallFinalizeSystemPrompt: String(input.recallFinalizeSystemPrompt || '').trim() || String(base.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT),
+    };
+}
+
+function applyAdvancedSettings(target, values) {
+    if (!target || typeof target !== 'object') {
+        return;
+    }
+    const normalized = normalizeAdvancedSettings(values, target);
+    target.recentRawTurns = normalized.recentRawTurns;
+    target.llmVisibleRecentMessages = normalized.llmVisibleRecentMessages;
+    target.recallMaxIterations = normalized.recallMaxIterations;
+    target.toolCallRetryMax = normalized.toolCallRetryMax;
+    target.extractExcludeRecentTurns = normalized.extractExcludeRecentTurns;
+    target.extractContextTurns = normalized.extractContextTurns;
+    target.recallQueryMessages = normalized.recallQueryMessages;
+    target.extractBatchTurns = normalized.extractBatchTurns;
+    target.extractSystemPrompt = normalized.extractSystemPrompt;
+    target.recallRouteSystemPrompt = normalized.recallRouteSystemPrompt;
+    target.recallFinalizeSystemPrompt = normalized.recallFinalizeSystemPrompt;
+}
+
+function getCurrentAvatar(context) {
+    const ctx = context || getContext();
+    return String(ctx?.characters?.[ctx?.characterId]?.avatar || '').trim();
+}
+
+function getCharacterByAvatar(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target) {
+        return null;
+    }
+    return (context?.characters || []).find((item) => String(item?.avatar || '').trim() === target) || null;
+}
+
+function getCharacterIndexByAvatar(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target) {
+        return -1;
+    }
+    return (context?.characters || []).findIndex((item) => String(item?.avatar || '').trim() === target);
+}
+
+function getCharacterDisplayNameByAvatar(context, avatar) {
+    const character = getCharacterByAvatar(context, avatar);
+    return String(character?.name || avatar || '').trim();
+}
+
+function getCharacterExtensionDataByAvatar(context, avatar) {
+    const character = getCharacterByAvatar(context, avatar);
+    const payload = character?.data?.extensions?.[MODULE_NAME];
+    return payload && typeof payload === 'object' ? payload : {};
+}
+
+function getCharacterSchemaOverrideByAvatar(context, avatar) {
+    const extensionData = getCharacterExtensionDataByAvatar(context, avatar);
+    const schema = extensionData?.[CHARACTER_SCHEMA_OVERRIDE_KEY];
+    if (!Array.isArray(schema) || schema.length === 0) {
+        return null;
+    }
+    return normalizeNodeTypeSchema(schema);
+}
+
+function getCharacterAdvancedOverrideByAvatar(context, avatar) {
+    const extensionData = getCharacterExtensionDataByAvatar(context, avatar);
+    const override = extensionData?.[CHARACTER_ADVANCED_OVERRIDE_KEY];
+    if (!override || typeof override !== 'object') {
+        return null;
+    }
+    return normalizeAdvancedSettings(override, defaultSettings);
+}
+
+function getEffectiveAdvancedSettings(context = null, settings = null) {
+    const ctx = context || getContext();
+    const currentSettings = settings || getSettings();
+    const base = normalizeAdvancedSettings(currentSettings, defaultSettings);
+    const avatar = getCurrentAvatar(ctx);
+    const override = avatar ? getCharacterAdvancedOverrideByAvatar(ctx, avatar) : null;
+    if (!override) {
+        return base;
+    }
+    return normalizeAdvancedSettings({ ...base, ...override }, base);
+}
+
+function getEffectiveSettings(context = null, settings = null) {
+    const base = settings || getSettings();
+    return {
+        ...base,
+        ...getEffectiveAdvancedSettings(context, base),
+    };
+}
+
+function getEffectiveNodeTypeSchema(context = null, settings = null) {
+    const ctx = context || getContext();
+    const currentSettings = settings || getSettings();
+    const avatar = getCurrentAvatar(ctx);
+    const overrideSchema = getCharacterSchemaOverrideByAvatar(ctx, avatar);
+    if (overrideSchema && overrideSchema.length > 0) {
+        return overrideSchema;
+    }
+    return normalizeNodeTypeSchema(currentSettings?.nodeTypeSchema);
+}
+
+function getSchemaScopeInfo(context = null, settings = null) {
+    const ctx = context || getContext();
+    const currentSettings = settings || getSettings();
+    const avatar = getCurrentAvatar(ctx);
+    const hasAvatar = Boolean(avatar);
+    const characterName = hasAvatar ? getCharacterDisplayNameByAvatar(ctx, avatar) : '';
+    const overrideSchema = hasAvatar ? getCharacterSchemaOverrideByAvatar(ctx, avatar) : null;
+    const hasOverride = Array.isArray(overrideSchema) && overrideSchema.length > 0;
+    const effectiveSchema = hasOverride
+        ? overrideSchema
+        : normalizeNodeTypeSchema(currentSettings?.nodeTypeSchema);
+    return {
+        avatar,
+        hasAvatar,
+        characterName,
+        hasOverride,
+        scope: hasOverride ? 'character' : 'global',
+        schema: effectiveSchema,
+    };
+}
+
+function getAdvancedScopeInfo(context = null, settings = null) {
+    const ctx = context || getContext();
+    const currentSettings = settings || getSettings();
+    const avatar = getCurrentAvatar(ctx);
+    const hasAvatar = Boolean(avatar);
+    const characterName = hasAvatar ? getCharacterDisplayNameByAvatar(ctx, avatar) : '';
+    const overrideSettings = hasAvatar ? getCharacterAdvancedOverrideByAvatar(ctx, avatar) : null;
+    const hasOverride = Boolean(overrideSettings);
+    const effectiveSettings = hasOverride
+        ? normalizeAdvancedSettings(overrideSettings, currentSettings)
+        : normalizeAdvancedSettings(currentSettings, defaultSettings);
+    return {
+        avatar,
+        hasAvatar,
+        characterName,
+        hasOverride,
+        scope: hasOverride ? 'character' : 'global',
+        settings: effectiveSettings,
+    };
+}
+
+async function persistCharacterSchemaOverride(context, avatar, schema) {
+    const target = String(avatar || '').trim();
+    if (!target || typeof context?.writeExtensionField !== 'function') {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    const next = {
+        ...previous,
+        [CHARACTER_SCHEMA_OVERRIDE_KEY]: normalizeNodeTypeSchema(schema),
+    };
+    await context.writeExtensionField(characterIndex, MODULE_NAME, next);
+    return true;
+}
+
+async function removeCharacterSchemaOverride(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target || typeof context?.writeExtensionField !== 'function') {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    if (!Object.prototype.hasOwnProperty.call(previous, CHARACTER_SCHEMA_OVERRIDE_KEY)) {
+        return true;
+    }
+    const next = { ...previous };
+    // writeExtensionField() persists via merge-attributes, so removals must be
+    // sent as explicit nulls instead of omitted keys.
+    next[CHARACTER_SCHEMA_OVERRIDE_KEY] = null;
+    await context.writeExtensionField(characterIndex, MODULE_NAME, next);
+    return true;
+}
+
+async function persistCharacterAdvancedOverride(context, avatar, advancedSettings) {
+    const target = String(avatar || '').trim();
+    if (!target || typeof context?.writeExtensionField !== 'function') {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    const next = {
+        ...previous,
+        [CHARACTER_ADVANCED_OVERRIDE_KEY]: normalizeAdvancedSettings(advancedSettings, defaultSettings),
+    };
+    await context.writeExtensionField(characterIndex, MODULE_NAME, next);
+    return true;
+}
+
+async function removeCharacterAdvancedOverride(context, avatar) {
+    const target = String(avatar || '').trim();
+    if (!target || typeof context?.writeExtensionField !== 'function') {
+        return false;
+    }
+    const characterIndex = getCharacterIndexByAvatar(context, target);
+    if (characterIndex < 0) {
+        return false;
+    }
+    const previous = getCharacterExtensionDataByAvatar(context, target);
+    if (!Object.prototype.hasOwnProperty.call(previous, CHARACTER_ADVANCED_OVERRIDE_KEY)) {
+        return true;
+    }
+    const next = { ...previous };
+    // writeExtensionField() persists via merge-attributes, so removals must be
+    // sent as explicit nulls instead of omitted keys.
+    next[CHARACTER_ADVANCED_OVERRIDE_KEY] = null;
+    await context.writeExtensionField(characterIndex, MODULE_NAME, next);
+    return true;
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll('\'', '&#39;');
+}
+
+function getOpenAIPresetNames(context) {
+    const manager = context.getPresetManager?.('openai');
+    if (!manager || typeof manager.getAllPresets !== 'function') {
+        return [];
+    }
+    const names = manager.getAllPresets();
+    if (!Array.isArray(names)) {
+        return [];
+    }
+    return [...new Set(names.map(name => String(name || '').trim()).filter(Boolean))];
+}
+
+function renderOpenAIPresetOptions(context, selectedName = '') {
+    const selected = String(selectedName || '').trim();
+    const names = getOpenAIPresetNames(context);
+    const options = [`<option value="">${escapeHtml(i18n('(Current preset)'))}</option>`];
+    for (const name of names) {
+        options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+    }
+    if (selected && !names.includes(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function getConnectionProfiles() {
+    return getChatCompletionConnectionProfiles();
+}
+
+function renderConnectionProfileOptions(selectedName = '') {
+    const selected = String(selectedName || '').trim();
+    const names = getConnectionProfiles().map(profile => profile.name);
+    const options = [`<option value="">${escapeHtml(i18n('(Current API config)'))}</option>`];
+    for (const name of names) {
+        options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
+    }
+    if (selected && !names.includes(selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function refreshOpenAIPresetSelectors(root, context, settings) {
+    const selectorValues = [
+        ['#luker_rpg_memory_recall_api_preset', settings.recallApiPresetName],
+        ['#luker_rpg_memory_recall_preset', settings.recallPresetName],
+        ['#luker_rpg_memory_extract_api_preset', settings.extractApiPresetName],
+        ['#luker_rpg_memory_extract_preset', settings.extractPresetName],
+    ];
+
+    for (const [selector, value] of selectorValues) {
+        const select = root.find(selector);
+        if (!select.length) {
+            continue;
+        }
+        const isConnectionSelector = selector.endsWith('_api_preset');
+        select.html(isConnectionSelector ? renderConnectionProfileOptions(value) : renderOpenAIPresetOptions(context, value));
+        select.val(String(value || '').trim());
+    }
+}
+
+function getChatKey(context, explicitTarget = null) {
+    const target = buildMemoryTargetFromContext(context, explicitTarget);
+    if (!target) {
+        return 'invalid_target';
+    }
+    if (target.is_group) {
+        const key = `group:${target.id}`;
+        lastKnownChatKey = key;
+        return key;
+    }
+    const key = `char:${target.avatar_url}:${target.file_name}`;
+    lastKnownChatKey = key;
+    return key;
+}
+
+function normalizeExplicitChatStateTarget(target) {
+    if (!target || typeof target !== 'object') {
+        return null;
+    }
+    if (target.is_group) {
+        const id = String(target.id || '').trim();
+        return id ? { is_group: true, id } : null;
+    }
+    const avatar = String(target.avatar_url || '').trim();
+    const fileName = String(target.file_name || '').trim();
+    return avatar && fileName
+        ? { is_group: false, avatar_url: avatar, file_name: fileName }
+        : null;
+}
+
+function normalizeResolvedMemoryTarget(target) {
+    if (!target || typeof target !== 'object') {
+        return null;
+    }
+    if (target.is_group) {
+        const id = String(target.id || '').trim();
+        return id ? { is_group: true, id } : null;
+    }
+    const avatar = String(target.avatar_url || '').trim();
+    const fileName = String(target.file_name || '').trim();
+    return avatar && fileName
+        ? { is_group: false, avatar_url: avatar, file_name: fileName }
+        : null;
+}
+
+function buildMemoryTargetFromContext(context, explicitTarget = null) {
+    const resolvedTarget = resolveChatStateTarget(explicitTarget);
+    return normalizeResolvedMemoryTarget(resolvedTarget);
+}
+
+function buildLegacyMemoryTargetCandidates(context, canonicalTarget, explicitTarget = null) {
+    if (normalizeExplicitChatStateTarget(explicitTarget)) {
+        return [];
+    }
+    const normalizedCanonical = normalizeResolvedMemoryTarget(canonicalTarget);
+    if (!normalizedCanonical || normalizedCanonical.is_group) {
+        return [];
+    }
+
+    const live = getContext();
+    const runtime = live && typeof live === 'object' ? live : context;
+    const candidates = [];
+    const seen = new Set([JSON.stringify(normalizedCanonical)]);
+    const avatar = String(normalizedCanonical.avatar_url || '').trim();
+
+    const pushCandidate = (fileName) => {
+        const normalizedFileName = String(fileName || '').trim();
+        if (!avatar || !normalizedFileName) {
+            return;
+        }
+        const candidate = normalizeExplicitChatStateTarget({
+            is_group: false,
+            avatar_url: avatar,
+            file_name: normalizedFileName,
+        });
+        if (!candidate) {
+            return;
+        }
+        const key = JSON.stringify(candidate);
+        if (seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        candidates.push(candidate);
+    };
+
+    const currentChatId = String(
+        (typeof runtime?.getCurrentChatId === 'function'
+            ? runtime.getCurrentChatId()
+            : (typeof context?.getCurrentChatId === 'function' ? context.getCurrentChatId() : (runtime?.chatId ?? context?.chatId))) || '',
+    ).trim();
+    const metadataChatId = String(runtime?.chatMetadata?.main_chat || context?.chatMetadata?.main_chat || '').trim();
+
+    pushCandidate(currentChatId);
+    pushCandidate(metadataChatId);
+
+    return candidates;
+}
+
+function sanitizeMemoryGraphFileNamePart(value, fallback = 'current-chat') {
+    const sanitized = String(value || '')
+        .trim()
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[^a-z0-9._-]+/gi, '_')
+        .replace(/^_+|_+$/g, '');
+    return sanitized || fallback;
+}
+
+function getMemoryGraphExportFileName(context) {
+    const target = buildMemoryTargetFromContext(context);
+    if (!target) {
+        return 'memory-graph-current-chat.json';
+    }
+    if (target.is_group) {
+        return `memory-graph-group-${sanitizeMemoryGraphFileNamePart(target.id)}.json`;
+    }
+    return `memory-graph-${sanitizeMemoryGraphFileNamePart(target.file_name)}.json`;
+}
+
+function getLatestAssistantFloorFromContext(context) {
+    return Math.max(0, Math.floor(Number(computeChatSourceState(context)?.messageCount || 0)));
+}
+
+function getImportedStoreBindingFloor(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    return getStoreCoveredSeqTo(normalized);
+}
+
+function clearImportedStoreTransientState(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    normalized.lastRecallTrace = [];
+    normalized.lastRecallProjection = null;
+    normalized.swipeTailCache = {};
+    normalized.lastExtractionDebug = null;
+    return normalized;
+}
+
+function bindImportedStoreToAssistantFloor(store, bindSeq) {
+    const normalized = clearImportedStoreTransientState(store);
+    const targetSeq = Math.max(1, Math.floor(Number(bindSeq || 0)));
+    for (const node of Object.values(normalized.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        node.seqTo = targetSeq;
+    }
+    normalized.appliedSeqTo = targetSeq;
+    normalized.seqCounter = targetSeq;
+    normalized.loggedSeqTo = targetSeq;
+    return normalized;
+}
+
+async function promptMemoryGraphImportMode(context, store) {
+    const normalized = normalizeStoreForRuntime(store);
+    const latestAssistantFloor = getLatestAssistantFloorFromContext(context);
+    const exportedFloor = getImportedStoreBindingFloor(normalized);
+    const specificFloorInputId = 'luker_rpg_memory_import_bind_floor';
+    const defaultSpecificFloor = latestAssistantFloor > 0
+        ? latestAssistantFloor
+        : Math.max(1, exportedFloor || 1);
+    let importMode = null;
+    let bindFloor = null;
+
+    const content = `
+        <div class="flex-container flexFlowColumn gap8">
+            <div>${escapeHtml(i18n('Choose how to attach the imported memory graph to assistant floors.'))}</div>
+            <div>${escapeHtml(i18nFormat(
+                'Imported nodes: ${0} | Edges: ${1} | Exported floor: ${2}',
+                Object.keys(normalized.nodes || {}).length,
+                Array.isArray(normalized.edges) ? normalized.edges.length : 0,
+                exportedFloor,
+            ))}</div>
+            <div>${escapeHtml(i18nFormat('Current chat latest assistant floor: ${0}', latestAssistantFloor))}</div>
+            <div class="opacity70p">${escapeHtml(i18n('Restore keeps exported floor numbers for same-chat recovery. Bind modes rewrite all imported nodes to the selected floor.'))}</div>
+        </div>
+    `;
+
+    const result = await context.callGenericPopup(content, context.POPUP_TYPE.TEXT, '', {
+        okButton: false,
+        cancelButton: i18n('Cancel'),
+        wider: true,
+        defaultResult: context.POPUP_RESULT.CUSTOM1,
+        customInputs: [{
+            id: specificFloorInputId,
+            type: 'text',
+            label: i18n('Specific assistant floor'),
+            defaultState: String(defaultSpecificFloor),
+            tooltip: i18nFormat('Enter a floor between 1 and ${0}.', Math.max(1, latestAssistantFloor)),
+        }],
+        customButtons: [
+            { text: i18n('Restore Exported Floor'), result: context.POPUP_RESULT.CUSTOM1 },
+            { text: i18n('Bind Latest Floor'), result: context.POPUP_RESULT.CUSTOM2 },
+            { text: i18n('Bind Specific Floor'), result: context.POPUP_RESULT.CUSTOM3 },
+        ],
+        onClosing: async (popup) => {
+            if (popup.result === context.POPUP_RESULT.CANCELLED) {
+                return true;
+            }
+
+            if (popup.result === context.POPUP_RESULT.CUSTOM1) {
+                if (exportedFloor > latestAssistantFloor) {
+                    notifyError(i18nFormat(
+                        'Restore requires current chat to have at least ${0} assistant floor(s). Current chat only has ${1}. Choose a bind mode instead.',
+                        exportedFloor,
+                        latestAssistantFloor,
+                    ));
+                    return false;
+                }
+                importMode = 'restore';
+                bindFloor = exportedFloor;
+                return true;
+            }
+
+            if (popup.result === context.POPUP_RESULT.CUSTOM2) {
+                if (latestAssistantFloor <= 0) {
+                    notifyError(i18n('Current chat has no assistant floors to bind.'));
+                    return false;
+                }
+                importMode = 'bind_latest';
+                bindFloor = latestAssistantFloor;
+                return true;
+            }
+
+            if (popup.result === context.POPUP_RESULT.CUSTOM3) {
+                if (latestAssistantFloor <= 0) {
+                    notifyError(i18n('Current chat has no assistant floors to bind.'));
+                    return false;
+                }
+                const rawValue = String(popup.inputResults?.get(specificFloorInputId) ?? '').trim();
+                if (!/^\d+$/.test(rawValue)) {
+                    notifyError(i18nFormat('Enter a floor between 1 and ${0}.', latestAssistantFloor));
+                    return false;
+                }
+                const specificFloor = Number(rawValue);
+                if (!Number.isFinite(specificFloor) || specificFloor < 1 || specificFloor > latestAssistantFloor) {
+                    notifyError(i18nFormat('Enter a floor between 1 and ${0}.', latestAssistantFloor));
+                    return false;
+                }
+                importMode = 'bind_specific';
+                bindFloor = specificFloor;
+                return true;
+            }
+
+            return true;
+        },
+    });
+
+    if (result === context.POPUP_RESULT.CANCELLED || !importMode) {
+        return null;
+    }
+
+    return {
+        importMode,
+        bindFloor,
+        exportedFloor,
+        latestAssistantFloor,
+    };
+}
+
+async function importMemoryGraphStore(context, parsed) {
+    const chatKey = getChatKey(context);
+    const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
+    if (target) {
+        memoryStoreTargets.set(chatKey, target);
+    }
+    const imported = normalizeStoreForRuntime(parsed);
+    const importPlan = await promptMemoryGraphImportMode(context, imported);
+    if (!importPlan) {
+        return null;
+    }
+
+    const nextStore = importPlan.importMode === 'restore'
+        ? clearImportedStoreTransientState(imported)
+        : bindImportedStoreToAssistantFloor(imported, importPlan.bindFloor);
+    updateStoreSourceState(nextStore, context);
+    const persistSeq = importPlan.importMode === 'restore'
+        ? importPlan.exportedFloor
+        : Math.max(1, Math.floor(Number(importPlan.bindFloor || 0)));
+    await commitMemoryStoreReplaceByChatKey(
+        context,
+        chatKey,
+        nextStore,
+        persistSeq,
+        { syncPersistentProjection: true },
+    );
+    clearRollbackHistory(chatKey);
+    latestRecallSnapshot = null;
+    refreshUiStats();
+    return {
+        importMode: importPlan.importMode,
+        bindFloor: persistSeq,
+    };
+}
+
+async function loadMemoryStoreByTarget(context, target) {
+    if (typeof context.getChatState !== 'function') {
+        throw new Error('Chat state API is unavailable in extension context.');
+    }
+    const data = await context.getChatState(CHAT_STATE_NAMESPACE, { target });
+    const { state, migrated } = normalizePersistedMemoryState(data, context);
+    return {
+        state,
+        store: buildRuntimeStoreFromPersistedState(state),
+        migrated,
+    };
+}
+
+async function deleteMemoryStoreByTarget(context, target) {
+    if (typeof context.deleteChatState !== 'function') {
+        throw new Error('Chat state delete API is unavailable in extension context.');
+    }
+    const ok = await context.deleteChatState(CHAT_STATE_NAMESPACE, { target });
+    if (!ok) {
+        throw new Error('Failed to delete memory store.');
+    }
+}
+
+function createEmptyStore() {
+    return {
+        version: 5,
+        nodeSeq: 0,
+        seqCounter: 0,
+        appliedSeqTo: 0,
+        loggedSeqTo: 0,
+        pendingFullRebuild: false,
+        nodes: {},
+        edges: [],
+        lastRecallTrace: [],
+        lastRecallProjection: null,
+        sourceMessageCount: 0,
+        swipeTailCache: {},
+    };
+}
+
+function createEmptyPersistedMemoryState() {
+    return {
+        version: PERSISTED_STORE_VERSION,
+        // Global replay/incremental coverage floor for the whole graph; distinct from node-local seqTo.
+        coveredSeqTo: 0,
+        // Replay source of truth: each entry is one atomic graph mutation batch.
+        opLog: [],
+        lastRecallTrace: [],
+        lastRecallProjection: null,
+        sourceMessageCount: 0,
+        swipeTailCache: {},
+    };
+}
+
+function normalizeStoreForRuntime(store) {
+    if (!store || typeof store !== 'object') {
+        return createEmptyStore();
+    }
+    const normalized = createEmptyStore();
+    normalized.sourceMessageCount = Math.max(0, Number(store.sourceMessageCount || 0));
+    normalized.loggedSeqTo = Math.max(0, Math.floor(Number(store.loggedSeqTo || 0)));
+    normalized.pendingFullRebuild = Boolean(store.pendingFullRebuild);
+    normalized.lastRecallTrace = Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace : [];
+    normalized.lastRecallProjection = store.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? store.lastRecallProjection
+        : null;
+    normalized.swipeTailCache = normalizeSwipeTailCache(store.swipeTailCache);
+
+    if (store.nodes && typeof store.nodes === 'object') {
+        for (const [id, rawNode] of Object.entries(store.nodes)) {
+            if (!rawNode || typeof rawNode !== 'object') {
+                continue;
+            }
+            const nodeId = String(id || '').trim();
+            if (!nodeId) {
+                continue;
+            }
+            const nodeType = String(rawNode.type || 'semantic').trim().toLowerCase();
+            if (nodeType === 'thread') {
+                continue;
+            }
+            const level = String(rawNode.level || LEVEL.SEMANTIC).trim();
+            if (level !== LEVEL.SEMANTIC) {
+                continue;
+            }
+            const seqTo = Number.isFinite(Number(rawNode.seqTo))
+                ? Math.max(0, Math.floor(Number(rawNode.seqTo)))
+                : 0;
+            const fields = rawNode.fields && typeof rawNode.fields === 'object' && !Array.isArray(rawNode.fields)
+                ? { ...rawNode.fields }
+                : {};
+            normalized.nodes[nodeId] = {
+                id: nodeId,
+                type: String(rawNode.type || 'semantic'),
+                level: LEVEL.SEMANTIC,
+                title: normalizeText(rawNode.title || nodeId),
+                seqTo,
+                fields,
+                semanticDepth: Number.isFinite(Number(rawNode.semanticDepth)) ? Number(rawNode.semanticDepth) : 0,
+                semanticRollup: Boolean(rawNode.semanticRollup),
+                childrenIds: Array.isArray(rawNode.childrenIds) ? rawNode.childrenIds.map(child => String(child || '').trim()).filter(Boolean) : [],
+                parentId: String(rawNode.parentId || '').trim(),
+                archived: Boolean(rawNode.archived),
+            };
+            normalized.seqCounter = Math.max(normalized.seqCounter, seqTo);
+            const extractedNodeSeq = Number(String(nodeId).replace(/^n_/, ''));
+            if (Number.isFinite(extractedNodeSeq)) {
+                normalized.nodeSeq = Math.max(normalized.nodeSeq, extractedNodeSeq);
+            }
+        }
+    }
+
+    const validNodeIds = new Set(Object.keys(normalized.nodes));
+    for (const node of Object.values(normalized.nodes)) {
+        node.childrenIds = node.childrenIds.filter(id => validNodeIds.has(id));
+        if (node.parentId && !validNodeIds.has(node.parentId)) {
+            node.parentId = '';
+        }
+    }
+
+    normalized.edges = Array.isArray(store.edges)
+        ? store.edges
+            .filter(edge => edge && typeof edge === 'object')
+            .map(edge => ({
+                from: String(edge.from || '').trim(),
+                to: String(edge.to || '').trim(),
+                type: normalizeText(edge.type || 'related') || 'related',
+            }))
+            .filter(edge => edge.from && edge.to && edge.from !== edge.to && validNodeIds.has(edge.from) && validNodeIds.has(edge.to))
+        : [];
+
+    normalized.appliedSeqTo = Math.max(
+        0,
+        Math.floor(Number.isFinite(Number(store.appliedSeqTo)) ? Number(store.appliedSeqTo) : normalized.seqCounter),
+    );
+    normalized.loggedSeqTo = Math.max(normalized.loggedSeqTo, normalized.appliedSeqTo);
+    normalized.seqCounter = Math.max(normalized.seqCounter, normalized.loggedSeqTo);
+    return normalized;
+}
+
+function normalizeMemoryLogOperation(raw) {
+    const type = String(raw?.type || '').trim().toLowerCase();
+    if (type === 'upsert_node') {
+        const node = cloneRollbackNodeSnapshot(raw?.node);
+        return node ? { type, node } : null;
+    }
+    if (type === 'delete_node') {
+        const nodeId = String(raw?.nodeId || raw?.id || '').trim();
+        return nodeId ? { type, nodeId } : null;
+    }
+    if (type === 'upsert_edge' || type === 'delete_edge') {
+        const edge = cloneRollbackEdgeSnapshot(raw?.edge || raw);
+        return edge ? { type, edge } : null;
+    }
+    return null;
+}
+
+function normalizeMemoryLogEntry(raw) {
+    if (!raw || typeof raw !== 'object') {
+        return null;
+    }
+    // entry.seq gates the whole batch; replay/branch trimming must not split ops inside one entry.
+    const seq = Math.max(0, Math.floor(Number(raw.seq || 0)));
+    const ops = Array.isArray(raw.ops)
+        ? raw.ops.map(normalizeMemoryLogOperation).filter(Boolean)
+        : [];
+    if (seq <= 0 && ops.length === 0) {
+        return null;
+    }
+    return { seq, ops };
+}
+
+function normalizeSwipeTailCacheEntry(raw) {
+    if (!raw || typeof raw !== 'object') {
+        return null;
+    }
+    const seqFrom = Math.max(1, Math.floor(Number(raw.seqFrom || 0)));
+    if (!Number.isFinite(seqFrom) || seqFrom <= 0) {
+        return null;
+    }
+    return {
+        seqFrom,
+        prefixHash: String(raw.prefixHash || ''),
+        tailLog: Array.isArray(raw.tailLog)
+            ? raw.tailLog.map(normalizeMemoryLogEntry).filter(Boolean)
+            : [],
+        cachedAt: Number.isFinite(Number(raw.cachedAt))
+            ? Math.max(0, Math.floor(Number(raw.cachedAt)))
+            : 0,
+    };
+}
+
+function normalizeSwipeTailCache(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        return {};
+    }
+    const normalized = {};
+    for (const [key, value] of Object.entries(raw)) {
+        const cacheKey = String(key || '').trim();
+        if (!cacheKey) {
+            continue;
+        }
+        const entry = normalizeSwipeTailCacheEntry(value);
+        if (!entry) {
+            continue;
+        }
+        normalized[cacheKey] = entry;
+    }
+    return normalized;
+}
+
+function cloneSwipeTailCache(cache) {
+    return structuredClone(normalizeSwipeTailCache(cache));
+}
+
+function buildSwipeTailMessageHash(message) {
+    const payload = {
+        name: String(message?.name || ''),
+        send_date: String(message?.send_date || ''),
+        mes: normalizeText(message?.mes || ''),
+    };
+    return String(getStringHash(JSON.stringify(payload)));
+}
+
+function buildSwipeTailCacheKey(assistantSeq, messageHash) {
+    return `${Math.max(1, Math.floor(Number(assistantSeq || 0)))}:${String(messageHash || '')}`;
+}
+
+function computeSwipeTailPrefixHash(state, seqFrom) {
+    const startSeq = Math.max(1, Math.floor(Number(seqFrom || 0)));
+    const normalizedState = normalizePersistedStateBase(state);
+    const prefixLog = normalizedState.opLog.filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < startSeq);
+    return String(getStringHash(JSON.stringify(prefixLog)));
+}
+
+function pruneSwipeTailCache(cache, { activeSeq = null, maxEntries = SWIPE_TAIL_CACHE_MAX_ENTRIES } = {}) {
+    const normalized = normalizeSwipeTailCache(cache);
+    const targetSeq = Number.isFinite(Number(activeSeq)) && Number(activeSeq) > 0
+        ? Math.max(1, Math.floor(Number(activeSeq)))
+        : null;
+    let entries = Object.entries(normalized);
+    if (targetSeq !== null) {
+        entries = entries.filter(([, entry]) => Math.max(0, Math.floor(Number(entry?.seqFrom || 0))) === targetSeq);
+    }
+    entries.sort(([, a], [, b]) => Math.max(0, Number(b?.cachedAt || 0)) - Math.max(0, Number(a?.cachedAt || 0)));
+    return Object.fromEntries(entries.slice(0, Math.max(1, Math.floor(Number(maxEntries || SWIPE_TAIL_CACHE_MAX_ENTRIES)))).map(([key, value]) => [key, structuredClone(value)]));
+}
+
+function buildActiveSwipeTailDescriptor(context, { messageIndex = null, expectedAssistantSeq = null } = {}) {
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    if (source.length === 0) {
+        return null;
+    }
+    const targetIndex = messageIndex === null || messageIndex === undefined
+        ? source.length - 1
+        : Math.max(0, Math.floor(Number(messageIndex)));
+    if (!Number.isFinite(targetIndex) || targetIndex < 0 || targetIndex >= source.length) {
+        return null;
+    }
+    if (targetIndex !== source.length - 1) {
+        return null;
+    }
+    const message = source[targetIndex];
+    if (!isExtractableAssistantMessage(message)) {
+        return null;
+    }
+    if (!Array.isArray(message?.swipes) || message.swipes.length < 2) {
+        return null;
+    }
+    const assistantSeq = findAffectedAssistantSeqFromMessageIndex(context, targetIndex);
+    if (!Number.isFinite(assistantSeq) || assistantSeq <= 0) {
+        return null;
+    }
+    const requiredSeq = Number.isFinite(Number(expectedAssistantSeq)) && Number(expectedAssistantSeq) > 0
+        ? Math.max(1, Math.floor(Number(expectedAssistantSeq)))
+        : null;
+    if (requiredSeq !== null && assistantSeq !== requiredSeq) {
+        return null;
+    }
+    const messageHash = buildSwipeTailMessageHash(message);
+    return {
+        messageIndex: targetIndex,
+        assistantSeq,
+        messageHash,
+        cacheKey: buildSwipeTailCacheKey(assistantSeq, messageHash),
+    };
+}
+
+function getLatestLoggedSeq(stateOrLog) {
+    const log = Array.isArray(stateOrLog)
+        ? stateOrLog
+        : (Array.isArray(stateOrLog?.opLog) ? stateOrLog.opLog : []);
+    return log.reduce((maxSeq, entry) => Math.max(maxSeq, Math.max(0, Math.floor(Number(entry?.seq || 0)))), 0);
+}
+
+function getPersistedCoveredSeqTo(state) {
+    const rawCoveredSeqTo = Number.isFinite(Number(state?.coveredSeqTo))
+        ? Math.max(0, Math.floor(Number(state.coveredSeqTo)))
+        : 0;
+    return Math.max(rawCoveredSeqTo, getLatestLoggedSeq(state));
+}
+
+function getStoreCoveredSeqTo(store) {
+    return Math.max(
+        0,
+        Math.floor(Number(store?.appliedSeqTo || 0)),
+        Math.floor(Number(store?.loggedSeqTo || 0)),
+        Math.floor(Number(getSemanticCoverageSeq(store) || 0)),
+    );
+}
+
+function normalizePersistedStateBase(raw) {
+    const normalized = createEmptyPersistedMemoryState();
+    if (!raw || typeof raw !== 'object') {
+        return normalized;
+    }
+    normalized.sourceMessageCount = Math.max(0, Number(raw.sourceMessageCount || 0));
+    normalized.lastRecallTrace = Array.isArray(raw.lastRecallTrace) ? structuredClone(raw.lastRecallTrace) : [];
+    normalized.lastRecallProjection = raw.lastRecallProjection && typeof raw.lastRecallProjection === 'object'
+        ? structuredClone(raw.lastRecallProjection)
+        : null;
+    normalized.swipeTailCache = normalizeSwipeTailCache(raw.swipeTailCache);
+    normalized.opLog = Array.isArray(raw.opLog)
+        ? raw.opLog.map(normalizeMemoryLogEntry).filter(Boolean)
+        : [];
+    normalized.coveredSeqTo = getPersistedCoveredSeqTo({
+        coveredSeqTo: raw.coveredSeqTo,
+        opLog: normalized.opLog,
+    });
+    return normalized;
+}
+
+function buildMemoryLogOpsFromStore(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    const ops = [];
+    const nodes = Object.values(normalized.nodes || {}).sort(compareNodesByTimeline);
+    for (const node of nodes) {
+        const snapshot = cloneRollbackNodeSnapshot(node);
+        if (snapshot) {
+            ops.push({ type: 'upsert_node', node: snapshot });
+        }
+    }
+    for (const edge of Array.isArray(normalized.edges) ? normalized.edges : []) {
+        const snapshot = cloneRollbackEdgeSnapshot(edge);
+        if (snapshot) {
+            ops.push({ type: 'upsert_edge', edge: snapshot });
+        }
+    }
+    return ops;
+}
+
+function buildLegacyMigrationSeq(context, legacyStore) {
+    void context;
+    return getStoreCoveredSeqTo(legacyStore);
+}
+
+function buildPersistedStateFromLegacyStore(raw, context) {
+    const normalized = createEmptyPersistedMemoryState();
+    const legacyStore = normalizeStoreForRuntime(raw || createEmptyStore());
+    normalized.sourceMessageCount = Math.max(0, Number(legacyStore.sourceMessageCount || 0));
+    normalized.lastRecallTrace = structuredClone(Array.isArray(legacyStore.lastRecallTrace) ? legacyStore.lastRecallTrace : []);
+    normalized.lastRecallProjection = legacyStore.lastRecallProjection && typeof legacyStore.lastRecallProjection === 'object'
+        ? structuredClone(legacyStore.lastRecallProjection)
+        : null;
+    normalized.swipeTailCache = cloneSwipeTailCache(legacyStore.swipeTailCache);
+
+    const hasLegacyPayload = Object.keys(legacyStore.nodes || {}).length > 0
+        || (Array.isArray(legacyStore.edges) && legacyStore.edges.length > 0)
+        || normalized.sourceMessageCount > 0
+        || normalized.lastRecallTrace.length > 0
+        || Boolean(normalized.lastRecallProjection)
+        || Object.keys(normalized.swipeTailCache).length > 0;
+    if (hasLegacyPayload) {
+        const seq = buildLegacyMigrationSeq(context, legacyStore);
+        normalized.coveredSeqTo = Math.max(0, seq);
+        const ops = buildMemoryLogOpsFromStore(legacyStore);
+        if (seq > 0 || ops.length > 0) {
+            normalized.opLog = [{ seq: Math.max(0, seq), ops }];
+        }
+    }
+    return { state: normalized, migrated: hasLegacyPayload };
+}
+
+function normalizePersistedMemoryState(raw, context) {
+    if (raw && typeof raw === 'object' && Array.isArray(raw.opLog)) {
+        return {
+            state: normalizePersistedStateBase(raw),
+            migrated: Number(raw.version || 0) !== PERSISTED_STORE_VERSION,
+        };
+    }
+    if (raw && typeof raw === 'object') {
+        return buildPersistedStateFromLegacyStore(raw, context);
+    }
+    return {
+        state: createEmptyPersistedMemoryState(),
+        migrated: false,
+    };
+}
+
+function hasPersistedMemoryStatePayload(state) {
+    const normalized = normalizePersistedStateBase(state);
+    return normalized.coveredSeqTo > 0
+        || normalized.opLog.length > 0
+        || normalized.lastRecallTrace.length > 0
+        || Boolean(normalized.lastRecallProjection)
+        || normalized.sourceMessageCount > 0
+        || Object.keys(normalized.swipeTailCache).length > 0;
+}
+
+function applyLoggedNodeSnapshot(store, node) {
+    const snapshot = cloneRollbackNodeSnapshot(node);
+    if (!snapshot) {
+        return;
+    }
+    store.nodes[snapshot.id] = snapshot;
+    const extractedNodeSeq = Number(String(snapshot.id || '').replace(/^n_/, ''));
+    if (Number.isFinite(extractedNodeSeq)) {
+        store.nodeSeq = Math.max(store.nodeSeq, extractedNodeSeq);
+    }
+    store.seqCounter = Math.max(store.seqCounter, Math.max(0, Number(snapshot.seqTo || 0)));
+}
+
+function removeLoggedEdge(store, edge) {
+    const key = getRollbackEdgeKey(edge);
+    if (!key) {
+        return;
+    }
+    store.edges = (Array.isArray(store.edges) ? store.edges : []).filter(item => getRollbackEdgeKey(item) !== key);
+}
+
+function applyMemoryLogEntryToStore(store, entry) {
+    if (!store || typeof store !== 'object' || !entry || typeof entry !== 'object') {
+        return;
+    }
+    for (const operation of Array.isArray(entry.ops) ? entry.ops : []) {
+        const type = String(operation?.type || '').trim().toLowerCase();
+        if (type === 'delete_edge') {
+            removeLoggedEdge(store, operation.edge);
+            continue;
+        }
+        if (type === 'delete_node') {
+            const nodeId = String(operation?.nodeId || '').trim();
+            if (nodeId) {
+                dropNode(store, nodeId, true);
+            }
+            continue;
+        }
+        if (type === 'upsert_node') {
+            applyLoggedNodeSnapshot(store, operation.node);
+            continue;
+        }
+        if (type === 'upsert_edge') {
+            const edge = cloneRollbackEdgeSnapshot(operation.edge);
+            if (edge) {
+                addEdge(store, edge.from, edge.to, edge.type);
+            }
+        }
+    }
+    repairStoreAfterRollback(store);
+    store.loggedSeqTo = Math.max(store.loggedSeqTo, Math.max(0, Math.floor(Number(entry.seq || 0))));
+    store.seqCounter = Math.max(store.seqCounter, store.loggedSeqTo);
+    store.appliedSeqTo = Math.max(store.appliedSeqTo, Math.max(0, Math.floor(Number(entry.seq || 0))));
+}
+
+function buildRuntimeStoreFromPersistedState(state) {
+    const normalizedState = normalizePersistedStateBase(state);
+    const runtimeStore = createEmptyStore();
+    for (const entry of normalizedState.opLog) {
+        applyMemoryLogEntryToStore(runtimeStore, entry);
+    }
+    runtimeStore.appliedSeqTo = Math.max(runtimeStore.appliedSeqTo, getPersistedCoveredSeqTo(normalizedState));
+    runtimeStore.loggedSeqTo = Math.max(runtimeStore.loggedSeqTo, getLatestLoggedSeq(normalizedState), runtimeStore.appliedSeqTo);
+    runtimeStore.seqCounter = Math.max(runtimeStore.seqCounter, runtimeStore.loggedSeqTo);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(normalizedState.lastRecallTrace) ? normalizedState.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = normalizedState.lastRecallProjection && typeof normalizedState.lastRecallProjection === 'object'
+        ? structuredClone(normalizedState.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(normalizedState.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(normalizedState.swipeTailCache);
+    return runtimeStore;
+}
+
+function buildBranchStateFromPersistedState(state, branchCutoffSeq) {
+    const normalizedState = normalizePersistedStateBase(state);
+    const cutoffSeq = Math.max(0, Math.floor(Number(branchCutoffSeq || 0)));
+    const nextState = applyStoreMetadataToPersistedState(createEmptyPersistedMemoryState(), normalizedState);
+    nextState.coveredSeqTo = Math.min(getPersistedCoveredSeqTo(normalizedState), cutoffSeq);
+    const branchStore = createEmptyStore();
+    const delayedBackfillNodeIds = new Set();
+    const backfillEntriesBySeq = new Map();
+
+    const appendBackfillOperation = (seq, operation) => {
+        const normalizedSeq = Math.max(0, Math.floor(Number(seq || 0)));
+        if (!normalizedSeq || !operation || typeof operation !== 'object') {
+            return;
+        }
+        if (!backfillEntriesBySeq.has(normalizedSeq)) {
+            backfillEntriesBySeq.set(normalizedSeq, []);
+        }
+        backfillEntriesBySeq.get(normalizedSeq).push(structuredClone(operation));
+    };
+
+    for (const entry of normalizedState.opLog) {
+        const entrySeq = Math.max(0, Math.floor(Number(entry?.seq || 0)));
+        if (entrySeq <= cutoffSeq) {
+            const clonedEntry = normalizeMemoryLogEntry(structuredClone(entry));
+            if (!clonedEntry) {
+                continue;
+            }
+            nextState.opLog.push(clonedEntry);
+            applyMemoryLogEntryToStore(branchStore, clonedEntry);
+        }
+    }
+
+    // Delayed extraction/compression can write old-content nodes after the branch cutoff.
+    for (const entry of normalizedState.opLog) {
+        const entrySeq = Math.max(0, Math.floor(Number(entry?.seq || 0)));
+        if (entrySeq <= cutoffSeq) {
+            continue;
+        }
+        for (const operation of Array.isArray(entry?.ops) ? entry.ops : []) {
+            if (String(operation?.type || '').trim().toLowerCase() !== 'upsert_node') {
+                continue;
+            }
+            const node = cloneRollbackNodeSnapshot(operation?.node);
+            const nodeSeq = Math.max(0, Math.floor(Number(node?.seqTo || 0)));
+            if (!node || nodeSeq <= 0 || nodeSeq > cutoffSeq) {
+                continue;
+            }
+            const currentNode = branchStore.nodes?.[node.id];
+            const currentSeq = Math.max(0, Math.floor(Number(currentNode?.seqTo || 0)));
+            if (!currentNode || nodeSeq >= currentSeq) {
+                applyLoggedNodeSnapshot(branchStore, node);
+                delayedBackfillNodeIds.add(node.id);
+                appendBackfillOperation(nodeSeq, { type: 'upsert_node', node });
+            }
+        }
+    }
+
+    if (delayedBackfillNodeIds.size > 0) {
+        for (const entry of normalizedState.opLog) {
+            const entrySeq = Math.max(0, Math.floor(Number(entry?.seq || 0)));
+            if (entrySeq <= cutoffSeq) {
+                continue;
+            }
+            for (const operation of Array.isArray(entry?.ops) ? entry.ops : []) {
+                if (String(operation?.type || '').trim().toLowerCase() !== 'upsert_edge') {
+                    continue;
+                }
+                const edge = cloneRollbackEdgeSnapshot(operation?.edge);
+                if (!edge) {
+                    continue;
+                }
+                const fromNode = branchStore.nodes?.[edge.from];
+                const toNode = branchStore.nodes?.[edge.to];
+                if (!fromNode || !toNode) {
+                    continue;
+                }
+                if (!delayedBackfillNodeIds.has(edge.from) && !delayedBackfillNodeIds.has(edge.to)) {
+                    continue;
+                }
+                const edgeKey = getRollbackEdgeKey(edge);
+                const hadEdge = Array.isArray(branchStore.edges) && branchStore.edges.some(item => getRollbackEdgeKey(item) === edgeKey);
+                addEdge(branchStore, edge.from, edge.to, edge.type);
+                if (!hadEdge) {
+                    const edgeSeq = Math.max(
+                        0,
+                        Math.floor(Number(fromNode?.seqTo || 0)),
+                        Math.floor(Number(toNode?.seqTo || 0)),
+                    );
+                    appendBackfillOperation(edgeSeq, { type: 'upsert_edge', edge });
+                }
+            }
+        }
+    }
+
+    repairStoreAfterRollback(branchStore);
+    nextState.opLog.push(
+        ...Array.from(backfillEntriesBySeq.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([seq, ops]) => ({ seq, ops })),
+    );
+    branchStore.appliedSeqTo = Math.max(branchStore.appliedSeqTo, nextState.coveredSeqTo);
+    branchStore.loggedSeqTo = Math.max(branchStore.loggedSeqTo, getLatestLoggedSeq(nextState), branchStore.appliedSeqTo);
+    branchStore.seqCounter = Math.max(branchStore.seqCounter, branchStore.loggedSeqTo);
+    branchStore.lastRecallTrace = structuredClone(Array.isArray(normalizedState.lastRecallTrace) ? normalizedState.lastRecallTrace : []);
+    branchStore.lastRecallProjection = normalizedState.lastRecallProjection && typeof normalizedState.lastRecallProjection === 'object'
+        ? structuredClone(normalizedState.lastRecallProjection)
+        : null;
+    branchStore.sourceMessageCount = Math.max(0, Number(normalizedState.sourceMessageCount || 0));
+    branchStore.swipeTailCache = cloneSwipeTailCache(normalizedState.swipeTailCache);
+    nextState.opLog = nextState.opLog
+        .map(entry => normalizeMemoryLogEntry(entry))
+        .filter(Boolean)
+        .sort((a, b) => a.seq - b.seq);
+    return {
+        state: nextState,
+        store: branchStore,
+    };
+}
+
+function getMemoryState(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return createEmptyPersistedMemoryState();
+    }
+    if (!memoryStateCache.has(key)) {
+        memoryStateCache.set(key, createEmptyPersistedMemoryState());
+    }
+    return memoryStateCache.get(key);
+}
+
+function updatePersistedStateMetadataFromStore(chatKey, store) {
+    const state = getMemoryState(chatKey);
+    state.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(state), getStoreCoveredSeqTo(store));
+    state.sourceMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
+    state.lastRecallTrace = structuredClone(Array.isArray(store?.lastRecallTrace) ? store.lastRecallTrace : []);
+    state.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? structuredClone(store.lastRecallProjection)
+        : null;
+    state.swipeTailCache = cloneSwipeTailCache(store?.swipeTailCache);
+    memoryStateCache.set(chatKey, state);
+    return state;
+}
+
+function rematerializeStoreForChatKey(chatKey) {
+    const state = getMemoryState(chatKey);
+    const store = buildRuntimeStoreFromPersistedState(state);
+    memoryStoreCache.set(chatKey, store);
+    return store;
+}
+
+function trimPersistedOpLogFromSeq(chatKey, fromSeq) {
+    const key = String(chatKey || '').trim();
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    const state = getMemoryState(key);
+    const nextLog = state.opLog.filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < startSeq);
+    if (nextLog.length === state.opLog.length) {
+        return {
+            changed: false,
+            store: memoryStoreCache.get(key) || buildRuntimeStoreFromPersistedState(state),
+        };
+    }
+    state.opLog = nextLog;
+    memoryStateCache.set(key, state);
+    return {
+        changed: true,
+        store: rematerializeStoreForChatKey(key),
+    };
+}
+
+function captureStoreDiffSnapshot(store) {
+    const normalized = normalizeStoreForRuntime(store);
+    return {
+        nodes: Object.fromEntries(
+            Object.entries(normalized.nodes || {}).map(([id, node]) => [id, cloneRollbackNodeSnapshot(node)]),
+        ),
+        edges: (Array.isArray(normalized.edges) ? normalized.edges : []).map(cloneRollbackEdgeSnapshot).filter(Boolean),
+    };
+}
+
+function buildMemoryLogDiffOps(beforeStore, afterStore) {
+    const beforeSnapshot = captureStoreDiffSnapshot(beforeStore);
+    const afterSnapshot = captureStoreDiffSnapshot(afterStore);
+    const operations = [];
+    const beforeNodeIds = new Set(Object.keys(beforeSnapshot.nodes || {}));
+    const afterNodeIds = new Set(Object.keys(afterSnapshot.nodes || {}));
+
+    for (const nodeId of [...beforeNodeIds].sort((a, b) => a.localeCompare(b))) {
+        if (!afterNodeIds.has(nodeId)) {
+            operations.push({ type: 'delete_node', nodeId });
+        }
+    }
+
+    for (const nodeId of [...afterNodeIds].sort((a, b) => a.localeCompare(b))) {
+        const beforeNode = beforeSnapshot.nodes?.[nodeId] ?? null;
+        const afterNode = afterSnapshot.nodes?.[nodeId] ?? null;
+        if (JSON.stringify(beforeNode) === JSON.stringify(afterNode)) {
+            continue;
+        }
+        const node = cloneRollbackNodeSnapshot(afterNode);
+        if (node) {
+            operations.push({ type: 'upsert_node', node });
+        }
+    }
+
+    const beforeEdges = new Map(beforeSnapshot.edges.map(edge => [getRollbackEdgeKey(edge), edge]));
+    const afterEdges = new Map(afterSnapshot.edges.map(edge => [getRollbackEdgeKey(edge), edge]));
+
+    for (const key of [...beforeEdges.keys()].sort((a, b) => a.localeCompare(b))) {
+        if (!afterEdges.has(key)) {
+            const edge = cloneRollbackEdgeSnapshot(beforeEdges.get(key));
+            if (edge) {
+                operations.push({ type: 'delete_edge', edge });
+            }
+        }
+    }
+
+    for (const key of [...afterEdges.keys()].sort((a, b) => a.localeCompare(b))) {
+        if (!beforeEdges.has(key)) {
+            const edge = cloneRollbackEdgeSnapshot(afterEdges.get(key));
+            if (edge) {
+                operations.push({ type: 'upsert_edge', edge });
+            }
+        }
+    }
+
+    return operations;
+}
+
+function appendPersistedDiffEntry(chatKey, beforeStore, afterStore, seq) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return false;
+    }
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || 0)));
+    const state = getMemoryState(key);
+    state.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(state), normalizedSeq);
+    const ops = buildMemoryLogDiffOps(beforeStore, afterStore);
+    if (ops.length === 0) {
+        return false;
+    }
+    state.opLog.push({ seq: normalizedSeq, ops });
+    const prepared = prepareCommittedStateWithSwipeTailCache(getContext(), state, afterStore, normalizedSeq);
+    memoryStateCache.set(key, prepared.state);
+    afterStore.loggedSeqTo = Math.max(Number(afterStore?.loggedSeqTo || 0), getPersistedCoveredSeqTo(prepared.state));
+    const runtimeStore = normalizeStoreForRuntime(prepared.store);
+    runtimeStore.loggedSeqTo = Math.max(getPersistedCoveredSeqTo(prepared.state), runtimeStore.loggedSeqTo);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(prepared.store?.lastRecallTrace) ? prepared.store.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = prepared.store?.lastRecallProjection && typeof prepared.store.lastRecallProjection === 'object'
+        ? structuredClone(prepared.store.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(prepared.store?.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(prepared.store?.swipeTailCache);
+    memoryStoreCache.set(key, runtimeStore);
+    updatePersistedStateMetadataFromStore(key, runtimeStore);
+    return true;
+}
+
+function applyStoreMetadataToPersistedState(state, store) {
+    const nextState = state && typeof state === 'object'
+        ? state
+        : createEmptyPersistedMemoryState();
+    nextState.coveredSeqTo = Number.isFinite(Number(store?.coveredSeqTo))
+        ? Math.max(0, Math.floor(Number(store.coveredSeqTo)))
+        : getStoreCoveredSeqTo(store);
+    nextState.sourceMessageCount = Math.max(0, Number(store?.sourceMessageCount || 0));
+    nextState.lastRecallTrace = structuredClone(Array.isArray(store?.lastRecallTrace) ? store.lastRecallTrace : []);
+    nextState.lastRecallProjection = store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? structuredClone(store.lastRecallProjection)
+        : null;
+    nextState.swipeTailCache = cloneSwipeTailCache(store?.swipeTailCache);
+    return nextState;
+}
+
+function buildRuntimeStoreWithPersistedMetadata(state, sourceStore) {
+    const runtimeStore = buildRuntimeStoreFromPersistedState(state);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(sourceStore?.lastRecallTrace) ? sourceStore.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = sourceStore?.lastRecallProjection && typeof sourceStore.lastRecallProjection === 'object'
+        ? structuredClone(sourceStore.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(sourceStore?.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(sourceStore?.swipeTailCache);
+    runtimeStore.lastExtractionDebug = sourceStore?.lastExtractionDebug && typeof sourceStore.lastExtractionDebug === 'object'
+        ? structuredClone(sourceStore.lastExtractionDebug)
+        : null;
+    return runtimeStore;
+}
+
+function hasPersistedStoreMetadataChanges(beforeStore, afterStore) {
+    const beforeTrace = JSON.stringify(Array.isArray(beforeStore?.lastRecallTrace) ? beforeStore.lastRecallTrace : []);
+    const afterTrace = JSON.stringify(Array.isArray(afterStore?.lastRecallTrace) ? afterStore.lastRecallTrace : []);
+    const beforeProjection = JSON.stringify(beforeStore?.lastRecallProjection && typeof beforeStore.lastRecallProjection === 'object'
+        ? beforeStore.lastRecallProjection
+        : null);
+    const afterProjection = JSON.stringify(afterStore?.lastRecallProjection && typeof afterStore.lastRecallProjection === 'object'
+        ? afterStore.lastRecallProjection
+        : null);
+    const beforeSwipeTailCache = JSON.stringify(normalizeSwipeTailCache(beforeStore?.swipeTailCache));
+    const afterSwipeTailCache = JSON.stringify(normalizeSwipeTailCache(afterStore?.swipeTailCache));
+    return getStoreCoveredSeqTo(beforeStore) !== getStoreCoveredSeqTo(afterStore)
+        || Math.max(0, Number(beforeStore?.sourceMessageCount || 0)) !== Math.max(0, Number(afterStore?.sourceMessageCount || 0))
+        || beforeTrace !== afterTrace
+        || beforeProjection !== afterProjection
+        || beforeSwipeTailCache !== afterSwipeTailCache;
+}
+
+function prepareCommittedStateWithSwipeTailCache(context, state, store, seq) {
+    const normalizedState = normalizePersistedStateBase(state);
+    const normalizedStore = normalizeStoreForRuntime(store);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedStore) || 0)));
+    normalizedState.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(normalizedState), normalizedSeq);
+    normalizedStore.appliedSeqTo = Math.max(getStoreCoveredSeqTo(normalizedStore), normalizedSeq);
+    normalizedStore.loggedSeqTo = Math.max(normalizedStore.loggedSeqTo, normalizedStore.appliedSeqTo);
+    normalizedStore.seqCounter = Math.max(normalizedStore.seqCounter, normalizedStore.loggedSeqTo);
+    const settings = getEffectiveSettings(context, getSettings());
+    const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, settings);
+    const descriptor = latestSeq > 0
+        ? buildActiveSwipeTailDescriptor(context, { expectedAssistantSeq: latestSeq })
+        : null;
+    let nextCache = descriptor
+        ? pruneSwipeTailCache(normalizedState.swipeTailCache, { activeSeq: descriptor.assistantSeq })
+        : {};
+    if (descriptor && normalizedSeq >= latestSeq) {
+        nextCache[descriptor.cacheKey] = {
+            seqFrom: descriptor.assistantSeq,
+            prefixHash: computeSwipeTailPrefixHash(normalizedState, descriptor.assistantSeq),
+            tailLog: normalizedState.opLog
+                .filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) >= descriptor.assistantSeq)
+                .map(entry => structuredClone(entry)),
+            cachedAt: Date.now(),
+        };
+        nextCache = pruneSwipeTailCache(nextCache, { activeSeq: descriptor.assistantSeq });
+    }
+    normalizedState.swipeTailCache = nextCache;
+    normalizedStore.swipeTailCache = cloneSwipeTailCache(nextCache);
+    return {
+        state: normalizedState,
+        store: normalizedStore,
+    };
+}
+
+function cancelPendingMutationInvalidation(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return;
+    }
+    const pending = pendingMutationInvalidations.get(key);
+    if (pending?.timer) {
+        clearTimeout(pending.timer);
+    }
+    pendingMutationInvalidations.delete(key);
+}
+
+async function restoreSwipeTailCacheForMessage(context, messageIndex) {
+    const chatKey = getChatKey(context);
+    if (!chatKey || chatKey === 'invalid_target') {
+        return false;
+    }
+    const descriptor = buildActiveSwipeTailDescriptor(context, { messageIndex });
+    if (!descriptor) {
+        return false;
+    }
+    const currentState = normalizePersistedStateBase(getMemoryState(chatKey));
+    const cacheEntry = normalizeSwipeTailCacheEntry(currentState.swipeTailCache?.[descriptor.cacheKey]);
+    if (!cacheEntry) {
+        return false;
+    }
+    const prefixHash = computeSwipeTailPrefixHash(currentState, descriptor.assistantSeq);
+    if (String(cacheEntry.prefixHash || '') !== prefixHash) {
+        return false;
+    }
+    cancelPendingMutationInvalidation(chatKey);
+    if (extractionTimers.has(chatKey)) {
+        clearTimeout(extractionTimers.get(chatKey));
+        extractionTimers.delete(chatKey);
+    }
+    if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+        clearRuntimeInfoToast();
+        activeExtractionAbortController.abort();
+    }
+    const nextState = normalizePersistedStateBase(currentState);
+    nextState.opLog = nextState.opLog
+        .filter(entry => Math.max(0, Math.floor(Number(entry?.seq || 0))) < descriptor.assistantSeq)
+        .concat(cacheEntry.tailLog.map(entry => structuredClone(entry)));
+    nextState.coveredSeqTo = Math.max(
+        getLatestLoggedSeq(nextState),
+        Math.min(getPersistedCoveredSeqTo(currentState), Math.max(0, descriptor.assistantSeq)),
+    );
+    nextState.sourceMessageCount = Math.max(0, Number(computeChatSourceState(context)?.messageCount || nextState.sourceMessageCount || 0));
+    nextState.lastRecallTrace = [];
+    nextState.lastRecallProjection = null;
+    nextState.swipeTailCache = pruneSwipeTailCache(nextState.swipeTailCache, { activeSeq: descriptor.assistantSeq });
+    const restoredStore = buildRuntimeStoreWithPersistedMetadata(nextState, {
+        sourceMessageCount: nextState.sourceMessageCount,
+        lastRecallTrace: [],
+        lastRecallProjection: null,
+        swipeTailCache: nextState.swipeTailCache,
+        lastExtractionDebug: {
+            beginSeq: descriptor.assistantSeq,
+            latestSeq: descriptor.assistantSeq,
+            coveredSeqTo: Math.max(0, descriptor.assistantSeq - 1),
+            extracted: cacheEntry.tailLog.length > 0,
+            reason: 'swipe_cache_hit',
+            at: Date.now(),
+        },
+    });
+    await persistPreparedMemoryStateByChatKey(context, chatKey, nextState, restoredStore, { syncPersistentProjection: true });
+    refreshUiStats();
+    return true;
+}
+
+async function persistPreparedMemoryStateByChatKey(context, chatKey, nextState, runtimeStore, { syncPersistentProjection = false } = {}) {
+    const target = memoryStoreTargets.get(chatKey);
+    if (!target) {
+        throw new Error('Memory store target is unavailable.');
+    }
+    if (typeof context.updateChatState !== 'function') {
+        throw new Error('Chat state update API is unavailable in extension context.');
+    }
+
+    const persistedState = normalizePersistedStateBase(nextState);
+    const normalizedStore = normalizeStoreForRuntime(runtimeStore);
+    normalizedStore.lastExtractionDebug = runtimeStore?.lastExtractionDebug && typeof runtimeStore.lastExtractionDebug === 'object'
+        ? structuredClone(runtimeStore.lastExtractionDebug)
+        : null;
+    const result = await context.updateChatState(
+        CHAT_STATE_NAMESPACE,
+        () => normalizePersistedStateBase(persistedState),
+        { target, maxOperations: 16000 },
+    );
+    if (!result?.ok) {
+        throw new Error('Failed to persist memory store.');
+    }
+
+    memoryStateCache.set(chatKey, persistedState);
+    memoryStoreCache.set(chatKey, normalizedStore);
+
+    if (syncPersistentProjection && chatKey === getChatKey(context)) {
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        await syncPersistentLorebookProjection(context, effectiveSettings, normalizedStore);
+    }
+
+    return normalizedStore;
+}
+
+async function commitMemoryStoreReplaceByChatKey(context, chatKey, store, seq, { syncPersistentProjection = false } = {}) {
+    const normalizedStore = normalizeStoreForRuntime(store);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedStore) || 0)));
+    const nextState = applyStoreMetadataToPersistedState(createEmptyPersistedMemoryState(), normalizedStore);
+    const ops = buildMemoryLogOpsFromStore(normalizedStore);
+    nextState.opLog = (normalizedSeq > 0 || ops.length > 0)
+        ? [{ seq: normalizedSeq, ops }]
+        : [];
+    const prepared = prepareCommittedStateWithSwipeTailCache(context, nextState, normalizedStore, normalizedSeq);
+    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(prepared.state, prepared.store);
+    return await persistPreparedMemoryStateByChatKey(context, chatKey, prepared.state, runtimeStore, { syncPersistentProjection });
+}
+
+async function commitMemoryStoreDiffByChatKey(context, chatKey, beforeStore, afterStore, seq, { syncPersistentProjection = false } = {}) {
+    const normalizedBefore = normalizeStoreForRuntime(beforeStore);
+    const normalizedAfter = normalizeStoreForRuntime(afterStore);
+    const ops = buildMemoryLogDiffOps(normalizedBefore, normalizedAfter);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedAfter) || 0)));
+    const nextState = normalizePersistedStateBase(getMemoryState(chatKey));
+    nextState.coveredSeqTo = Math.max(getPersistedCoveredSeqTo(nextState), normalizedSeq);
+    if (ops.length > 0) {
+        nextState.opLog.push({ seq: normalizedSeq, ops });
+    }
+    applyStoreMetadataToPersistedState(nextState, normalizedAfter);
+    const prepared = prepareCommittedStateWithSwipeTailCache(context, nextState, normalizedAfter, normalizedSeq);
+    const metadataChanged = hasPersistedStoreMetadataChanges(normalizedBefore, prepared.store);
+    if (ops.length === 0 && !metadataChanged) {
+        return prepared.store;
+    }
+    const runtimeStore = buildRuntimeStoreWithPersistedMetadata(prepared.state, prepared.store);
+    return await persistPreparedMemoryStateByChatKey(context, chatKey, prepared.state, runtimeStore, { syncPersistentProjection });
+}
+
+function replacePersistedGraphWithStore(chatKey, store, seq) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return null;
+    }
+    const normalizedStore = normalizeStoreForRuntime(store);
+    const state = getMemoryState(key);
+    const normalizedSeq = Math.max(0, Math.floor(Number(seq || getStoreCoveredSeqTo(normalizedStore) || 0)));
+    const ops = buildMemoryLogOpsFromStore(normalizedStore);
+    state.coveredSeqTo = normalizedSeq;
+    state.opLog = (normalizedSeq > 0 || ops.length > 0)
+        ? [{ seq: normalizedSeq, ops }]
+        : [];
+    const prepared = prepareCommittedStateWithSwipeTailCache(getContext(), state, normalizedStore, normalizedSeq);
+    memoryStateCache.set(key, prepared.state);
+    store.loggedSeqTo = Math.max(Number(store?.loggedSeqTo || 0), getPersistedCoveredSeqTo(prepared.state));
+    const runtimeStore = buildRuntimeStoreFromPersistedState(prepared.state);
+    runtimeStore.lastRecallTrace = structuredClone(Array.isArray(prepared.store.lastRecallTrace) ? prepared.store.lastRecallTrace : []);
+    runtimeStore.lastRecallProjection = prepared.store.lastRecallProjection && typeof prepared.store.lastRecallProjection === 'object'
+        ? structuredClone(prepared.store.lastRecallProjection)
+        : null;
+    runtimeStore.sourceMessageCount = Math.max(0, Number(prepared.store.sourceMessageCount || 0));
+    runtimeStore.swipeTailCache = cloneSwipeTailCache(prepared.store.swipeTailCache);
+    updatePersistedStateMetadataFromStore(key, runtimeStore);
+    memoryStoreCache.set(key, runtimeStore);
+    return runtimeStore;
+}
+
+async function ensureMemoryStoreLoaded(context, { force = false, targetHint = null } = {}) {
+    const target = buildMemoryTargetFromContext(context, targetHint);
+    if (!target) {
+        return null;
+    }
+
+    const chatKey = getChatKey(context, target);
+    memoryStoreTargets.set(chatKey, target);
+
+    if (!force && memoryStoreCache.has(chatKey)) {
+        return memoryStoreCache.get(chatKey);
+    }
+    if (!force && memoryLoadTasks.has(chatKey)) {
+        return await memoryLoadTasks.get(chatKey);
+    }
+
+    const task = (async () => {
+        let loaded = await loadMemoryStoreByTarget(context, target);
+        let migratedFromTarget = null;
+        if (!hasPersistedMemoryStatePayload(loaded.state)) {
+            for (const legacyTarget of buildLegacyMemoryTargetCandidates(context, target, targetHint)) {
+                const legacyLoaded = await loadMemoryStoreByTarget(context, legacyTarget);
+                if (!hasPersistedMemoryStatePayload(legacyLoaded.state)) {
+                    continue;
+                }
+                loaded = legacyLoaded;
+                migratedFromTarget = legacyTarget;
+                console.info(`[${MODULE_NAME}] Migrating memory graph from legacy target`, {
+                    from: legacyTarget,
+                    to: target,
+                });
+                break;
+            }
+        }
+        memoryStateCache.set(chatKey, loaded.state);
+        memoryStoreCache.set(chatKey, loaded.store);
+        if (migratedFromTarget) {
+            await persistPreparedMemoryStateByChatKey(context, chatKey, loaded.state, loaded.store);
+            try {
+                await deleteMemoryStoreByTarget(context, migratedFromTarget);
+            } catch (error) {
+                console.warn(`[${MODULE_NAME}] Failed to delete migrated legacy memory target`, {
+                    from: migratedFromTarget,
+                    to: target,
+                    error,
+                });
+            }
+        } else if (loaded.migrated) {
+            await persistMemoryStoreByChatKey(context, chatKey, loaded.store);
+        }
+        return loaded.store;
+    })();
+    memoryLoadTasks.set(chatKey, task);
+
+    try {
+        return await task;
+    } finally {
+        memoryLoadTasks.delete(chatKey);
+    }
+}
+
+function getMemoryStore(context, targetHint = null) {
+    const chatKey = getChatKey(context, targetHint);
+    return memoryStoreCache.get(chatKey) || null;
+}
+
+async function persistMemoryStoreByChatKey(context, chatKey, store, { syncPersistentProjection = false } = {}) {
+    const target = memoryStoreTargets.get(chatKey);
+    if (!target) {
+        return;
+    }
+    if (typeof context.updateChatState !== 'function') {
+        throw new Error('Chat state update API is unavailable in extension context.');
+    }
+    const nextStore = normalizeStoreForRuntime(store);
+    memoryStoreCache.set(chatKey, nextStore);
+    const nextState = updatePersistedStateMetadataFromStore(chatKey, nextStore);
+    const result = await context.updateChatState(
+        CHAT_STATE_NAMESPACE,
+        () => normalizePersistedStateBase(nextState),
+        { target, maxOperations: 16000 },
+    );
+    if (!result?.ok) {
+        throw new Error('Failed to persist memory store.');
+    }
+    if (syncPersistentProjection && chatKey === getChatKey(context)) {
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        await syncPersistentLorebookProjection(context, effectiveSettings, nextStore);
+    }
+}
+
+async function inheritMemoryStoreForBranch(context, payload) {
+    const sourceTarget = normalizeExplicitChatStateTarget(payload?.sourceTarget);
+    const targetTarget = normalizeExplicitChatStateTarget(payload?.targetTarget);
+    if (!sourceTarget || !targetTarget) {
+        return;
+    }
+
+    const assistantMessageCount = Math.max(0, Math.floor(Number(payload?.assistantMessageCount || 0)));
+    await ensureMemoryStoreLoaded(context, { targetHint: sourceTarget });
+    const sourceChatKey = getChatKey(context, sourceTarget);
+    const targetChatKey = getChatKey(context, targetTarget);
+    if (!sourceChatKey || sourceChatKey === 'invalid_target' || !targetChatKey || targetChatKey === 'invalid_target') {
+        return;
+    }
+
+    const sourceState = normalizePersistedStateBase(memoryStateCache.get(sourceChatKey));
+    const branchState = buildBranchStateFromPersistedState(sourceState, assistantMessageCount);
+    const nextState = branchState.state;
+    const branchStore = branchState.store;
+    branchStore.sourceMessageCount = assistantMessageCount;
+    branchStore.lastRecallTrace = [];
+    branchStore.lastRecallProjection = null;
+    branchStore.swipeTailCache = {};
+    branchStore.pendingFullRebuild = false;
+    branchStore.lastExtractionDebug = null;
+    branchStore.appliedSeqTo = Math.max(0, Number(branchStore.appliedSeqTo || 0));
+    branchStore.loggedSeqTo = Math.max(Number(branchStore.loggedSeqTo || 0), Number(branchStore.appliedSeqTo || 0));
+    branchStore.seqCounter = Math.max(branchStore.seqCounter, branchStore.loggedSeqTo);
+    nextState.sourceMessageCount = assistantMessageCount;
+    nextState.lastRecallTrace = [];
+    nextState.lastRecallProjection = null;
+    nextState.swipeTailCache = {};
+    nextState.opLog = nextState.opLog
+        .map(entry => normalizeMemoryLogEntry(entry))
+        .filter(Boolean)
+        .sort((a, b) => a.seq - b.seq);
+
+    memoryStoreTargets.set(targetChatKey, targetTarget);
+    memoryLoadTasks.delete(targetChatKey);
+    memoryStoreCache.delete(targetChatKey);
+    memoryStateCache.delete(targetChatKey);
+    clearRollbackHistory(targetChatKey);
+    const pendingInvalidation = pendingMutationInvalidations.get(targetChatKey);
+    if (pendingInvalidation?.timer) {
+        clearTimeout(pendingInvalidation.timer);
+    }
+    pendingMutationInvalidations.delete(targetChatKey);
+    if (extractionTimers.has(targetChatKey)) {
+        clearTimeout(extractionTimers.get(targetChatKey));
+        extractionTimers.delete(targetChatKey);
+    }
+
+    await persistPreparedMemoryStateByChatKey(context, targetChatKey, nextState, branchStore);
+}
+
+function normalizeText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeMultilineText(text) {
+    return String(text || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\u00A0/g, ' ')
+        .trim();
+}
+
+function ensureNodeFieldsObject(node) {
+    if (!node || typeof node !== 'object') {
+        return {};
+    }
+    if (!node.fields || typeof node.fields !== 'object' || Array.isArray(node.fields)) {
+        node.fields = {};
+    }
+    return node.fields;
+}
+
+function tryParseJsonObject(text) {
+    const raw = String(text || '').trim();
+    if (!raw) {
+        return null;
+    }
+    const stripFence = (input) => input.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const candidates = [raw, stripFence(raw)];
+    for (const candidate of candidates) {
+        if (!candidate) {
+            continue;
+        }
+        if ((candidate.startsWith('{') && candidate.endsWith('}')) || (candidate.startsWith('[') && candidate.endsWith(']'))) {
+            try {
+                const parsed = JSON.parse(candidate);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    return parsed;
+                }
+            } catch {
+                // ignore and continue
+            }
+        }
+        const start = candidate.indexOf('{');
+        const end = candidate.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            try {
+                const parsed = JSON.parse(candidate.slice(start, end + 1));
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                    return parsed;
+                }
+            } catch {
+                // ignore and continue
+            }
+        }
+    }
+    return null;
+}
+
+function toDisplayScalar(value) {
+    if (value === null || value === undefined) {
+        return '';
+    }
+    if (Array.isArray(value)) {
+        return value.map(item => normalizeText(typeof item === 'string' ? item : JSON.stringify(item))).filter(Boolean).join(', ');
+    }
+    if (typeof value === 'object') {
+        return normalizeText(JSON.stringify(value));
+    }
+    return normalizeText(String(value));
+}
+
+function getNodeSummary(node) {
+    if (!node || typeof node !== 'object') {
+        return '';
+    }
+    const fields = node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+        ? node.fields
+        : {};
+    if (fields.summary !== undefined && fields.summary !== null) {
+        return normalizeText(toDisplayScalar(fields.summary));
+    }
+    return '';
+}
+
+function setNodeSummary(node, summaryText) {
+    if (!node || typeof node !== 'object') {
+        return;
+    }
+    const fields = ensureNodeFieldsObject(node);
+    const normalized = normalizeText(summaryText);
+    if (normalized) {
+        fields.summary = normalized;
+    } else {
+        delete fields.summary;
+    }
+    if (Object.prototype.hasOwnProperty.call(node, 'summary')) {
+        delete node.summary;
+    }
+}
+
+function getStructuredNodeFields(node) {
+    const fields = {};
+    const mergeObject = (obj) => {
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+            return;
+        }
+        Object.assign(fields, obj);
+        if (obj.fields && typeof obj.fields === 'object' && !Array.isArray(obj.fields)) {
+            Object.assign(fields, obj.fields);
+        }
+    };
+    mergeObject(node?.fields);
+    mergeObject(tryParseJsonObject(node?.fields));
+    mergeObject(tryParseJsonObject(getNodeSummary(node)));
+    return fields;
+}
+
+function findValueByKeyDeep(value, targetKey, depth = 0) {
+    if (!value || depth > 5) {
+        return undefined;
+    }
+    const key = String(targetKey || '').trim().toLowerCase();
+    if (!key) {
+        return undefined;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const hit = findValueByKeyDeep(item, key, depth + 1);
+            if (hit !== undefined) {
+                return hit;
+            }
+        }
+        return undefined;
+    }
+    if (typeof value !== 'object') {
+        return undefined;
+    }
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+        if (String(entryKey || '').trim().toLowerCase() === key) {
+            return entryValue;
+        }
+    }
+    for (const entryValue of Object.values(value)) {
+        const hit = findValueByKeyDeep(entryValue, key, depth + 1);
+        if (hit !== undefined) {
+            return hit;
+        }
+    }
+    return undefined;
+}
+
+function isExtractableAssistantMessage(message) {
+    if (!message || message.is_system || message.is_user) {
+        return false;
+    }
+    return Boolean(normalizeText(message?.mes || ''));
+}
+
+function getAssistantChatMessages(sourceOrContext) {
+    const source = Array.isArray(sourceOrContext)
+        ? sourceOrContext
+        : (Array.isArray(sourceOrContext?.chat) ? sourceOrContext.chat : []);
+    const result = [];
+    let lastUser = null;
+    for (const message of source) {
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (message.is_user) {
+            lastUser = {
+                name: String(message.name || ''),
+                mes: String(message.mes || ''),
+                send_date: String(message.send_date || ''),
+            };
+            continue;
+        }
+        if (!isExtractableAssistantMessage(message)) {
+            continue;
+        }
+        const text = normalizeText(message?.mes || '');
+        result.push({
+            is_user: false,
+            name: String(message.name || ''),
+            mes: text,
+            send_date: String(message.send_date || ''),
+            last_user_name: String(lastUser?.name || ''),
+            last_user_mes: String(lastUser?.mes || ''),
+            last_user_send_date: String(lastUser?.send_date || ''),
+        });
+    }
+    return result;
+}
+
+function computeChatSourceStateFromMessages(messages) {
+    const source = getAssistantChatMessages(messages);
+    let count = 0;
+    for (const message of source) {
+        count += 1;
+    }
+    return {
+        messageCount: count,
+    };
+}
+
+function computeChatSourceState(context) {
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    return computeChatSourceStateFromMessages(source);
+}
+
+function updateStoreSourceState(store, context) {
+    const source = computeChatSourceState(context);
+    store.sourceMessageCount = Number(source.messageCount || 0);
+    store.pendingFullRebuild = false;
+}
+
+function cloneRollbackNodeSnapshot(rawNode) {
+    if (!rawNode || typeof rawNode !== 'object') {
+        return null;
+    }
+    return {
+        id: String(rawNode.id || '').trim(),
+        type: String(rawNode.type || 'unknown'),
+        level: String(rawNode.level || LEVEL.SEMANTIC),
+        title: normalizeText(rawNode.title || rawNode.id || ''),
+        parentId: String(rawNode.parentId || '').trim(),
+        childrenIds: Array.isArray(rawNode.childrenIds)
+            ? rawNode.childrenIds.map(child => String(child || '').trim()).filter(Boolean)
+            : [],
+        fields: rawNode.fields && typeof rawNode.fields === 'object' && !Array.isArray(rawNode.fields)
+            ? structuredClone(rawNode.fields)
+            : {},
+        semanticDepth: Number.isFinite(Number(rawNode.semanticDepth)) ? Number(rawNode.semanticDepth) : 0,
+        semanticRollup: Boolean(rawNode.semanticRollup),
+        // Node-local last-touched/visible-through index for sorting/filtering helpers; main replay uses opLog entry.seq.
+        seqTo: Number.isFinite(Number(rawNode.seqTo)) ? Math.max(0, Math.floor(Number(rawNode.seqTo))) : undefined,
+        archived: Boolean(rawNode.archived),
+    };
+}
+
+function cloneRollbackEdgeSnapshot(rawEdge) {
+    if (!rawEdge || typeof rawEdge !== 'object') {
+        return null;
+    }
+    const from = String(rawEdge.from || '').trim();
+    const to = String(rawEdge.to || '').trim();
+    if (!from || !to || from === to) {
+        return null;
+    }
+    return {
+        from,
+        to,
+        type: normalizeText(rawEdge.type || 'related') || 'related',
+    };
+}
+
+function getRollbackEdgeKey(edge) {
+    const snapshot = cloneRollbackEdgeSnapshot(edge);
+    if (!snapshot) {
+        return '';
+    }
+    return `${snapshot.from}\u241F${snapshot.type}\u241F${snapshot.to}`;
+}
+
+function getRollbackHistory(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return [];
+    }
+    if (!rollbackHistoryCache.has(key)) {
+        rollbackHistoryCache.set(key, []);
+    }
+    return rollbackHistoryCache.get(key);
+}
+
+function clearRollbackHistory(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return;
+    }
+    rollbackHistoryCache.delete(key);
+}
+
+function trimRollbackHistoryFromSeq(chatKey, fromSeq) {
+    const key = String(chatKey || '').trim();
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    if (!key || !Number.isFinite(startSeq) || startSeq <= 0) {
+        return;
+    }
+    const history = rollbackHistoryCache.get(key);
+    if (!Array.isArray(history) || history.length === 0) {
+        return;
+    }
+    const nextHistory = history.filter(entry => Math.max(0, Math.floor(Number(entry?.seqTo || 0))) < startSeq);
+    if (nextHistory.length > 0) {
+        rollbackHistoryCache.set(key, nextHistory);
+    } else {
+        rollbackHistoryCache.delete(key);
+    }
+}
+
+function captureRollbackSnapshot(store) {
+    const nodes = {};
+    for (const [id, node] of Object.entries(store?.nodes || {})) {
+        const snapshot = cloneRollbackNodeSnapshot(node);
+        if (snapshot) {
+            nodes[String(id || '').trim()] = snapshot;
+        }
+    }
+    return {
+        nodeSeq: Math.max(0, Math.floor(Number(store?.nodeSeq || 0))),
+        seqCounter: Math.max(0, Math.floor(Number(store?.seqCounter || 0))),
+        appliedSeqTo: Math.max(0, Math.floor(Number(store?.appliedSeqTo || 0))),
+        loggedSeqTo: Math.max(0, Math.floor(Number(store?.loggedSeqTo || 0))),
+        nodes,
+        edges: Array.isArray(store?.edges)
+            ? store.edges.map(cloneRollbackEdgeSnapshot).filter(Boolean)
+            : [],
+    };
+}
+
+function restoreStoreFromRollbackSnapshot(store, snapshot) {
+    if (!store || typeof store !== 'object' || !snapshot || typeof snapshot !== 'object') {
+        return;
+    }
+    store.nodeSeq = Math.max(0, Math.floor(Number(snapshot.nodeSeq || 0)));
+    store.seqCounter = Math.max(0, Math.floor(Number(snapshot.seqCounter || 0)));
+    store.appliedSeqTo = Math.max(0, Math.floor(Number(snapshot.appliedSeqTo || 0)));
+    store.loggedSeqTo = Math.max(0, Math.floor(Number(snapshot.loggedSeqTo || snapshot.appliedSeqTo || 0)));
+    store.nodes = {};
+    for (const [id, node] of Object.entries(snapshot.nodes || {})) {
+        const restored = cloneRollbackNodeSnapshot(node);
+        if (restored) {
+            store.nodes[String(id || '').trim()] = restored;
+        }
+    }
+    store.edges = Array.isArray(snapshot.edges)
+        ? snapshot.edges.map(cloneRollbackEdgeSnapshot).filter(Boolean)
+        : [];
+    repairStoreAfterRollback(store);
+}
+
+function repairStoreAfterRollback(store) {
+    if (!store || typeof store !== 'object') {
+        return;
+    }
+    const validNodeIds = new Set(Object.keys(store.nodes || {}));
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        node.childrenIds = Array.isArray(node.childrenIds)
+            ? [...new Set(node.childrenIds.map(child => String(child || '').trim()).filter(child => child && child !== node.id && validNodeIds.has(child)))]
+            : [];
+        const parentId = String(node.parentId || '').trim();
+        node.parentId = parentId && parentId !== node.id && validNodeIds.has(parentId) ? parentId : '';
+    }
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object' || !node.parentId) {
+            continue;
+        }
+        const parent = store.nodes?.[node.parentId];
+        if (!parent || typeof parent !== 'object') {
+            node.parentId = '';
+            continue;
+        }
+        if (!Array.isArray(parent.childrenIds)) {
+            parent.childrenIds = [];
+        }
+        if (!parent.childrenIds.includes(node.id)) {
+            parent.childrenIds.push(node.id);
+        }
+    }
+    const nextEdges = [];
+    const seen = new Set();
+    for (const edge of Array.isArray(store.edges) ? store.edges : []) {
+        const snapshot = cloneRollbackEdgeSnapshot(edge);
+        const key = getRollbackEdgeKey(snapshot);
+        if (!snapshot || !key || seen.has(key)) {
+            continue;
+        }
+        if (!validNodeIds.has(snapshot.from) || !validNodeIds.has(snapshot.to)) {
+            continue;
+        }
+        seen.add(key);
+        nextEdges.push(snapshot);
+    }
+    store.edges = nextEdges;
+}
+
+function buildRollbackEntry(chatKey, beforeSnapshot, store, { seqFrom = 0, seqTo = 0, kind = 'extract' } = {}) {
+    const key = String(chatKey || '').trim();
+    if (!key || !beforeSnapshot || typeof beforeSnapshot !== 'object' || !store || typeof store !== 'object') {
+        return null;
+    }
+    const afterSnapshot = captureRollbackSnapshot(store);
+    const nodeIds = new Set([
+        ...Object.keys(beforeSnapshot.nodes || {}),
+        ...Object.keys(afterSnapshot.nodes || {}),
+    ]);
+    const nodesBefore = {};
+    let nodeChangeCount = 0;
+    for (const id of nodeIds) {
+        const beforeNode = beforeSnapshot.nodes?.[id] ?? null;
+        const afterNode = afterSnapshot.nodes?.[id] ?? null;
+        if (JSON.stringify(beforeNode) === JSON.stringify(afterNode)) {
+            continue;
+        }
+        nodesBefore[id] = beforeNode ? cloneRollbackNodeSnapshot(beforeNode) : null;
+        nodeChangeCount += 1;
+    }
+    const beforeEdges = Array.isArray(beforeSnapshot.edges) ? beforeSnapshot.edges : [];
+    const afterEdges = Array.isArray(afterSnapshot.edges) ? afterSnapshot.edges : [];
+    const beforeEdgeKeys = new Set(beforeEdges.map(getRollbackEdgeKey).filter(Boolean));
+    const afterEdgeKeys = new Set(afterEdges.map(getRollbackEdgeKey).filter(Boolean));
+    const addedEdges = afterEdges.filter(edge => {
+        const edgeKey = getRollbackEdgeKey(edge);
+        return edgeKey && !beforeEdgeKeys.has(edgeKey);
+    });
+    const removedEdges = beforeEdges.filter(edge => {
+        const edgeKey = getRollbackEdgeKey(edge);
+        return edgeKey && !afterEdgeKeys.has(edgeKey);
+    });
+    const metaChanged = beforeSnapshot.nodeSeq !== afterSnapshot.nodeSeq
+        || beforeSnapshot.seqCounter !== afterSnapshot.seqCounter
+        || beforeSnapshot.appliedSeqTo !== afterSnapshot.appliedSeqTo
+        || beforeSnapshot.loggedSeqTo !== afterSnapshot.loggedSeqTo;
+    if (!metaChanged && nodeChangeCount === 0 && addedEdges.length === 0 && removedEdges.length === 0) {
+        return null;
+    }
+    return {
+        kind: String(kind || 'extract'),
+        seqFrom: Math.max(1, Math.floor(Number(seqFrom || 0))),
+        seqTo: Math.max(1, Math.floor(Number(seqTo || seqFrom || 0))),
+        metaBefore: {
+            nodeSeq: beforeSnapshot.nodeSeq,
+            seqCounter: beforeSnapshot.seqCounter,
+            appliedSeqTo: beforeSnapshot.appliedSeqTo,
+            loggedSeqTo: beforeSnapshot.loggedSeqTo,
+        },
+        nodesBefore,
+        addedEdges: addedEdges.map(cloneRollbackEdgeSnapshot).filter(Boolean),
+        removedEdges: removedEdges.map(cloneRollbackEdgeSnapshot).filter(Boolean),
+    };
+}
+
+function recordRollbackEntry(chatKey, entry) {
+    const key = String(chatKey || '').trim();
+    if (!key || !entry || typeof entry !== 'object') {
+        return;
+    }
+    getRollbackHistory(key).push(entry);
+}
+
+function applyRollbackEntry(store, entry) {
+    if (!store || typeof store !== 'object' || !entry || typeof entry !== 'object') {
+        return;
+    }
+    const nodesBefore = entry.nodesBefore && typeof entry.nodesBefore === 'object' ? entry.nodesBefore : {};
+    for (const [id, nodeBefore] of Object.entries(nodesBefore)) {
+        const nodeId = String(id || '').trim();
+        if (!nodeId) {
+            continue;
+        }
+        if (!nodeBefore) {
+            delete store.nodes[nodeId];
+            continue;
+        }
+        const restored = cloneRollbackNodeSnapshot(nodeBefore);
+        if (restored) {
+            store.nodes[nodeId] = restored;
+        }
+    }
+    const addedEdgeKeys = new Set(
+        (Array.isArray(entry.addedEdges) ? entry.addedEdges : [])
+            .map(getRollbackEdgeKey)
+            .filter(Boolean),
+    );
+    if (addedEdgeKeys.size > 0) {
+        store.edges = (Array.isArray(store.edges) ? store.edges : []).filter(edge => !addedEdgeKeys.has(getRollbackEdgeKey(edge)));
+    }
+    for (const edge of Array.isArray(entry.removedEdges) ? entry.removedEdges : []) {
+        addEdge(store, edge?.from, edge?.to, edge?.type);
+    }
+    store.nodeSeq = Math.max(0, Math.floor(Number(entry?.metaBefore?.nodeSeq || 0)));
+    store.seqCounter = Math.max(0, Math.floor(Number(entry?.metaBefore?.seqCounter || 0)));
+    store.appliedSeqTo = Math.max(0, Math.floor(Number(entry?.metaBefore?.appliedSeqTo || 0)));
+    store.loggedSeqTo = Math.max(0, Math.floor(Number(entry?.metaBefore?.loggedSeqTo || entry?.metaBefore?.appliedSeqTo || 0)));
+}
+
+function rollbackStoreUsingHistory(store, chatKey, fromSeq) {
+    const key = String(chatKey || '').trim();
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    if (!key || !Number.isFinite(startSeq) || startSeq <= 0) {
+        return { rolledBack: false, rollbackStartSeq: null };
+    }
+    const history = rollbackHistoryCache.get(key);
+    if (!Array.isArray(history) || history.length === 0) {
+        return { rolledBack: false, rollbackStartSeq: null };
+    }
+    let rolledBack = false;
+    let rollbackStartSeq = null;
+    while (history.length > 0) {
+        const lastEntry = history[history.length - 1];
+        const entrySeqTo = Math.max(0, Math.floor(Number(lastEntry?.seqTo || 0)));
+        if (entrySeqTo < startSeq) {
+            break;
+        }
+        applyRollbackEntry(store, lastEntry);
+        history.pop();
+        rolledBack = true;
+        const entrySeqFrom = Math.max(1, Math.floor(Number(lastEntry?.seqFrom || startSeq)));
+        rollbackStartSeq = rollbackStartSeq === null ? entrySeqFrom : Math.min(rollbackStartSeq, entrySeqFrom);
+    }
+    if (!rolledBack) {
+        return { rolledBack: false, rollbackStartSeq: null };
+    }
+    repairStoreAfterRollback(store);
+    store.pendingFullRebuild = false;
+    if (history.length === 0) {
+        rollbackHistoryCache.delete(key);
+    } else {
+        rollbackHistoryCache.set(key, history);
+    }
+    return { rolledBack: true, rollbackStartSeq };
+}
+
+function findAssistantSeqFromPlayableSeq(context, playableSeqFrom) {
+    const targetPlayableSeq = Math.max(1, Math.floor(Number(playableSeqFrom || 0)));
+    if (!Number.isFinite(targetPlayableSeq) || targetPlayableSeq <= 0) {
+        return null;
+    }
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    let playableSeq = 0;
+    let assistantSeq = 0;
+    for (const message of source) {
+        if (!message || message.is_system) {
+            continue;
+        }
+        playableSeq += 1;
+        if (!isExtractableAssistantMessage(message)) {
+            continue;
+        }
+        assistantSeq += 1;
+        if (playableSeq >= targetPlayableSeq) {
+            return assistantSeq;
+        }
+    }
+    return null;
+}
+
+function findAffectedAssistantSeqFromMessageIndex(context, messageIndex) {
+    const targetIndex = Math.max(0, Math.floor(Number(messageIndex || 0)));
+    if (!Number.isFinite(targetIndex) || targetIndex < 0) {
+        return null;
+    }
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    let assistantSeq = 0;
+    for (let i = 0; i < source.length; i++) {
+        const message = source[i];
+        if (!isExtractableAssistantMessage(message)) {
+            continue;
+        }
+        assistantSeq += 1;
+        if (i >= targetIndex) {
+            return assistantSeq;
+        }
+    }
+    return null;
+}
+
+function getStoreSourceSyncState(store, context) {
+    const sourceState = computeChatSourceState(context);
+    const storedMessageCount = getStoreCoveredSeqTo(store);
+    const currentMessageCount = Math.max(0, Number(sourceState.messageCount || 0));
+    let requiresFullRebuild = false;
+    let reason = '';
+
+    if (currentMessageCount < storedMessageCount) {
+        requiresFullRebuild = true;
+        reason = 'source_count_decreased';
+    }
+
+    return {
+        sourceState,
+        storedMessageCount,
+        currentMessageCount,
+        requiresFullRebuild,
+        reason,
+    };
+}
+
+function getNodeTypeSchemaMap(settings, context = null) {
+    const map = new Map();
+    for (const entry of getEffectiveNodeTypeSchema(context, settings)) {
+        map.set(String(entry.id || '').toLowerCase(), entry);
+    }
+    return map;
+}
+
+function getSemanticTypeSpec(settings, type, context = null) {
+    const map = getNodeTypeSchemaMap(settings, context);
+    return map.get(String(type || '').toLowerCase()) || null;
+}
+
+function getSemanticCompressionConfig(settings, type, context = null) {
+    const spec = getSemanticTypeSpec(settings, type, context);
+    const raw = spec?.compression && typeof spec.compression === 'object' ? spec.compression : {};
+    const mode = ['none', 'hierarchical'].includes(String(raw.mode || '').toLowerCase())
+        ? String(raw.mode).toLowerCase()
+        : 'none';
+    return {
+        mode,
+        threshold: Math.max(2, Number(raw.threshold) || 6),
+        fanIn: Math.max(2, Number(raw.fanIn) || 3),
+        maxDepth: Math.max(1, Number(raw.maxDepth) || 6),
+        keepRecentLeaves: Math.max(0, Number(raw.keepRecentLeaves) || 0),
+        rule: String(raw.rule || '').trim(),
+        summarizeInstruction: String(raw.summarizeInstruction || '').trim(),
+        label: String(spec?.label || type || 'Semantic'),
+    };
+}
+
+function getSemanticLatestOnlyConfig(settings, type, context = null) {
+    const spec = getSemanticTypeSpec(settings, type, context);
+    return {
+        enabled: Boolean(spec?.latestOnly),
+        keyFields: Array.isArray(spec?.primaryKeyColumns)
+            ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+            : [],
+    };
+}
+
+function nextNodeId(store) {
+    store.nodeSeq = Number(store.nodeSeq || 0) + 1;
+    return `n_${store.nodeSeq}`;
+}
+
+function createNode(store, node) {
+    const id = nextNodeId(store);
+    const seqToRaw = Number.isFinite(Number(node.seqTo))
+        ? Number(node.seqTo)
+        : Number.isFinite(Number(node.seq))
+            ? Number(node.seq)
+            : Number(store.seqCounter || 0);
+    const seqTo = Number.isFinite(seqToRaw) ? Math.max(0, Math.floor(seqToRaw)) : Number(store.seqCounter || 0);
+    store.seqCounter = Math.max(Number(store.seqCounter || 0), Number.isFinite(seqTo) ? seqTo : 0);
+    store.nodes[id] = {
+        id,
+        type: String(node.type || 'unknown'),
+        level: String(node.level || LEVEL.SEMANTIC),
+        title: normalizeText(node.title || id),
+        parentId: node.parentId ? String(node.parentId) : '',
+        childrenIds: [],
+        fields: node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields) ? node.fields : {},
+        semanticDepth: Number.isFinite(Number(node.semanticDepth)) ? Number(node.semanticDepth) : 0,
+        semanticRollup: Boolean(node.semanticRollup),
+        seqTo: Number.isFinite(seqTo) ? seqTo : undefined,
+        archived: Boolean(node.archived),
+    };
+    setNodeSummary(store.nodes[id], node?.fields?.summary ?? '');
+
+    if (store.nodes[id].parentId && store.nodes[store.nodes[id].parentId]) {
+        const parent = store.nodes[store.nodes[id].parentId];
+        if (!parent.childrenIds.includes(id)) {
+            parent.childrenIds.push(id);
+        }
+        addEdge(store, parent.id, id, 'contains');
+    }
+
+    return store.nodes[id];
+}
+
+function addEdge(store, from, to, type = 'related') {
+    if (!from || !to || from === to) {
+        return;
+    }
+
+    const found = store.edges.find(edge => edge.from === from && edge.to === to && edge.type === type);
+    if (found) {
+        return;
+    }
+
+    store.edges.push({
+        from,
+        to,
+        type,
+    });
+}
+
+function reparentNode(store, childId, parentId) {
+    const child = store.nodes[childId];
+    const parent = store.nodes[parentId];
+    if (!child || !parent) {
+        return;
+    }
+
+    const oldParentId = String(child.parentId || '');
+    if (oldParentId && store.nodes[oldParentId]) {
+        const oldParent = store.nodes[oldParentId];
+        oldParent.childrenIds = (oldParent.childrenIds || []).filter(id => id !== childId);
+    }
+
+    child.parentId = parentId;
+    if (!Array.isArray(parent.childrenIds)) {
+        parent.childrenIds = [];
+    }
+    if (!parent.childrenIds.includes(childId)) {
+        parent.childrenIds.push(childId);
+    }
+    addEdge(store, parentId, childId, 'contains');
+}
+
+function listNodesByLevel(store, level) {
+    return Object.values(store.nodes).filter(node => node.level === level);
+}
+
+function getChildren(store, nodeId) {
+    const node = store.nodes[nodeId];
+    if (!node || !Array.isArray(node.childrenIds)) {
+        return [];
+    }
+    return node.childrenIds.map(id => store.nodes[id]).filter(child => Boolean(child) && !child.archived);
+}
+
+function dropNode(store, nodeId, recursive = true) {
+    const node = store.nodes[nodeId];
+    if (!node) {
+        return;
+    }
+
+    if (recursive && Array.isArray(node.childrenIds)) {
+        for (const childId of [...node.childrenIds]) {
+            dropNode(store, childId, true);
+        }
+    }
+
+    if (node.parentId && store.nodes[node.parentId]) {
+        const parent = store.nodes[node.parentId];
+        parent.childrenIds = parent.childrenIds.filter(id => id !== nodeId);
+    }
+
+    delete store.nodes[nodeId];
+    store.edges = store.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId);
+}
+
+function archiveNode(store, nodeId) {
+    const node = store.nodes[nodeId];
+    if (!node) {
+        return;
+    }
+    node.archived = true;
+}
+
+function summarizeTextHeuristic(lines) {
+    return lines
+        .map(line => normalizeText(line))
+        .filter(Boolean)
+        .join('\n');
+}
+
+function buildCompressionSummaryInstruction(baseInstruction) {
+    const base = normalizeText(baseInstruction || '');
+    const defaultInstruction = 'Compress semantic nodes into concise higher-level memory while preserving key causality and unresolved hooks.';
+    const instruction = base || defaultInstruction;
+    return [
+        instruction,
+        'Length guide: target within 150 Chinese characters (soft limit; slight overflow only if critical information would be lost).',
+        'Avoid raw dialogue and excessive detail. Keep only durable plot signal.',
+    ].join('\n');
+}
+
+function getCompressionColumnNames(spec) {
+    const columns = Array.isArray(spec?.tableColumns)
+        ? spec.tableColumns.map(column => String(column || '').trim().toLowerCase()).filter(Boolean)
+        : [];
+    const deduped = Array.from(new Set(columns));
+    if (!deduped.includes('summary')) {
+        deduped.unshift('summary');
+    }
+    return deduped;
+}
+
+function normalizeWorldInfoResolverMessages(messages = []) {
+    if (!Array.isArray(messages)) {
+        return [];
+    }
+
+    return messages.map((message) => {
+        if (!message || typeof message !== 'object') {
+            return message;
+        }
+        const next = { ...message };
+        const rawRole = String(next.role || '').trim().toLowerCase();
+        if (rawRole === 'system' || rawRole === 'user' || rawRole === 'assistant') {
+            next.role = rawRole;
+        } else if (next.is_system) {
+            next.role = 'system';
+        } else if (next.is_user) {
+            next.role = 'user';
+        } else {
+            next.role = 'assistant';
+        }
+        if (next.content === undefined && Object.hasOwn(next, 'mes')) {
+            next.content = String(next.mes ?? '');
+        }
+        return next;
+    });
+}
+
+function rewriteDepthWorldInfoToAfter(payload = {}) {
+    if (!payload || typeof payload !== 'object') {
+        return payload;
+    }
+    const depthEntries = Array.isArray(payload.worldInfoDepth) ? payload.worldInfoDepth : [];
+    if (depthEntries.length === 0) {
+        return payload;
+    }
+
+    const blocks = [];
+    for (const entry of depthEntries) {
+        const lines = Array.isArray(entry?.entries) ? entry.entries : [];
+        for (const line of lines) {
+            const content = String(line ?? '').trim();
+            if (content) {
+                blocks.push(content);
+            }
+        }
+    }
+
+    payload.worldInfoDepth = [];
+    if (blocks.length === 0) {
+        return payload;
+    }
+
+    appendUniqueWorldInfoEntries(payload, 'worldInfoAfter', blocks);
+    return payload;
+}
+
+function normalizeWorldInfoEntries(rawEntries) {
+    return Array.isArray(rawEntries)
+        ? rawEntries.map(entry => String(entry ?? '').trim()).filter(Boolean)
+        : [];
+}
+
+function ensureWorldInfoEntries(payload, field) {
+    const entryField = `${field}Entries`;
+    const entries = normalizeWorldInfoEntries(payload?.[entryField]);
+    payload[entryField] = entries;
+    return entries;
+}
+
+function appendUniqueWorldInfoEntries(payload, field, incomingEntries = []) {
+    if (!payload || typeof payload !== 'object') {
+        return false;
+    }
+
+    const entries = ensureWorldInfoEntries(payload, field);
+    let changed = false;
+    for (const value of incomingEntries) {
+        const incoming = String(value ?? '').trim();
+        if (!incoming || entries.includes(incoming)) {
+            continue;
+        }
+        entries.push(incoming);
+        changed = true;
+    }
+    return changed;
+}
+
+async function buildPresetAwareLLMMessages(
+    context,
+    settings,
+    {
+        api = '',
+        systemPrompt = '',
+        userPrompt = '',
+        includeCharacterCard = true,
+        promptPresetName = '',
+        worldInfoMessages = null,
+        runtimeWorldInfo = null,
+        forceWorldInfoResimulate = false,
+        worldInfoType = 'quiet',
+        abortSignal = null,
+        recallRunToken = 0,
+    } = {},
+) {
+    const systemText = String(systemPrompt || '').trim();
+    const userText = String(userPrompt || '').trim();
+    const selectedPromptPresetName = String(promptPresetName || '').trim();
+    const envelopeApi = selectedPromptPresetName ? 'openai' : (api || context.mainApi || 'openai');
+    const includeWorldInfoWithPreset = settings?.includeWorldInfoWithPreset !== false;
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+    let resolvedRuntimeWorldInfo = includeWorldInfoWithPreset
+        ? ((!forceWorldInfoResimulate && hasEffectiveRuntimeWorldInfo(runtimeWorldInfo))
+            ? normalizeRuntimeWorldInfo(runtimeWorldInfo)
+            : null)
+        : {};
+    const resolverMessages = normalizeWorldInfoResolverMessages(worldInfoMessages);
+    if (includeWorldInfoWithPreset && !resolvedRuntimeWorldInfo && typeof context?.resolveWorldInfoForMessages === 'function' && resolverMessages.length > 0) {
+        resolvedRuntimeWorldInfo = await context.resolveWorldInfoForMessages(resolverMessages, {
+            type: String(worldInfoType || 'quiet'),
+            fallbackToCurrentChat: false,
+            postActivationHook: rewriteDepthWorldInfoToAfter,
+        });
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+    }
+
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+    return context.buildPresetAwarePromptMessages({
+        messages: [
+            { role: 'system', content: systemText },
+            { role: 'user', content: userText },
+        ],
+        envelopeOptions: {
+            includeCharacterCard,
+            api: envelopeApi,
+            promptPresetName: selectedPromptPresetName,
+        },
+        promptPresetName: selectedPromptPresetName,
+        runtimeWorldInfo: resolvedRuntimeWorldInfo,
+    });
+}
+
+function normalizeRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const source = runtimeWorldInfo && typeof runtimeWorldInfo === 'object' ? runtimeWorldInfo : {};
+    return {
+        worldInfoBeforeEntries: normalizeWorldInfoEntries(source.worldInfoBeforeEntries),
+        worldInfoAfterEntries: normalizeWorldInfoEntries(source.worldInfoAfterEntries),
+        worldInfoDepth: Array.isArray(source.worldInfoDepth) ? source.worldInfoDepth : [],
+        outletEntries: source.outletEntries && typeof source.outletEntries === 'object' ? source.outletEntries : {},
+        worldInfoExamples: Array.isArray(source.worldInfoExamples) ? source.worldInfoExamples : [],
+        anBefore: Array.isArray(source.anBefore) ? source.anBefore : [],
+        anAfter: Array.isArray(source.anAfter) ? source.anAfter : [],
+    };
+}
+
+function hasEffectiveRuntimeWorldInfo(runtimeWorldInfo = null) {
+    const normalized = normalizeRuntimeWorldInfo(runtimeWorldInfo);
+    if (normalized.worldInfoBeforeEntries.length > 0 || normalized.worldInfoAfterEntries.length > 0) {
+        return true;
+    }
+    if (normalized.worldInfoDepth.length > 0 || normalized.worldInfoExamples.length > 0) {
+        return true;
+    }
+    if (normalized.anBefore.length > 0 || normalized.anAfter.length > 0) {
+        return true;
+    }
+    return Object.keys(normalized.outletEntries).length > 0;
+}
+
+function buildRuntimeWorldInfoFromPayload(payload = null) {
+    const candidate = normalizeRuntimeWorldInfo({
+        worldInfoBeforeEntries: Array.isArray(payload?.worldInfoBeforeEntries) ? payload.worldInfoBeforeEntries : [],
+        worldInfoAfterEntries: Array.isArray(payload?.worldInfoAfterEntries) ? payload.worldInfoAfterEntries : [],
+        worldInfoDepth: Array.isArray(payload?.worldInfoDepth) ? payload.worldInfoDepth : [],
+        outletEntries: payload?.outletEntries && typeof payload.outletEntries === 'object' ? payload.outletEntries : {},
+        worldInfoExamples: Array.isArray(payload?.worldInfoExamples) ? payload.worldInfoExamples : [],
+        anBefore: Array.isArray(payload?.anBefore) ? payload.anBefore : [],
+        anAfter: Array.isArray(payload?.anAfter) ? payload.anAfter : [],
+    });
+    const rewritten = normalizeRuntimeWorldInfo(rewriteDepthWorldInfoToAfter({
+        ...candidate,
+        worldInfoDepth: Array.isArray(candidate.worldInfoDepth)
+            ? candidate.worldInfoDepth.map(entry => ({
+                ...entry,
+                entries: Array.isArray(entry?.entries) ? entry.entries.slice() : [],
+            }))
+            : [],
+    }));
+    return hasEffectiveRuntimeWorldInfo(rewritten) ? rewritten : null;
+}
+
+async function summarizeTextWithLLM(context, settings, instruction, lines, abortSignal = null) {
+    const joined = summarizeTextHeuristic(lines);
+    if (!joined) {
+        return '';
+    }
+
+    try {
+        const result = await runFunctionCallTask(context, settings, {
+            systemPrompt: instruction,
+            userPrompt: joined,
+            apiPresetName: settings.extractApiPresetName || '',
+            promptPresetName: settings.extractPresetName || '',
+            functionName: 'luker_rpg_summary',
+            functionDescription: 'Return compressed memory summary text.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    summary: { type: 'string' },
+                },
+                required: ['summary'],
+                additionalProperties: false,
+            },
+            abortSignal,
+        });
+        return normalizeText(result?.summary || '');
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] LLM summary failed`, error);
+        return '';
+    }
+}
+
+async function summarizeRollupFieldsWithLLM(context, settings, spec, instruction, group, abortSignal = null) {
+    const columns = getCompressionColumnNames(spec);
+    const rows = (Array.isArray(group) ? group : []).map((node) => {
+        const row = {
+            title: String(node?.title || ''),
+            seq_to: String(node?.seqTo ?? ''),
+        };
+        for (const column of columns) {
+            row[column] = getTableCellValueFromNode(node, column);
+        }
+        return row;
+    });
+    if (rows.length === 0) {
+        return {};
+    }
+    const properties = {};
+    for (const column of columns) {
+        properties[column] = { type: 'string' };
+    }
+    const userPrompt = rows.map(row => JSON.stringify(row)).join('\n');
+    try {
+        const result = await runFunctionCallTask(context, settings, {
+            systemPrompt: [
+                instruction,
+                'Return only compressed rollup fields.',
+                'Keep each field concise and high-signal.',
+                'Do not continue story.',
+            ].join('\n'),
+            userPrompt,
+            apiPresetName: settings.extractApiPresetName || '',
+            promptPresetName: settings.extractPresetName || '',
+            functionName: 'luker_rpg_summary_fields',
+            functionDescription: 'Return compressed rollup fields for the higher-level memory node.',
+            parameters: {
+                type: 'object',
+                properties,
+                required: ['summary'],
+                additionalProperties: false,
+            },
+            abortSignal,
+        });
+        const out = {};
+        for (const column of columns) {
+            const normalized = normalizeText(result?.[column] ?? '');
+            if (normalized) {
+                out[column] = normalized;
+            }
+        }
+        return out;
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] LLM rollup fields failed`, error);
+        return {};
+    }
+}
+
+function isAbortSignalLike(value) {
+    return Boolean(value && typeof value === 'object' && 'aborted' in value);
+}
+
+function isAbortError(error, abortSignal = null) {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        return true;
+    }
+    const name = String(error?.name || '').toLowerCase();
+    if (name === 'aborterror') {
+        return true;
+    }
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('aborted') || message.includes('abort');
+}
+
+function createAbortError(message = 'Operation aborted.') {
+    try {
+        return new DOMException(String(message || 'Operation aborted.'), 'AbortError');
+    } catch {
+        const error = new Error(String(message || 'Operation aborted.'));
+        error.name = 'AbortError';
+        return error;
+    }
+}
+
+function throwIfAborted(abortSignal, message = 'Operation aborted.') {
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        throw createAbortError(message);
+    }
+}
+
+function throwIfRecallRunInvalid(runToken, abortSignal, message = 'Memory recall aborted.') {
+    throwIfAborted(abortSignal, message);
+    const normalizedRunToken = Number(runToken);
+    if (Number.isFinite(normalizedRunToken) && normalizedRunToken > 0 && normalizedRunToken !== activeRecallRunToken) {
+        throw createAbortError(message);
+    }
+}
+
+function linkAbortSignals(...signals) {
+    const validSignals = signals.filter(isAbortSignalLike);
+    if (validSignals.length === 0) {
+        return { signal: null, cleanup: () => {} };
+    }
+    if (validSignals.length === 1) {
+        return { signal: validSignals[0], cleanup: () => {} };
+    }
+
+    const controller = new AbortController();
+    const onAbort = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    for (const signal of validSignals) {
+        if (signal.aborted) {
+            onAbort();
+            break;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return {
+        signal: controller.signal,
+        cleanup: () => {
+            for (const signal of validSignals) {
+                signal.removeEventListener('abort', onAbort);
+            }
+        },
+    };
+}
+
+function createLinkedAbortController(...signals) {
+    const validSignals = signals.filter(isAbortSignalLike);
+    const controller = new AbortController();
+    if (validSignals.length === 0) {
+        return {
+            controller,
+            signal: controller.signal,
+            cleanup: () => {},
+        };
+    }
+
+    const onAbort = () => {
+        if (!controller.signal.aborted) {
+            controller.abort();
+        }
+    };
+
+    for (const signal of validSignals) {
+        if (signal.aborted) {
+            onAbort();
+            break;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    return {
+        controller,
+        signal: controller.signal,
+        cleanup: () => {
+            for (const signal of validSignals) {
+                signal.removeEventListener('abort', onAbort);
+            }
+        },
+    };
+}
+
+function registerActiveRecallRequest(runToken, controller) {
+    const normalizedRunToken = Number(runToken);
+    if (!Number.isFinite(normalizedRunToken) || normalizedRunToken <= 0 || !controller) {
+        return null;
+    }
+
+    let resolveSettled = null;
+    const settledPromise = new Promise((resolve) => {
+        resolveSettled = resolve;
+    });
+    const state = {
+        id: ++nextActiveRecallRequestId,
+        runToken: normalizedRunToken,
+        controller,
+        settledPromise,
+        settled: false,
+        resolveSettled: typeof resolveSettled === 'function' ? resolveSettled : (() => {}),
+    };
+    activeRecallRequestStates.set(state.id, state);
+    return state;
+}
+
+function finishActiveRecallRequest(state) {
+    if (!state || typeof state !== 'object' || state.settled) {
+        return;
+    }
+    state.settled = true;
+    state.resolveSettled();
+    activeRecallRequestStates.delete(state.id);
+}
+
+function listActiveRecallRequests(runToken) {
+    const normalizedRunToken = Number(runToken);
+    if (!Number.isFinite(normalizedRunToken) || normalizedRunToken <= 0) {
+        return [];
+    }
+    return Array.from(activeRecallRequestStates.values())
+        .filter(state => Number(state?.runToken || 0) === normalizedRunToken);
+}
+
+async function abortActiveRecallRequests(runToken, timeoutMs = 400) {
+    const requests = listActiveRecallRequests(runToken);
+    if (requests.length === 0) {
+        return;
+    }
+
+    for (const state of requests) {
+        if (!state?.controller?.signal?.aborted) {
+            state.controller.abort();
+        }
+    }
+
+    const waitForSettlement = Promise.allSettled(requests.map(state => state.settledPromise));
+    const numericTimeout = Number(timeoutMs);
+    if (!Number.isFinite(numericTimeout) || numericTimeout <= 0) {
+        await waitForSettlement;
+        return;
+    }
+
+    await Promise.race([
+        waitForSettlement,
+        new Promise((resolve) => setTimeout(resolve, numericTimeout)),
+    ]);
+}
+
+async function requestToolCallWithRetry(settings, promptMessages, {
+    functionName = '',
+    functionDescription = '',
+    parameters = {},
+    llmPresetName = '',
+    apiSettingsOverride = null,
+    abortSignal = null,
+    recallRunToken = 0,
+} = {}) {
+    const fnName = String(functionName || '').trim();
+    if (!fnName) {
+        throw new Error('Function name is required.');
+    }
+
+    const retries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const tools = [{
+        type: 'function',
+        function: {
+            name: fnName,
+            description: String(functionDescription || `Function output for ${fnName}`),
+            parameters: parameters && typeof parameters === 'object' ? parameters : { type: 'object', additionalProperties: true },
+        },
+    }];
+    const toolChoice = {
+        type: 'function',
+        function: { name: fnName },
+    };
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const requestController = createLinkedAbortController(isAbortSignalLike(abortSignal) ? abortSignal : null);
+        const activeRequestState = registerActiveRecallRequest(recallRunToken, requestController.controller);
+        try {
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, requestController.signal, {
+                tools,
+                toolChoice,
+                replaceTools: true,
+                llmPresetName: String(llmPresetName || '').trim(),
+                apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                requestScope: 'extension_internal',
+                functionCallOptions: {
+                    requiredFunctionName: fnName,
+                    protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                },
+            });
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            const calls = extractAllFunctionCalls(responseData, [fnName]);
+            const validationError = validateParsedToolCalls(calls, tools);
+            if (validationError) {
+                throw new Error(validationError);
+            }
+            const matched = calls.find(call => String(call?.name || '') === fnName);
+            if (!matched) {
+                throw new Error(`Model returned tool call, but not '${fnName}'.`);
+            }
+            return matched.args;
+        } catch (error) {
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            lastError = error;
+            if (attempt >= retries) {
+                throw error;
+            }
+            console.warn(`[${MODULE_NAME}] Tool call '${fnName}' failed. Retrying (${attempt + 1}/${retries})...`, error);
+        } finally {
+            finishActiveRecallRequest(activeRequestState);
+            requestController.cleanup();
+        }
+    }
+
+    throw lastError || new Error(`Tool call '${fnName}' failed.`);
+}
+
+async function requestToolCallsWithRetry(settings, promptMessages, {
+    tools = [],
+    allowedNames = null,
+    llmPresetName = '',
+    apiSettingsOverride = null,
+    retriesOverride = null,
+    abortSignal = null,
+    recallRunToken = 0,
+} = {}) {
+    if (!Array.isArray(tools) || tools.length === 0) {
+        throw new Error('Tools are required.');
+    }
+
+    const retriesSource = retriesOverride === null || retriesOverride === undefined
+        ? Number(settings?.toolCallRetryMax)
+        : Number(retriesOverride);
+    const retries = Math.max(0, Math.min(10, Math.floor(retriesSource || 0)));
+    const toolChoice = 'auto';
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        const requestController = createLinkedAbortController(isAbortSignalLike(abortSignal) ? abortSignal : null);
+        const activeRequestState = registerActiveRecallRequest(recallRunToken, requestController.controller);
+        try {
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            const responseData = await sendOpenAIRequest('quiet', promptMessages, requestController.signal, {
+                tools,
+                toolChoice,
+                replaceTools: true,
+                llmPresetName: String(llmPresetName || '').trim(),
+                apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                requestScope: 'extension_internal',
+                functionCallOptions: {
+                    protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
+                },
+            });
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            const calls = extractAllFunctionCalls(responseData, allowedNames);
+            const validationError = validateParsedToolCalls(calls, tools);
+            if (validationError) {
+                throw new Error(validationError);
+            }
+            return calls;
+        } catch (error) {
+            if (isAbortError(error, abortSignal)) {
+                throw error;
+            }
+            throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            lastError = error;
+            if (attempt >= retries) {
+                throw error;
+            }
+            console.warn(`[${MODULE_NAME}] Multi tool call request failed. Retrying (${attempt + 1}/${retries})...`, error);
+        } finally {
+            finishActiveRecallRequest(activeRequestState);
+            requestController.cleanup();
+        }
+    }
+
+    throw lastError || new Error('Multi tool call request failed.');
+}
+
+async function runFunctionCallTask(context, settings, {
+    systemPrompt = '',
+    userPrompt = '',
+    promptPresetName = '',
+    apiPresetName = '',
+    worldInfoMessages = null,
+    runtimeWorldInfo = null,
+    forceWorldInfoResimulate = false,
+    worldInfoType = 'quiet',
+    functionName = '',
+    functionDescription = '',
+    parameters = {},
+    abortSignal = null,
+    recallRunToken = 0,
+} = {}) {
+    const fnName = String(functionName || '').trim();
+    if (!fnName) {
+        throw new Error('Function name is required.');
+    }
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+
+    const resolvedApiPresetName = String(apiPresetName || '').trim();
+    const profileResolution = resolveChatCompletionRequestProfile({
+        profileName: resolvedApiPresetName,
+        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
+        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    });
+    const requestApi = profileResolution.requestApi;
+    const prompt = await buildPresetAwareLLMMessages(context, settings, {
+        api: requestApi,
+        systemPrompt,
+        userPrompt,
+        includeCharacterCard: true,
+        promptPresetName: String(promptPresetName || '').trim(),
+        worldInfoMessages,
+        runtimeWorldInfo,
+        forceWorldInfoResimulate,
+        worldInfoType,
+        abortSignal,
+        recallRunToken,
+    });
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+
+    const apiSettingsOverride = profileResolution.apiSettingsOverride;
+
+    return await requestToolCallWithRetry(settings, prompt, {
+        functionName: fnName,
+        functionDescription,
+        parameters,
+        llmPresetName: String(promptPresetName || '').trim(),
+        apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+        abortSignal,
+        recallRunToken,
+    });
+}
+
+function buildEvidenceSeqRange(item, batch) {
+    const seqs = Array.isArray(item?.evidence_seqs)
+        ? item.evidence_seqs.map(value => Number(value)).filter(Number.isFinite)
+        : [];
+    if (seqs.length > 0) {
+        return { seqTo: Math.max(...seqs) };
+    }
+    const fromRaw = Number(item?.evidence_seq_range?.from_seq);
+    const toRaw = Number(item?.evidence_seq_range?.to_seq);
+    if (Number.isFinite(fromRaw) || Number.isFinite(toRaw)) {
+        const to = Number.isFinite(toRaw) ? toRaw : fromRaw;
+        return { seqTo: Number(to) };
+    }
+    const lastSeqInBatch = Number(batch?.[batch.length - 1]?.seq);
+    if (Number.isFinite(lastSeqInBatch)) {
+        return { seqTo: Number(lastSeqInBatch) };
+    }
+    return { seqTo: 0 };
+}
+
+function sanitizeExtractToolNameSuffix(typeId = '') {
+    return String(typeId || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '') || 'semantic';
+}
+
+function buildDynamicToolDescription(spec = {}, mode = 'create') {
+    const typeId = String(spec?.id || '').trim().toLowerCase();
+    const tableName = String(spec?.tableName || typeId || '').trim();
+    const hint = normalizeText(spec?.extractHint || '');
+    const fields = Array.isArray(spec?.tableColumns) ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
+    const columnHints = spec?.columnHints && typeof spec.columnHints === 'object' && !Array.isArray(spec.columnHints)
+        ? spec.columnHints
+        : {};
+    const required = Array.isArray(spec?.requiredColumns) ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean) : [];
+    const primaryKeyColumns = Array.isArray(spec?.primaryKeyColumns)
+        ? spec.primaryKeyColumns.map(field => String(field || '').trim()).filter(Boolean)
+        : [];
+    const forceUpdate = Boolean(spec?.forceUpdate);
+    const latestOnly = Boolean(spec?.latestOnly);
+    const normalizedMode = String(mode || 'create').trim().toLowerCase();
+    const chunks = [];
+    if (normalizedMode === 'edit') {
+        chunks.push(`Edit semantic node for type "${typeId}" (table "${tableName || typeId}") by node_id.`);
+        chunks.push('Provide only changed fields in set_fields. Existing fields not mentioned will stay unchanged.');
+    } else {
+        chunks.push(`Create semantic node for type "${typeId}" (table "${tableName || typeId}").`);
+        chunks.push('Use this tool only for creating new nodes.');
+    }
+    if (hint) {
+        chunks.push(`Meaning: ${hint}`);
+    }
+    if (fields.length > 0) {
+        chunks.push(`Columns: ${fields.join(', ')}`);
+    }
+    const hintRows = fields
+        .map(field => `${field}=${normalizeText(columnHints[field] || '')}`)
+        .filter(row => !row.endsWith('='));
+    if (hintRows.length > 0) {
+        chunks.push(`Column meanings: ${hintRows.join('; ')}`);
+    }
+    if (required.length > 0) {
+        chunks.push(`Required columns: ${required.join(', ')}`);
+    } else {
+        chunks.push('Required columns: none');
+    }
+    if (fields.includes('name')) {
+        chunks.push('Name normalization: name must be the canonical primary name only. Never append aliases, English names, translations, titles, or any parenthetical/bracketed clarification to name.');
+    }
+    if (fields.includes('aliases')) {
+        chunks.push('Alias normalization: put nicknames, titles, English names, translated names, short names, and alternative spellings in aliases only. Separate multiple aliases with commas or semicolons.');
+    }
+    if (typeId === 'event' && fields.includes('summary')) {
+        chunks.push('Event summary time rule: summary must begin with "时间：<time>；" using an explicit full in-world date/time or date span.');
+        chunks.push('Event summary time inference: if source lacks a concrete timestamp, infer or invent one plausible continuity-consistent full time instead of placeholders.');
+        chunks.push('Event summary time ban: never use x年x月x日, 某年某月某日, 未知时间, 待定时间, or similar placeholders.');
+    }
+    if (latestOnly && primaryKeyColumns.length > 0) {
+        chunks.push(`Dedup rule: before create, inspect graph_data.nodes and prefer edit over create when an existing node plausibly matches by primary-key overlap (${primaryKeyColumns.join(', ')}).`);
+    }
+    if (normalizedMode === 'create') {
+        chunks.push(`Link relation vocabulary: when adding links, only use canonical relation types ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}. Reuse existing canonical labels instead of inventing synonyms or bilingual variants.`);
+    }
+    chunks.push(`Force update each extraction batch: ${forceUpdate ? 'yes' : 'no'}`);
+    return chunks.join(' ');
+}
+
+function buildDynamicExtractTools(schema = [], options = {}) {
+    const tools = [];
+    const specByToolName = new Map();
+    const usedNames = new Set();
+    const allowEditDelete = options?.allowEditDelete !== false;
+
+    for (const rawSpec of Array.isArray(schema) ? schema : []) {
+        const spec = rawSpec && typeof rawSpec === 'object' ? rawSpec : null;
+        if (!spec) {
+            continue;
+        }
+        const typeId = String(spec.id || '').trim().toLowerCase();
+        if (!typeId) {
+            continue;
+        }
+        const baseName = `luker_rpg_extract_${sanitizeExtractToolNameSuffix(typeId)}`;
+        const isEditableType = Boolean(spec?.editable);
+        let createToolName = `${baseName}_create`;
+        let suffix = 2;
+        while (usedNames.has(createToolName)) {
+            createToolName = `${baseName}_create_${suffix}`;
+            suffix += 1;
+        }
+        usedNames.add(createToolName);
+        let editToolName = '';
+        if (isEditableType && allowEditDelete) {
+            editToolName = `${baseName}_edit`;
+            suffix = 2;
+            while (usedNames.has(editToolName)) {
+                editToolName = `${baseName}_edit_${suffix}`;
+                suffix += 1;
+            }
+            usedNames.add(editToolName);
+        }
+        let deleteToolName = '';
+        if (isEditableType && allowEditDelete) {
+            deleteToolName = `${baseName}_delete`;
+            suffix = 2;
+            while (usedNames.has(deleteToolName)) {
+                deleteToolName = `${baseName}_delete_${suffix}`;
+                suffix += 1;
+            }
+            usedNames.add(deleteToolName);
+        }
+        const fields = Array.isArray(spec.tableColumns)
+            ? spec.tableColumns.map(field => String(field || '').trim()).filter(Boolean)
+            : [];
+        const filteredFields = fields;
+        const requiredColumns = Array.isArray(spec.requiredColumns)
+            ? spec.requiredColumns.map(field => String(field || '').trim()).filter(Boolean)
+            : [];
+        const filteredRequiredColumns = requiredColumns;
+        const rawColumnHints = spec.columnHints && typeof spec.columnHints === 'object' && !Array.isArray(spec.columnHints)
+            ? spec.columnHints
+            : {};
+        const filteredColumnHints = Object.fromEntries(
+            Object.entries(rawColumnHints)
+                .map(([key, value]) => [String(key || '').trim(), String(value || '').trim()])
+                .filter(([key, value]) => key && value && filteredFields.includes(key)),
+        );
+        const fieldSet = new Set(filteredFields);
+        const createProperties = {
+            ref: { type: 'string' },
+            evidence_seqs: {
+                type: 'array',
+                items: { type: 'integer' },
+            },
+            evidence_seq_range: {
+                type: 'object',
+                properties: {
+                    from_seq: { type: 'integer' },
+                    to_seq: { type: 'integer' },
+                },
+                additionalProperties: false,
+            },
+            no_link_reason: { type: 'string' },
+            links: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        target_ref: { type: 'string', description: 'Optional. Use either target_ref or target_node_id.' },
+                        target_node_id: { type: 'string', description: 'Optional. Use either target_node_id or target_ref.' },
+                        relation: { type: 'string', description: `Canonical relation type only. Allowed values: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}.` },
+                        direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
+                    },
+                    additionalProperties: false,
+                },
+            },
+        };
+        if (fieldSet.has('title')) {
+            createProperties.title = { type: 'string' };
+        }
+        for (const field of fieldSet) {
+            if (createProperties[field]) {
+                continue;
+            }
+            createProperties[field] = { type: 'string' };
+        }
+        const editFieldProperties = {};
+        for (const field of fieldSet) {
+            editFieldProperties[field] = { type: 'string' };
+        }
+
+        const createRequiredColumns = filteredRequiredColumns
+            .filter(field => fieldSet.has(field) || field === 'title');
+        if (typeId === 'event' && !createRequiredColumns.includes('links')) {
+            createRequiredColumns.push('links');
+        }
+
+        tools.push({
+            type: 'function',
+            function: {
+                name: createToolName,
+                description: buildDynamicToolDescription({
+                    ...spec,
+                    id: typeId,
+                    tableColumns: filteredFields,
+                    requiredColumns: filteredRequiredColumns,
+                    columnHints: filteredColumnHints,
+                }, 'create'),
+                parameters: {
+                    type: 'object',
+                    properties: createProperties,
+                    required: createRequiredColumns,
+                    additionalProperties: false,
+                },
+            },
+        });
+        if (isEditableType && allowEditDelete) {
+            tools.push({
+                type: 'function',
+                function: {
+                    name: editToolName,
+                    description: buildDynamicToolDescription({
+                        ...spec,
+                        id: typeId,
+                        tableColumns: filteredFields,
+                        requiredColumns: filteredRequiredColumns,
+                        columnHints: filteredColumnHints,
+                    }, 'edit'),
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            node_id: { type: 'string' },
+                            title: { type: 'string' },
+                            set_fields: {
+                                type: 'object',
+                                properties: editFieldProperties,
+                                additionalProperties: false,
+                            },
+                            clear_fields: {
+                                type: 'array',
+                                items: {
+                                    type: 'string',
+                                    enum: filteredFields,
+                                },
+                            },
+                            reason: { type: 'string' },
+                        },
+                        required: ['node_id'],
+                        additionalProperties: false,
+                    },
+                },
+            });
+        }
+        if (isEditableType && allowEditDelete) {
+            tools.push({
+                type: 'function',
+                function: {
+                    name: deleteToolName,
+                    description: `Delete semantic node for type "${typeId}" by node_id.`,
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            node_id: { type: 'string' },
+                            reason: { type: 'string' },
+                        },
+                        required: ['node_id'],
+                        additionalProperties: false,
+                    },
+                },
+            });
+        }
+        specByToolName.set(createToolName, {
+            ...spec,
+            id: typeId,
+            tableColumns: filteredFields,
+            requiredColumns: filteredRequiredColumns,
+            columnHints: filteredColumnHints,
+            op: 'create',
+        });
+        if (isEditableType && allowEditDelete) {
+            specByToolName.set(editToolName, {
+                ...spec,
+                id: typeId,
+                tableColumns: filteredFields,
+                requiredColumns: filteredRequiredColumns,
+                columnHints: filteredColumnHints,
+                op: 'edit',
+            });
+        }
+        if (isEditableType && allowEditDelete) {
+            specByToolName.set(deleteToolName, {
+                ...spec,
+                id: typeId,
+                tableColumns: filteredFields,
+                requiredColumns: filteredRequiredColumns,
+                columnHints: filteredColumnHints,
+                op: 'delete',
+            });
+        }
+    }
+
+    const linkUpsertToolName = 'luker_rpg_extract_link_upsert';
+    tools.push({
+        type: 'function',
+        function: {
+            name: linkUpsertToolName,
+            description: `Upsert relation edges between semantic nodes. Use this when only links change. Only use canonical relation types: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}. Reuse existing canonical labels instead of inventing synonyms or bilingual variants.`,
+            parameters: {
+                type: 'object',
+                properties: {
+                    source_ref: { type: 'string', description: 'Optional. Use either source_ref or source_node_id.' },
+                    source_node_id: { type: 'string', description: 'Optional. Use either source_node_id or source_ref.' },
+                    links: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                target_ref: { type: 'string', description: 'Optional. Use either target_ref or target_node_id.' },
+                                target_node_id: { type: 'string', description: 'Optional. Use either target_node_id or target_ref.' },
+                                relation: { type: 'string', description: `Canonical relation type only. Allowed values: ${CANONICAL_EXTRACT_RELATION_TYPES_TEXT}.` },
+                                direction: { type: 'string', enum: ['outgoing', 'incoming', 'bidirectional'] },
+                            },
+                            additionalProperties: false,
+                        },
+                    },
+                    evidence_seqs: {
+                        type: 'array',
+                        items: { type: 'integer' },
+                    },
+                    evidence_seq_range: {
+                        type: 'object',
+                        properties: {
+                            from_seq: { type: 'integer' },
+                            to_seq: { type: 'integer' },
+                        },
+                        additionalProperties: false,
+                    },
+                },
+                required: ['links'],
+                additionalProperties: false,
+            },
+        },
+    });
+    specByToolName.set(linkUpsertToolName, {
+        id: 'link',
+        tableName: 'link',
+        tableColumns: [],
+        requiredColumns: [],
+        columnHints: {},
+        editable: true,
+        op: 'link_upsert',
+        toolName: linkUpsertToolName,
+    });
+
+    tools.push({
+        type: 'function',
+        function: {
+            name: 'luker_rpg_extract_done',
+            description: 'Signal extraction completion.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    note: { type: 'string' },
+                },
+                additionalProperties: false,
+            },
+        },
+    });
+
+    return { tools, specByToolName };
+}
+
+function normalizeExtractLinks(rawLinks) {
+    if (!Array.isArray(rawLinks)) {
+        return [];
+    }
+    const normalized = [];
+    for (const rawLink of rawLinks) {
+        const link = rawLink && typeof rawLink === 'object' ? rawLink : null;
+        if (!link) {
+            continue;
+        }
+        const targetRef = normalizeText(link?.target_ref || link?.targetRef || '');
+        const targetNodeId = normalizeText(link?.target_node_id || link?.targetNodeId || '');
+        if (!targetRef && !targetNodeId) {
+            continue;
+        }
+        const relation = normalizeText(link?.relation || 'related') || 'related';
+        const directionRaw = String(link?.direction || 'bidirectional').toLowerCase();
+        const direction = ['outgoing', 'incoming', 'bidirectional'].includes(directionRaw)
+            ? directionRaw
+            : 'bidirectional';
+        normalized.push({
+            targetRef,
+            targetNodeId,
+            relation,
+            direction,
+        });
+    }
+    return normalized;
+}
+
+function buildCreateFromDynamicToolCall(call, spec) {
+    if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
+        return { payload: null, missingRequired: [] };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const fields = {};
+    for (const column of Array.isArray(spec.tableColumns) ? spec.tableColumns : []) {
+        const key = String(column || '').trim();
+        if (!key) {
+            continue;
+        }
+        if (key === 'title') {
+            continue;
+        }
+        if (!Object.prototype.hasOwnProperty.call(args, key)) {
+            continue;
+        }
+        const rawValue = args[key];
+        if (rawValue === undefined || rawValue === null) {
+            continue;
+        }
+        fields[key] = rawValue;
+    }
+    const titleValue = args.title ?? '';
+    const missingRequired = [];
+    for (const requiredField of Array.isArray(spec.requiredColumns) ? spec.requiredColumns : []) {
+        const key = String(requiredField || '').trim();
+        if (!key) {
+            continue;
+        }
+        const value = key === 'title'
+            ? titleValue
+            : fields[key];
+        if (!normalizeText(toDisplayScalar(value))) {
+            missingRequired.push(key);
+        }
+    }
+    return {
+        payload: {
+            type: String(spec.id || '').trim().toLowerCase(),
+            title: normalizeText(titleValue),
+            fields,
+            ref: normalizeText(args.ref || ''),
+            links: normalizeExtractLinks(args.links),
+            noLinkReason: normalizeText(args.no_link_reason || ''),
+            hasLinksProp: Object.prototype.hasOwnProperty.call(args, 'links'),
+            evidence_seqs: Array.isArray(args.evidence_seqs) ? args.evidence_seqs : [],
+            evidence_seq_range: args.evidence_seq_range && typeof args.evidence_seq_range === 'object'
+                ? args.evidence_seq_range
+                : null,
+        },
+        missingRequired,
+    };
+}
+
+function buildLinkUpsertFromToolCall(call) {
+    if (!call || typeof call !== 'object') {
+        return { payload: null, invalidReason: 'Invalid call.' };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const sourceNodeId = normalizeText(args.source_node_id || '');
+    const sourceRef = normalizeText(args.source_ref || '');
+    if (!sourceNodeId && !sourceRef) {
+        return { payload: null, invalidReason: 'source_node_id or source_ref is required.' };
+    }
+    const links = normalizeExtractLinks(args.links);
+    if (links.length === 0) {
+        return { payload: null, invalidReason: 'links must contain at least one valid target.' };
+    }
+    return {
+        payload: {
+            op: 'link_upsert',
+            sourceNodeId,
+            sourceRef,
+            links,
+            evidence_seqs: Array.isArray(args.evidence_seqs) ? args.evidence_seqs : [],
+            evidence_seq_range: args.evidence_seq_range && typeof args.evidence_seq_range === 'object'
+                ? args.evidence_seq_range
+                : null,
+        },
+        invalidReason: '',
+    };
+}
+
+function buildEditFromDynamicToolCall(call, spec) {
+    if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
+        return { payload: null, invalidReason: 'Invalid call.' };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const nodeId = normalizeText(args.node_id || '');
+    if (!nodeId) {
+        return { payload: null, invalidReason: 'node_id is required.' };
+    }
+    const allowedFields = new Set(
+        (Array.isArray(spec.tableColumns) ? spec.tableColumns : [])
+            .map(column => String(column || '').trim())
+            .filter(key => key && key !== 'title'),
+    );
+    const rawSetFields = args.set_fields && typeof args.set_fields === 'object' && !Array.isArray(args.set_fields)
+        ? args.set_fields
+        : {};
+    const setFields = {};
+    for (const [key, value] of Object.entries(rawSetFields)) {
+        const normalizedKey = String(key || '').trim();
+        if (!normalizedKey || !allowedFields.has(normalizedKey)) {
+            continue;
+        }
+        if (value === undefined || value === null) {
+            continue;
+        }
+        setFields[normalizedKey] = value;
+    }
+    const clearFields = Array.isArray(args.clear_fields)
+        ? args.clear_fields
+            .map(key => String(key || '').trim())
+            .filter(key => key && allowedFields.has(key))
+        : [];
+    const titleValue = Object.prototype.hasOwnProperty.call(args, 'title')
+        ? normalizeText(args.title || '')
+        : '';
+    const hasTitlePatch = Object.prototype.hasOwnProperty.call(args, 'title');
+    if (!hasTitlePatch && Object.keys(setFields).length === 0 && clearFields.length === 0) {
+        return { payload: null, invalidReason: 'No effective edit fields provided.' };
+    }
+    return {
+        payload: {
+            op: 'edit',
+            type: String(spec.id || '').trim().toLowerCase(),
+            nodeId,
+            hasTitlePatch,
+            title: titleValue,
+            setFields,
+            clearFields,
+        },
+        invalidReason: '',
+    };
+}
+
+function buildDeleteFromDynamicToolCall(call, spec) {
+    if (!call || typeof call !== 'object' || !spec || typeof spec !== 'object') {
+        return { payload: null, invalidReason: 'Invalid call.' };
+    }
+    const args = call.args && typeof call.args === 'object' ? call.args : {};
+    const nodeId = normalizeText(args.node_id || '');
+    if (!nodeId) {
+        return { payload: null, invalidReason: 'node_id is required.' };
+    }
+    return {
+        payload: {
+            op: 'delete',
+            type: String(spec.id || '').trim().toLowerCase(),
+            nodeId,
+        },
+        invalidReason: '',
+    };
+}
+
+function getSchemaProjectionColumns(spec = null) {
+    return Array.isArray(spec?.tableColumns)
+        ? spec.tableColumns.map(column => String(column || '').trim()).filter(Boolean)
+        : [];
+}
+
+function buildProjectedRowValues(node, spec = null, { includeLegacyFallback = false } = {}) {
+    const rowValues = {};
+    const columns = getSchemaProjectionColumns(spec);
+    if (columns.length > 0) {
+        for (const column of columns) {
+            const value = toDisplayScalar(getTableCellValueFromNode(node, column));
+            if (!value) {
+                continue;
+            }
+            rowValues[column] = value;
+        }
+        return rowValues;
+    }
+    if (!includeLegacyFallback) {
+        return rowValues;
+    }
+    const structured = getStructuredNodeFields(node);
+    for (const [key, rawValue] of Object.entries(structured)) {
+        const normalizedKey = String(key || '').trim();
+        if (!normalizedKey || normalizedKey.toLowerCase() === 'summary') {
+            continue;
+        }
+        const value = toDisplayScalar(rawValue);
+        if (!value) {
+            continue;
+        }
+        rowValues[normalizedKey] = value;
+    }
+    return rowValues;
+}
+
+function buildProjectedKeyValues(node, spec = null) {
+    const keyColumns = Array.from(new Set([
+        ...(
+            Array.isArray(spec?.primaryKeyColumns)
+                ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+                : []
+        ),
+        ...(
+            Array.isArray(spec?.requiredColumns)
+                ? spec.requiredColumns.map(column => String(column || '').trim()).filter(Boolean)
+                : []
+        ),
+    ]));
+    const keyValues = {};
+    for (const column of keyColumns) {
+        const value = toDisplayScalar(getTableCellValueFromNode(node, column));
+        if (!value) {
+            continue;
+        }
+        keyValues[column] = value;
+    }
+    return keyValues;
+}
+
+function buildProjectedRowText(rowValues = {}) {
+    return Object.entries(rowValues)
+        .map(([key, value]) => `${String(key || '').trim()}=${toDisplayScalar(value)}`)
+        .filter(row => !row.endsWith('='))
+        .join('; ');
+}
+
+function buildLlmFriendlyNodeProjection(node, spec = null, options = {}) {
+    const includeLegacyFallback = Boolean(options?.includeLegacyFallback);
+    const rowValues = buildProjectedRowValues(node, spec, { includeLegacyFallback });
+    const keyValues = buildProjectedKeyValues(node, spec);
+    const seqTo = Number.isFinite(Number(node?.seqTo)) ? Number(node.seqTo) : null;
+    return {
+        id: String(node?.id || ''),
+        level: String(node?.level || ''),
+        type: String(node?.type || ''),
+        table_name: String(spec?.tableName || node?.type || '').trim(),
+        title: String(node?.title || ''),
+        summary: getNodeSummary(node),
+        key_values: keyValues,
+        row_values: rowValues,
+        row_text: buildProjectedRowText(rowValues),
+        to_seq: seqTo,
+    };
+}
+
+function buildGraphNodeHints(store, schema, limit = 0, options = {}) {
+    const numericLimit = Number(limit);
+    const safeLimit = Number.isFinite(numericLimit) && numericLimit > 0
+        ? Math.max(1, Math.min(5000, Math.floor(numericLimit)))
+        : Number.POSITIVE_INFINITY;
+    const maxSeq = Number.isFinite(Number(options?.maxSeq))
+        ? Math.max(0, Math.floor(Number(options.maxSeq)))
+        : null;
+    if (!store || typeof store !== 'object') {
+        return [];
+    }
+    const scope = String(options?.scope || 'visible').trim().toLowerCase();
+    const schemaMap = new Map(
+        (Array.isArray(schema) ? schema : [])
+            .map(item => [String(item?.id || '').trim().toLowerCase(), item]),
+    );
+    const allSemanticNodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+        .filter(node => !node?.archived)
+        .filter(node => !isRecallDiagnosticNode(node))
+        .filter((node) => {
+            if (maxSeq === null) {
+                return true;
+            }
+            const seq = Number(node?.seqTo ?? NaN);
+            return !Number.isFinite(seq) || seq <= maxSeq;
+        });
+    let projectedNodes = allSemanticNodes;
+    if (scope !== 'full') {
+        const typeIds = new Set(
+            allSemanticNodes
+                .map(node => String(node?.type || '').trim().toLowerCase())
+                .filter(Boolean),
+        );
+        const visibleNodes = [];
+        const visibleNodeIds = new Set();
+        for (const type of typeIds) {
+            const spec = schemaMap.get(type);
+            const compressionMode = String(spec?.compression?.mode || 'none').trim().toLowerCase();
+            const typeNodes = allSemanticNodes
+                .filter(node => String(node?.type || '').trim().toLowerCase() === type)
+                .sort(compareNodesByTimeline);
+            if (typeNodes.length === 0) {
+                continue;
+            }
+            const selectedTypeNodes = selectVisibleNodesForType(store, typeNodes, type, compressionMode);
+            for (const node of selectedTypeNodes) {
+                if (!node?.id || visibleNodeIds.has(node.id)) {
+                    continue;
+                }
+                visibleNodeIds.add(node.id);
+                visibleNodes.push(node);
+            }
+        }
+        projectedNodes = visibleNodes;
+    }
+    projectedNodes.sort(compareNodesByTimeline);
+    const rows = [];
+    for (const node of projectedNodes) {
+        if (rows.length >= safeLimit) {
+            break;
+        }
+        const type = String(node?.type || '').trim().toLowerCase();
+        const spec = schemaMap.get(type);
+        rows.push({
+            ...buildLlmFriendlyNodeProjection(node, spec),
+            type,
+            semantic_depth: Number(node?.semanticDepth ?? node?.metadata?.semantic_depth ?? 0),
+            parent_id: String(node?.parentId || ''),
+            child_count: Array.isArray(node?.childrenIds) ? node.childrenIds.length : 0,
+            editable: Boolean(spec?.editable),
+        });
+    }
+    return rows;
+}
+
+function buildJsonXmlSection(tag, value) {
+    const name = String(tag || '').trim();
+    const safeTag = name || 'data';
+    const jsonText = JSON.stringify(value ?? {});
+    return [
+        `  <${safeTag}>`,
+        `    ${jsonText}`,
+        `  </${safeTag}>`,
+    ].join('\n');
+}
+
+function buildRawXmlTag(tag, value, indent = '    ') {
+    const safeTag = String(tag || '').trim() || 'value';
+    const body = String(value ?? '');
+    return [
+        `${indent}<${safeTag}>`,
+        `${indent}  ${body}`,
+        `${indent}</${safeTag}>`,
+    ].join('\n');
+}
+
+function buildExtractInputXml(requiredTypes, graphData, messages) {
+    const safeRequiredTypes = Array.isArray(requiredTypes)
+        ? requiredTypes.map(item => normalizeText(item).toLowerCase()).filter(Boolean)
+        : [];
+    const safeGraphData = graphData && typeof graphData === 'object' ? graphData : { initialized: false, nodes: [] };
+    const safeMessages = Array.isArray(messages) ? messages : [];
+
+    const requiredTypeXml = safeRequiredTypes.length > 0
+        ? safeRequiredTypes.map(type => `    <type>${type}</type>`).join('\n')
+        : '    <type>(none)</type>';
+
+    const messageXml = safeMessages.map(message => {
+        const seq = String(Number(message?.seq || 0));
+        const roleRaw = String(message?.role || '').trim().toLowerCase() === 'assistant' ? 'Assistant' : 'User';
+        const nameRaw = String(message?.name || '');
+        const speaker = nameRaw ? `${roleRaw}: ${nameRaw}` : roleRaw;
+        return [
+            '    <message>',
+            `      <seq>${seq}</seq>`,
+            `      <role>${roleRaw}</role>`,
+            buildRawXmlTag('name', nameRaw, '      '),
+            buildRawXmlTag('speaker', speaker, '      '),
+            buildRawXmlTag('text', String(message?.text || ''), '      '),
+            '    </message>',
+        ].join('\n');
+    }).join('\n');
+
+    return [
+        '<extract_input>',
+        '  <input_guide>Below are the extraction inputs. graph_data is the current semantic memory graph state for extraction.</input_guide>',
+        '  <input_guide>graph_data is a full schema-aware projection of the current semantic graph for extraction.</input_guide>',
+        '  <input_guide>Each graph_data.nodes row contains key_values (identity keys), row_values (schema columns), and row_text (compact human-readable row rendering).</input_guide>',
+        '  <input_guide>graph_data.edges contains the currently projected semantic relations between nodes.</input_guide>',
+        '  <input_guide>If graph_data.initialized=false, treat graph as uninitialized and prefer create operations over edit/delete.</input_guide>',
+        '  <input_guide>required_types are hard-required types for this batch.</input_guide>',
+        '  <input_guide>dialogue_batch is the current source dialogue to extract from.</input_guide>',
+        buildJsonXmlSection('graph_data', safeGraphData),
+        '  <required_types>',
+        requiredTypeXml,
+        '  </required_types>',
+        '  <dialogue_batch>',
+        messageXml,
+        '  </dialogue_batch>',
+        '</extract_input>',
+    ].join('\n');
+}
+
+function buildRecallRouteInputXml({
+    recallQueryContext = {},
+    candidateNodes = [],
+    alwaysInjectNodeIds = [],
+    schemaOverview = [],
+    selectionConstraints = {},
+} = {}) {
+    return [
+        '<recall_route_input>',
+        '  <input_guide>Plan recall route from the data blocks below. Use node ids from candidate_nodes only.</input_guide>',
+        '  <input_guide>always_inject_node_ids are injected separately; never include them in selected_node_ids.</input_guide>',
+        buildJsonXmlSection('recall_query_context', recallQueryContext),
+        buildJsonXmlSection('candidate_nodes', candidateNodes),
+        buildJsonXmlSection('always_inject_node_ids', alwaysInjectNodeIds),
+        buildJsonXmlSection('schema_overview', schemaOverview),
+        buildJsonXmlSection('selection_constraints', selectionConstraints),
+        '</recall_route_input>',
+    ].join('\n');
+}
+
+function buildRecallFinalizeInputXml({
+    recallQueryContext = {},
+    candidateNodes = [],
+    alwaysInjectNodeIds = [],
+    routeResult = {},
+    selectionConstraints = {},
+} = {}) {
+    return [
+        '<recall_finalize_input>',
+        '  <input_guide>Finalize selected node ids for injection from candidate_nodes.</input_guide>',
+        '  <input_guide>always_inject_node_ids are injected separately; never include them in selected_node_ids.</input_guide>',
+        buildJsonXmlSection('recall_query_context', recallQueryContext),
+        buildJsonXmlSection('candidate_nodes', candidateNodes),
+        buildJsonXmlSection('always_inject_node_ids', alwaysInjectNodeIds),
+        buildJsonXmlSection('route_result', routeResult),
+        buildJsonXmlSection('selection_constraints', selectionConstraints),
+        '</recall_finalize_input>',
+    ].join('\n');
+}
+
+async function extractNodesWithLLM(context, store, settings, schema, messageBatch, options = {}) {
+    const messages = (Array.isArray(messageBatch) ? messageBatch : [])
+        .map(item => ({
+            seq: Number(item?.seq || 0),
+            role: item?.is_user ? 'user' : 'assistant',
+            name: String(item?.name || ''),
+            text: String(item?.mes || ''),
+        }))
+        .filter(item => normalizeText(item.text));
+    if (messages.length === 0) {
+        return [];
+    }
+
+    const resolvedApiPresetName = String(settings.extractApiPresetName || '').trim();
+    const profileResolution = resolveChatCompletionRequestProfile({
+        profileName: resolvedApiPresetName,
+        defaultApi: String(context?.mainApi || 'openai').trim() || 'openai',
+        defaultSource: String(context?.chatCompletionSettings?.chat_completion_source || ''),
+    });
+    const requestApi = profileResolution.requestApi;
+    const promptPresetName = String(settings.extractPresetName || '').trim();
+    const forceUpdateTypes = new Set(
+        schema
+            .filter(item => item && typeof item === 'object' && item.forceUpdate)
+            .map(item => String(item.id || '').trim().toLowerCase())
+            .filter(Boolean),
+    );
+    const editableTypeSet = new Set(
+        schema
+            .filter(item => item && typeof item === 'object' && item.editable)
+            .map(item => String(item.id || '').trim().toLowerCase())
+            .filter(Boolean),
+    );
+    const extractionMaxSeq = Number.isFinite(Number(options?.maxSeq))
+        ? Math.max(0, Math.floor(Number(options.maxSeq)))
+        : null;
+    const rebuildCreateOnly = Boolean(options?.rebuildCreateOnly);
+    const graphNodes = rebuildCreateOnly
+        ? []
+        : buildGraphNodeHints(store, schema, 0, { maxSeq: extractionMaxSeq, scope: 'full' });
+    const graphNodeIds = new Set(graphNodes.map(node => String(node?.id || '')).filter(Boolean));
+    const graphEdges = rebuildCreateOnly
+        ? []
+        : buildProjectedEdges(store, {
+            visibleNodeIds: graphNodeIds,
+            excludeInternal: false,
+        }).map(edge => ({
+            from: String(edge?.from || ''),
+            to: String(edge?.to || ''),
+            type: normalizeText(edge?.type || 'related') || 'related',
+            weight: Math.max(1, Number(edge?.weight || 1)),
+        }));
+    const semanticNodeTotal = rebuildCreateOnly
+        ? 0
+        : listNodesByLevel(store, LEVEL.SEMANTIC)
+            .filter(node => !node?.archived)
+            .filter(node => !isRecallDiagnosticNode(node))
+            .filter((node) => {
+                if (extractionMaxSeq === null) {
+                    return true;
+                }
+                const seq = Number(node?.seqTo ?? NaN);
+                return !Number.isFinite(seq) || seq <= extractionMaxSeq;
+            })
+            .length;
+    const graphDataPayload = rebuildCreateOnly
+        ? {
+            initialized: false,
+            editable_type_ids: [],
+            projection_policy: {
+                hierarchical_types: 'full',
+                non_hierarchical_types: 'full',
+            },
+            graph_scope: 'full',
+            semantic_node_total: 0,
+            visible_node_count: 0,
+            nodes: [],
+            edges: [],
+        }
+        : {
+            initialized: graphNodes.length > 0,
+            editable_type_ids: Array.from(editableTypeSet.values()),
+            projection_policy: {
+                hierarchical_types: 'full',
+                non_hierarchical_types: 'full',
+            },
+            graph_scope: 'full',
+            semantic_node_total: semanticNodeTotal,
+            visible_node_count: graphNodes.length,
+            nodes: graphNodes,
+            edges: graphEdges,
+        };
+    const promptMessages = await buildPresetAwareLLMMessages(context, settings, {
+        api: requestApi,
+        systemPrompt: String(settings.extractSystemPrompt || '').trim() || DEFAULT_EXTRACT_SYSTEM_PROMPT,
+        userPrompt: buildExtractInputXml(
+            Array.from(forceUpdateTypes),
+            graphDataPayload,
+            messages,
+        ),
+        includeCharacterCard: true,
+        promptPresetName,
+        worldInfoMessages: messages.map(item => ({
+            role: item.role,
+            content: item.text,
+            name: item.name,
+        })),
+        worldInfoType: 'quiet',
+    });
+    const { tools, specByToolName } = buildDynamicExtractTools(schema, {
+        allowEditDelete: !rebuildCreateOnly,
+    });
+    const allowedNames = new Set(['luker_rpg_extract_done', ...specByToolName.keys()]);
+    const apiSettingsOverride = profileResolution.apiSettingsOverride;
+    const semanticRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const editableNodes = new Map(
+        listNodesByLevel(store, LEVEL.SEMANTIC)
+            .filter((node) => {
+                if (!node || node.archived || !node.id) {
+                    return false;
+                }
+                if (extractionMaxSeq !== null) {
+                    const seq = Number(node?.seqTo ?? NaN);
+                    if (Number.isFinite(seq) && seq > extractionMaxSeq) {
+                        return false;
+                    }
+                }
+                const type = String(node?.type || '').trim().toLowerCase();
+                return editableTypeSet.has(type);
+            })
+            .map(node => [String(node.id), node]),
+    );
+    let validatedOps = [];
+    let retryReason = '';
+    let lastRetryableError = null;
+    for (let attempt = 0; attempt <= semanticRetries; attempt++) {
+        const reminderText = attempt > 0
+            ? `Previous response was incomplete. Return COMPLETE extraction tool calls in one response: at least one type tool call and exactly one final luker_rpg_extract_done as the last call.${retryReason ? ` Fix: ${retryReason}` : ''}`
+            : '';
+        const requestPromptMessages = reminderText
+            ? mergeUserAddendumIntoPromptMessages(promptMessages, reminderText, 'retry_requirements')
+            : promptMessages;
+        let calls = [];
+        try {
+            calls = await requestToolCallsWithRetry(settings, requestPromptMessages, {
+                tools,
+                allowedNames,
+                llmPresetName: promptPresetName,
+                apiSettingsOverride: apiSettingsOverride && typeof apiSettingsOverride === 'object' ? apiSettingsOverride : null,
+                retriesOverride: 0,
+                abortSignal: options?.abortSignal || null,
+            });
+        } catch (error) {
+            if (isAbortError(error, options?.abortSignal || null)) {
+                throw error;
+            }
+            if (attempt >= semanticRetries) {
+                throw error;
+            }
+            lastRetryableError = error;
+            retryReason = `request_error: ${String(error?.message || error)}`;
+            console.warn(`[${MODULE_NAME}] Extract request failed. Retrying semantic pass (${attempt + 1}/${semanticRetries})...`, error);
+            continue;
+        }
+        if (!Array.isArray(calls) || calls.length < 2) {
+            retryReason = 'Tool calls are missing or incomplete.';
+            continue;
+        }
+            const names = calls.map(call => String(call?.name || '').trim()).filter(Boolean);
+            const doneCount = names.filter(name => name === 'luker_rpg_extract_done').length;
+            if (doneCount < 1) {
+                continue;
+            }
+            if (names[names.length - 1] !== 'luker_rpg_extract_done') {
+                retryReason = 'luker_rpg_extract_done must be the last call.';
+                continue;
+            }
+            const typeCalls = calls.filter(call => specByToolName.has(String(call?.name || '')));
+            if (typeCalls.length < 1) {
+                retryReason = 'No semantic type tool call found.';
+                continue;
+            }
+            const ops = [];
+            const calledTypes = new Set();
+            let invalid = false;
+            for (const call of typeCalls) {
+                const toolName = String(call?.name || '');
+                const specEntry = specByToolName.get(toolName);
+                if (!specEntry) {
+                    continue;
+                }
+                const spec = { ...specEntry };
+                if (spec.op === 'delete') {
+                    const deletion = buildDeleteFromDynamicToolCall(call, spec);
+                    if (!deletion.payload) {
+                        invalid = true;
+                        retryReason = `Delete call invalid for "${spec.id}": ${deletion.invalidReason}`;
+                        break;
+                    }
+                    const mappedNodeId = String(deletion.payload.nodeId || '').trim();
+                    const targetNode = editableNodes.get(mappedNodeId);
+                    if (!targetNode) {
+                        invalid = true;
+                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from graph_data.nodes (editable nodes only).`;
+                        break;
+                    }
+                    if (String(targetNode?.type || '').trim().toLowerCase() !== String(spec.id || '').trim().toLowerCase()) {
+                        invalid = true;
+                        retryReason = `node_id "${mappedNodeId}" type mismatch: expected "${spec.id}".`;
+                        break;
+                    }
+                    ops.push(deletion.payload);
+                    continue;
+                }
+                if (spec.op === 'link_upsert') {
+                    const linkOp = buildLinkUpsertFromToolCall(call);
+                    if (!linkOp.payload) {
+                        invalid = true;
+                        retryReason = `Link call invalid: ${linkOp.invalidReason}`;
+                        break;
+                    }
+                    ops.push(linkOp.payload);
+                    continue;
+                }
+                if (spec.op === 'edit') {
+                    const editOp = buildEditFromDynamicToolCall(call, spec);
+                    if (!editOp.payload) {
+                        invalid = true;
+                        retryReason = `Edit call invalid for "${spec.id}": ${editOp.invalidReason}`;
+                        break;
+                    }
+                    const mappedNodeId = String(editOp.payload.nodeId || '').trim();
+                    const targetNode = editableNodes.get(mappedNodeId);
+                    if (!targetNode) {
+                        invalid = true;
+                        retryReason = `Unknown node_id "${mappedNodeId}". Use only ids from graph_data.nodes (editable nodes only).`;
+                        break;
+                    }
+                    if (String(targetNode?.type || '').trim().toLowerCase() !== String(spec.id || '').trim().toLowerCase()) {
+                        invalid = true;
+                        retryReason = `node_id "${mappedNodeId}" type mismatch: expected "${spec.id}".`;
+                        break;
+                    }
+                    calledTypes.add(String(spec.id || '').trim().toLowerCase());
+                    ops.push(editOp.payload);
+                    continue;
+                }
+                const mapped = buildCreateFromDynamicToolCall(call, spec);
+                if (mapped.missingRequired.length > 0) {
+                    invalid = true;
+                    retryReason = `Type "${spec.id}" missing required columns: ${mapped.missingRequired.join(', ')}.`;
+                    break;
+                }
+                const safeTypeId = String(spec.id || '').trim().toLowerCase();
+                if (safeTypeId === 'event') {
+                    if (!mapped.payload?.hasLinksProp) {
+                        invalid = true;
+                        retryReason = 'Event create must include links. Use links: [] with no_link_reason if no relation is grounded.';
+                        break;
+                    }
+                    const eventLinkCount = Array.isArray(mapped.payload?.links) ? mapped.payload.links.length : 0;
+                    const eventNoLinkReason = normalizeText(mapped.payload?.noLinkReason || '');
+                    if (eventLinkCount === 0 && !eventNoLinkReason) {
+                        invalid = true;
+                        retryReason = 'Event create has empty links. Provide no_link_reason when no links are grounded.';
+                        break;
+                    }
+                }
+                if (mapped.payload) {
+                    calledTypes.add(safeTypeId);
+                    ops.push({
+                        op: 'create',
+                        ...mapped.payload,
+                    });
+                }
+            }
+            if (invalid) {
+                continue;
+            }
+            const missingForceTypes = [...forceUpdateTypes].filter(typeId => !calledTypes.has(typeId));
+            if (missingForceTypes.length > 0) {
+                retryReason = `Missing force-update type tool calls: ${missingForceTypes.join(', ')}.`;
+                continue;
+            }
+            if (ops.length < 1) {
+                retryReason = 'No valid extraction operations found.';
+                continue;
+            }
+        validatedOps = ops;
+        break;
+    }
+    if (validatedOps.length > 0) {
+        return validatedOps;
+    }
+    const failureReason = normalizeText(retryReason || String(lastRetryableError?.message || '')) || 'No valid extraction tool calls after retries.';
+    throw new Error(failureReason);
+}
+
+function upsertSemanticNode(store, item, settings = null, options = {}) {
+    const type = String(item.type || 'semantic').toLowerCase();
+    let title = normalizeText(item.title || '');
+    const explicitNodeId = normalizeText(item?.nodeId || item?.node_id || '');
+    const maxSeqLimit = Number.isFinite(Number(options?.maxSeq))
+        ? Math.max(0, Math.floor(Number(options.maxSeq)))
+        : null;
+    const isNodeVisibleAtSeq = (node) => {
+        if (!node || node.archived || node.level !== LEVEL.SEMANTIC) {
+            return false;
+        }
+        if (maxSeqLimit === null) {
+            return true;
+        }
+        const nodeSeq = Number(node?.seqTo ?? NaN);
+        if (!Number.isFinite(nodeSeq)) {
+            return true;
+        }
+        return nodeSeq <= maxSeqLimit;
+    };
+    const parseEventSummaryIndex = (value) => {
+        const text = normalizeText(value || '');
+        if (!text) {
+            return null;
+        }
+        const match = text.match(/^(?:summary|摘要)\s*#?\s*(\d+)$/i);
+        if (!match) {
+            return null;
+        }
+        const num = Number(match[1]);
+        return Number.isFinite(num) && num > 0 ? Math.floor(num) : null;
+    };
+    const nextEventSummaryTitle = () => {
+        let maxIndex = 0;
+        for (const node of Object.values(store.nodes || {})) {
+            if (!node || node.archived || node.level !== LEVEL.SEMANTIC) {
+                continue;
+            }
+            if (String(node.type || '').toLowerCase() !== 'event') {
+                continue;
+            }
+            const index = parseEventSummaryIndex(node.title);
+            if (index && index > maxIndex) {
+                maxIndex = index;
+            }
+        }
+        return `Summary ${maxIndex + 1}`;
+    };
+    const seqTo = Number.isFinite(Number(item.seqTo))
+        ? Math.max(0, Math.floor(Number(item.seqTo)))
+        : Math.max(0, Number(store.seqCounter || 0));
+    const incomingFields = item?.fields && typeof item.fields === 'object' && !Array.isArray(item.fields)
+        ? { ...item.fields }
+        : {};
+    const itemSummary = normalizeText(
+        incomingFields.summary
+        ?? '',
+    );
+    const latestOnlyConfig = settings ? getSemanticLatestOnlyConfig(settings, type) : { enabled: false, keyFields: [] };
+    const latestOnlyKeyFields = Array.isArray(latestOnlyConfig.keyFields)
+        ? latestOnlyConfig.keyFields.map(column => String(column || '').trim()).filter(Boolean)
+        : [];
+    const tokenizePrimaryKeyField = (fieldsObject, key) => {
+        const fields = fieldsObject && typeof fieldsObject === 'object' && !Array.isArray(fieldsObject)
+            ? fieldsObject
+            : {};
+        const raw = toDisplayScalar(fields[key]);
+        if (!raw) {
+            return [];
+        }
+        return String(raw)
+            .split(/[,，;；|]/g)
+            .map(part => normalizeText(part).toLowerCase())
+            .filter(Boolean);
+    };
+    const computeLatestOnlyMatchScore = (candidateFields) => {
+        if (latestOnlyKeyFields.length === 0) {
+            return 0;
+        }
+        let score = 0;
+        for (const key of latestOnlyKeyFields) {
+            const incomingTokens = tokenizePrimaryKeyField(incomingFields, key);
+            const candidateTokens = tokenizePrimaryKeyField(candidateFields, key);
+            if (incomingTokens.length === 0 || candidateTokens.length === 0) {
+                continue;
+            }
+            const candidateSet = new Set(candidateTokens);
+            if (incomingTokens.some(token => candidateSet.has(token))) {
+                score += 1;
+            }
+        }
+        return score;
+    };
+
+    let target = null;
+    if (explicitNodeId) {
+        const explicitTarget = store?.nodes?.[explicitNodeId];
+        if (
+            isNodeVisibleAtSeq(explicitTarget)
+            && String(explicitTarget.type || '').toLowerCase() === type
+        ) {
+            target = explicitTarget;
+        }
+    }
+
+    if (type === 'event' && !target) {
+        const generatedTitle = nextEventSummaryTitle();
+        return createNode(store, {
+            type,
+            level: LEVEL.SEMANTIC,
+            title: generatedTitle,
+            fields: incomingFields,
+            semanticDepth: 0,
+            semanticRollup: false,
+            seqTo,
+        });
+    }
+
+    if (!title) {
+        const derivedTitle = normalizeText(
+            incomingFields?.name
+            || incomingFields?.id
+            || incomingFields?.key
+            || incomingFields?.label
+            || '',
+        );
+        title = derivedTitle || `${type}_${Math.max(1, seqTo || Number(store.seqCounter || 0) || 1)}`;
+    }
+    if (!target && latestOnlyConfig.enabled) {
+        const candidates = Object.values(store.nodes)
+            .filter(node => isNodeVisibleAtSeq(node))
+            .filter(node => String(node.type || '').toLowerCase() === type)
+            .map(node => ({ node, score: computeLatestOnlyMatchScore(node?.fields) }))
+            .filter(entry => entry.score > 0)
+            .sort((a, b) => {
+                if (a.score !== b.score) {
+                    return b.score - a.score;
+                }
+                const aSeq = Number(a?.node?.seqTo ?? -1);
+                const bSeq = Number(b?.node?.seqTo ?? -1);
+                if (aSeq !== bSeq) {
+                    return bSeq - aSeq;
+                }
+                return String(a?.node?.id || '').localeCompare(String(b?.node?.id || ''));
+            });
+        target = candidates[0]?.node || null;
+        for (let i = 1; i < candidates.length; i++) {
+            archiveNode(store, candidates[i]?.node?.id);
+        }
+    } else if (!target) {
+        const normalizedKey = `${type}::${title.toLowerCase()}`;
+        target = Object.values(store.nodes).find(node => isNodeVisibleAtSeq(node) && `${node.type}::${node.title.toLowerCase()}` === normalizedKey);
+    }
+
+    if (!target) {
+        target = createNode(store, {
+            type,
+            level: LEVEL.SEMANTIC,
+            title,
+            fields: incomingFields,
+            semanticDepth: 0,
+            semanticRollup: false,
+            seqTo,
+        });
+    } else {
+        setNodeSummary(target, itemSummary || getNodeSummary(target));
+        if (!target.fields || typeof target.fields !== 'object' || Array.isArray(target.fields)) {
+            target.fields = {};
+        }
+        if (!Number.isFinite(Number(target.semanticDepth))) {
+            target.semanticDepth = 0;
+        }
+        if (target.semanticRollup === undefined) {
+            target.semanticRollup = false;
+        }
+        if (incomingFields && typeof incomingFields === 'object') {
+            Object.assign(target.fields, incomingFields);
+        }
+        target.seqTo = Math.max(Number(target.seqTo || 0), seqTo);
+    }
+
+    return target;
+}
+
+function resolveExtractNodeId(store, {
+    nodeId = '',
+    ref = '',
+} = {}, options = {}) {
+    const normalizedNodeId = normalizeText(nodeId || '');
+    if (normalizedNodeId) {
+        const directNode = store?.nodes?.[normalizedNodeId];
+        if (directNode && !directNode.archived && directNode.level === LEVEL.SEMANTIC) {
+            return normalizedNodeId;
+        }
+    }
+    const normalizedRef = normalizeText(ref || '');
+    if (!normalizedRef) {
+        return '';
+    }
+    const refIndex = options?.refIndex instanceof Map ? options.refIndex : null;
+    if (!refIndex) {
+        return '';
+    }
+    const refNodeId = normalizeText(refIndex.get(normalizedRef) || '');
+    if (!refNodeId) {
+        return '';
+    }
+    const mappedNode = store?.nodes?.[refNodeId];
+    if (!mappedNode || mappedNode.archived || mappedNode.level !== LEVEL.SEMANTIC) {
+        return '';
+    }
+    return refNodeId;
+}
+
+function applyExtractedLinks(store, sourceNode, rawLinks, defaultSeqRange = { seqTo: 0 }, options = {}) {
+    if (!sourceNode || !Array.isArray(rawLinks) || rawLinks.length === 0) {
+        return;
+    }
+
+    for (const link of rawLinks) {
+        const targetNodeId = resolveExtractNodeId(store, {
+            nodeId: link?.targetNodeId || link?.target_node_id || '',
+            ref: link?.targetRef || link?.target_ref || '',
+        }, options);
+        if (!targetNodeId) {
+            continue;
+        }
+        const targetNode = store?.nodes?.[targetNodeId];
+        if (!targetNode || targetNode.archived || targetNode.level !== LEVEL.SEMANTIC) {
+            continue;
+        }
+
+        const relation = normalizeText(link?.relation || 'related') || 'related';
+        const direction = String(link?.direction || 'bidirectional').toLowerCase();
+
+        if (direction === 'incoming') {
+            addEdge(store, targetNode.id, sourceNode.id, relation);
+            continue;
+        }
+        if (direction === 'outgoing') {
+            addEdge(store, sourceNode.id, targetNode.id, relation);
+            continue;
+        }
+
+        addEdge(store, sourceNode.id, targetNode.id, relation);
+        addEdge(store, targetNode.id, sourceNode.id, relation);
+    }
+}
+
+function getSemanticNodesForType(store, type) {
+    const targetType = String(type || '').toLowerCase();
+    return listNodesByLevel(store, LEVEL.SEMANTIC)
+        .filter(node => !node.archived)
+        .filter(node => String(node.type || '').toLowerCase() === targetType);
+}
+
+function createCompressionStats() {
+    return {
+        totalRounds: 0,
+        byType: {},
+    };
+}
+
+function recordCompressionRound(stats, type, rounds = 1) {
+    if (!stats || typeof stats !== 'object') {
+        return;
+    }
+    const safeType = String(type || '').trim().toLowerCase();
+    const safeRounds = Math.max(0, Math.floor(Number(rounds) || 0));
+    if (!safeType || safeRounds <= 0) {
+        return;
+    }
+    stats.totalRounds = Math.max(0, Math.floor(Number(stats.totalRounds || 0))) + safeRounds;
+    if (!stats.byType || typeof stats.byType !== 'object') {
+        stats.byType = {};
+    }
+    stats.byType[safeType] = Math.max(0, Math.floor(Number(stats.byType[safeType] || 0))) + safeRounds;
+}
+
+function getCompressionRoundsByType(stats, type) {
+    const safeType = String(type || '').trim().toLowerCase();
+    if (!safeType || !stats || typeof stats !== 'object' || !stats.byType || typeof stats.byType !== 'object') {
+        return 0;
+    }
+    return Math.max(0, Math.floor(Number(stats.byType[safeType] || 0)));
+}
+
+function collectSemanticRootsByDepth(store, type, depth, options = {}) {
+    const maxSeq = Number.isFinite(Number(options?.maxSeq)) ? Math.max(0, Math.floor(Number(options.maxSeq))) : null;
+    return getSemanticNodesForType(store, type)
+        .filter(node => Number(node?.semanticDepth ?? 0) === Number(depth))
+        .filter(node => !String(node.parentId || '').trim())
+        .filter(node => maxSeq === null || Number(node?.seqTo ?? 0) <= maxSeq)
+        .sort((a, b) => {
+            const aTo = Number(a.seqTo ?? 0);
+            const bTo = Number(b.seqTo ?? 0);
+            if (aTo !== bTo) {
+                return aTo - bTo;
+            }
+            return String(a?.id || '').localeCompare(String(b?.id || ''));
+        });
+}
+
+function normalizeCompressionRuleToken(raw) {
+    return String(raw || '')
+        .trim()
+        .replace(/^["'`]|["'`]$/g, '')
+        .trim()
+        .toLowerCase();
+}
+
+function parseCompressionRuleValues(rawValues) {
+    const source = String(rawValues || '').trim().replace(/^[\[(\{]\s*|\s*[\])\}]$/g, '');
+    return source
+        .split(/[|,]/g)
+        .map(item => normalizeCompressionRuleToken(item))
+        .filter(Boolean);
+}
+
+function parseCompressionRuleClause(rawClause) {
+    const text = String(rawClause || '').trim();
+    if (!text) {
+        return null;
+    }
+    const existsMatch = text.match(/^(?:has|exists)\s*\(\s*([a-zA-Z0-9_]+)\s*\)$/i);
+    if (existsMatch) {
+        return { field: String(existsMatch[1]).trim().toLowerCase(), op: 'exists', values: [] };
+    }
+    const emptyMatch = text.match(/^empty\s*\(\s*([a-zA-Z0-9_]+)\s*\)$/i);
+    if (emptyMatch) {
+        return { field: String(emptyMatch[1]).trim().toLowerCase(), op: 'empty', values: [] };
+    }
+    const compareMatch = text.match(/^([a-zA-Z0-9_]+)\s*(=|==|!=|in|not\s+in)\s*(.+)$/i);
+    if (!compareMatch) {
+        return { raw: text, invalid: true };
+    }
+    const field = String(compareMatch[1] || '').trim().toLowerCase();
+    const opRaw = String(compareMatch[2] || '').trim().toLowerCase();
+    const values = parseCompressionRuleValues(compareMatch[3]);
+    if (!field || values.length === 0) {
+        return { raw: text, invalid: true };
+    }
+    const op = opRaw === '=' || opRaw === '==' ? 'eq' : opRaw === '!=' ? 'neq' : opRaw.includes('not') ? 'not_in' : 'in';
+    return { field, op, values };
+}
+
+function getCompressionRuleFieldValue(node, field) {
+    const key = String(field || '').trim().toLowerCase();
+    if (!key) {
+        return '';
+    }
+    if (key === 'semantic_rollup' || key === 'rollup' || key === 'is_rollup') {
+        return String(Boolean(node?.semanticRollup)).toLowerCase();
+    }
+    if (key === 'semantic_depth' || key === 'depth') {
+        return String(Number.isFinite(Number(node?.semanticDepth)) ? Number(node.semanticDepth) : 0);
+    }
+    if (key === 'seq' || key === 'seq_to') {
+        return String(Number.isFinite(Number(node?.seqTo)) ? Number(node.seqTo) : '');
+    }
+    return normalizeCompressionRuleToken(getTableCellValueFromNode(node, key));
+}
+
+function buildCompressionRuleMatcher(ruleText) {
+    const text = String(ruleText || '').trim();
+    if (!text) {
+        return { enabled: false, valid: true, test: () => true, invalid: [] };
+    }
+    const rawClauses = text
+        .split(/\n|&&/g)
+        .map(clause => String(clause || '').trim())
+        .filter(Boolean);
+    if (rawClauses.length === 0) {
+        return { enabled: false, valid: true, test: () => true, invalid: [] };
+    }
+    const clauses = [];
+    const invalid = [];
+    for (const rawClause of rawClauses) {
+        const parsed = parseCompressionRuleClause(rawClause);
+        if (!parsed) {
+            continue;
+        }
+        if (parsed.invalid) {
+            invalid.push(String(parsed.raw || rawClause));
+            continue;
+        }
+        clauses.push(parsed);
+    }
+    if (invalid.length > 0 || clauses.length === 0) {
+        return { enabled: true, valid: false, test: () => false, invalid };
+    }
+    return {
+        enabled: true,
+        valid: true,
+        invalid: [],
+        test: (node) => {
+            for (const clause of clauses) {
+                const actual = getCompressionRuleFieldValue(node, clause.field);
+                if (clause.op === 'exists') {
+                    if (!actual) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'empty') {
+                    if (actual) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'eq') {
+                    if (actual !== clause.values[0]) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'neq') {
+                    if (actual === clause.values[0]) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'in') {
+                    if (!clause.values.includes(actual)) {
+                        return false;
+                    }
+                    continue;
+                }
+                if (clause.op === 'not_in') {
+                    if (clause.values.includes(actual)) {
+                        return false;
+                    }
+                    continue;
+                }
+            }
+            return true;
+        },
+    };
+}
+
+function getNextSemanticRollupOrdinal(store, type, depth) {
+    const targetDepth = Math.max(1, Math.floor(Number(depth || 0)));
+    const nodes = getSemanticNodesForType(store, type)
+        .filter(node => !node.archived)
+        .filter(node => Number(node?.semanticDepth ?? 0) === targetDepth);
+    let maxOrdinal = 0;
+    const suffixPattern = /#(\d+)\s*$/;
+    for (const node of nodes) {
+        const title = String(node?.title || '');
+        const match = title.match(suffixPattern);
+        if (!match) {
+            continue;
+        }
+        const value = Number(match[1]);
+        if (Number.isFinite(value) && value > maxOrdinal) {
+            maxOrdinal = value;
+        }
+    }
+    if (maxOrdinal > 0) {
+        return maxOrdinal + 1;
+    }
+    return nodes.length + 1;
+}
+
+async function compressSemanticHierarchical(context, store, settings, spec, type, config, options = {}) {
+    let changed = false;
+    let guard = 0;
+    let compressedRounds = 0;
+    const forceMode = Boolean(options?.force);
+    const maxRoundsPerType = Number.isFinite(Number(options?.maxRoundsPerType))
+        ? Math.max(1, Math.floor(Number(options.maxRoundsPerType)))
+        : Number.POSITIVE_INFINITY;
+    const threshold = forceMode
+        ? 2
+        : Math.max(2, Number(config.threshold || 2));
+    const fanIn = Math.max(2, Number(config.fanIn || 2));
+    const ruleMatcher = buildCompressionRuleMatcher(config.rule);
+    if (ruleMatcher.enabled && !ruleMatcher.valid) {
+        const invalidPart = ruleMatcher.invalid.length > 0 ? ruleMatcher.invalid.join(' | ') : String(config.rule || '');
+        console.warn(`[${MODULE_NAME}]`, i18nFormat('Invalid compression rule for type ${0}: ${1}', String(type || 'unknown'), invalidPart));
+        return false;
+    }
+
+    for (let depth = 0; depth < Number(config.maxDepth || 1); depth++) {
+        while (guard < 120 && compressedRounds < maxRoundsPerType) {
+            if (isAbortSignalLike(options?.abortSignal) && options.abortSignal.aborted) {
+                throw new DOMException('Memory compression aborted.', 'AbortError');
+            }
+            guard += 1;
+            let candidates = collectSemanticRootsByDepth(store, type, depth, options);
+            if (ruleMatcher.enabled) {
+                candidates = candidates.filter(node => ruleMatcher.test(node));
+            }
+            if (!forceMode && depth === 0 && Number(config.keepRecentLeaves || 0) > 0 && candidates.length > Number(config.keepRecentLeaves || 0)) {
+                candidates = candidates.slice(0, Math.max(0, candidates.length - Number(config.keepRecentLeaves || 0)));
+            }
+            if (candidates.length < threshold) {
+                break;
+            }
+
+            const groupSize = forceMode ? Math.min(fanIn, candidates.length) : fanIn;
+            if (groupSize < 2) {
+                break;
+            }
+            const group = candidates.slice(0, groupSize);
+            if (group.length < groupSize || group.length < 2) {
+                break;
+            }
+
+            const roundBeforeStore = typeof options?.onRoundApplied === 'function'
+                ? normalizeStoreForRuntime(store)
+                : null;
+            const lines = group.map(node => `${node.title}: ${getNodeSummary(node)}`);
+            const instruction = buildCompressionSummaryInstruction(
+                config.summarizeInstruction
+                || `Compress semantic type "${type}" into a higher-level summary node. Keep enduring facts and unresolved hooks.`,
+            );
+            const rollupFields = await summarizeRollupFieldsWithLLM(
+                context,
+                settings,
+                spec,
+                instruction,
+                group,
+                options?.abortSignal || null,
+            );
+            if (!normalizeText(rollupFields?.summary || '')) {
+                const fallbackSummary = await summarizeTextWithLLM(
+                    context,
+                    settings,
+                    instruction,
+                    lines,
+                    options?.abortSignal || null,
+                );
+                if (fallbackSummary) {
+                    rollupFields.summary = fallbackSummary;
+                }
+            }
+            if (!normalizeText(rollupFields?.summary || '')) {
+                break;
+            }
+
+            const rollupDepth = depth + 1;
+            const rollupOrdinal = getNextSemanticRollupOrdinal(store, type, rollupDepth);
+            const parent = createNode(store, {
+                type: String(type || 'semantic'),
+                level: LEVEL.SEMANTIC,
+                title: `${String(config.label || type || 'Semantic')} Summary L${rollupDepth} #${rollupOrdinal}`,
+                fields: rollupFields,
+                archived: false,
+                semanticRollup: true,
+                semanticDepth: rollupDepth,
+                seqTo: Math.max(...group.map(node => Number(node.seqTo ?? 0))),
+            });
+
+            for (const child of group) {
+                reparentNode(store, child.id, parent.id);
+                addEdge(store, parent.id, child.id, 'semantic_contains');
+            }
+            changed = true;
+            compressedRounds += 1;
+            recordCompressionRound(options?.compressionStats, type, 1);
+            if (typeof options?.onRoundApplied === 'function' && roundBeforeStore) {
+                await options.onRoundApplied({
+                    type: String(type || ''),
+                    depth,
+                    roundSeqTo: Number(parent?.seqTo ?? 0),
+                    beforeStore: roundBeforeStore,
+                });
+            }
+        }
+        if (compressedRounds >= maxRoundsPerType) {
+            break;
+        }
+    }
+
+    return changed;
+}
+
+async function compressSemanticTypesIfNeeded(context, store, settings, options = {}) {
+    const schema = getEffectiveNodeTypeSchema(context, settings);
+    const selectedTypeSet = Array.isArray(options?.typeIds)
+        ? new Set(options.typeIds.map(item => String(item || '').trim().toLowerCase()).filter(Boolean))
+        : null;
+    let changed = false;
+    for (const spec of schema) {
+        const type = String(spec.id || '').toLowerCase();
+        if (!type) {
+            continue;
+        }
+        if (selectedTypeSet && !selectedTypeSet.has(type)) {
+            continue;
+        }
+        const config = getSemanticCompressionConfig(settings, type, context);
+        if (config.mode === 'none') {
+            continue;
+        }
+        if (config.mode === 'hierarchical') {
+            if (await compressSemanticHierarchical(context, store, settings, spec, type, config, options)) {
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+async function runCompressionLoop(context, store, settings, options = {}) {
+    return await compressSemanticTypesIfNeeded(context, store, settings, options);
+}
+
+function buildExtractBatchFromFrames(frames, batchStartIndex, batchEndIndex, contextTurns = 1) {
+    const source = Array.isArray(frames) ? frames : [];
+    const safeStart = Math.max(0, Math.min(source.length - 1, Math.floor(Number(batchStartIndex) || 0)));
+    const safeEnd = Math.max(safeStart, Math.min(source.length - 1, Math.floor(Number(batchEndIndex) || safeStart)));
+    const windowSize = Math.max(1, Math.min(32, Math.floor(Number(contextTurns) || 1)));
+    const contextStartIndex = Math.max(0, safeStart - windowSize);
+    const rangeStart = contextStartIndex;
+    const rangeEnd = safeEnd;
+    const batch = [];
+
+    for (let i = rangeStart; i <= rangeEnd; i++) {
+        const frame = source[i];
+        if (!frame || typeof frame !== 'object') {
+            continue;
+        }
+        const seq = Number(frame?.seq || 0);
+        const lastUserText = normalizeText(frame?.last_user_mes || '');
+        if (lastUserText) {
+            batch.push({
+                seq,
+                is_user: true,
+                name: String(frame?.last_user_name || ''),
+                mes: lastUserText,
+                send_date: String(frame?.last_user_send_date || ''),
+            });
+        }
+        const assistantText = normalizeText(frame?.mes || '');
+        if (!assistantText) {
+            continue;
+        }
+        batch.push({
+            seq,
+            is_user: Boolean(frame?.is_user),
+            name: String(frame?.name || ''),
+            mes: assistantText,
+            send_date: String(frame?.send_date || ''),
+        });
+    }
+
+    return batch;
+}
+
+async function processPendingMessageBatchWithLLM(context, store, settings, schema, frames, batchStartIndex, batchEndIndex, options = {}) {
+    const source = Array.isArray(frames) ? frames : [];
+    const safeStart = Math.max(0, Math.min(source.length - 1, Math.floor(Number(batchStartIndex) || 0)));
+    const safeEnd = Math.max(safeStart, Math.min(source.length - 1, Math.floor(Number(batchEndIndex) || safeStart)));
+    const endFrame = source[safeEnd];
+    if (!endFrame || typeof endFrame !== 'object') {
+        return { processed: false, changed: false };
+    }
+    const extractBatch = [];
+    const contextTurns = Math.max(1, Math.min(32, Number(settings?.extractContextTurns || 1)));
+    extractBatch.push(...buildExtractBatchFromFrames(frames, safeStart, safeEnd, contextTurns));
+    const endFrameSeq = Number(endFrame?.seq || 0);
+    const extractionMaxSeq = Number.isFinite(endFrameSeq) ? Math.max(0, Math.floor(endFrameSeq)) : null;
+    const operations = await extractNodesWithLLM(context, store, settings, schema, extractBatch, {
+        maxSeq: extractionMaxSeq,
+        abortSignal: options?.abortSignal || null,
+        rebuildCreateOnly: Boolean(options?.rebuildCreateOnly),
+    });
+    if (operations.length === 0) {
+        return { processed: true, changed: false };
+    }
+
+    const extractionRefIndex = new Map();
+    const pendingLinkJobs = [];
+
+    for (const item of operations) {
+        const op = String(item?.op || 'create').trim().toLowerCase();
+        if (op === 'delete') {
+            const nodeId = String(item?.nodeId || '').trim();
+            if (nodeId && store?.nodes?.[nodeId]) {
+                dropNode(store, nodeId, true);
+            }
+            continue;
+        }
+        if (op === 'edit') {
+            const nodeId = String(item?.nodeId || '').trim();
+            const targetNode = nodeId ? store?.nodes?.[nodeId] : null;
+            if (!targetNode || targetNode.archived || targetNode.level !== LEVEL.SEMANTIC) {
+                continue;
+            }
+            if (String(targetNode.type || '').toLowerCase() !== String(item?.type || '').toLowerCase()) {
+                continue;
+            }
+            const setFields = item?.setFields && typeof item.setFields === 'object' && !Array.isArray(item.setFields)
+                ? item.setFields
+                : {};
+            const clearFields = Array.isArray(item?.clearFields)
+                ? item.clearFields.map(key => String(key || '').trim()).filter(Boolean)
+                : [];
+            const evidence = buildEvidenceSeqRange(item, extractBatch);
+            if (!targetNode.fields || typeof targetNode.fields !== 'object' || Array.isArray(targetNode.fields)) {
+                targetNode.fields = {};
+            }
+            if (Boolean(item?.hasTitlePatch)) {
+                const patchedTitle = normalizeText(item?.title || '');
+                if (patchedTitle) {
+                    targetNode.title = patchedTitle;
+                }
+            }
+            for (const [key, value] of Object.entries(setFields)) {
+                if (value === undefined || value === null) {
+                    continue;
+                }
+                targetNode.fields[key] = value;
+            }
+            for (const key of clearFields) {
+                delete targetNode.fields[key];
+            }
+            targetNode.seqTo = Math.max(Number(targetNode.seqTo || 0), Number(evidence.seqTo || 0));
+            continue;
+        }
+        if (op === 'link_upsert') {
+            const evidence = buildEvidenceSeqRange(item, extractBatch);
+            pendingLinkJobs.push({
+                sourceNodeId: normalizeText(item?.sourceNodeId || ''),
+                sourceRef: normalizeText(item?.sourceRef || ''),
+                links: Array.isArray(item?.links) ? item.links : [],
+                evidence,
+            });
+            continue;
+        }
+        const type = String(item?.type || 'semantic').toLowerCase();
+        const title = normalizeText(item?.title || '');
+        if (!type) {
+            continue;
+        }
+        const evidence = buildEvidenceSeqRange(item, extractBatch);
+        const targetNode = upsertSemanticNode(store, {
+            type,
+            nodeId: String(item?.nodeId || ''),
+            title,
+            fields: item?.fields && typeof item.fields === 'object' ? item.fields : {},
+            seqTo: evidence.seqTo,
+        }, settings, { maxSeq: extractionMaxSeq });
+        if (targetNode) {
+            const ref = normalizeText(item?.ref || '');
+            if (ref) {
+                extractionRefIndex.set(ref, targetNode.id);
+            }
+            pendingLinkJobs.push({
+                sourceNodeId: targetNode.id,
+                sourceRef: '',
+                links: Array.isArray(item?.links) ? item.links : [],
+                evidence,
+            });
+        }
+    }
+
+    for (const job of pendingLinkJobs) {
+        const sourceNodeId = resolveExtractNodeId(store, {
+            nodeId: job?.sourceNodeId || '',
+            ref: job?.sourceRef || '',
+        }, { refIndex: extractionRefIndex });
+        if (!sourceNodeId) {
+            continue;
+        }
+        const sourceNode = store?.nodes?.[sourceNodeId];
+        if (!sourceNode || sourceNode.archived || sourceNode.level !== LEVEL.SEMANTIC) {
+            continue;
+        }
+        applyExtractedLinks(
+            store,
+            sourceNode,
+            Array.isArray(job?.links) ? job.links : [],
+            job?.evidence || { seqTo: 0 },
+            { maxSeq: extractionMaxSeq, refIndex: extractionRefIndex },
+        );
+    }
+
+    return { processed: true, changed: true };
+}
+
+async function runExtractionForStore(context, store, {
+    force = false,
+    startSeq = null,
+    showCompressionToast = true,
+    abortSignal = null,
+    onBatchStart = null,
+    onBatchApplied = null,
+    onCompressionApplied = null,
+    rebuildCreateOnly = false,
+} = {}) {
+    const settings = getEffectiveSettings(context, getSettings());
+    const window = computeExtractionWindow(context, store, startSeq, settings);
+    const frames = window.frames;
+    const latestSeq = window.latestSeq;
+    const coveredSeqTo = window.coveredSeqTo;
+    if (coveredSeqTo !== Math.max(0, Math.floor(Number(store.appliedSeqTo || 0)))) {
+        store.appliedSeqTo = coveredSeqTo;
+    }
+    const beginSeq = window.beginSeq;
+    if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+        throw new DOMException('Memory extraction aborted.', 'AbortError');
+    }
+    if (beginSeq > latestSeq) {
+        store.appliedSeqTo = latestSeq;
+        store.seqCounter = latestSeq;
+        store.lastExtractionDebug = {
+            beginSeq,
+            latestSeq,
+            coveredSeqTo,
+            extracted: false,
+            reason: 'already_up_to_date',
+            at: Date.now(),
+        };
+        return false;
+    }
+
+    if (!force) {
+        const gap = Number(window.gap || 0);
+        if (gap < Number(settings.updateEvery || 1)) {
+            store.lastExtractionDebug = {
+                beginSeq,
+                latestSeq,
+                coveredSeqTo,
+                extracted: false,
+                reason: 'gap_below_threshold',
+                at: Date.now(),
+            };
+            return false;
+        }
+    }
+
+    const schema = getEffectiveNodeTypeSchema(context, settings);
+    const compressionStats = createCompressionStats();
+    const frameErrorRetries = Math.max(0, Math.min(10, Math.floor(Number(settings?.toolCallRetryMax) || 0)));
+    const extractBatchTurns = Math.max(
+        1,
+        Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+    );
+    const historyChatKey = String(getChatKey(context) || '').trim();
+    let extractedAny = false;
+    let processedSeqTo = coveredSeqTo;
+    for (let i = beginSeq - 1; i < latestSeq; i += extractBatchTurns) {
+        if (isAbortSignalLike(abortSignal) && abortSignal.aborted) {
+            throw new DOMException('Memory extraction aborted.', 'AbortError');
+        }
+        const batchStartIndex = i;
+        const batchEndIndex = Math.min(latestSeq - 1, i + extractBatchTurns - 1);
+        const startFrame = frames[batchStartIndex];
+        const endFrame = frames[batchEndIndex];
+        if (typeof onBatchStart === 'function') {
+            onBatchStart({
+                beginSeq: Number(startFrame?.seq || 0),
+                endSeq: Number(endFrame?.seq || 0),
+                latestSeq,
+                batchStartIndex,
+                batchEndIndex,
+            });
+        }
+        let success = false;
+        let lastFrameError = null;
+        for (let attempt = 0; attempt <= frameErrorRetries; attempt++) {
+            const attemptSnapshot = captureRollbackSnapshot(store);
+            try {
+                const batchResult = await processPendingMessageBatchWithLLM(
+                    context,
+                    store,
+                    settings,
+                    schema,
+                    frames,
+                    batchStartIndex,
+                    batchEndIndex,
+                    {
+                        compressionStats,
+                        abortSignal,
+                        rebuildCreateOnly: Boolean(rebuildCreateOnly),
+                    },
+                );
+                success = Boolean(batchResult?.processed);
+                lastFrameError = null;
+                if (success) {
+                    processedSeqTo = Math.max(processedSeqTo, Number(endFrame?.seq || 0));
+                    store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), Number(endFrame?.seq || 0));
+                    if (batchResult?.changed) {
+                        extractedAny = true;
+                        const rollbackEntry = buildRollbackEntry(historyChatKey, attemptSnapshot, store, {
+                            kind: 'extract',
+                            seqFrom: Number(startFrame?.seq || 0),
+                            seqTo: Number(endFrame?.seq || 0),
+                        });
+                        if (rollbackEntry) {
+                            recordRollbackEntry(historyChatKey, rollbackEntry);
+                        }
+                    }
+                }
+                break;
+            } catch (error) {
+                restoreStoreFromRollbackSnapshot(store, attemptSnapshot);
+                if (isAbortError(error, abortSignal)) {
+                    throw error;
+                }
+                lastFrameError = error;
+                if (attempt >= frameErrorRetries) {
+                    throw error;
+                }
+                console.warn(
+                    `[${MODULE_NAME}] Extraction batch failed (seq=${Number(startFrame?.seq || 0)}-${Number(endFrame?.seq || 0)}). Retrying (${attempt + 1}/${frameErrorRetries})...`,
+                    error,
+                );
+            }
+        }
+        if (lastFrameError) {
+            throw lastFrameError;
+        }
+        if (!success) {
+            break;
+        }
+        if (typeof onBatchApplied === 'function') {
+            await onBatchApplied({
+                beginSeq: Number(startFrame?.seq || 0),
+                endSeq: Number(endFrame?.seq || 0),
+                latestSeq,
+            });
+        }
+    }
+    if (extractedAny) {
+        const compressionSnapshot = captureRollbackSnapshot(store);
+        await runCompressionLoop(context, store, settings, {
+            compressionStats,
+            maxSeq: latestSeq,
+            abortSignal: abortSignal || null,
+            onRoundApplied: typeof onCompressionApplied === 'function'
+                ? async ({ type, depth, roundSeqTo, beforeStore }) => {
+                    await onCompressionApplied({
+                        type,
+                        depth,
+                        roundSeqTo,
+                        latestSeq,
+                        beforeStore,
+                    });
+                }
+                : null,
+        });
+        const compressionRollbackEntry = buildRollbackEntry(historyChatKey, compressionSnapshot, store, {
+            kind: 'compression',
+            seqFrom: beginSeq,
+            seqTo: latestSeq,
+        });
+        if (compressionRollbackEntry) {
+            recordRollbackEntry(historyChatKey, compressionRollbackEntry);
+        }
+    }
+    store.appliedSeqTo = Math.max(Number(store.appliedSeqTo || 0), processedSeqTo);
+    store.loggedSeqTo = Math.max(Number(store.loggedSeqTo || 0), store.appliedSeqTo);
+    store.seqCounter = Math.max(Number(store.seqCounter || 0), store.appliedSeqTo);
+    updateStoreSourceState(store, context);
+    store.lastExtractionDebug = {
+        beginSeq,
+        latestSeq,
+        coveredSeqTo,
+        extracted: extractedAny,
+        reason: extractedAny ? 'ok' : (processedSeqTo > coveredSeqTo ? 'no_graph_changes' : 'no_upserts'),
+        compression: compressionStats,
+        at: Date.now(),
+    };
+    if (showCompressionToast) {
+        notifyEventCompressionIfAny(compressionStats);
+    }
+    return extractedAny;
+}
+
+function formatNodeBrief(node, settings = null, context = null, extra = {}) {
+    const spec = settings ? getSemanticTypeSpec(settings, node?.type, context) : null;
+    return {
+        ...buildLlmFriendlyNodeProjection(node, spec),
+        child_count: Array.isArray(node?.childrenIds) ? node.childrenIds.length : 0,
+        ...extra,
+    };
+}
+
+function formatNodeDetail(node, settings = null, context = null, extra = {}) {
+    const spec = settings ? getSemanticTypeSpec(settings, node?.type, context) : null;
+    return {
+        ...buildLlmFriendlyNodeProjection(node, spec),
+        semantic_depth: Number(node?.semanticDepth || 0),
+        semantic_rollup: Boolean(node?.semanticRollup),
+        children: Array.isArray(node?.childrenIds) ? node.childrenIds : [],
+        ...extra,
+    };
+}
+
+function extractWorldInfoHints(payload) {
+    const hints = [];
+    hints.push(...normalizeWorldInfoEntries(payload?.worldInfoBeforeEntries));
+    hints.push(...normalizeWorldInfoEntries(payload?.worldInfoAfterEntries));
+
+    const allActivated = payload?.worldInfoResolution?.allActivatedEntries;
+    if (allActivated && typeof allActivated[Symbol.iterator] === 'function') {
+        for (const entry of allActivated) {
+            if (!entry || typeof entry !== 'object') {
+                continue;
+            }
+            const raw = normalizeText(entry.comment || entry.content || entry.key || entry.keys || '');
+            if (raw) {
+                hints.push(raw);
+            }
+            if (hints.length >= 8) {
+                break;
+            }
+        }
+    }
+
+    return hints;
+}
+
+function compareNodesByRecency(a, b) {
+    const aSeq = Number(a?.seqTo ?? -1);
+    const bSeq = Number(b?.seqTo ?? -1);
+    if (aSeq !== bSeq) {
+        return bSeq - aSeq;
+    }
+    const aDepth = Number(a?.semanticDepth ?? 0);
+    const bDepth = Number(b?.semanticDepth ?? 0);
+    if (aDepth !== bDepth) {
+        return bDepth - aDepth;
+    }
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+}
+
+function getSortedNodesByRecency(nodes) {
+    return nodes
+        .slice()
+        .sort(compareNodesByRecency);
+}
+
+function buildRecallDebugCoreChat(context, queryText, settings = null) {
+    const source = Array.isArray(context?.chat) ? context.chat : [];
+    const recentTurns = Math.max(
+        1,
+        Math.min(60, Math.floor(Number(settings?.recentRawTurns ?? defaultSettings.recentRawTurns))),
+    );
+    const recentMessageLimit = Math.max(2, recentTurns * 2);
+    const history = [];
+    for (let i = source.length - 1; i >= 0 && history.length < recentMessageLimit; i -= 1) {
+        const message = source[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        const text = normalizeText(message.mes ?? message.content ?? message.text ?? '');
+        if (!text) {
+            continue;
+        }
+        history.push({
+            is_user: Boolean(message.is_user),
+            name: String(message.name || ''),
+            mes: text,
+        });
+    }
+    history.reverse();
+
+    const query = normalizeText(queryText || '');
+    if (query) {
+        history.push({
+            is_user: true,
+            name: String(context?.name1 || 'User'),
+            mes: query,
+        });
+    }
+
+    if (history.length === 0) {
+        history.push({
+            is_user: true,
+            name: String(context?.name1 || 'User'),
+            mes: query || 'Recall debug for current context.',
+        });
+    }
+
+    return history;
+}
+
+function getRecallQueryBundle(payload, context, settings = null) {
+    const payloadMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : null;
+    const source = payloadMessages || context.chat || [];
+    const recentAssistantTurns = Math.max(
+        1,
+        Math.min(
+            64,
+            Math.floor(Number(settings?.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
+        ),
+    );
+    const recentWindow = getRecentMessagesByAssistantTurns(source, recentAssistantTurns);
+    const recentMessages = [];
+    let lastUser = '';
+    let lastAssistant = '';
+
+    for (let i = recentWindow.length - 1; i >= 0; i--) {
+        const message = recentWindow[i];
+        if (!message) {
+            continue;
+        }
+        if (message.is_system) {
+            continue;
+        }
+        const text = normalizeText(message.mes || '');
+        if (text) {
+            recentMessages.push({
+                role: message.is_user ? 'user' : 'assistant',
+                text,
+            });
+        }
+        if (!lastUser && message.is_user) {
+            lastUser = text;
+            continue;
+        }
+        if (!lastAssistant && !message.is_user) {
+            lastAssistant = text;
+            continue;
+        }
+        if (lastUser && lastAssistant) {
+            break;
+        }
+    }
+    recentMessages.reverse();
+    const wiHints = extractWorldInfoHints(payload);
+    const recentText = recentMessages
+        .map(item => `${item.role}: ${item.text}`)
+        .join('\n');
+    const fullText = normalizeText([recentText, ...wiHints].join('\n'));
+    return {
+        last_user: normalizeText(lastUser),
+        last_assistant: normalizeText(lastAssistant),
+        recent_messages: recentMessages,
+        wi_hints: wiHints,
+        fullText,
+    };
+}
+
+function buildLastUserAnchorFromMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (!message.is_user) {
+            continue;
+        }
+        const playableFloor = messages
+            .slice(0, i + 1)
+            .reduce((count, item) => count + (item && !item.is_system ? 1 : 0), 0);
+        const assistantFloor = messages
+            .slice(0, i + 1)
+            .reduce((count, item) => count + (item && !item.is_system && !item.is_user ? 1 : 0), 0);
+        const text = String(message.mes ?? '');
+        return {
+            floor: i + 1,
+            playableFloor,
+            assistantFloor,
+            hash: String(getStringHash(text)),
+        };
+    }
+    return null;
+}
+
+function buildLastUserAnchor(context, payloadMessages) {
+    const contextMessages = Array.isArray(context?.chat) ? context.chat : [];
+    const contextAnchor = buildLastUserAnchorFromMessages(contextMessages);
+    if (contextAnchor) {
+        return contextAnchor;
+    }
+
+    return buildLastUserAnchorFromMessages(payloadMessages);
+}
+
+function canReuseLatestRecallSnapshot(chatKey, anchor) {
+    if (!latestRecallSnapshot || typeof latestRecallSnapshot !== 'object') {
+        return false;
+    }
+    if (!anchor || typeof anchor !== 'object') {
+        return false;
+    }
+    if (String(latestRecallSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return false;
+    }
+    const storedFloor = Number(latestRecallSnapshot.anchorFloor);
+    const incomingFloor = Number(anchor.floor);
+    const storedPlayableFloor = Number(latestRecallSnapshot.anchorPlayableFloor);
+    const incomingPlayableFloor = Number(anchor.playableFloor);
+    const floorMatched = Number.isFinite(storedPlayableFloor) && Number.isFinite(incomingPlayableFloor)
+        ? storedPlayableFloor === incomingPlayableFloor
+        : storedFloor === incomingFloor;
+    return floorMatched
+        && String(latestRecallSnapshot.anchorHash || '') === String(anchor.hash || '');
+}
+
+function shouldPreserveLatestRecallSnapshotForAssistantMutation(context, fromSeq) {
+    if (!latestRecallSnapshot || typeof latestRecallSnapshot !== 'object') {
+        return false;
+    }
+    const chatKey = getChatKey(context);
+    if (String(latestRecallSnapshot.chatKey || '') !== String(chatKey || '')) {
+        return false;
+    }
+    const anchorAssistantFloor = Number(latestRecallSnapshot.anchorAssistantFloor);
+    const affectedAssistantSeq = Number(fromSeq);
+    return Number.isFinite(anchorAssistantFloor)
+        && anchorAssistantFloor >= 0
+        && Number.isFinite(affectedAssistantSeq)
+        && affectedAssistantSeq > anchorAssistantFloor;
+}
+
+function getNodeRecallExposure(settings, node, context = null) {
+    if (!node) {
+        return 'high_only';
+    }
+    if (node.level !== LEVEL.SEMANTIC) {
+        return 'high_only';
+    }
+    const config = getSemanticCompressionConfig(settings, node.type, context);
+    if (config.mode === 'hierarchical') {
+        return 'high_only';
+    }
+    return 'full';
+}
+
+function getNearestVisibleAncestorId(store, nodeId, visibleSet) {
+    const target = String(nodeId || '').trim();
+    if (!target) {
+        return '';
+    }
+    const set = visibleSet instanceof Set ? visibleSet : new Set();
+    let currentId = target;
+    const guard = new Set();
+    while (currentId && !guard.has(currentId)) {
+        guard.add(currentId);
+        const node = store?.nodes?.[currentId];
+        if (!node || node.archived) {
+            return '';
+        }
+        if (set.has(currentId)) {
+            return currentId;
+        }
+        currentId = String(node.parentId || '').trim();
+    }
+    return '';
+}
+
+function buildProjectedEdges(store, {
+    visibleNodeIds = null,
+    relationTypes = null,
+    excludeInternal = false,
+} = {}) {
+    const visibleSet = visibleNodeIds instanceof Set
+        ? visibleNodeIds
+        : Array.isArray(visibleNodeIds)
+            ? new Set(visibleNodeIds.map(id => String(id || '').trim()).filter(Boolean))
+            : new Set(
+                Object.values(store?.nodes || {})
+                    .filter(node => node && !node.archived)
+                    .map(node => String(node.id || '').trim())
+                    .filter(Boolean),
+            );
+    const relationAllow = Array.isArray(relationTypes) && relationTypes.length > 0
+        ? new Set(relationTypes.map(type => normalizeText(type).toLowerCase()).filter(Boolean))
+        : null;
+    const internalEdgeTypes = new Set(['contains', 'semantic_contains']);
+    const merged = new Map();
+    for (const edge of store?.edges || []) {
+        if (!edge) {
+            continue;
+        }
+        const edgeType = normalizeText(edge.type || '').toLowerCase() || 'related';
+        if (excludeInternal && internalEdgeTypes.has(edgeType)) {
+            continue;
+        }
+        if (relationAllow && !relationAllow.has(edgeType)) {
+            continue;
+        }
+        const fromVisible = getNearestVisibleAncestorId(store, edge.from, visibleSet);
+        const toVisible = getNearestVisibleAncestorId(store, edge.to, visibleSet);
+        if (!fromVisible || !toVisible || fromVisible === toVisible) {
+            continue;
+        }
+        const key = `${fromVisible}::${toVisible}::${edgeType}`;
+        const current = merged.get(key);
+        if (!current) {
+            merged.set(key, {
+                from: fromVisible,
+                to: toVisible,
+                type: edgeType,
+                weight: 1,
+            });
+            continue;
+        }
+        current.weight = Number(current.weight || 0) + 1;
+    }
+    return Array.from(merged.values());
+}
+
+function buildEdgeSummary(store, nodeId, { nodeSet = null, relationTypes = null, limit = 10 } = {}) {
+    if (!nodeId) {
+        return {
+            degree: 0,
+            relations: [],
+            sample_neighbors: [],
+        };
+    }
+    const visibleSet = nodeSet instanceof Set
+        ? nodeSet
+        : Array.isArray(nodeSet)
+            ? new Set(nodeSet.map(id => String(id || '').trim()).filter(Boolean))
+            : null;
+    const projectedEdges = buildProjectedEdges(store, {
+        visibleNodeIds: visibleSet,
+        relationTypes,
+        excludeInternal: false,
+    });
+    const byRelation = new Map();
+    const neighborIds = new Set();
+    let degree = 0;
+    for (const edge of projectedEdges) {
+        const edgeType = normalizeText(edge.type || '').toLowerCase() || 'related';
+        let neighborId = '';
+        let direction = '';
+        if (edge.from === nodeId) {
+            neighborId = String(edge.to || '');
+            direction = 'out';
+        } else if (edge.to === nodeId) {
+            neighborId = String(edge.from || '');
+            direction = 'in';
+        } else {
+            continue;
+        }
+        if (!neighborId) {
+            continue;
+        }
+        if (visibleSet && !visibleSet.has(neighborId)) {
+            continue;
+        }
+        if (!store.nodes[neighborId] || store.nodes[neighborId].archived) {
+            continue;
+        }
+        const supportCount = Math.max(1, Number(edge?.weight || 1));
+        degree += supportCount;
+        neighborIds.add(neighborId);
+        const key = `${edgeType}:${direction}`;
+        byRelation.set(key, Number(byRelation.get(key) || 0) + supportCount);
+    }
+    const relationRows = Array.from(byRelation.entries())
+        .map(([key, count]) => {
+            const [relation, direction] = key.split(':');
+            return { relation, direction, count };
+        })
+        .sort((a, b) => b.count - a.count);
+
+    const sampleNeighbors = Array.from(neighborIds)
+        .slice(0, Math.max(1, Number(limit || 10)))
+        .map(id => {
+            const node = store.nodes[id];
+            return {
+                id,
+                type: String(node?.type || ''),
+                title: String(node?.title || ''),
+            };
+        });
+
+    return {
+        degree,
+        relations: relationRows,
+        sample_neighbors: sampleNeighbors,
+    };
+}
+
+function isRecallDiagnosticNode(node) {
+    const type = String(node?.type || '').trim().toLowerCase();
+    return type === 'recall' || type.startsWith('recall_');
+}
+
+function collectRootCandidates(store, settings, queryBundle = { fullText: '' }, alwaysInjectNodes = [], context = null, {
+    latestSeqIndex = -1,
+    excludeMessages = 0,
+} = {}) {
+    void queryBundle;
+    const schema = getEffectiveNodeTypeSchema(context, settings);
+    const visibleRows = buildGraphNodeHints(store, schema, 0);
+    const visibleNodes = visibleRows
+        .map((row) => store?.nodes?.[String(row?.id || '')] || null)
+        .filter((node) => Boolean(node) && !node.archived && !isRecallDiagnosticNode(node))
+        .filter((node) => !isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages));
+    const merged = [
+        ...getSortedNodesByRecency(alwaysInjectNodes.filter(Boolean)),
+        ...getSortedNodesByRecency(visibleNodes),
+    ];
+    const deduped = [];
+    const seen = new Set();
+    for (const node of merged) {
+        const nodeId = String(node?.id || '');
+        if (!nodeId || seen.has(nodeId)) {
+            continue;
+        }
+        seen.add(nodeId);
+        deduped.push(node);
+    }
+    return deduped;
+}
+
+function normalizeEdgeTypeList(rawTypes) {
+    if (!Array.isArray(rawTypes)) {
+        return ['related', 'involved_in', 'mentions', 'evidence', 'contains', 'updates', 'advances', 'occurred_at'];
+    }
+    const list = rawTypes.map(type => normalizeText(type).toLowerCase()).filter(Boolean);
+    return list.length > 0 ? list : ['related', 'involved_in', 'mentions', 'evidence', 'contains', 'updates', 'advances', 'occurred_at'];
+}
+
+async function chooseRecallRoute(context, settings, recallState) {
+    const routeSystemPrompt = String(settings?.recallRouteSystemPrompt || '').trim() || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT;
+    const alwaysInjectIds = Array.isArray(recallState?.alwaysInjectIds) ? recallState.alwaysInjectIds : [];
+    const candidateSet = new Set((recallState.candidates || []).map(node => String(node?.id || '')).filter(Boolean));
+    if (candidateSet.size === 0) {
+        return {
+            action: 'finalize',
+            selected_node_ids: [],
+            expand_plan: [],
+            referenced_always_inject_ids: [],
+            reason: 'No recall candidates.',
+        };
+    }
+    const candidateRows = (recallState.candidates || []).map(node => {
+        const row = formatNodeBrief(node, settings, context, {
+            exposure: getNodeRecallExposure(settings, node, context),
+            edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 8 }),
+            always_inject: alwaysInjectIds.includes(String(node?.id || '')),
+        });
+        return row;
+    });
+    try {
+        const parsed = await runFunctionCallTask(context, settings, {
+            systemPrompt: routeSystemPrompt,
+            userPrompt: buildRecallRouteInputXml({
+                recallQueryContext: {
+                    user_query_text: recallState.query,
+                    recent_dialogue_context: recallState.queryBundle,
+                },
+                candidateNodes: candidateRows,
+                alwaysInjectNodeIds: alwaysInjectIds,
+                schemaOverview: getEffectiveNodeTypeSchema(context, settings).map(item => ({
+                    id: item.id,
+                    table_name: item.tableName,
+                    table_columns: item.tableColumns,
+                    required_columns: item.requiredColumns,
+                    force_update: Boolean(item.forceUpdate),
+                    always_inject: Boolean(item.alwaysInject),
+                    editable: Boolean(item.editable),
+                    compression_mode: String(item?.compression?.mode || 'none'),
+                })),
+                selectionConstraints: {
+                    recent_message_window: Math.max(3, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
+                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
+                    recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
+                },
+            }),
+            apiPresetName: settings.recallApiPresetName || '',
+            promptPresetName: String(settings.recallPresetName || '').trim(),
+            worldInfoMessages: Array.isArray(recallState?.worldInfoMessages) ? recallState.worldInfoMessages : null,
+            runtimeWorldInfo: recallState?.runtimeWorldInfo && typeof recallState.runtimeWorldInfo === 'object'
+                ? recallState.runtimeWorldInfo
+                : null,
+            forceWorldInfoResimulate: Boolean(recallState?.forceWorldInfoResimulate),
+            worldInfoType: 'quiet',
+            functionName: 'luker_rpg_recall_plan',
+            functionDescription: 'Plan recall as finalize or drill with optional expansion plan.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    action: { type: 'string', enum: ['finalize', 'drill'] },
+                    selected_node_ids: {
+                        type: 'array',
+                        items: { type: 'string' },
+                    },
+                    expand_plan: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: {
+                                seed_node_id: { type: 'string' },
+                                relation_types: {
+                                    type: 'array',
+                                    items: { type: 'string' },
+                                },
+                                depth: { type: 'integer' },
+                                include_children: { type: 'boolean' },
+                            },
+                            required: ['seed_node_id'],
+                            additionalProperties: true,
+                        },
+                    },
+                    referenced_always_inject_ids: {
+                        type: 'array',
+                        items: { type: 'string' },
+                    },
+                    reason: { type: 'string' },
+                },
+                required: ['action'],
+                additionalProperties: true,
+            },
+            abortSignal: recallState?.abortSignal || null,
+            recallRunToken: Number(recallState?.recallRunToken || 0),
+        });
+        return {
+            action: String(parsed?.action || '').toLowerCase() === 'drill' ? 'drill' : 'finalize',
+            selected_node_ids: Array.isArray(parsed?.selected_node_ids)
+                ? parsed.selected_node_ids.map(id => String(id || '').trim()).filter(id => id && candidateSet.has(id))
+                : [],
+            expand_plan: Array.isArray(parsed?.expand_plan)
+                ? parsed.expand_plan.map(item => ({
+                    seed_node_id: String(item?.seed_node_id || '').trim(),
+                    relation_types: normalizeEdgeTypeList(item?.relation_types),
+                    depth: Math.max(1, Math.floor(Number(item?.depth) || 1)),
+                    include_children: item?.include_children !== false,
+                })).filter(item => item.seed_node_id && candidateSet.has(item.seed_node_id))
+                : [],
+            referenced_always_inject_ids: Array.isArray(parsed?.referenced_always_inject_ids)
+                ? parsed.referenced_always_inject_ids.map(id => String(id || '').trim()).filter(Boolean)
+                : [],
+            reason: String(parsed?.reason || ''),
+        };
+    } catch (error) {
+        if (isAbortError(error, recallState?.abortSignal || null)) {
+            throw error;
+        }
+        console.warn(`[${MODULE_NAME}] recall route failed`, error);
+        return {
+            action: 'finalize',
+            selected_node_ids: recallState.candidates.map(node => node.id),
+            expand_plan: [],
+            referenced_always_inject_ids: [],
+            reason: 'Fallback route used.',
+        };
+    }
+}
+
+function addCandidate(candidateMap, node) {
+    if (!node?.id) {
+        return;
+    }
+    if (!candidateMap.has(node.id)) {
+        candidateMap.set(node.id, node);
+    }
+}
+
+function expandRouteCandidates(store, route, rootCandidates) {
+    const candidateMap = new Map();
+    const expandPlan = Array.isArray(route?.expand_plan) ? route.expand_plan : [];
+
+    for (const node of rootCandidates) {
+        addCandidate(candidateMap, node);
+    }
+    for (const request of expandPlan) {
+        const seedId = String(request?.seed_node_id || '').trim();
+        if (!seedId || !store.nodes[seedId]) {
+            continue;
+        }
+        const relationTypes = normalizeEdgeTypeList(request?.relation_types);
+        const depth = Math.max(1, Math.floor(Number(request?.depth) || 1));
+        const includeChildren = request?.include_children !== false;
+        const seen = new Set([seedId]);
+        let frontier = [seedId];
+        addCandidate(candidateMap, store.nodes[seedId]);
+        for (let hop = 0; hop < depth; hop++) {
+            if (frontier.length === 0) {
+                break;
+            }
+            const visibleSet = new Set(candidateMap.keys());
+            const projectedEdges = buildProjectedEdges(store, {
+                visibleNodeIds: visibleSet,
+                relationTypes,
+                excludeInternal: false,
+            });
+            const next = [];
+            for (const currentId of frontier) {
+                const currentNode = store.nodes[currentId];
+                if (!currentNode || currentNode.archived) {
+                    continue;
+                }
+                if (includeChildren) {
+                    for (const child of getChildren(store, currentId)) {
+                        if (!child?.id || child.archived || seen.has(child.id)) {
+                            continue;
+                        }
+                        seen.add(child.id);
+                        addCandidate(candidateMap, child);
+                        next.push(child.id);
+                    }
+                }
+                for (const edge of projectedEdges) {
+                    if (!edge) {
+                        continue;
+                    }
+                    let neighborId = '';
+                    if (edge.from === currentId) {
+                        neighborId = String(edge.to || '');
+                    } else if (edge.to === currentId) {
+                        neighborId = String(edge.from || '');
+                    } else {
+                        continue;
+                    }
+                    if (!neighborId || seen.has(neighborId)) {
+                        continue;
+                    }
+                    const neighbor = store.nodes[neighborId];
+                    if (!neighbor || neighbor.archived) {
+                        continue;
+                    }
+                    seen.add(neighborId);
+                    addCandidate(candidateMap, neighbor);
+                    next.push(neighborId);
+                }
+            }
+            frontier = next;
+        }
+    }
+
+    return Array.from(candidateMap.values());
+}
+
+async function chooseFocusNodes(context, settings, recallState) {
+    const finalizeSystemPrompt = String(settings?.recallFinalizeSystemPrompt || '').trim() || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT;
+    const alwaysInjectIds = Array.isArray(recallState?.alwaysInjectIds) ? recallState.alwaysInjectIds : [];
+    const candidateSet = new Set((recallState.candidates || []).map(node => String(node?.id || '')).filter(Boolean));
+    if (candidateSet.size === 0) {
+        return {
+            selected_node_ids: [],
+            reason: 'No recall candidates.',
+        };
+    }
+    const detailRows = (recallState.candidates || []).map(node => {
+        const row = formatNodeDetail(node, settings, context, {
+            exposure: getNodeRecallExposure(settings, node, context),
+            edge_summary: buildEdgeSummary(recallState.store, node?.id, { nodeSet: candidateSet, limit: 12 }),
+            always_inject: alwaysInjectIds.includes(String(node?.id || '')),
+        });
+        return row;
+    });
+    try {
+        const parsed = await runFunctionCallTask(context, settings, {
+            systemPrompt: finalizeSystemPrompt,
+            userPrompt: buildRecallFinalizeInputXml({
+                recallQueryContext: {
+                    user_query_text: recallState.query,
+                    recent_dialogue_context: recallState.queryBundle,
+                },
+                candidateNodes: detailRows,
+                alwaysInjectNodeIds: alwaysInjectIds,
+                routeResult: recallState.route || {},
+                selectionConstraints: {
+                    include_non_event_nodes: true,
+                    require_event_continuity: true,
+                    recent_message_window: Math.max(3, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
+                    injection_exclude_recent_messages: Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns)),
+                    recall_query_recent_messages: Math.max(1, Number(settings.recallQueryMessages || defaultSettings.recallQueryMessages || 2)),
+                    min_event_nodes_if_available: 2,
+                },
+            }),
+            apiPresetName: settings.recallApiPresetName || '',
+            promptPresetName: String(settings.recallPresetName || '').trim(),
+            worldInfoMessages: Array.isArray(recallState?.worldInfoMessages) ? recallState.worldInfoMessages : null,
+            runtimeWorldInfo: recallState?.runtimeWorldInfo && typeof recallState.runtimeWorldInfo === 'object'
+                ? recallState.runtimeWorldInfo
+                : null,
+            forceWorldInfoResimulate: Boolean(recallState?.forceWorldInfoResimulate),
+            worldInfoType: 'quiet',
+            functionName: 'luker_rpg_recall_finalize',
+            functionDescription: 'Finalize memory node IDs to inject.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    selected_node_ids: {
+                        type: 'array',
+                        items: { type: 'string' },
+                    },
+                    reason: { type: 'string' },
+                },
+                required: ['selected_node_ids'],
+                additionalProperties: true,
+            },
+            abortSignal: recallState?.abortSignal || null,
+            recallRunToken: Number(recallState?.recallRunToken || 0),
+        });
+
+        const selectedIds = Array.isArray(parsed?.selected_node_ids)
+            ? parsed.selected_node_ids.map(id => String(id || '').trim()).filter(id => id && candidateSet.has(id))
+            : [];
+        return {
+            selected_node_ids: selectedIds,
+            reason: String(parsed?.reason || ''),
+        };
+    } catch (error) {
+        if (isAbortError(error, recallState?.abortSignal || null)) {
+            throw error;
+        }
+        console.warn(`[${MODULE_NAME}] recall select failed`, error);
+        return {
+            selected_node_ids: recallState.candidates.map(node => node.id),
+            reason: 'Fallback selection used.',
+        };
+    }
+}
+
+function compareNodesByTimeline(a, b) {
+    const aTo = Number(a?.seqTo ?? Number.MAX_SAFE_INTEGER);
+    const bTo = Number(b?.seqTo ?? Number.MAX_SAFE_INTEGER);
+    if (aTo !== bTo) {
+        return aTo - bTo;
+    }
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+}
+
+function getActiveSemanticParentOfType(store, node, type) {
+    const parentId = String(node?.parentId || '').trim();
+    if (!parentId) {
+        return null;
+    }
+    const parent = store.nodes[parentId];
+    if (!parent || parent.archived) {
+        return null;
+    }
+    if (String(parent.type || '').toLowerCase() !== String(type || '').toLowerCase()) {
+        return null;
+    }
+    return parent;
+}
+
+function getTopActiveSemanticAncestorOfType(store, node, type) {
+    if (!node) {
+        return null;
+    }
+    const targetType = String(type || '').toLowerCase();
+    let current = node;
+    let top = node;
+    const guard = new Set();
+    while (current && current.id && !guard.has(current.id)) {
+        guard.add(current.id);
+        const parent = getActiveSemanticParentOfType(store, current, targetType);
+        if (!parent) {
+            break;
+        }
+        top = parent;
+        current = parent;
+    }
+    return top;
+}
+
+function hasActiveSemanticChildOfType(store, node, type) {
+    if (!node || !Array.isArray(node.childrenIds) || node.childrenIds.length === 0) {
+        return false;
+    }
+    const targetType = String(type || '').toLowerCase();
+    for (const childId of node.childrenIds) {
+        const child = store.nodes[childId];
+        if (!child || child.archived) {
+            continue;
+        }
+        if (String(child.type || '').toLowerCase() === targetType) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function selectVisibleNodesForType(store, typeNodes, type, compressionMode = 'none') {
+    const sorted = Array.isArray(typeNodes)
+        ? typeNodes.slice().sort(compareNodesByTimeline)
+        : [];
+    if (sorted.length === 0) {
+        return [];
+    }
+    if (String(compressionMode || '').toLowerCase() !== 'hierarchical') {
+        return sorted;
+    }
+
+    const leaves = sorted.filter(node => !hasActiveSemanticChildOfType(store, node, type));
+    const picked = [];
+    const seen = new Set();
+    for (const leaf of leaves) {
+        const candidate = getTopActiveSemanticAncestorOfType(store, leaf, type) || leaf;
+        if (!candidate?.id || seen.has(candidate.id)) {
+            continue;
+        }
+        seen.add(candidate.id);
+        picked.push(candidate);
+    }
+    return picked.sort(compareNodesByTimeline);
+}
+
+function collectAlwaysInjectNodes(store, settings, context = null) {
+    const alwaysSpecs = getEffectiveNodeTypeSchema(context, settings)
+        .filter((spec) => {
+            const tableName = String(spec?.tableName || '').trim().toLowerCase();
+            // `event_table` is always considered core storyline context and must stay injected.
+            return Boolean(spec?.alwaysInject) || tableName === 'event_table';
+        })
+        .map(spec => ({
+            type: String(spec.id || '').toLowerCase(),
+            compression: getSemanticCompressionConfig(settings, String(spec.id || '').toLowerCase(), context),
+        }))
+        .filter(spec => spec.type);
+    if (alwaysSpecs.length === 0) {
+        return [];
+    }
+
+    const picked = [];
+    const seen = new Set();
+    for (const spec of alwaysSpecs) {
+        const nodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+            .filter(node => !node.archived)
+            .filter(node => !isRecallDiagnosticNode(node))
+            .filter(node => String(node.type || '').toLowerCase() === spec.type);
+        if (nodes.length === 0) {
+            continue;
+        }
+        const selectedTypeNodes = selectVisibleNodesForType(store, nodes, spec.type, spec.compression.mode);
+        for (const node of selectedTypeNodes) {
+            if (!node?.id || seen.has(node.id)) {
+                continue;
+            }
+            seen.add(node.id);
+            picked.push(node);
+        }
+    }
+
+    return picked.sort(compareNodesByTimeline);
+}
+
+function getNodeSeqRange(node) {
+    if (Number.isFinite(Number(node?.seqTo))) {
+        return String(Number(node.seqTo));
+    }
+    return '';
+}
+
+function getLatestSeqIndex(store) {
+    return Math.max(-1, getStoreCoveredSeqTo(store));
+}
+
+function getRecentMessagesByAssistantTurns(messages, keepAssistantTurns) {
+    const source = Array.isArray(messages) ? messages : [];
+    const windowSize = Math.max(0, Math.floor(Number(keepAssistantTurns || 0)));
+    if (windowSize <= 0 || source.length === 0) {
+        return source.slice();
+    }
+
+    let assistantCount = 0;
+    let startIndex = -1;
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+        const message = source[i];
+        if (!message || message.is_system) {
+            continue;
+        }
+        if (!message.is_user) {
+            assistantCount += 1;
+            if (assistantCount >= windowSize) {
+                startIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (startIndex < 0) {
+        return source.slice();
+    }
+
+    // If the cutoff lands on an assistant message, include directly preceding user inputs for readability.
+    while (startIndex > 0) {
+        const prev = source[startIndex - 1];
+        if (!prev || prev.is_system || !prev.is_user) {
+            break;
+        }
+        startIndex -= 1;
+    }
+
+    return source.slice(startIndex);
+}
+
+function isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages) {
+    const windowSize = Math.max(0, Number(excludeMessages || 0));
+    if (windowSize <= 0 || latestSeqIndex < 0 || !node) {
+        return false;
+    }
+    const toSeq = Number(node?.seqTo ?? NaN);
+    if (!Number.isFinite(toSeq)) {
+        return false;
+    }
+    const cutoff = latestSeqIndex - windowSize + 1;
+    return Number.isFinite(cutoff) && toSeq >= cutoff;
+}
+
+function toMarkdownTable(headers, rows) {
+    if (!Array.isArray(headers) || headers.length === 0 || !Array.isArray(rows) || rows.length === 0) {
+        return '';
+    }
+    const safeHeaders = headers.map(header => normalizeText(header || '-').replaceAll('|', '\\|'));
+    const lines = [];
+    lines.push(`| ${safeHeaders.join(' | ')} |`);
+    lines.push(`| ${safeHeaders.map(() => '---').join(' | ')} |`);
+    for (const row of rows) {
+        const cells = safeHeaders.map((_, index) => normalizeText(row?.[index] ?? '').replaceAll('|', '\\|'));
+        lines.push(`| ${cells.join(' | ')} |`);
+    }
+    return lines.join('\n');
+}
+
+function getTableCellValueFromNode(node, columnName) {
+    const key = String(columnName || '').trim().toLowerCase();
+    if (!key) {
+        return '';
+    }
+    const structured = getStructuredNodeFields(node);
+    if (key === 'title' || key === 'name') {
+        return String(node.title || structured.name || '');
+    }
+    if (key === 'type') {
+        return String(node.type || '');
+    }
+    if (key === 'seq_range' || key === 'turn_range') {
+        return getNodeSeqRange(node);
+    }
+    if (key === 'summary') {
+        return getNodeSummary(node);
+    }
+    if (key === 'details') {
+        if (structured[key] !== undefined) {
+            return toDisplayScalar(structured[key]);
+        }
+        return '';
+    }
+    if (key === 'last_update_seq' || key === 'last_update_turn') {
+        return String(node.seqTo ?? '');
+    }
+    if (key === 'seq_to' || key === 'turn_to' || key === 'seq') {
+        return String(node.seqTo ?? '');
+    }
+    if (structured[key] !== undefined) {
+        return toDisplayScalar(structured[key]);
+    }
+    const parsedSummary = tryParseJsonObject(getNodeSummary(node));
+    const deepHit = findValueByKeyDeep(node?.fields, key)
+        ?? findValueByKeyDeep(parsedSummary, key);
+    if (deepHit !== undefined) {
+        return toDisplayScalar(deepHit);
+    }
+    return String(node?.fields?.[key] ?? '');
+}
+
+function buildFocusTablesText(nodes, settings, options = {}, context = null) {
+    const byBucket = new Map();
+    const sourceNodes = Array.isArray(nodes) ? nodes : [];
+    const tablePrefix = String(options?.tablePrefix || 'Focus').trim() || 'Focus';
+    const schemaMap = getNodeTypeSchemaMap(settings, context);
+    for (const node of sourceNodes) {
+        if (!node) {
+            continue;
+        }
+        const bucket = node.level === LEVEL.SEMANTIC
+            ? `semantic:${String(node.type || 'semantic')}`
+            : `timeline:${String(node.level || 'unknown')}`;
+        if (!byBucket.has(bucket)) {
+            byBucket.set(bucket, []);
+        }
+        byBucket.get(bucket).push(node);
+    }
+
+    const blocks = [];
+    for (const [bucket, bucketNodes] of byBucket.entries()) {
+        let headers = ['title', 'type', 'seq_range', 'summary'];
+        let rows = bucketNodes.map(node => [
+            String(node.title || ''),
+            String(node.type || ''),
+            getNodeSeqRange(node),
+            getNodeSummary(node),
+        ]);
+        let bucketTitle = `${tablePrefix} ${bucket}`;
+
+        if (bucket.startsWith('semantic:')) {
+            const semanticType = String(bucket.slice('semantic:'.length) || '').trim().toLowerCase();
+            const spec = schemaMap.get(semanticType);
+            const columns = Array.isArray(spec?.tableColumns) ? spec.tableColumns : [];
+            if (columns.length > 0) {
+                headers = columns;
+                rows = bucketNodes.map(node => columns.map(column => getTableCellValueFromNode(node, column)));
+            }
+            bucketTitle = `${tablePrefix} ${spec?.tableName || semanticType || bucket}`;
+        }
+
+        const table = toMarkdownTable(headers, rows);
+        if (!table) {
+            continue;
+        }
+        blocks.push(`[Table: ${bucketTitle}]\n${table}`);
+    }
+
+    return blocks.join('\n\n');
+}
+
+const DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG = Object.freeze({
+    position: Number(newWorldInfoEntryTemplate.position ?? world_info_position.before),
+    depth: Math.max(0, Math.min(10000, Math.floor(Number(newWorldInfoEntryTemplate.depth ?? 4) || 0))),
+    role: [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+        .includes(Number(newWorldInfoEntryTemplate.role))
+        ? Number(newWorldInfoEntryTemplate.role)
+        : extension_prompt_roles.SYSTEM,
+});
+
+function normalizeManagedLorebookEntryConfig(entryConfig = {}, fallbackConfig = DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG) {
+    const fallback = fallbackConfig && typeof fallbackConfig === 'object'
+        ? fallbackConfig
+        : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG;
+    const fallbackPosition = SUPPORTED_WORLD_INFO_POSITIONS.includes(Number(fallback.position))
+        ? Number(fallback.position)
+        : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.position;
+    const fallbackDepth = Math.max(
+        0,
+        Math.min(10000, Math.floor(Number(fallback.depth ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.depth) || 0)),
+    );
+    const fallbackRole = [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+        .includes(Number(fallback.role))
+        ? Number(fallback.role)
+        : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.role;
+    const numericPosition = Number(entryConfig?.position);
+    const numericRole = Number(entryConfig?.role);
+
+    return {
+        position: SUPPORTED_WORLD_INFO_POSITIONS.includes(numericPosition) ? numericPosition : fallbackPosition,
+        depth: Math.max(0, Math.min(10000, Math.floor(Number(entryConfig?.depth ?? fallbackDepth) || 0))),
+        role: [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+            .includes(numericRole) ? numericRole : fallbackRole,
+    };
+}
+
+function getProjectionLorebookEntryConfig(commentPrefix, settings) {
+    if ([PERSISTENT_LOREBOOK_COMMENT_PREFIX, RUNTIME_LOREBOOK_COMMENT_PREFIX].includes(String(commentPrefix || '').trim())) {
+        return normalizeManagedLorebookEntryConfig({
+            position: normalizeRecallInjectPosition(settings?.recallInjectPosition),
+            depth: normalizeRecallInjectDepth(settings?.recallInjectDepth),
+            role: normalizeRecallInjectRole(settings?.recallInjectRole),
+        });
+    }
+    return DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG;
+}
+
+function createRuntimeLorebookEntry(uid, comment, content, order, entryConfig = DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG) {
+    const normalizedEntryConfig = normalizeManagedLorebookEntryConfig(entryConfig);
+    return {
+        uid,
+        ...structuredClone(newWorldInfoEntryTemplate),
+        key: [],
+        keysecondary: [],
+        comment: String(comment || ''),
+        content: String(content || ''),
+        constant: true,
+        selective: true,
+        disable: false,
+        order: Number(order || 100),
+        preventRecursion: true,
+        excludeRecursion: true,
+        useProbability: true,
+        probability: 100,
+        position: normalizedEntryConfig.position,
+        depth: normalizedEntryConfig.depth,
+        role: normalizedEntryConfig.role,
+    };
+}
+
+function syncMutableGenerationPayloadState(target, source) {
+    if (!target || typeof target !== 'object' || !source || typeof source !== 'object' || target === source) {
+        return;
+    }
+
+    const mutableKeys = [
+        'requestRescan',
+        '__lukerRpgMemoryNeedRescan',
+        '__lukerRpgMemoryInjected',
+        'worldInfoResolution',
+        'worldInfoResolutionOverride',
+        'worldInfoBeforeEntries',
+        'worldInfoAfterEntries',
+        'worldInfoDepth',
+        'worldInfoExamples',
+        'anBefore',
+        'anAfter',
+        'outletEntries',
+        'globalScanData',
+        'chatForWI',
+        'maxContext',
+        'useCustomChatForWI',
+    ];
+
+    for (const key of mutableKeys) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+            target[key] = source[key];
+        }
+    }
+}
+
+async function ensureSharedLorebook(context, allowCreate = true) {
+    const loaded = await context.loadWorldInfo(SHARED_LOREBOOK_NAME);
+    if (loaded && typeof loaded === 'object') {
+        return SHARED_LOREBOOK_NAME;
+    }
+    if (!allowCreate) {
+        return '';
+    }
+
+    await context.saveWorldInfo(SHARED_LOREBOOK_NAME, { entries: {} }, true);
+    return SHARED_LOREBOOK_NAME;
+}
+
+async function refreshSharedLorebookVisibilityAndSelection(context, selected) {
+    if (typeof selected === 'boolean') {
+        await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, selected, { refreshList: true });
+    }
+}
+
+function getManagedLorebookEntries(data, commentPrefix) {
+    const prefix = `${String(commentPrefix || '').trim()}::`;
+    if (!prefix || !data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+        return [];
+    }
+    return Object.entries(data.entries)
+        .filter(([, entry]) => String(entry?.comment || '').startsWith(prefix))
+        .map(([uid, entry]) => ({
+            uid: String(uid || ''),
+            comment: String(entry?.comment || ''),
+            content: normalizeMultilineText(entry?.content || ''),
+            order: Number(entry?.order || 0),
+            position: Number(entry?.position ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.position),
+            depth: Math.max(
+                0,
+                Math.min(10000, Math.floor(Number(entry?.depth ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.depth) || 0)),
+            ),
+            role: [extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+                .includes(Number(entry?.role))
+                ? Number(entry.role)
+                : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.role,
+        }));
+}
+
+function getNextLorebookUid(entries) {
+    return Object.keys(entries || {})
+        .map(uid => Number(uid))
+        .filter(Number.isFinite)
+        .reduce((max, value) => Math.max(max, value), -1) + 1;
+}
+
+function areManagedLorebookEntriesEqual(
+    existingEntries,
+    sections,
+    commentPrefix,
+    baseOrder,
+    entryConfig = DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG,
+) {
+    const normalizedSections = Array.isArray(sections) ? sections : [];
+    const normalizedExisting = Array.isArray(existingEntries) ? existingEntries : [];
+    const normalizedEntryConfig = normalizeManagedLorebookEntryConfig(entryConfig);
+    if (normalizedExisting.length !== normalizedSections.length) {
+        return false;
+    }
+    const byComment = new Map(normalizedExisting.map(entry => [String(entry.comment || ''), entry]));
+    if (byComment.size !== normalizedExisting.length) {
+        return false;
+    }
+    for (let i = 0; i < normalizedSections.length; i += 1) {
+        const [name, text] = normalizedSections[i];
+        const comment = `${String(commentPrefix || '').trim()}::${String(name || '').trim()}`;
+        const expectedContent = normalizeMultilineText(text || '');
+        const expectedOrder = baseOrder + i;
+        const existing = byComment.get(comment);
+        if (!existing) {
+            return false;
+        }
+        if (normalizeMultilineText(existing.content || '') !== expectedContent) {
+            return false;
+        }
+        if (Number(existing.order || 0) !== expectedOrder) {
+            return false;
+        }
+        if (Number(existing.position ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.position) !== normalizedEntryConfig.position) {
+            return false;
+        }
+        if (Math.max(
+            0,
+            Math.min(10000, Math.floor(Number(existing.depth ?? DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.depth) || 0)),
+        ) !== normalizedEntryConfig.depth) {
+            return false;
+        }
+        if (([extension_prompt_roles.SYSTEM, extension_prompt_roles.USER, extension_prompt_roles.ASSISTANT]
+            .includes(Number(existing.role))
+            ? Number(existing.role)
+            : DEFAULT_MANAGED_LOREBOOK_ENTRY_CONFIG.role) !== normalizedEntryConfig.role) {
+            return false;
+        }
+    }
+    return true;
+}
+
+async function upsertManagedLorebookProjection(context, settings, {
+    commentPrefix,
+    sections,
+    orderBase,
+    allowCreate = true,
+    entryConfig = undefined,
+} = {}) {
+    const prefix = String(commentPrefix || '').trim();
+    if (!prefix) {
+        return { changed: false, bookName: '' };
+    }
+    const resolvedEntryConfig = normalizeManagedLorebookEntryConfig(
+        entryConfig ?? getProjectionLorebookEntryConfig(prefix, settings),
+    );
+    const normalizedSections = (Array.isArray(sections) ? sections : [])
+        .map((section) => [String(section?.[0] || '').trim(), normalizeMultilineText(section?.[1] || '')])
+        .filter(([name, text]) => Boolean(name) && Boolean(text));
+    let bookName = SHARED_LOREBOOK_NAME;
+    let data = null;
+    const loaded = await context.loadWorldInfo(bookName);
+    if (loaded && typeof loaded === 'object') {
+        data = loaded;
+    }
+
+    if (!data) {
+        if (normalizedSections.length === 0 || !allowCreate) {
+            return { changed: false, bookName };
+        }
+        bookName = await ensureSharedLorebook(context, true);
+        const created = await context.loadWorldInfo(bookName);
+        data = created && typeof created === 'object' ? created : { entries: {} };
+    }
+
+    if (!data.entries || typeof data.entries !== 'object') {
+        data.entries = {};
+    }
+
+    const baseOrder = Math.max(100, Number(orderBase || settings?.lorebookEntryOrderBase || 9800));
+    const existingEntries = getManagedLorebookEntries(data, prefix);
+    if (areManagedLorebookEntriesEqual(existingEntries, normalizedSections, prefix, baseOrder, resolvedEntryConfig)) {
+        return { changed: false, bookName };
+    }
+
+    for (const entry of existingEntries) {
+        delete data.entries[entry.uid];
+    }
+
+    let nextUid = getNextLorebookUid(data.entries);
+    for (let i = 0; i < normalizedSections.length; i += 1) {
+        const [name, text] = normalizedSections[i];
+        data.entries[nextUid] = createRuntimeLorebookEntry(
+            nextUid,
+            `${prefix}::${name}`,
+            text,
+            baseOrder + i,
+            resolvedEntryConfig,
+        );
+        nextUid += 1;
+    }
+
+    await context.saveWorldInfo(bookName, data, true);
+    if (bookName === SHARED_LOREBOOK_NAME) {
+        await refreshSharedLorebookVisibilityAndSelection(context, Boolean(settings?.enabled));
+    }
+    return { changed: true, bookName };
+}
+
+async function syncPersistentLorebookProjection(context, settings, store) {
+    const semanticNodes = listNodesByLevel(store, LEVEL.SEMANTIC)
+        .filter(node => node && !node.archived);
+    if (semanticNodes.length === 0) {
+        const changed = await clearPersistentLorebookProjection(context, settings);
+        return {
+            changed,
+            corePacket: '',
+            alwaysInjectNodes: [],
+        };
+    }
+    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
+    const corePacket = normalizeMultilineText(
+        buildFocusTablesText(alwaysInjectNodes, settings, { tablePrefix: 'Core' }, context),
+    );
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: PERSISTENT_LOREBOOK_COMMENT_PREFIX,
+        sections: [['CORE_PACKET', corePacket]],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)),
+        allowCreate: true,
+    });
+    return {
+        changed: Boolean(result?.changed),
+        corePacket,
+        alwaysInjectNodes,
+    };
+}
+
+async function syncRuntimeLorebookProjection(context, settings, store) {
+    const projection = getLastRecallProjection(store);
+    const focusPacket = normalizeMultilineText(projection?.blocks?.focusPacket || projection?.focusPacket || '');
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: RUNTIME_LOREBOOK_COMMENT_PREFIX,
+        sections: focusPacket ? [['FOCUS_PACKET', focusPacket]] : [],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)) + 50,
+        allowCreate: Boolean(focusPacket),
+    });
+    return {
+        changed: Boolean(result?.changed),
+        focusPacket,
+    };
+}
+
+async function clearRuntimeLorebookProjection(context, settings) {
+    const result = await syncRuntimeLorebookProjection(context, settings, { lastRecallProjection: null });
+    return Boolean(result?.changed);
+}
+
+async function clearPersistentLorebookProjection(context, settings) {
+    const result = await upsertManagedLorebookProjection(context, settings, {
+        commentPrefix: PERSISTENT_LOREBOOK_COMMENT_PREFIX,
+        sections: [],
+        orderBase: Math.max(100, Number(settings.lorebookEntryOrderBase || 9800)),
+        allowCreate: false,
+    });
+    return Boolean(result?.changed);
+}
+
+async function clearAllMemoryLorebookProjection(context, settings) {
+    await clearRuntimeLorebookProjection(context, settings);
+    await clearPersistentLorebookProjection(context, settings);
+}
+
+async function syncMemoryLorebookActivation(context, settings) {
+    if (settings?.enabled) {
+        await ensureSharedLorebook(context, true);
+        await refreshSharedLorebookVisibilityAndSelection(context, true);
+        return;
+    }
+
+    await setGlobalWorldInfoSelection(SHARED_LOREBOOK_NAME, false);
+}
+
+async function syncPersistentProjectionForCurrentChat(context = getContext()) {
+    try {
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        await syncMemoryLorebookActivation(context, effectiveSettings);
+        if (!effectiveSettings.enabled) {
+            refreshUiStats();
+            return;
+        }
+        const store = await ensureStoreSyncedWithChat(context);
+        if (!store) {
+            await clearAllMemoryLorebookProjection(context, effectiveSettings);
+            refreshUiStats();
+            return;
+        }
+        await syncPersistentLorebookProjection(context, effectiveSettings, store);
+        refreshUiStats();
+    } catch (error) {
+        console.warn(`[${MODULE_NAME}] Failed to sync persistent lorebook projection on chat open`, error);
+        refreshUiStats();
+    }
+}
+
+async function runLLMDrivenRecall(context, store, payload) {
+    const settings = getEffectiveSettings(context, getSettings());
+    if (!settings.recallEnabled) {
+        return { selectedNodes: [], alwaysInjectNodes: [], trace: [], query: '' };
+    }
+    const abortSignal = isAbortSignalLike(payload?.signal) ? payload.signal : null;
+    const recallRunToken = Number(payload?.__lukerRpgMemoryRecallRunToken || 0);
+    throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+
+    const queryBundle = getRecallQueryBundle(payload, context, settings);
+    const query = normalizeText(queryBundle.fullText || '');
+    const runtimeWorldInfo = buildRuntimeWorldInfoFromPayload(payload);
+    const forceWorldInfoResimulate = Boolean(payload?.forceWorldInfoResimulate);
+    const worldInfoMessages = Array.isArray(payload?.coreChat) ? payload.coreChat : [];
+    const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
+    const latestSeqIndex = getLatestSeqIndex(store);
+    const excludeMessages = Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns));
+    const rootCandidates = collectRootCandidates(store, settings, queryBundle, alwaysInjectNodes, context, {
+        latestSeqIndex,
+        excludeMessages,
+    });
+    const maxIterations = Math.max(2, Math.min(6, Number(settings.recallMaxIterations || 3)));
+    const trace = [];
+    const alwaysInjectIds = alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean);
+    const alwaysInjectSet = new Set(alwaysInjectIds);
+    const routeCandidates = rootCandidates.filter((node) => node?.id && !alwaysInjectSet.has(String(node.id)));
+
+    if (routeCandidates.length === 0) {
+        trace.push({
+            step: 'skip_recall_route_no_candidates',
+            latest_seq: latestSeqIndex,
+            exclude_messages: excludeMessages,
+            always_inject_count: alwaysInjectNodes.length,
+        });
+        if (alwaysInjectNodes.length > 0) {
+            trace.push({
+                step: 'always_inject',
+                node_ids: alwaysInjectNodes.map(node => node.id),
+            });
+        }
+        return {
+            selectedNodes: [],
+            alwaysInjectNodes,
+            query,
+            trace,
+        };
+    }
+
+    let selectedIds = [];
+    let currentCandidates = routeCandidates.slice();
+    let latestRoute = null;
+    let earlyFinalized = false;
+    const drillBudget = Math.max(0, maxIterations - 1);
+
+    for (let pass = 1; pass <= drillBudget; pass++) {
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+        const route = await chooseRecallRoute(context, settings, {
+            store,
+            query,
+            queryBundle,
+            candidates: currentCandidates,
+            alwaysInjectIds,
+            worldInfoMessages,
+            runtimeWorldInfo,
+            forceWorldInfoResimulate,
+            abortSignal,
+            recallRunToken,
+        });
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+        latestRoute = route;
+        trace.push({
+            step: `plan_pass_${pass}`,
+            route,
+            stage1_candidates: currentCandidates.map(node => node.id),
+        });
+        if (Array.isArray(route?.referenced_always_inject_ids) && route.referenced_always_inject_ids.length > 0) {
+            trace.push({
+                step: `plan_referenced_always_inject_${pass}`,
+                node_ids: route.referenced_always_inject_ids,
+            });
+        }
+
+        if (route.action === 'finalize') {
+            selectedIds = Array.isArray(route.selected_node_ids) ? route.selected_node_ids : [];
+            trace.push({
+                step: `plan_early_finalize_${pass}`,
+                selected_ids: selectedIds,
+                reason: route.reason || '',
+            });
+            earlyFinalized = true;
+            break;
+        }
+
+        if (route.action !== 'drill') {
+            trace.push({
+                step: `plan_stop_non_drill_${pass}`,
+                action: String(route.action || ''),
+            });
+            break;
+        }
+
+        const expandedCandidates = expandRouteCandidates(store, route, currentCandidates);
+        trace.push({
+            step: `expand_from_plan_${pass}`,
+            expanded_candidates: expandedCandidates.map(node => node.id),
+        });
+
+        if (expandedCandidates.length <= currentCandidates.length) {
+            currentCandidates = expandedCandidates;
+            trace.push({
+                step: `drill_stagnated_${pass}`,
+                candidate_count: currentCandidates.length,
+            });
+            break;
+        }
+
+        currentCandidates = expandedCandidates;
+    }
+
+    if (!earlyFinalized) {
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+        const selectedRaw = await chooseFocusNodes(context, settings, {
+            store,
+            query,
+            queryBundle,
+            route: latestRoute || {},
+            candidates: currentCandidates,
+            alwaysInjectIds,
+            worldInfoMessages,
+            runtimeWorldInfo,
+            forceWorldInfoResimulate,
+            abortSignal,
+            recallRunToken,
+        });
+        throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+        selectedIds = Array.isArray(selectedRaw.selected_node_ids) ? selectedRaw.selected_node_ids : [];
+        trace.push({
+            step: 'finalize_pass',
+            selected_ids: selectedIds,
+            reason: selectedRaw.reason || '',
+        });
+    }
+
+    const droppedAlwaysInjectIds = [];
+    const filteredSelectionIds = [];
+    for (const id of selectedIds) {
+        const key = String(id || '').trim();
+        if (!key) {
+            continue;
+        }
+        if (alwaysInjectSet.has(key)) {
+            droppedAlwaysInjectIds.push(key);
+            continue;
+        }
+        filteredSelectionIds.push(key);
+    }
+    if (droppedAlwaysInjectIds.length > 0) {
+        trace.push({
+            step: 'drop_always_inject_from_selection',
+            dropped_always_inject_ids: droppedAlwaysInjectIds,
+        });
+    }
+
+    const selectedNodesRaw = filteredSelectionIds
+        .map(id => store.nodes[id])
+        .filter(Boolean);
+    const dedupedSelectedNodes = [];
+    const selectedNodeSeen = new Set();
+    for (const node of selectedNodesRaw) {
+        if (!node?.id || selectedNodeSeen.has(node.id)) {
+            continue;
+        }
+        selectedNodeSeen.add(node.id);
+        dedupedSelectedNodes.push(node);
+    }
+    const selectedNodes = dedupedSelectedNodes;
+    if (alwaysInjectNodes.length > 0) {
+        trace.push({
+            step: 'always_inject',
+            node_ids: alwaysInjectNodes.map(node => node.id),
+        });
+    }
+
+    const excludedNodeIds = [];
+    const filteredSelectedNodes = selectedNodes.filter((node) => {
+        const excluded = isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages);
+        if (excluded && node?.id) {
+            excludedNodeIds.push(node.id);
+        }
+        return !excluded;
+    }).sort(compareNodesByTimeline);
+    if (excludeMessages > 0 && excludedNodeIds.length > 0) {
+        trace.push({
+            step: 'exclude_recent_window',
+            exclude_messages: excludeMessages,
+            latest_seq: latestSeqIndex,
+            excluded_node_ids: excludedNodeIds,
+        });
+    }
+
+    return {
+        selectedNodes: filteredSelectedNodes,
+        alwaysInjectNodes,
+        query,
+        trace,
+    };
+}
+
+async function rebuildStoreFromCurrentChat(context, { abortSignal = null, onBatchStart = null, targetHint = null } = {}) {
+    const chatKey = getChatKey(context, targetHint);
+    const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context, targetHint);
+    if (!target) {
+        return null;
+    }
+
+    const rebuilt = createEmptyStore();
+    let hasCommittedBatch = false;
+    const extracted = await runExtractionForStore(context, rebuilt, {
+        force: true,
+        startSeq: 1,
+        showCompressionToast: false,
+        abortSignal,
+        onBatchStart,
+        onBatchApplied: async ({ beginSeq, endSeq }) => {
+            if (!hasCommittedBatch) {
+                const currentBatchEntries = getRollbackHistory(chatKey)
+                    .filter(entry => Number(entry?.seqFrom || 0) === Number(beginSeq || 0) && Number(entry?.seqTo || 0) === Number(endSeq || 0));
+                clearRollbackHistory(chatKey);
+                for (const entry of currentBatchEntries) {
+                    recordRollbackEntry(chatKey, entry);
+                }
+                hasCommittedBatch = true;
+            }
+            await commitMemoryStoreReplaceByChatKey(context, chatKey, rebuilt, endSeq, { syncPersistentProjection: true });
+        },
+        onCompressionApplied: async ({ roundSeqTo }) => {
+            await commitMemoryStoreReplaceByChatKey(
+                context,
+                chatKey,
+                rebuilt,
+                Number(roundSeqTo || getStoreCoveredSeqTo(rebuilt) || 0),
+                { syncPersistentProjection: true },
+            );
+        },
+        rebuildCreateOnly: true,
+    });
+    const latestSeq = Math.max(0, Number(rebuilt?.lastExtractionDebug?.latestSeq || 0));
+    if (!extracted && latestSeq > 0 && String(rebuilt?.lastExtractionDebug?.reason || '') !== 'no_graph_changes') {
+        throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
+    }
+    updateStoreSourceState(rebuilt, context);
+    memoryStoreTargets.set(chatKey, target);
+    const persistedStore = await commitMemoryStoreReplaceByChatKey(
+        context,
+        chatKey,
+        rebuilt,
+        Number(rebuilt?.lastExtractionDebug?.latestSeq || getStoreCoveredSeqTo(rebuilt) || 0),
+        { syncPersistentProjection: true },
+    );
+    return persistedStore;
+}
+
+function buildPlayableFramesFromContext(context) {
+    const frames = [];
+    let seq = 0;
+    for (const message of getAssistantChatMessages(context)) {
+        const text = normalizeText(message?.mes || '');
+        if (!text) {
+            continue;
+        }
+        seq += 1;
+        frames.push({
+            seq,
+            is_user: Boolean(message?.is_user),
+            name: String(message?.name || ''),
+            mes: text,
+            send_date: String(message?.send_date || ''),
+            last_user_name: String(message?.last_user_name || ''),
+            last_user_mes: String(message?.last_user_mes || ''),
+            last_user_send_date: String(message?.last_user_send_date || ''),
+        });
+    }
+    return frames;
+}
+
+function rebaseStoreToChatBaseline(store, context) {
+    if (!store || typeof store !== 'object') {
+        return;
+    }
+    const baselineSeq = Math.max(0, Math.floor(Number(buildPlayableFramesFromContext(context).length || 0)));
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        node.seqTo = baselineSeq;
+    }
+    store.appliedSeqTo = baselineSeq;
+    store.loggedSeqTo = baselineSeq;
+    store.seqCounter = baselineSeq;
+    store.lastRecallTrace = [];
+    store.lastRecallProjection = null;
+}
+
+function getSemanticCoverageSeq(store) {
+    const nodes = Object.values(store?.nodes || {})
+        .filter(node => node && !node.archived && node.level === LEVEL.SEMANTIC);
+    if (nodes.length === 0) {
+        return 0;
+    }
+    const maxSeq = nodes.reduce((maxSeq, node) => {
+        const seq = Number(node?.seqTo ?? 0);
+        if (!Number.isFinite(seq)) {
+            return maxSeq;
+        }
+        return Math.max(maxSeq, Math.max(0, Math.floor(seq)));
+    }, 0);
+    return Number.isFinite(maxSeq) ? maxSeq : 0;
+}
+
+function computeExtractionWindow(context, store, startSeq = null, settings = null) {
+    const effectiveSettings = settings || getEffectiveSettings(context, getSettings());
+    const frames = buildPlayableFramesFromContext(context);
+    const latestSeq = getExtractableLatestSeq(frames.length, effectiveSettings);
+    const coveredSeqTo = Math.min(latestSeq, getStoreCoveredSeqTo(store));
+    const hasExplicitStartSeq = startSeq !== null
+        && startSeq !== undefined
+        && Number.isFinite(Number(startSeq));
+    const beginSeq = hasExplicitStartSeq
+        ? Math.max(1, Math.floor(Number(startSeq)))
+        : coveredSeqTo + 1;
+    return {
+        frames,
+        latestSeq,
+        coveredSeqTo,
+        beginSeq,
+        gap: latestSeq - coveredSeqTo,
+    };
+}
+
+function formatExtractionRangeToast(beginSeq, endSeq, latestSeq) {
+    const begin = Math.max(1, Math.floor(Number(beginSeq || 0)));
+    const end = Math.max(begin, Math.floor(Number(endSeq || begin)));
+    const latest = Math.max(end, Math.floor(Number(latestSeq || end)));
+    return i18nFormat('Memory graph update running... seq ${0}-${1} / latest ${2}', begin, end, latest);
+}
+
+function truncateStoreFromSeq(store, fromSeq, chatKey = '') {
+    const startSeq = Math.max(1, Math.floor(Number(fromSeq || 0)));
+    if (!store || typeof store !== 'object' || !Number.isFinite(startSeq) || startSeq <= 0) {
+        return;
+    }
+    trimRollbackHistoryFromSeq(chatKey, startSeq);
+    const removeIds = new Set();
+    for (const [id, node] of Object.entries(store.nodes || {})) {
+        const nodeSeq = Number(node?.seqTo || 0);
+        if (Number.isFinite(nodeSeq) && nodeSeq >= startSeq) {
+            removeIds.add(String(id || ''));
+        }
+    }
+    if (removeIds.size === 0) {
+        const covered = Math.max(0, startSeq - 1);
+        store.appliedSeqTo = covered;
+        store.loggedSeqTo = covered;
+        store.seqCounter = Math.max(getSemanticCoverageSeq(store), covered);
+        return;
+    }
+
+    for (const id of removeIds) {
+        delete store.nodes[id];
+    }
+    for (const node of Object.values(store.nodes || {})) {
+        if (!node || typeof node !== 'object') {
+            continue;
+        }
+        if (Array.isArray(node.childrenIds)) {
+            node.childrenIds = node.childrenIds.filter(childId => !removeIds.has(String(childId || '')));
+        } else {
+            node.childrenIds = [];
+        }
+        if (String(node.parentId || '').trim() && removeIds.has(String(node.parentId || '').trim())) {
+            node.parentId = '';
+        }
+    }
+    if (Array.isArray(store.edges)) {
+        store.edges = store.edges.filter(edge => {
+            const from = String(edge?.from || '');
+            const to = String(edge?.to || '');
+            return from && to && !removeIds.has(from) && !removeIds.has(to);
+        });
+    }
+    const covered = Math.max(0, startSeq - 1);
+    store.appliedSeqTo = covered;
+    store.loggedSeqTo = covered;
+    store.seqCounter = Math.max(getSemanticCoverageSeq(store), covered);
+}
+
+function alignStoreCoverageToChat(store, context, settings = null) {
+    if (!store || typeof store !== 'object') {
+        return { changed: false, latestSeq: 0 };
+    }
+    const effectiveSettings = settings || getEffectiveSettings(context, getSettings());
+    const frames = buildPlayableFramesFromContext(context);
+    const latestSeq = getExtractableLatestSeq(frames.length, effectiveSettings);
+    updateStoreSourceState(store, context);
+    return { changed: false, latestSeq };
+}
+
+async function ensureStoreSyncedWithChat(context, targetHint = null) {
+    const loaded = await ensureMemoryStoreLoaded(context, { targetHint });
+    let store = getMemoryStore(context, targetHint) || loaded || null;
+    if (!store) {
+        return null;
+    }
+    const target = buildMemoryTargetFromContext(context, targetHint);
+    if (!target) {
+        return store;
+    }
+    updateStoreSourceState(store, context);
+    return store;
+}
+
+async function injectMemoryPrompts(context, payload) {
+    const settings = getEffectiveSettings(context, getSettings());
+    const generationType = String(payload?.type || '').trim().toLowerCase();
+    const isDryRun = payload?.dryRun === true;
+    const generationAbortSignal = isAbortSignalLike(payload?.__lukerRpgMemoryGenerationSignal)
+        ? payload.__lukerRpgMemoryGenerationSignal
+        : payload?.signal;
+    const recallRunToken = Number(payload?.__lukerRpgMemoryRecallRunToken || 0);
+    if (payload && typeof payload === 'object') {
+        payload.__lukerRpgMemoryNeedRescan = false;
+    }
+    if (isDryRun || generationType === 'quiet') {
+        return false;
+    }
+    if (!RECALL_ALLOWED_GENERATION_TYPES.has(generationType)) {
+        return false;
+    }
+    if (!Array.isArray(payload?.coreChat)) {
+        return false;
+    }
+    if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        updateUiStatus(isAbortSignalLike(generationAbortSignal) && generationAbortSignal.aborted
+            ? i18n('Generation aborted. Skipped memory recall.')
+            : i18n('Memory recall cancelled by user.'));
+        return false;
+    }
+
+    if (!settings.enabled) {
+        await clearAllMemoryLorebookProjection(context, settings);
+        updateUiStatus(i18n('Memory disabled, cleared memory lorebook injections.'));
+        return false;
+    }
+
+    const targetHint = normalizeExplicitChatStateTarget(payload?.chatStateTarget);
+    const store = await ensureStoreSyncedWithChat(context, targetHint);
+    if (!store) {
+        updateUiStatus(i18n('Memory store unavailable for current chat.'));
+        return false;
+    }
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    const persistentSync = await syncPersistentLorebookProjection(context, settings, store);
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    const corePacket = normalizeMultilineText(persistentSync.corePacket || '');
+    if (isAbortSignalLike(payload?.signal) && payload.signal.aborted) {
+        updateUiStatus(isAbortSignalLike(generationAbortSignal) && generationAbortSignal.aborted
+            ? i18n('Generation aborted. Skipped memory recall.')
+            : i18n('Memory recall cancelled by user.'));
+        return false;
+    }
+    const chatKey = getChatKey(context, targetHint);
+    const anchor = buildLastUserAnchor(context, payload?.coreChat);
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    const shouldReuseSnapshot = settings.recallEnabled
+        && RECALL_REUSE_GENERATION_TYPES.has(generationType)
+        && canReuseLatestRecallSnapshot(chatKey, anchor);
+    if (shouldReuseSnapshot) {
+        const focusPacket = normalizeMultilineText(latestRecallSnapshot?.blocks?.focusPacket || '');
+        const blocks = { corePacket, focusPacket };
+        store.lastRecallTrace = structuredClone(Array.isArray(latestRecallSnapshot.trace) ? latestRecallSnapshot.trace : []);
+        store.lastRecallProjection = {
+            at: Date.now(),
+            blocks,
+        };
+        await persistMemoryStoreByChatKey(context, chatKey, store);
+        throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+        const runtimeSync = await syncRuntimeLorebookProjection(context, settings, store);
+        throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+        if (payload && typeof payload === 'object') {
+            payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed || runtimeSync.changed);
+        }
+        updateUiStatus(i18nFormat('Recall ready. selected=${0}', Math.max(0, Number(latestRecallSnapshot.selectedCount || 0))));
+        return Boolean(persistentSync.changed || runtimeSync.changed);
+    }
+
+    const { selectedNodes, trace } = await runLLMDrivenRecall(context, store, payload);
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    store.lastRecallTrace = trace;
+
+    const blocks = {
+        corePacket,
+        focusPacket: normalizeMultilineText(buildFocusTablesText(selectedNodes, settings, { tablePrefix: 'Recall' }, context)),
+    };
+    store.lastRecallProjection = {
+        at: Date.now(),
+        blocks,
+    };
+    await persistMemoryStoreByChatKey(context, chatKey, store);
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    const runtimeSync = await syncRuntimeLorebookProjection(context, settings, store);
+    throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+    if (payload && typeof payload === 'object') {
+        payload.__lukerRpgMemoryNeedRescan = Boolean(persistentSync.changed || runtimeSync.changed);
+    }
+    latestRecallSnapshot = anchor
+        ? {
+            chatKey,
+            anchorFloor: anchor.floor,
+            anchorPlayableFloor: anchor.playableFloor,
+            anchorAssistantFloor: anchor.assistantFloor,
+            anchorHash: anchor.hash,
+            blocks: structuredClone(blocks),
+            trace: structuredClone(trace),
+            selectedCount: selectedNodes.length,
+        }
+        : null;
+    updateUiStatus(i18nFormat('Recall ready. selected=${0}', selectedNodes.length));
+    return Boolean(persistentSync.changed || runtimeSync.changed);
+}
+
+async function safeInjectMemoryPrompts(context, payload, trigger = 'after_world_info_scan') {
+    const settings = getSettings();
+    const generationType = String(payload?.type || '').trim().toLowerCase();
+    clearPersistentRuntimeNotice();
+    const shouldShowRuntimeToast = settings.enabled
+        && settings.recallEnabled
+        && RECALL_ALLOWED_GENERATION_TYPES.has(generationType)
+        && payload?.dryRun !== true
+        && generationType !== 'quiet'
+        && Array.isArray(payload?.coreChat);
+    if (activeRecallAbortController && !activeRecallAbortController.signal.aborted) {
+        activeRecallAbortController.abort();
+    }
+    const recallRunToken = ++activeRecallRunToken;
+    const recallAbortController = shouldShowRuntimeToast ? new AbortController() : null;
+    if (recallAbortController) {
+        activeRecallAbortController = recallAbortController;
+    }
+    const linkedAbort = linkAbortSignals(payload?.signal, recallAbortController?.signal);
+    const effectivePayload = linkedAbort.signal && linkedAbort.signal !== payload?.signal
+        ? {
+            ...payload,
+            signal: linkedAbort.signal,
+            __lukerRpgMemoryGenerationSignal: payload?.signal || null,
+            __lukerRpgMemoryRecallRunToken: recallRunToken,
+        }
+        : {
+            ...payload,
+            __lukerRpgMemoryRecallRunToken: recallRunToken,
+        };
+    let stopRequestedByUser = false;
+    let resolveStopRequest = null;
+    const stopRequestPromise = shouldShowRuntimeToast
+        ? new Promise((resolve) => {
+            resolveStopRequest = () => {
+                if (stopRequestedByUser) {
+                    return;
+                }
+                stopRequestedByUser = true;
+                if (activeRecallRunToken === recallRunToken) {
+                    activeRecallRunToken += 1;
+                }
+                void (async () => {
+                    if (recallAbortController && !recallAbortController.signal.aborted) {
+                        recallAbortController.abort();
+                    }
+                    await abortActiveRecallRequests(recallRunToken);
+                    resolve({ stopped: true });
+                })();
+            };
+        })
+        : null;
+    if (shouldShowRuntimeToast) {
+        showRuntimeInfoToast(i18n('Memory recall running...'), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                resolveStopRequest?.();
+            },
+        });
+    }
+    try {
+        const injectTask = (async () => {
+            const injected = await injectMemoryPrompts(context, effectivePayload);
+            return { stopped: false, injected: Boolean(injected) };
+        })();
+        if (stopRequestPromise) {
+            void injectTask.catch((error) => {
+                if (!stopRequestedByUser) {
+                    return;
+                }
+                if (!isAbortError(error, effectivePayload?.signal)) {
+                    console.warn(`[${MODULE_NAME}] Recall task finished after user stop`, error);
+                }
+            });
+        }
+        const result = stopRequestPromise
+            ? await Promise.race([injectTask, stopRequestPromise])
+            : await injectTask;
+        if (result?.stopped) {
+            syncMutableGenerationPayloadState(payload, effectivePayload);
+            if (payload && typeof payload === 'object') {
+                payload.__lukerRpgMemoryNeedRescan = false;
+                payload.requestRescan = false;
+            }
+            updateUiStatus(i18n('Memory recall cancelled by user.'));
+            clearPersistentRuntimeNotice();
+            return false;
+        }
+        syncMutableGenerationPayloadState(payload, effectivePayload);
+        const injected = Boolean(result?.injected);
+        if (injected && payload && typeof payload === 'object') {
+            payload.__lukerRpgMemoryInjected = true;
+        }
+        clearPersistentRuntimeNotice();
+        return Boolean(injected);
+    } catch (error) {
+        syncMutableGenerationPayloadState(payload, effectivePayload);
+        if (isAbortError(error, effectivePayload?.signal)) {
+            if (payload && typeof payload === 'object') {
+                payload.__lukerRpgMemoryNeedRescan = false;
+                payload.requestRescan = false;
+            }
+            const generationAborted = Boolean(isAbortSignalLike(payload?.signal) && payload.signal.aborted);
+            updateUiStatus(generationAborted
+                ? i18n('Generation aborted. Skipped memory recall.')
+                : i18n('Memory recall cancelled by user.'));
+            clearPersistentRuntimeNotice();
+            return false;
+        }
+        console.error(`[${MODULE_NAME}] Recall injection failed during ${trigger}`, error);
+        const failureText = i18nFormat(
+            'Recall injection failed (${0}): ${1}',
+            trigger,
+            String(error?.message || error),
+        );
+        updateUiStatus(failureText);
+        showPersistentRuntimeNotice(failureText);
+        return false;
+    } finally {
+        linkedAbort.cleanup();
+        if (activeRecallAbortController === recallAbortController) {
+            activeRecallAbortController = null;
+        }
+        if (shouldShowRuntimeToast) {
+            clearRuntimeInfoToast();
+        }
+    }
+}
+
+async function captureLatestAssistantAfterGeneration() {
+    const context = getContext();
+    const settings = getSettings();
+    if (!settings.enabled) {
+        return;
+    }
+    if (!Array.isArray(context.chat) || context.chat.length === 0) {
+        return;
+    }
+    const index = context.chat.length - 1;
+    const message = context.chat[index];
+    if (!message || message.is_system || message.is_user) {
+        return;
+    }
+    if (!normalizeText(message.mes || '')) {
+        return;
+    }
+    await ensureMemoryStoreLoaded(context);
+    scheduleExtraction(context);
+}
+
+function getScheduledExtractionSingleFlightState(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return null;
+    }
+    if (!scheduledExtractionSingleFlightStates.has(key)) {
+        scheduledExtractionSingleFlightStates.set(key, {
+            running: false,
+            rerun: false,
+            cancelled: false,
+        });
+    }
+    return scheduledExtractionSingleFlightStates.get(key);
+}
+
+function clearScheduledExtractionSingleFlightState(chatKey) {
+    const key = String(chatKey || '').trim();
+    if (!key) {
+        return;
+    }
+    scheduledExtractionSingleFlightStates.delete(key);
+}
+
+async function runScheduledExtractionPass(chatKey) {
+    const runtimeContext = getContext();
+    if (getChatKey(runtimeContext) !== chatKey) {
+        return;
+    }
+    const store = await ensureStoreSyncedWithChat(runtimeContext);
+    if (!store) {
+        return;
+    }
+    const extractionAbortController = new AbortController();
+    activeExtractionAbortController = extractionAbortController;
+    try {
+        const settings = getEffectiveSettings(runtimeContext, getSettings());
+        if (!settings.enabled) {
+            refreshUiStats();
+            return;
+        }
+        alignStoreCoverageToChat(store, runtimeContext, settings);
+        const preview = computeExtractionWindow(runtimeContext, store, null, settings);
+        if (preview.beginSeq > preview.latestSeq || preview.gap < Number(settings.updateEvery || 1)) {
+            store.lastExtractionDebug = {
+                beginSeq: preview.beginSeq,
+                latestSeq: preview.latestSeq,
+                coveredSeqTo: preview.coveredSeqTo,
+                extracted: false,
+                reason: preview.beginSeq > preview.latestSeq ? 'already_up_to_date' : 'gap_below_threshold',
+                at: Date.now(),
+            };
+            const debug = store.lastExtractionDebug || {};
+            updateUiStatus(i18nFormat(
+                'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                'skip',
+                Number(debug.beginSeq || 0),
+                Number(debug.latestSeq || 0),
+                Number(debug.coveredSeqTo || 0),
+            ));
+            refreshUiStats();
+            return;
+        }
+        const workingStore = normalizeStoreForRuntime(store);
+        let committedStore = normalizeStoreForRuntime(store);
+        const extractBatchTurns = Math.max(
+            1,
+            Math.floor(Number(settings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+        );
+        const initialEndSeq = Math.min(
+            Number(preview.latestSeq || 0),
+            Number(preview.beginSeq || 1) + extractBatchTurns - 1,
+        );
+        showRuntimeInfoToast(formatExtractionRangeToast(preview.beginSeq, initialEndSeq, preview.latestSeq), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!extractionAbortController.signal.aborted) {
+                    extractionAbortController.abort();
+                }
+            },
+        });
+        await runExtractionForStore(runtimeContext, workingStore, {
+            abortSignal: extractionAbortController.signal,
+            onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+            },
+            onBatchApplied: async ({ endSeq }) => {
+                committedStore = await commitMemoryStoreDiffByChatKey(
+                    runtimeContext,
+                    chatKey,
+                    committedStore,
+                    workingStore,
+                    endSeq,
+                    { syncPersistentProjection: true },
+                );
+            },
+            onCompressionApplied: async ({ beforeStore, roundSeqTo }) => {
+                committedStore = await commitMemoryStoreDiffByChatKey(
+                    runtimeContext,
+                    chatKey,
+                    beforeStore,
+                    workingStore,
+                    roundSeqTo,
+                    { syncPersistentProjection: true },
+                );
+            },
+        });
+        const finalStore = await commitMemoryStoreDiffByChatKey(
+            runtimeContext,
+            chatKey,
+            committedStore,
+            workingStore,
+            Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
+            { syncPersistentProjection: true },
+        );
+        const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
+        updateUiStatus(i18nFormat(
+            'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+            debug.extracted ? 'ok' : 'skip',
+            Number(debug.beginSeq || 0),
+            Number(debug.latestSeq || 0),
+            Number(debug.coveredSeqTo || 0),
+        ));
+        clearPersistentRuntimeNotice();
+        refreshUiStats();
+    } catch (error) {
+        if (isAbortError(error, extractionAbortController.signal)) {
+            updateUiStatus(i18n('Memory graph update cancelled by user.'));
+            clearPersistentRuntimeNotice();
+            refreshUiStats();
+            return;
+        }
+        console.warn(`[${MODULE_NAME}] Extraction failed`, error);
+        const failureText = i18nFormat('Recall injection failed (${0}): ${1}', 'extract', String(error?.message || error));
+        updateUiStatus(failureText);
+        showPersistentRuntimeNotice(failureText);
+    } finally {
+        if (activeExtractionAbortController === extractionAbortController) {
+            activeExtractionAbortController = null;
+        }
+        clearRuntimeInfoToast();
+    }
+}
+
+function scheduleExtraction(context) {
+    const settings = getEffectiveSettings(context, getSettings());
+    if (!settings.enabled) {
+        return;
+    }
+    const chatKey = getChatKey(context);
+    if (!chatKey || chatKey === 'invalid_target') {
+        return;
+    }
+    const singleFlightState = getScheduledExtractionSingleFlightState(chatKey);
+    if (!singleFlightState) {
+        return;
+    }
+    if (singleFlightState.running) {
+        if (!singleFlightState.cancelled) {
+            singleFlightState.rerun = true;
+        }
+        return;
+    }
+    if (singleFlightState.cancelled) {
+        clearScheduledExtractionSingleFlightState(chatKey);
+    }
+    if (extractionTimers.has(chatKey)) {
+        return;
+    }
+
+    const timer = setTimeout(async () => {
+        extractionTimers.delete(chatKey);
+        const runState = getScheduledExtractionSingleFlightState(chatKey);
+        if (!runState) {
+            return;
+        }
+        if (runState.running) {
+            if (!runState.cancelled) {
+                runState.rerun = true;
+            }
+            return;
+        }
+        runState.running = true;
+        runState.cancelled = false;
+        try {
+            do {
+                runState.rerun = false;
+                await runScheduledExtractionPass(chatKey);
+            } while (runState.rerun && !runState.cancelled);
+        } finally {
+            runState.running = false;
+            runState.rerun = false;
+            clearScheduledExtractionSingleFlightState(chatKey);
+        }
+    }, 0);
+
+    extractionTimers.set(chatKey, timer);
+}
+
+function getStoreStats(store) {
+    const nodes = Object.values(store.nodes || {});
+    const levelCount = {
+        semantic: nodes.filter(n => n.level === LEVEL.SEMANTIC).length,
+    };
+
+    return {
+        nodeCount: nodes.length,
+        edgeCount: Array.isArray(store.edges) ? store.edges.length : 0,
+        messageCount: getStoreCoveredSeqTo(store),
+        sourceMessageCount: Number(store.sourceMessageCount || 0),
+        levelCount,
+        lastRecallSteps: Array.isArray(store.lastRecallTrace) ? store.lastRecallTrace.length : 0,
+    };
+}
+
+function clipMemoryGraphText(value, maxLength = 180) {
+    const text = normalizeText(value);
+    if (!text) {
+        return '';
+    }
+    if (text.length <= maxLength) {
+        return text;
+    }
+    return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function getMemoryGraphNodeSearchText(node) {
+    if (!node || typeof node !== 'object') {
+        return '';
+    }
+    const fields = node.fields && typeof node.fields === 'object' && !Array.isArray(node.fields)
+        ? node.fields
+        : {};
+    const fieldText = Object.entries(fields)
+        .map(([key, value]) => `${key} ${toDisplayScalar(value)}`)
+        .filter(Boolean)
+        .join(' ');
+    return normalizeText([
+        node.id,
+        node.title,
+        node.type,
+        node.level,
+        getNodeSummary(node),
+        fieldText,
+    ].filter(Boolean).join(' '));
+}
+
+function getMemoryGraphSearchModel(store, searchState = {}) {
+    const allNodes = Object.values(store?.nodes || {}).sort(compareNodesByTimeline);
+    const typeCounts = new Map();
+    for (const node of allNodes) {
+        const type = String(node?.type || '').trim() || 'unknown';
+        typeCounts.set(type, Number(typeCounts.get(type) || 0) + 1);
+    }
+
+    const requestedType = String(searchState?.type || MEMORY_GRAPH_SEARCH_ALL_TYPE).trim() || MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    const typeFilter = requestedType === MEMORY_GRAPH_SEARCH_ALL_TYPE || typeCounts.has(requestedType)
+        ? requestedType
+        : MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    const query = normalizeText(searchState?.query || '');
+    const isSearchActive = Boolean(query) || typeFilter !== MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    const typeFilteredNodes = typeFilter === MEMORY_GRAPH_SEARCH_ALL_TYPE
+        ? allNodes
+        : allNodes.filter(node => String(node?.type || '').trim() === typeFilter);
+
+    let matchedNodes = [];
+    if (isSearchActive && query) {
+        const searchData = typeFilteredNodes.map(node => ({
+            node,
+            id: String(node?.id || ''),
+            title: normalizeText(node?.title || ''),
+            summary: getNodeSummary(node),
+            type: String(node?.type || ''),
+            body: getMemoryGraphNodeSearchText(node),
+        }));
+        const fuzzyResults = performFuzzySearch(
+            'memory-graph-inspector',
+            searchData,
+            [
+                { name: 'title', weight: 0.45 },
+                { name: 'summary', weight: 0.25 },
+                { name: 'body', weight: 0.18 },
+                { name: 'id', weight: 0.08 },
+                { name: 'type', weight: 0.04 },
+            ],
+            query,
+        );
+        matchedNodes = fuzzyResults.map(result => ({ node: result.item.node, score: Number(result.score ?? 0) }));
+        if (!matchedNodes.length) {
+            const loweredQuery = query.toLowerCase();
+            matchedNodes = typeFilteredNodes
+                .filter(node => getMemoryGraphNodeSearchText(node).toLowerCase().includes(loweredQuery))
+                .map(node => ({ node, score: 0 }));
+        }
+    } else if (isSearchActive) {
+        matchedNodes = typeFilteredNodes.map(node => ({ node, score: 0 }));
+    }
+
+    const matchNodeIds = matchedNodes.map(item => String(item.node?.id || '')).filter(Boolean);
+    const matchNodeIdSet = new Set(matchNodeIds);
+    const visibleNodes = (isSearchActive
+        ? allNodes.filter(node => matchNodeIdSet.has(String(node?.id || '')))
+        : allNodes)
+        .slice(-220);
+    const visibleEdges = Array.isArray(store?.edges)
+        ? store.edges
+            .map((edge, index) => ({ ...edge, _index: index }))
+            .filter(edge => {
+                if (!isSearchActive) {
+                    return true;
+                }
+                return matchNodeIdSet.has(String(edge?.from || '')) || matchNodeIdSet.has(String(edge?.to || ''));
+            })
+            .sort((a, b) => Number(b._index || 0) - Number(a._index || 0))
+            .slice(0, 160)
+        : [];
+    const previewNodes = matchedNodes.slice(0, MEMORY_GRAPH_SEARCH_RESULT_PREVIEW_LIMIT);
+    const activeNodeId = matchNodeIdSet.has(String(searchState?.activeNodeId || ''))
+        ? String(searchState.activeNodeId)
+        : '';
+    const summaryText = isSearchActive
+        ? i18nFormat('Showing ${0} of ${1} matching nodes.', previewNodes.length, matchNodeIds.length)
+        : i18n('Start typing to search the graph.');
+
+    return {
+        active: isSearchActive,
+        query,
+        typeFilter,
+        activeNodeId,
+        matchNodeIds,
+        matchNodeIdSet,
+        typeOptions: [
+            {
+                value: MEMORY_GRAPH_SEARCH_ALL_TYPE,
+                label: i18n('All types'),
+                count: allNodes.length,
+            },
+            ...[...typeCounts.entries()]
+                .sort((a, b) => a[0].localeCompare(b[0]))
+                .map(([value, count]) => ({ value, label: value, count })),
+        ],
+        summaryText,
+        emptyText: isSearchActive ? i18n('No nodes match the current search.') : i18n('Start typing to search the graph.'),
+        emptyHint: isSearchActive ? i18n('Try a different keyword or type filter.') : i18n('Select a result to focus it in graph.'),
+        previewNodes,
+        visibleNodes,
+        visibleEdges,
+    };
+}
+
+function renderGraphInspectorHtml(store, options = {}) {
+    const stats = getStoreStats(store);
+    const searchModel = getMemoryGraphSearchModel(store, options.searchState);
+    const nodes = searchModel.visibleNodes;
+    const edges = searchModel.visibleEdges;
+    const activeTab = String(options.activeTab || 'graph');
+    const isSearchOpen = Boolean(options.isSearchOpen);
+
+    // --- Node table rows (desktop) ---
+    const nodeTableRows = nodes.map(node => `
+<tr>
+<td>${escapeHtml(String(node.id || ''))}</td>
+<td>${escapeHtml(String(node.type || ''))}</td>
+<td>${escapeHtml(String(node.title || ''))}</td>
+<td class="luker-graph-td-summary">${escapeHtml(clipMemoryGraphText(getNodeSummary(node), 120))}</td>
+<td>${node.seqTo ?? ''}</td>
+<td>
+    <div class="luker-graph-row-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-node" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('View'))}"><i class="fa-solid fa-eye fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('Form Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-delete" data-node-id="${escapeHtml(node.id)}" title="${escapeHtml(i18n('Delete'))}"><i class="fa-solid fa-trash fa-fw"></i></div>
+    </div>
+</td>
+</tr>`).join('');
+
+    // --- Node card list (mobile) ---
+    const nodeCardList = nodes.map(node => {
+        const nodeId = escapeHtml(String(node.id || ''));
+        const summary = clipMemoryGraphText(getNodeSummary(node), 140);
+        return `
+<div class="luker-graph-card" data-node-id="${nodeId}">
+    <div class="luker-graph-card-head">
+        <span class="luker-graph-card-title">${escapeHtml(String(node.title || node.id || ''))}</span>
+        <span class="luker-graph-card-type">${escapeHtml(String(node.type || ''))}</span>
+    </div>
+    <div class="luker-graph-card-meta">#${nodeId} · seq ${escapeHtml(String(node.seqTo ?? ''))}</div>
+    ${summary ? `<div class="luker-graph-card-body">${escapeHtml(summary)}</div>` : ''}
+    <div class="luker-graph-card-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-node" data-node-id="${nodeId}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-view" data-node-id="${nodeId}" title="${escapeHtml(i18n('View'))}"><i class="fa-solid fa-eye fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-edit" data-node-id="${nodeId}" title="${escapeHtml(i18n('Form Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-node-delete" data-node-id="${nodeId}" title="${escapeHtml(i18n('Delete'))}"><i class="fa-solid fa-trash fa-fw"></i></div>
+    </div>
+</div>`;
+    }).join('');
+
+    // --- Edge table rows (desktop) ---
+    const edgeTableRows = edges.map(edge => `
+<tr>
+<td>${escapeHtml(String(edge.from || ''))}</td>
+<td>${escapeHtml(String(edge.to || ''))}</td>
+<td>${escapeHtml(String(edge.type || ''))}</td>
+<td>${Number(edge._index)}</td>
+<td>
+    <div class="luker-graph-row-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-edge" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+    </div>
+</td>
+</tr>`).join('');
+
+    // --- Edge card list (mobile) ---
+    const edgeCardList = edges.map(edge => `
+<div class="luker-graph-card">
+    <div class="luker-graph-card-head">
+        <span class="luker-graph-card-title">${escapeHtml(String(edge.from || ''))} → ${escapeHtml(String(edge.to || ''))}</span>
+        <span class="luker-graph-card-type">${escapeHtml(String(edge.type || ''))}</span>
+    </div>
+    <div class="luker-graph-card-meta">#${Number(edge._index)}</div>
+    <div class="luker-graph-card-actions">
+        <div class="menu_button menu_button_small luker-graph-locate-edge" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Locate in Graph'))}"><i class="fa-solid fa-crosshairs fa-fw"></i></div>
+        <div class="menu_button menu_button_small luker-rpg-memory-edge-edit-row" data-edge-index="${Number(edge._index)}" title="${escapeHtml(i18n('Edit'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+    </div>
+</div>`).join('');
+
+    // --- Search filter chips ---
+    const searchFilterHtml = searchModel.typeOptions.map(option => `
+<button
+    type="button"
+    class="luker-rpg-memory-graph-search-filter${option.value === searchModel.typeFilter ? ' is-active' : ''}"
+    data-search-type="${escapeHtml(option.value)}"
+>
+    <span>${escapeHtml(option.label)}</span>
+    <span class="luker-rpg-memory-graph-search-filter-count">${option.count}</span>
+</button>`).join('');
+
+    // --- Search result cards ---
+    const searchResultsHtml = searchModel.previewNodes.length > 0
+        ? searchModel.previewNodes.map(item => {
+            const node = item.node;
+            const nodeId = String(node?.id || '');
+            const summary = clipMemoryGraphText(getNodeSummary(node) || getMemoryGraphNodeSearchText(node), 160);
+            return `
+<button
+    type="button"
+    class="luker-rpg-memory-graph-search-result${nodeId === searchModel.activeNodeId ? ' is-active' : ''}"
+    data-node-id="${escapeHtml(nodeId)}"
+>
+    <span class="luker-rpg-memory-graph-search-result-topline">
+        <span class="luker-rpg-memory-graph-search-result-title">${escapeHtml(String(node?.title || nodeId || ''))}</span>
+        <span class="luker-rpg-memory-graph-search-result-type">${escapeHtml(String(node?.type || 'unknown'))}</span>
+    </span>
+    <span class="luker-rpg-memory-graph-search-result-meta">#${escapeHtml(nodeId)} · seq ${escapeHtml(String(node?.seqTo ?? ''))}</span>
+    <span class="luker-rpg-memory-graph-search-result-summary">${escapeHtml(summary || String(node?.type || ''))}</span>
+</button>`;
+        }).join('')
+        : `
+<div class="luker-rpg-memory-graph-search-empty">
+    <div>${escapeHtml(searchModel.emptyText)}</div>
+    <small>${escapeHtml(searchModel.emptyHint)}</small>
+</div>`;
+
+    // --- Tab helper ---
+    const tabClass = (name) => `luker-graph-tab${activeTab === name ? ' is-active' : ''}`;
+    const panelClass = (name) => `luker-graph-tab-panel${activeTab === name ? ' is-active' : ''}`;
+
+    return `
+<div class="luker-rpg-memory-graph-popup-inner">
+    <!-- HEADER -->
+    <div class="luker-graph-header">
+        <div class="luker-graph-header-left">
+            <h3 class="luker-graph-title">${escapeHtml(i18n('Memory Graph'))}</h3>
+            <div class="luker-graph-stats">
+                <span class="luker-graph-stat">${escapeHtml(i18n('Nodes'))} <b>${stats.nodeCount}</b></span>
+                <span class="luker-graph-stat">${escapeHtml(i18n('Edges'))} <b>${stats.edgeCount}</b></span>
+                <span class="luker-graph-stat">${escapeHtml(i18n('Turns'))} <b>${stats.messageCount}</b></span>
+                <span class="luker-graph-stat">${escapeHtml(i18n('Recall'))} <b>${stats.lastRecallSteps}</b></span>
+            </div>
+        </div>
+        <button type="button" class="luker-graph-search-toggle${isSearchOpen ? ' is-active' : ''}" title="${escapeHtml(i18n('Search'))}">
+            <i class="fa-solid fa-magnifying-glass"></i>
+        </button>
+    </div>
+
+    <!-- SEARCH (collapsible) -->
+    <div class="luker-graph-search-collapsible${isSearchOpen ? ' is-open' : ''}">
+        <div class="luker-rpg-memory-graph-search-shell">
+            <div class="luker-rpg-memory-graph-search-head">
+                <label class="luker-rpg-memory-graph-search-input-wrap">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input
+                        type="search"
+                        class="text_pole luker-rpg-memory-graph-search-input"
+                        placeholder="${escapeHtml(i18n('Search nodes, summaries, IDs...'))}"
+                        value="${escapeHtml(searchModel.query)}"
+                    />
+                </label>
+                <div class="luker-rpg-memory-graph-search-actions">
+                    <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-prev"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'} title="${escapeHtml(i18n('Prev Result'))}"><i class="fa-solid fa-chevron-up fa-fw"></i></button>
+                    <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-next"${searchModel.matchNodeIds.length > 1 ? '' : ' disabled'} title="${escapeHtml(i18n('Next Result'))}"><i class="fa-solid fa-chevron-down fa-fw"></i></button>
+                    <button type="button" class="menu_button menu_button_small luker-rpg-memory-graph-search-clear"${searchModel.active ? '' : ' disabled'} title="${escapeHtml(i18n('Clear Search'))}"><i class="fa-solid fa-xmark fa-fw"></i></button>
+                </div>
+            </div>
+            <div class="luker-rpg-memory-graph-search-meta">
+                <div class="luker-rpg-memory-graph-search-filters">${searchFilterHtml}</div>
+                <small class="luker-rpg-memory-graph-search-summary">${escapeHtml(searchModel.summaryText)}</small>
+            </div>
+            <div class="luker-rpg-memory-graph-search-results">${searchResultsHtml}</div>
+        </div>
+    </div>
+
+    <!-- TAB BAR -->
+    <div class="luker-graph-tab-bar">
+        <button type="button" class="${tabClass('graph')}" data-tab="graph"><i class="fa-solid fa-diagram-project fa-fw"></i><span>${escapeHtml(i18n('Graph'))}</span></button>
+        <button type="button" class="${tabClass('nodes')}" data-tab="nodes"><i class="fa-solid fa-circle-nodes fa-fw"></i><span>${escapeHtml(i18n('Nodes'))}</span></button>
+        <button type="button" class="${tabClass('edges')}" data-tab="edges"><i class="fa-solid fa-arrows-left-right fa-fw"></i><span>${escapeHtml(i18n('Edges'))}</span></button>
+        <button type="button" class="${tabClass('recall')}" data-tab="recall"><i class="fa-solid fa-file-lines fa-fw"></i><span>${escapeHtml(i18n('Recall'))}</span></button>
+    </div>
+
+    <!-- TAB: Graph -->
+    <div class="${panelClass('graph')}" data-panel="graph">
+        <div class="luker-rpg-memory-graph-workspace">
+            <div class="luker-rpg-memory-graph-canvas-wrap">
+                <div class="luker-rpg-memory-graph-cy"></div>
+                <div class="luker-graph-canvas-toolbar">
+                    <div class="menu_button menu_button_small luker-rpg-memory-graph-fit" title="${escapeHtml(i18n('Fit View'))}"><i class="fa-solid fa-expand fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-edge-add" title="${escapeHtml(i18n('Add Edge'))}"><i class="fa-solid fa-plus fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-edge-edit" title="${escapeHtml(i18n('Edit Selected Edge'))}"><i class="fa-solid fa-pen fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-node-delete" title="${escapeHtml(i18n('Delete Selected Node'))}"><i class="fa-solid fa-trash fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-edge-delete" title="${escapeHtml(i18n('Delete Selected Edge'))}"><i class="fa-solid fa-link-slash fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-graph-raw-view" title="${escapeHtml(i18n('JSON View'))}"><i class="fa-solid fa-code fa-fw"></i></div>
+                    <div class="menu_button menu_button_small luker-rpg-memory-graph-raw-edit" title="${escapeHtml(i18n('JSON Edit'))}"><i class="fa-solid fa-file-code fa-fw"></i></div>
+                </div>
+                <small class="luker-rpg-memory-graph-selection">${escapeHtml(i18n('Click a node or edge to inspect.'))}</small>
+            </div>
+            <div class="luker-rpg-memory-graph-sidepanel">
+                <div class="luker-graph-inspector-header">
+                    <h4 class="margin0">${escapeHtml(i18n('Inspector'))}</h4>
+                    <button type="button" class="luker-graph-inspector-toggle" title="${escapeHtml(i18n('Toggle Inspector'))}"><i class="fa-solid fa-chevron-down fa-fw"></i></button>
+                </div>
+                <small class="luker-rpg-memory-graph-sidehint">${escapeHtml(i18n('Select a node or edge to edit.'))}</small>
+                <div class="luker-rpg-memory-graph-editor-slot"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB: Nodes -->
+    <div class="${panelClass('nodes')}" data-panel="nodes">
+        <div class="luker-rpg-memory-graph-table-wrap luker-graph-desktop-only">
+            <table class="table luker-graph-table">
+                <thead><tr><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('Title'))}</th><th>${escapeHtml(i18n('Summary'))}</th><th>${escapeHtml(i18n('Seq'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+                <tbody>${nodeTableRows}</tbody>
+            </table>
+        </div>
+        <div class="luker-graph-card-list luker-graph-mobile-only">${nodeCardList}</div>
+    </div>
+
+    <!-- TAB: Edges -->
+    <div class="${panelClass('edges')}" data-panel="edges">
+        <div class="luker-graph-edges-toolbar">
+            <div class="menu_button menu_button_small luker-rpg-memory-edge-add" title="${escapeHtml(i18n('Add Edge'))}"><i class="fa-solid fa-plus fa-fw"></i> ${escapeHtml(i18n('Add Edge'))}</div>
+        </div>
+        <div class="luker-rpg-memory-graph-table-wrap luker-graph-desktop-only">
+            <table class="table luker-graph-table">
+                <thead><tr><th>${escapeHtml(i18n('From'))}</th><th>${escapeHtml(i18n('To'))}</th><th>${escapeHtml(i18n('Type'))}</th><th>${escapeHtml(i18n('ID'))}</th><th>${escapeHtml(i18n('Actions'))}</th></tr></thead>
+                <tbody>${edgeTableRows}</tbody>
+            </table>
+        </div>
+        <div class="luker-graph-card-list luker-graph-mobile-only">${edgeCardList}</div>
+    </div>
+
+    <!-- TAB: Recall -->
+    <div class="${panelClass('recall')}" data-panel="recall">
+        ${buildLastRecallCorePacketHtml(store, { showHeader: true })}
+    </div>
+</div>`;
+}
+
+function parseOptionalNumber(value) {
+    const text = String(value ?? '').trim();
+    if (!text.length) {
+        return undefined;
+    }
+    const number = Number(text);
+    return Number.isFinite(number) ? number : undefined;
+}
+
+function parseLooseScalar(value) {
+    const text = String(value ?? '').trim();
+    if (!text.length) {
+        return '';
+    }
+    const lower = text.toLowerCase();
+    if (lower === 'true') {
+        return true;
+    }
+    if (lower === 'false') {
+        return false;
+    }
+    if (lower === 'null') {
+        return null;
+    }
+    if (lower === 'undefined') {
+        return '';
+    }
+    const number = Number(text);
+    if (Number.isFinite(number) && /^[-+]?\d+(\.\d+)?$/.test(text)) {
+        return number;
+    }
+    return text;
+}
+
+function getLastRecallProjection(store) {
+    return store?.lastRecallProjection && typeof store.lastRecallProjection === 'object'
+        ? store.lastRecallProjection
+        : null;
+}
+
+function getLastRecallCorePacketText(store) {
+    const projection = getLastRecallProjection(store);
+    if (!projection) {
+        return '';
+    }
+    const corePacket = normalizeMultilineText(projection?.blocks?.corePacket || '');
+    const focusPacket = normalizeMultilineText(projection?.blocks?.focusPacket || '');
+    const sections = [];
+    if (corePacket) {
+        sections.push(`[CORE_PACKET]\n${corePacket}`);
+    }
+    if (focusPacket) {
+        sections.push(`[FOCUS_PACKET]\n${focusPacket}`);
+    }
+    if (sections.length > 0) {
+        return sections.join('\n\n');
+    }
+    return normalizeMultilineText(projection?.corePacket || '');
+}
+
+function buildLastRecallCorePacketHtml(store, options = {}) {
+    const projection = getLastRecallProjection(store);
+    if (!projection) {
+        return `<div style="opacity:0.8;">${escapeHtml(i18n('No recall injection result yet.'))}</div>`;
+    }
+    const corePacket = getLastRecallCorePacketText(store);
+    const showHeader = options?.showHeader !== false;
+    const at = Number(projection?.at);
+    const renderedAt = Number.isFinite(at) ? new Date(at).toLocaleString() : '';
+    const header = showHeader
+        ? `<div style="font-weight:600; margin-bottom:6px;">${escapeHtml(i18n('Injection Content'))}</div>`
+        : '';
+    const timeLine = renderedAt
+        ? `<div style="font-size:12px; opacity:0.8; margin-bottom:8px;">${escapeHtml(renderedAt)}</div>`
+        : '';
+    return `
+<div style="display:flex; flex-direction:column; gap:4px;">
+    ${header}
+    ${timeLine}
+    <pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(corePacket || i18n('Injection content is empty.'))}</pre>
+</div>`;
+}
+
+function encodeFieldsAsLines(fields) {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+        return '';
+    }
+    return Object.entries(fields)
+        .filter(([key]) => String(key || '').trim().toLowerCase() !== 'summary')
+        .map(([key, value]) => {
+            let encoded = value;
+            if (value && typeof value === 'object') {
+                encoded = JSON.stringify(value);
+            }
+            return `${key}=${String(encoded ?? '')}`;
+        })
+        .join('\n');
+}
+
+function decodeFieldsFromLines(text) {
+    const out = {};
+    for (const rawLine of String(text || '').split('\n')) {
+        const line = rawLine.trim();
+        if (!line) {
+            continue;
+        }
+        const sep = line.indexOf('=');
+        if (sep <= 0) {
+            continue;
+        }
+        const key = line.slice(0, sep).trim();
+        const valueRaw = line.slice(sep + 1).trim();
+        if (!key) {
+            continue;
+        }
+        if ((valueRaw.startsWith('{') && valueRaw.endsWith('}')) || (valueRaw.startsWith('[') && valueRaw.endsWith(']'))) {
+            try {
+                out[key] = JSON.parse(valueRaw);
+                continue;
+            } catch {
+                // scalar parsing below
+            }
+        }
+        out[key] = parseLooseScalar(valueRaw);
+    }
+    return out;
+}
+
+function getNodeTypeOptionsHtml(settings, store, currentType = '') {
+    const candidates = new Set();
+    for (const entry of getEffectiveNodeTypeSchema(null, settings)) {
+        candidates.add(String(entry.id || '').trim());
+    }
+    for (const node of Object.values(store.nodes || {})) {
+        const type = String(node?.type || '').trim();
+        if (type) {
+            candidates.add(type);
+        }
+    }
+    const selected = String(currentType || '').trim();
+    if (selected) {
+        candidates.add(selected);
+    }
+    return [...candidates]
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+        .map(type => `<option value="${escapeHtml(type)}"${type === selected ? ' selected' : ''}>${escapeHtml(type)}</option>`)
+        .join('');
+}
+
+function getNodeParentOptionsHtml(store, selfId, selectedParentId = '') {
+    const selected = String(selectedParentId || '').trim();
+    const options = [`<option value="">${escapeHtml(i18n('(none)'))}</option>`];
+    const nodes = Object.values(store.nodes || {})
+        .filter(node => node && String(node.id || '') !== String(selfId || ''))
+        .sort(compareNodesByTimeline);
+    for (const node of nodes) {
+        const id = String(node.id || '');
+        const title = String(node.title || '').trim();
+        const label = `${id} | ${node.level}/${node.type} | ${title}`;
+        options.push(`<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
+    }
+    if (selected && !nodes.find(node => String(node.id || '') === selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function renderNodeFormEditorHtml(node, store, settings, editorId) {
+    const levelOptions = [LEVEL.SEMANTIC]
+        .map(level => `<option value="${level}"${String(node.level || '') === level ? ' selected' : ''}>${level}</option>`).join('');
+
+    return `
+<div id="${editorId}" class="flex-container flexFlowColumn luker-rpg-memory-node-form">
+    <small style="opacity:0.85">${escapeHtml(i18n('Form editor for one node. Parent/child relationships and graph persistence are applied automatically.'))}</small>
+    <div class="luker-rpg-memory-node-form-grid">
+        <label>${escapeHtml(i18n('Node ID'))}
+            <input data-field="id" class="text_pole" type="text" value="${escapeHtml(node.id)}" readonly />
+        </label>
+        <label>${escapeHtml(i18n('Parent Node'))}
+            <select data-field="parentId" class="text_pole">${getNodeParentOptionsHtml(store, node.id, node.parentId || '')}</select>
+        </label>
+        <label>${escapeHtml(i18n('Type'))}
+            <select data-field="type" class="text_pole">${getNodeTypeOptionsHtml(settings, store, node.type || '')}</select>
+        </label>
+        <label>${escapeHtml(i18n('Level'))}
+            <select data-field="level" class="text_pole">${levelOptions}</select>
+        </label>
+        <label>${escapeHtml(i18n('Sequence'))}
+            <input data-field="seqTo" class="text_pole" type="number" step="1" value="${escapeHtml(node.seqTo ?? '')}" />
+        </label>
+    </div>
+    <div class="luker-rpg-memory-node-form-flags">
+        <label class="checkbox_label"><input data-field="archived" type="checkbox" ${node.archived ? 'checked' : ''} /> ${escapeHtml(i18n('Archived'))}</label>
+    </div>
+    <label>${escapeHtml(i18n('Title'))}
+        <input data-field="title" class="text_pole" type="text" value="${escapeHtml(node.title || '')}" />
+    </label>
+    <label>${escapeHtml(i18n('Summary'))}
+        <textarea data-field="summary" class="text_pole textarea_compact" rows="3">${escapeHtml(getNodeSummary(node))}</textarea>
+    </label>
+    <label>${escapeHtml(i18n('Fields (one key=value per line)'))}
+        <textarea data-field="fieldsLines" class="text_pole textarea_compact" rows="6">${escapeHtml(encodeFieldsAsLines(node.fields || {}))}</textarea>
+    </label>
+</div>`;
+}
+
+function willCreateParentCycle(store, nodeId, parentId) {
+    const childId = String(nodeId || '').trim();
+    let current = String(parentId || '').trim();
+    if (!childId || !current) {
+        return false;
+    }
+
+    let guard = 0;
+    while (current && guard < 3000) {
+        if (current === childId) {
+            return true;
+        }
+        const node = store.nodes?.[current];
+        current = String(node?.parentId || '').trim();
+        guard += 1;
+    }
+    return false;
+}
+
+async function ensureCytoscapeLoaded() {
+    if (window.cytoscape) {
+        return window.cytoscape;
+    }
+    if (cytoscapeLoadPromise) {
+        return cytoscapeLoadPromise;
+    }
+
+    const scriptId = 'luker_rpg_memory_cytoscape_script';
+    const src = '/lib/cytoscape.min.js';
+    cytoscapeLoadPromise = new Promise((resolve, reject) => {
+        const existing = document.getElementById(scriptId);
+        if (existing) {
+            if (window.cytoscape) {
+                resolve(window.cytoscape);
+                return;
+            }
+            existing.addEventListener('load', () => resolve(window.cytoscape), { once: true });
+            existing.addEventListener('error', () => reject(new Error('Failed to load Cytoscape script')), { once: true });
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.id = scriptId;
+        script.src = src;
+        script.async = true;
+        script.onload = () => resolve(window.cytoscape);
+        script.onerror = () => reject(new Error(`Failed to load Cytoscape from ${src}`));
+        document.head.append(script);
+    });
+
+    try {
+        return await cytoscapeLoadPromise;
+    } catch (error) {
+        cytoscapeLoadPromise = null;
+        throw error;
+    }
+}
+
+function buildGraphCytoscapeElements(store) {
+    const sortedNodes = Object.values(store.nodes || {})
+        .sort(compareNodesByTimeline);
+    const maxVisualNodes = 450;
+    const scopedNodes = sortedNodes.slice(-maxVisualNodes);
+    const scopedNodeIds = new Set(scopedNodes.map(node => String(node.id || '')));
+    const scopedNodeList = [...scopedNodeIds]
+        .map(id => store.nodes[id])
+        .filter(Boolean);
+    const nodeById = new Map(scopedNodeList.map(node => [String(node.id || ''), node]));
+    const timelineNodes = scopedNodeList
+        .slice()
+        .sort((a, b) => {
+            const at = Number(a.seqTo ?? 0);
+            const bt = Number(b.seqTo ?? 0);
+            if (at !== bt) {
+                return at - bt;
+            }
+            const typeCompare = String(a.type || '').localeCompare(String(b.type || ''));
+            if (typeCompare !== 0) {
+                return typeCompare;
+            }
+            return String(a.id || '').localeCompare(String(b.id || ''));
+        });
+    // Keep event nodes on the primary horizontal rail, then fan secondary nodes into parallel lanes nearby.
+    const railNodes = timelineNodes.filter(node => String(node.type || '').trim() === 'event');
+    const primaryRailNodes = railNodes.length > 0 ? railNodes : timelineNodes;
+    const railIndexByNodeId = new Map();
+    primaryRailNodes.forEach((node, index) => {
+        railIndexByNodeId.set(String(node.id || ''), index);
+    });
+
+    const preferredTypeOrder = ['event', 'character_sheet', 'location_state', 'rule_constraint'];
+    const typeRank = new Map(preferredTypeOrder.map((type, index) => [type, index]));
+    const types = [...new Set(scopedNodeList.map(node => String(node.type || 'unknown').trim() || 'unknown'))]
+        .sort((a, b) => {
+            const ar = typeRank.has(a) ? Number(typeRank.get(a)) : 999;
+            const br = typeRank.has(b) ? Number(typeRank.get(b)) : 999;
+            if (ar !== br) {
+                return ar - br;
+            }
+            return a.localeCompare(b);
+        });
+
+    const secondaryTypes = types.filter(type => type !== 'event');
+    const preferredLaneSlots = new Map([
+        ['character_sheet', { side: -1, depth: 0 }],
+        ['location_state', { side: 1, depth: 0 }],
+        ['rule_constraint', { side: 1, depth: 1 }],
+    ]);
+    const laneSlotByType = new Map([['event', { side: 0, depth: 0 }]]);
+    let fallbackLaneIndex = 0;
+    for (const type of secondaryTypes) {
+        if (preferredLaneSlots.has(type)) {
+            laneSlotByType.set(type, preferredLaneSlots.get(type));
+            continue;
+        }
+        const depth = 1 + Math.floor((fallbackLaneIndex + 1) / 2);
+        const side = fallbackLaneIndex % 2 === 0 ? -1 : 1;
+        laneSlotByType.set(type, { side, depth });
+        fallbackLaneIndex += 1;
+    }
+
+    const railCount = Math.max(1, primaryRailNodes.length);
+    const colGap = railCount <= 8 ? 250 : railCount <= 16 ? 220 : railCount <= 28 ? 184 : 152;
+    const railCenter = (railCount - 1) / 2;
+    const laneBaseOffset = 220;
+    const laneDepthGap = 170;
+    const laneFanX = railCount <= 10 ? 92 : railCount <= 24 ? 76 : 64;
+    const laneFanY = 60;
+    const getRailX = (railIndex) => (railIndex - railCenter) * colGap;
+    const getLaneCenterY = (type) => {
+        const slot = laneSlotByType.get(type) || { side: 1, depth: 1 };
+        if (slot.side === 0) {
+            return 0;
+        }
+        return slot.side * (laneBaseOffset + (slot.depth * laneDepthGap));
+    };
+    const getLaneStackOffset = (index, side) => {
+        if (index <= 0) {
+            return { x: 0, y: 0 };
+        }
+        const layer = Math.floor(index / 3);
+        const slot = index % 3;
+        const xPattern = [0, -laneFanX, laneFanX];
+        const xScale = 1 + (Math.floor(layer / 2) * 0.35);
+        return {
+            x: xPattern[slot] * xScale,
+            y: side * layer * laneFanY,
+        };
+    };
+
+    const scopedEdges = Array.isArray(store.edges)
+        ? store.edges
+            .map((edge, index) => ({ edge, index }))
+            .filter(item => {
+                const from = String(item.edge?.from || '');
+                const to = String(item.edge?.to || '');
+                return from && to && scopedNodeIds.has(from) && scopedNodeIds.has(to);
+            })
+        : [];
+    const adjacency = new Map();
+    const linkAdjacency = (from, to) => {
+        if (!adjacency.has(from)) {
+            adjacency.set(from, new Set());
+        }
+        adjacency.get(from).add(to);
+    };
+    for (const item of scopedEdges) {
+        const from = String(item.edge?.from || '');
+        const to = String(item.edge?.to || '');
+        if (!from || !to) {
+            continue;
+        }
+        linkAdjacency(from, to);
+        linkAdjacency(to, from);
+    }
+
+    const resolveNearestRailIndex = (node) => {
+        const nodeId = String(node?.id || '');
+        if (railIndexByNodeId.has(nodeId)) {
+            return Number(railIndexByNodeId.get(nodeId) ?? 0);
+        }
+        if (primaryRailNodes.length === 0) {
+            return 0;
+        }
+        const nodeSeq = Number(node?.seqTo ?? NaN);
+        let bestIndex = 0;
+        let bestDistance = Number.POSITIVE_INFINITY;
+        primaryRailNodes.forEach((railNode, index) => {
+            const railSeq = Number(railNode?.seqTo ?? NaN);
+            const distance = Number.isFinite(nodeSeq) && Number.isFinite(railSeq)
+                ? Math.abs(nodeSeq - railSeq)
+                : Math.abs(index - ((railCount - 1) / 2));
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIndex = index;
+            }
+        });
+        return bestIndex;
+    };
+    const directEventLinkCountByNodeId = new Map();
+    const anchoredRailIndexByNodeId = new Map();
+    for (const node of scopedNodeList) {
+        const nodeId = String(node.id || '');
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        if (type === 'event' && railIndexByNodeId.has(nodeId)) {
+            anchoredRailIndexByNodeId.set(nodeId, Number(railIndexByNodeId.get(nodeId) ?? 0));
+            directEventLinkCountByNodeId.set(nodeId, Number.MAX_SAFE_INTEGER);
+            continue;
+        }
+
+        const linkedEventIndices = new Set();
+        const linkedNodeIds = adjacency.get(nodeId);
+        if (linkedNodeIds) {
+            for (const linkedNodeId of linkedNodeIds) {
+                const linkedNode = nodeById.get(linkedNodeId);
+                if (String(linkedNode?.type || '').trim() !== 'event') {
+                    continue;
+                }
+                if (railIndexByNodeId.has(linkedNodeId)) {
+                    linkedEventIndices.add(Number(railIndexByNodeId.get(linkedNodeId) ?? 0));
+                }
+            }
+        }
+        const parentId = String(node.parentId || '').trim();
+        if (parentId) {
+            const parentNode = nodeById.get(parentId);
+            if (String(parentNode?.type || '').trim() === 'event' && railIndexByNodeId.has(parentId)) {
+                linkedEventIndices.add(Number(railIndexByNodeId.get(parentId) ?? 0));
+            }
+        }
+
+        const linkedIndices = [...linkedEventIndices];
+        directEventLinkCountByNodeId.set(nodeId, linkedIndices.length);
+        if (linkedIndices.length > 0) {
+            const averageRailIndex = linkedIndices.reduce((sum, value) => sum + value, 0) / linkedIndices.length;
+            anchoredRailIndexByNodeId.set(nodeId, averageRailIndex);
+            continue;
+        }
+        anchoredRailIndexByNodeId.set(nodeId, resolveNearestRailIndex(node));
+    }
+
+    const secondaryBuckets = new Map();
+    for (const node of scopedNodeList) {
+        const nodeId = String(node.id || '');
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        if (type === 'event') {
+            continue;
+        }
+        const anchorRailIndex = Number(anchoredRailIndexByNodeId.get(nodeId) ?? 0);
+        const bucketRailIndex = Math.round(anchorRailIndex * 2) / 2;
+        const bucketKey = `${type}|${bucketRailIndex}`;
+        if (!secondaryBuckets.has(bucketKey)) {
+            secondaryBuckets.set(bucketKey, {
+                type,
+                bucketRailIndex,
+                nodes: [],
+            });
+        }
+        secondaryBuckets.get(bucketKey).nodes.push(node);
+    }
+
+    const positionByNodeId = new Map();
+    for (const node of scopedNodeList) {
+        const nodeId = String(node.id || '');
+        const type = String(node.type || 'unknown').trim() || 'unknown';
+        if (type !== 'event') {
+            continue;
+        }
+        const railIndex = Number(anchoredRailIndexByNodeId.get(nodeId) ?? 0);
+        positionByNodeId.set(nodeId, {
+            x: getRailX(railIndex),
+            y: 0,
+        });
+    }
+    for (const bucket of secondaryBuckets.values()) {
+        const type = String(bucket.type || 'unknown').trim() || 'unknown';
+        const laneSlot = laneSlotByType.get(type) || { side: 1, depth: 1 };
+        const laneSide = laneSlot.side === 0 ? 1 : laneSlot.side;
+        const baseX = getRailX(Number(bucket.bucketRailIndex || 0));
+        const baseY = getLaneCenterY(type);
+        bucket.nodes
+            .sort((a, b) => {
+                const aLinkedCount = Number(directEventLinkCountByNodeId.get(String(a.id || '')) ?? 0);
+                const bLinkedCount = Number(directEventLinkCountByNodeId.get(String(b.id || '')) ?? 0);
+                if (aLinkedCount !== bLinkedCount) {
+                    return bLinkedCount - aLinkedCount;
+                }
+                const aSeq = Number(a?.seqTo ?? 0);
+                const bSeq = Number(b?.seqTo ?? 0);
+                if (aSeq !== bSeq) {
+                    return aSeq - bSeq;
+                }
+                return String(a.id || '').localeCompare(String(b.id || ''));
+            })
+            .forEach((node, index) => {
+                const offset = getLaneStackOffset(index, laneSide);
+                positionByNodeId.set(String(node.id || ''), {
+                    x: baseX + offset.x,
+                    y: baseY + offset.y,
+                });
+            });
+    }
+
+    const nodes = scopedNodeList
+        .map(node => ({
+            data: {
+                id: `node:${node.id}`,
+                nodeId: String(node.id),
+                label: `${String(node.title || node.id)}\n${String(node.level || '')}/${String(node.type || '')}`,
+                level: String(node.level || ''),
+                type: String(node.type || ''),
+                archived: Boolean(node.archived),
+            },
+            position: positionByNodeId.get(String(node.id)) || { x: 0, y: 0 },
+        }));
+
+    const edges = scopedEdges
+        .map(item => {
+            const from = String(item.edge?.from || '');
+            const to = String(item.edge?.to || '');
+            const fromType = String(nodeById.get(from)?.type || '').trim();
+            const toType = String(nodeById.get(to)?.type || '').trim();
+            return {
+                data: {
+                    id: `edge:${item.index}`,
+                    edgeIndex: Number(item.index),
+                    source: `node:${from}`,
+                    target: `node:${to}`,
+                    type: String(item.edge?.type || 'related'),
+                    eventBridge: (fromType === 'event') !== (toType === 'event') ? 1 : 0,
+                    eventToEvent: fromType === 'event' && toType === 'event' ? 1 : 0,
+                },
+            };
+        });
+
+    return { nodes, edges };
+}
+
+function getEdgeNodeOptionsHtml(store, selectedNodeId = '') {
+    const selected = String(selectedNodeId || '').trim();
+    const options = [`<option value="">${escapeHtml(i18n('(select node)'))}</option>`];
+    const nodes = Object.values(store.nodes || {})
+        .sort(compareNodesByTimeline);
+    for (const node of nodes) {
+        const id = String(node.id || '');
+        if (!id) {
+            continue;
+        }
+        const label = `${id} | ${node.level}/${node.type} | ${(node.title || '')}`;
+        options.push(`<option value="${escapeHtml(id)}"${id === selected ? ' selected' : ''}>${escapeHtml(label)}</option>`);
+    }
+    if (selected && !nodes.find(node => String(node.id || '') === selected)) {
+        options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(selected)} ${escapeHtml(i18n('(missing)'))}</option>`);
+    }
+    return options.join('');
+}
+
+function getEdgeTypeOptionsHtml(store, selectedType = 'related') {
+    const selected = String(selectedType || 'related').trim() || 'related';
+    const presets = ['contains', 'related', 'mentions', 'involves', 'located_at', 'caused_by', 'follows', 'depends_on'];
+    const known = new Set(presets);
+    for (const edge of store.edges || []) {
+        const type = String(edge?.type || '').trim();
+        if (type) {
+            known.add(type);
+        }
+    }
+    known.add(selected);
+    return [...known]
+        .sort((a, b) => a.localeCompare(b))
+        .map(type => `<option value="${escapeHtml(type)}"${type === selected ? ' selected' : ''}>${escapeHtml(type)}</option>`)
+        .join('');
+}
+
+function renderEdgeFormEditorHtml(store, editorId, edge = {}, edgeIndex = -1) {
+    const from = String(edge?.from || '').trim();
+    const to = String(edge?.to || '').trim();
+    const type = String(edge?.type || 'related').trim() || 'related';
+
+    return `
+<div id="${editorId}" class="flex-container flexFlowColumn">
+    <small style="opacity:0.85">${escapeHtml(i18nFormat('Edge ${0}: configure relation between two nodes.', edgeIndex >= 0 ? `#${edgeIndex}` : i18n('(new)')))}</small>
+    <div class="luker-rpg-memory-edge-form-grid">
+        <label>${escapeHtml(i18n('From Node'))}
+            <select data-field="from" class="text_pole">${getEdgeNodeOptionsHtml(store, from)}</select>
+        </label>
+        <label>${escapeHtml(i18n('To Node'))}
+            <select data-field="to" class="text_pole">${getEdgeNodeOptionsHtml(store, to)}</select>
+        </label>
+        <label>${escapeHtml(i18n('Type'))}
+            <select data-field="type" class="text_pole">${getEdgeTypeOptionsHtml(store, type)}</select>
+        </label>
+    </div>
+</div>`;
+}
+
+async function openGraphInspectorPopup(context) {
+    await ensureStoreSyncedWithChat(context);
+    const chatKey = getChatKey(context);
+    const store = getMemoryStore(context);
+    if (!store) {
+        notifyError(i18n('No active chat selected.'));
+        return;
+    }
+
+    const popupId = `luker_rpg_memory_graph_popup_${Date.now()}`;
+    const selector = `#${popupId}`;
+    const namespace = `.lukerGraphPopup_${popupId}`;
+    let cy = null;
+    let selectedEdgeIndex = -1;
+    let selectedNodeId = '';
+    let searchQuery = '';
+    let searchType = MEMORY_GRAPH_SEARCH_ALL_TYPE;
+    let activeSearchNodeId = '';
+    let isSearchComposing = false;
+    let currentTab = 'graph';
+    let isSearchOpen = false;
+    let runLayout = null;
+    let mountRetryTimer = null;
+    const popupHtml = `<div id="${popupId}" class="luker-rpg-memory-graph-popup">${renderGraphInspectorHtml(store, {
+        searchState: { query: searchQuery, type: searchType, activeNodeId: activeSearchNodeId },
+        activeTab: currentTab,
+        isSearchOpen,
+    })}</div>`;
+
+    const popupPromise = context.callGenericPopup(
+        popupHtml,
+        context.POPUP_TYPE.TEXT,
+        '',
+        { wide: true, wider: true, large: true, allowVerticalScrolling: true, allowHorizontalScrolling: true },
+    );
+
+    const getStore = () => memoryStoreCache.get(chatKey) || store;
+    const getPopupRoot = () => jQuery(selector);
+    const getSearchState = () => ({
+        query: searchQuery,
+        type: searchType,
+        activeNodeId: activeSearchNodeId,
+    });
+    const getSearchModel = (currentStore = getStore()) => getMemoryGraphSearchModel(currentStore, getSearchState());
+    const syncSearchState = (currentStore = getStore()) => {
+        const initialModel = getSearchModel(currentStore);
+        if (!initialModel.active) {
+            activeSearchNodeId = '';
+            return initialModel;
+        }
+        if (selectedNodeId && initialModel.matchNodeIdSet.has(selectedNodeId)) {
+            activeSearchNodeId = selectedNodeId;
+            return getSearchModel(currentStore);
+        }
+        if (activeSearchNodeId && initialModel.matchNodeIdSet.has(activeSearchNodeId)) {
+            return initialModel;
+        }
+        activeSearchNodeId = initialModel.matchNodeIds[0] || '';
+        return getSearchModel(currentStore);
+    };
+    const getDefaultSelectionText = () => i18n('Click a node or edge to inspect.');
+    const updateSelectionText = (text = '') => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find('.luker-rpg-memory-graph-selection').text(String(text || getDefaultSelectionText()));
+    };
+    const syncSearchResultSelectionUi = () => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find('.luker-rpg-memory-graph-search-result').each(function () {
+            const button = jQuery(this);
+            button.toggleClass('is-active', String(button.data('node-id') || '') === activeSearchNodeId);
+        });
+    };
+    const updateInspectorPanel = () => {
+        const popupRoot = getPopupRoot();
+        const latest = getStore();
+        if (!popupRoot.length || !latest) {
+            return;
+        }
+        const slot = popupRoot.find('.luker-rpg-memory-graph-editor-slot');
+        if (!slot.length) {
+            return;
+        }
+        if (selectedNodeId) {
+            const node = latest.nodes?.[selectedNodeId];
+            if (!node) {
+                slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18nFormat('Node not found: ${0}', selectedNodeId))}</div>`);
+                return;
+            }
+            const editorId = `${popupId}_inline_node_editor`;
+            slot.html(`
+<div class="luker-rpg-memory-graph-editor-box">
+${renderNodeFormEditorHtml(node, latest, getSettings(), editorId)}
+<div class="luker-rpg-memory-graph-inline-actions">
+    <div class="menu_button luker-rpg-memory-inline-node-apply">${escapeHtml(i18n('Apply Changes'))}</div>
+    <div class="menu_button luker-rpg-memory-inline-node-view" data-node-id="${escapeHtml(selectedNodeId)}">${escapeHtml(i18n('View'))}</div>
+    <div class="menu_button luker-rpg-memory-inline-node-delete" data-node-id="${escapeHtml(selectedNodeId)}">${escapeHtml(i18n('Delete'))}</div>
+</div>
+</div>`);
+            return;
+        }
+        if (Number.isInteger(selectedEdgeIndex) && selectedEdgeIndex >= 0) {
+            const edge = latest.edges?.[selectedEdgeIndex];
+            if (!edge) {
+                slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18nFormat('Selected edge index ${0} (missing).', selectedEdgeIndex))}</div>`);
+                return;
+            }
+            const editorId = `${popupId}_inline_edge_editor`;
+            slot.html(`
+<div class="luker-rpg-memory-graph-editor-box">
+${renderEdgeFormEditorHtml(latest, editorId, edge, selectedEdgeIndex)}
+<div class="luker-rpg-memory-graph-inline-actions">
+    <div class="menu_button luker-rpg-memory-inline-edge-apply">${escapeHtml(i18n('Apply Changes'))}</div>
+    <div class="menu_button luker-rpg-memory-inline-edge-delete">${escapeHtml(i18n('Delete'))}</div>
+</div>
+</div>`);
+            return;
+        }
+        slot.html(`<div class="luker-rpg-memory-graph-editor-empty">${escapeHtml(i18n('Select a node or edge to edit.'))}</div>`);
+    };
+    const applySearchGraphState = () => {
+        if (!cy) {
+            return;
+        }
+        const latest = getStore();
+        const searchModel = syncSearchState(latest);
+        cy.startBatch();
+        cy.nodes().forEach(nodeElement => {
+            const nodeId = String(nodeElement.data('nodeId') || '');
+            const matched = !searchModel.active || searchModel.matchNodeIdSet.has(nodeId);
+            nodeElement.toggleClass('luker-search-match', searchModel.active && matched);
+            nodeElement.toggleClass('luker-search-dimmed', searchModel.active && !matched);
+        });
+        cy.edges().forEach(edgeElement => {
+            const sourceId = String(edgeElement.data('source') || '').replace(/^node:/, '');
+            const targetId = String(edgeElement.data('target') || '').replace(/^node:/, '');
+            const matched = !searchModel.active
+                || searchModel.matchNodeIdSet.has(sourceId)
+                || searchModel.matchNodeIdSet.has(targetId);
+            edgeElement.toggleClass('luker-search-dimmed', searchModel.active && !matched);
+        });
+        cy.endBatch();
+        syncSearchResultSelectionUi();
+    };
+    const focusNodeInGraph = (nodeId) => {
+        if (!cy || !nodeId) {
+            return;
+        }
+        const nodeElement = cy.$id(`node:${nodeId}`);
+        if (!nodeElement || !nodeElement.length) {
+            return;
+        }
+        const connectedEdges = nodeElement.connectedEdges();
+        const neighborhood = nodeElement.union(connectedEdges.connectedNodes()).union(connectedEdges);
+        cy.animate({
+            fit: {
+                eles: neighborhood.length > 1 ? neighborhood : nodeElement,
+                padding: 120,
+            },
+            duration: 180,
+        });
+    };
+    const selectNodeForInspection = (nodeId, { focusGraph = false } = {}) => {
+        const latest = getStore();
+        if (!latest?.nodes?.[nodeId]) {
+            return;
+        }
+        selectedNodeId = nodeId;
+        selectedEdgeIndex = -1;
+        const searchModel = syncSearchState(latest);
+        if (searchModel.matchNodeIdSet.has(nodeId)) {
+            activeSearchNodeId = nodeId;
+        }
+        updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', nodeId));
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            const nodeElement = cy.$id(`node:${nodeId}`);
+            if (nodeElement.length) {
+                nodeElement.select();
+            }
+            applySearchGraphState();
+            if (focusGraph) {
+                focusNodeInGraph(nodeId);
+            }
+        } else {
+            syncSearchResultSelectionUi();
+        }
+    };
+    const selectEdgeForInspection = (edgeIndex, { focusGraph = false } = {}) => {
+        const latest = getStore();
+        const edge = latest?.edges?.[edgeIndex];
+        if (!edge) {
+            updateSelectionText(i18nFormat('Selected edge index ${0} (missing).', edgeIndex));
+            updateInspectorPanel();
+            return;
+        }
+        selectedEdgeIndex = edgeIndex;
+        selectedNodeId = '';
+        syncSearchState(latest);
+        updateSelectionText(i18nFormat(
+            'Selected edge #${0}: ${1} -> ${2} [${3}]',
+            edgeIndex,
+            edge.from,
+            edge.to,
+            edge.type,
+        ));
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            const edgeElement = cy.$id(`edge:${edgeIndex}`);
+            if (edgeElement.length) {
+                edgeElement.select();
+                if (focusGraph) {
+                    cy.animate({
+                        fit: {
+                            eles: edgeElement,
+                            padding: 120,
+                        },
+                        duration: 180,
+                    });
+                }
+            }
+            applySearchGraphState();
+        } else {
+            syncSearchResultSelectionUi();
+        }
+    };
+    const clearInspectorSelection = () => {
+        selectedNodeId = '';
+        selectedEdgeIndex = -1;
+        updateSelectionText('');
+        updateInspectorPanel();
+        if (cy) {
+            cy.elements().unselect();
+            applySearchGraphState();
+        } else {
+            syncSearchResultSelectionUi();
+        }
+    };
+    const persistLatest = async (latest, successText, statusText, { beforeStore = null, replaceGraph = false, seq = null } = {}) => {
+        memoryStoreCache.set(chatKey, latest);
+        clearRollbackHistory(chatKey);
+        const effectiveSeq = Number.isFinite(Number(seq))
+            ? Math.max(0, Math.floor(Number(seq)))
+            : getStoreCoveredSeqTo(latest);
+        if (replaceGraph) {
+            replacePersistedGraphWithStore(chatKey, latest, effectiveSeq);
+        } else if (beforeStore) {
+            appendPersistedDiffEntry(chatKey, beforeStore, latest, effectiveSeq);
+        }
+        await persistMemoryStoreByChatKey(context, chatKey, latest, { syncPersistentProjection: true });
+        refreshUiStats();
+        if (statusText) {
+            updateUiStatus(statusText);
+        }
+        if (successText) {
+            notifySuccess(successText);
+        }
+    };
+    const mountGraph = async () => {
+        const popupRoot = getPopupRoot();
+        const latest = getStore();
+        if (!popupRoot.length || !latest) {
+            return false;
+        }
+        if (cy) {
+            cy.destroy();
+            cy = null;
+        }
+
+        const container = popupRoot.find('.luker-rpg-memory-graph-cy').get(0);
+        if (!container) {
+            return false;
+        }
+
+        try {
+            const cytoscape = await ensureCytoscapeLoaded();
+            const elements = buildGraphCytoscapeElements(latest);
+            cy = cytoscape({
+                container,
+                elements,
+                wheelSensitivity: 0.2,
+                layout: { name: 'preset', fit: true, padding: 20 },
+                minZoom: 0.02,
+                maxZoom: 5,
+                panningEnabled: true,
+                userPanningEnabled: true,
+                zoomingEnabled: true,
+                userZoomingEnabled: true,
+                boxSelectionEnabled: false,
+                style: [
+                    {
+                        selector: 'node',
+                        style: {
+                            label: 'data(label)',
+                            'font-size': 12,
+                            'text-wrap': 'wrap',
+                            'text-max-width': 220,
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            color: '#f5f5f5',
+                            'text-outline-width': 2,
+                            'text-outline-color': '#1a1a1a',
+                            'background-color': '#4f7ba7',
+                            shape: 'round-rectangle',
+                            width: 'label',
+                            height: 'label',
+                            padding: '14px',
+                        },
+                    },
+                    { selector: 'node[level = "semantic"]', style: { 'background-color': '#3c9b7b' } },
+                    {
+                        selector: 'node[type = "event"]',
+                        style: {
+                            'background-color': '#2f74bd',
+                            'border-width': 2,
+                            'border-color': '#8ec6ff',
+                            padding: '18px',
+                            'font-size': 13,
+                            'text-outline-color': '#14283d',
+                        },
+                    },
+                    { selector: 'node[type = "character_sheet"]', style: { 'background-color': '#a55c3f' } },
+                    { selector: 'node[type = "location_state"]', style: { 'background-color': '#2f8c6d' } },
+                    { selector: 'node[type = "rule_constraint"]', style: { 'background-color': '#8b6a24' } },
+                    { selector: 'node[archived = true]', style: { opacity: 0.45 } },
+                    { selector: 'node.luker-search-match', style: { 'border-width': 2, 'border-color': '#9ed8b3' } },
+                    { selector: 'node.luker-search-dimmed', style: { opacity: 0.16 } },
+                    {
+                        selector: 'edge',
+                        style: {
+                            label: '',
+                            'font-size': 9,
+                            'curve-style': 'bezier',
+                            'control-point-step-size': 30,
+                            'target-arrow-shape': 'vee',
+                            'target-arrow-color': '#8e95a0',
+                            'line-color': '#8e95a0',
+                            width: 2,
+                            'line-opacity': 0.75,
+                            color: '#d3d9e2',
+                            'text-outline-width': 2,
+                            'text-outline-color': '#20242b',
+                            'text-opacity': 0,
+                        },
+                    },
+                    {
+                        selector: 'edge[eventBridge = 1]',
+                        style: {
+                            'curve-style': 'taxi',
+                            'taxi-direction': 'vertical',
+                            'taxi-turn': 34,
+                            'taxi-turn-min-distance': 16,
+                        },
+                    },
+                    {
+                        selector: 'edge[eventToEvent = 1]',
+                        style: {
+                            'curve-style': 'bezier',
+                            'control-point-step-size': 26,
+                            width: 2.6,
+                            'line-opacity': 0.85,
+                        },
+                    },
+                    {
+                        selector: 'edge[type = "contains"]',
+                        style: {
+                            'line-color': '#3fa66f',
+                            'target-arrow-color': '#3fa66f',
+                        },
+                    },
+                    {
+                        selector: 'edge.luker-search-dimmed',
+                        style: {
+                            opacity: 0.08,
+                            'line-opacity': 0.08,
+                            'target-arrow-color': '#5e6772',
+                            'line-color': '#5e6772',
+                        },
+                    },
+                    {
+                        selector: 'edge:selected',
+                        style: {
+                            label: 'data(type)',
+                            'text-opacity': 1,
+                            'line-color': '#ffd96c',
+                            'target-arrow-color': '#ffd96c',
+                            width: 4,
+                        },
+                    },
+                    {
+                        selector: ':selected',
+                        style: {
+                            'overlay-color': '#ffd96c',
+                            'overlay-padding': 6,
+                            'overlay-opacity': 0.2,
+                            'border-width': 3,
+                            'border-color': '#ffd96c',
+                        },
+                    },
+                ],
+            });
+            const applyViewportFit = () => {
+                if (!cy) {
+                    return;
+                }
+                const nodeCount = Number(cy.nodes().length || 0);
+                const padding = nodeCount <= 10 ? 20 : nodeCount <= 24 ? 32 : nodeCount <= 48 ? 48 : 64;
+                const minComfortZoom = nodeCount <= 8 ? 1.2 : nodeCount <= 16 ? 1.0 : nodeCount <= 32 ? 0.85 : 0.65;
+                cy.resize();
+                cy.fit(cy.elements(), padding);
+                if (cy.zoom() < minComfortZoom) {
+                    cy.zoom(minComfortZoom);
+                }
+                cy.center();
+            };
+            runLayout = () => {
+                if (!cy) {
+                    return;
+                }
+                const current = getStore();
+                const refreshed = buildGraphCytoscapeElements(current);
+                const positionMap = new Map(
+                    refreshed.nodes
+                        .map(node => [String(node?.data?.nodeId || ''), node.position])
+                        .filter(([id, pos]) => id && pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)),
+                );
+                cy.startBatch();
+                cy.nodes().forEach(node => {
+                    const nodeId = String(node.data('nodeId') || '');
+                    const nextPos = positionMap.get(nodeId);
+                    if (nextPos) {
+                        node.position(nextPos);
+                    }
+                });
+                cy.endBatch();
+                applyViewportFit();
+            };
+            runLayout();
+            setTimeout(() => {
+                applyViewportFit();
+            }, 0);
+            setTimeout(() => {
+                applyViewportFit();
+            }, 60);
+            setTimeout(() => {
+                applyViewportFit();
+            }, 220);
+            applySearchGraphState();
+
+            cy.on('tap', 'node', (event) => {
+                const nodeId = String(event.target.data('nodeId') || '');
+                selectNodeForInspection(nodeId);
+            });
+            cy.on('tap', 'edge', (event) => {
+                const edgeIndex = Number(event.target.data('edgeIndex'));
+                if (!Number.isInteger(edgeIndex) || edgeIndex < 0) {
+                    return;
+                }
+                selectEdgeForInspection(edgeIndex);
+            });
+            cy.on('tap', (event) => {
+                if (event.target !== cy) {
+                    return;
+                }
+                clearInspectorSelection();
+            });
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Cytoscape mount failed`, error);
+            updateSelectionText(i18n('Visual graph unavailable: failed to load Cytoscape.'));
+            return false;
+        }
+        return true;
+    };
+    const mountGraphWithRetry = async (attempt = 0) => {
+        const mounted = await mountGraph();
+        if (mounted || attempt >= 25) {
+            return mounted;
+        }
+        if (mountRetryTimer) {
+            clearTimeout(mountRetryTimer);
+            mountRetryTimer = null;
+        }
+        await new Promise(resolve => {
+            mountRetryTimer = setTimeout(resolve, 80);
+        });
+        mountRetryTimer = null;
+        return await mountGraphWithRetry(attempt + 1);
+    };
+    const rerender = async () => {
+        const popupRoot = jQuery(selector);
+        const latest = getStore();
+        if (!popupRoot.length || !latest) {
+            return;
+        }
+        if (cy) {
+            cy.destroy();
+            cy = null;
+        }
+        syncSearchState(latest);
+        popupRoot.html(renderGraphInspectorHtml(latest, {
+            searchState: getSearchState(),
+            activeTab: currentTab,
+            isSearchOpen: isSearchOpen || Boolean(searchQuery),
+        }));
+        if (!latest.edges?.[selectedEdgeIndex]) {
+            selectedEdgeIndex = -1;
+        }
+        if (!latest.nodes?.[selectedNodeId]) {
+            selectedNodeId = '';
+        }
+        if (currentTab === 'graph') {
+            await mountGraphWithRetry();
+            if (cy && selectedNodeId && latest.nodes?.[selectedNodeId]) {
+                cy.$id(`node:${selectedNodeId}`).select();
+            } else if (cy && selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
+                cy.$id(`edge:${selectedEdgeIndex}`).select();
+            }
+            applySearchGraphState();
+        }
+        if (selectedNodeId && latest.nodes?.[selectedNodeId]) {
+            updateSelectionText(i18nFormat('Selected node: ${0}. Tip: click an edge to edit relation.', selectedNodeId));
+        } else if (selectedEdgeIndex >= 0 && latest.edges?.[selectedEdgeIndex]) {
+            const edge = latest.edges[selectedEdgeIndex];
+            updateSelectionText(i18nFormat(
+                'Selected edge #${0}: ${1} -> ${2} [${3}]',
+                selectedEdgeIndex,
+                edge.from,
+                edge.to,
+                edge.type,
+            ));
+        } else {
+            updateSelectionText('');
+        }
+        updateInspectorPanel();
+    };
+    const openEdgeEditor = async (edgeIndex = -1) => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const isEdit = Number.isInteger(edgeIndex) && edgeIndex >= 0;
+        const sourceEdge = isEdit ? latest.edges?.[edgeIndex] : null;
+        if (isEdit && !sourceEdge) {
+            notifyError(i18nFormat('Edge not found: #${0}', edgeIndex));
+            return;
+        }
+        const editorId = `luker_rpg_memory_edge_editor_${Date.now()}`;
+        const editorHtml = renderEdgeFormEditorHtml(
+            latest,
+            editorId,
+            sourceEdge || { from: '', to: '', type: 'related' },
+            isEdit ? edgeIndex : -1,
+        );
+        const result = await context.callGenericPopup(
+            editorHtml,
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            {
+                okButton: isEdit ? i18n('Apply Edge') : i18n('Create Edge'),
+                cancelButton: i18n('Cancel'),
+                wide: true,
+                wider: true,
+                large: false,
+                allowVerticalScrolling: true,
+                allowHorizontalScrolling: true,
+            },
+        );
+        if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        try {
+            const editorRoot = jQuery(`#${editorId}`);
+            if (!editorRoot.length) {
+                throw new Error(i18n('Edge form not found'));
+            }
+            const from = String(editorRoot.find('[data-field="from"]').val() || '').trim();
+            const to = String(editorRoot.find('[data-field="to"]').val() || '').trim();
+            const type = String(editorRoot.find('[data-field="type"]').val() || 'related').trim() || 'related';
+
+            if (!from || !to) {
+                throw new Error(i18n('From/To node is required'));
+            }
+            if (!latest.nodes[from] || !latest.nodes[to]) {
+                throw new Error(i18n('From/To node does not exist'));
+            }
+            if (from === to) {
+                throw new Error(i18n('From and To cannot be the same node'));
+            }
+
+            const next = {
+                from,
+                to,
+                type,
+            };
+            const beforeStore = normalizeStoreForRuntime(latest);
+
+            if (isEdit) {
+                latest.edges[edgeIndex] = next;
+                selectedEdgeIndex = edgeIndex;
+                await persistLatest(
+                    latest,
+                    i18nFormat('Edge updated (#${0})', edgeIndex),
+                    i18nFormat('Updated edge #${0}.', edgeIndex),
+                    { beforeStore },
+                );
+            } else {
+                latest.edges.push(next);
+                selectedEdgeIndex = latest.edges.length - 1;
+                await persistLatest(
+                    latest,
+                    i18n('Edge created.'),
+                    i18nFormat('Created edge #${0}.', selectedEdgeIndex),
+                    { beforeStore },
+                );
+            }
+            await rerender();
+        } catch (error) {
+            notifyError(i18nFormat('Edge edit failed: ${0}', error?.message || error));
+        }
+    };
+    const applyNodeEditorFromRoot = async (editorRoot, nodeId) => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const node = latest?.nodes?.[nodeId];
+        if (!node) {
+            throw new Error(i18nFormat('Node not found: ${0}', nodeId));
+        }
+        if (!editorRoot || !editorRoot.length) {
+            throw new Error(i18n('Node form not found'));
+        }
+        const parsedParentId = String(editorRoot.find('[data-field="parentId"]').val() || '').trim();
+        if (parsedParentId && !latest.nodes[parsedParentId]) {
+            throw new Error(i18nFormat('Parent node does not exist: ${0}', parsedParentId));
+        }
+        if (parsedParentId === nodeId) {
+            throw new Error(i18n('Parent node cannot be itself'));
+        }
+        if (willCreateParentCycle(latest, nodeId, parsedParentId)) {
+            throw new Error(i18n('Parent selection would create a cycle'));
+        }
+        const beforeStore = normalizeStoreForRuntime(latest);
+
+        const target = latest.nodes[nodeId];
+        const oldParentId = String(target.parentId || '').trim();
+
+        target.type = String(editorRoot.find('[data-field="type"]').val() || target.type || 'unknown').trim() || 'unknown';
+        target.level = String(editorRoot.find('[data-field="level"]').val() || target.level || LEVEL.SEMANTIC).trim() || LEVEL.SEMANTIC;
+        target.title = normalizeText(editorRoot.find('[data-field="title"]').val() || target.title || nodeId);
+        target.seqTo = parseOptionalNumber(editorRoot.find('[data-field="seqTo"]').val());
+        target.archived = Boolean(editorRoot.find('[data-field="archived"]').prop('checked'));
+        target.fields = decodeFieldsFromLines(editorRoot.find('[data-field="fieldsLines"]').val());
+        setNodeSummary(target, editorRoot.find('[data-field="summary"]').val() || '');
+
+        if (parsedParentId !== oldParentId) {
+            if (oldParentId && latest.nodes[oldParentId]) {
+                const oldParent = latest.nodes[oldParentId];
+                oldParent.childrenIds = (oldParent.childrenIds || []).filter(id => id !== nodeId);
+            }
+            if (parsedParentId && latest.nodes[parsedParentId]) {
+                reparentNode(latest, nodeId, parsedParentId);
+            } else {
+                target.parentId = '';
+            }
+        } else if (parsedParentId && latest.nodes[parsedParentId]) {
+            const parent = latest.nodes[parsedParentId];
+            if (!Array.isArray(parent.childrenIds)) {
+                parent.childrenIds = [];
+            }
+            if (!parent.childrenIds.includes(nodeId)) {
+                parent.childrenIds.push(nodeId);
+            }
+        }
+
+        selectedNodeId = nodeId;
+        selectedEdgeIndex = -1;
+        await persistLatest(
+            latest,
+            i18nFormat('Node updated: ${0}', nodeId),
+            i18nFormat('Updated node ${0}.', nodeId),
+            { beforeStore },
+        );
+        await rerender();
+    };
+    const applyEdgeEditorFromRoot = async (editorRoot, edgeIndex) => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const edge = latest.edges?.[edgeIndex];
+        if (!edge) {
+            throw new Error(i18nFormat('Edge not found: #${0}', edgeIndex));
+        }
+        if (!editorRoot || !editorRoot.length) {
+            throw new Error(i18n('Edge form not found'));
+        }
+        const from = String(editorRoot.find('[data-field="from"]').val() || '').trim();
+        const to = String(editorRoot.find('[data-field="to"]').val() || '').trim();
+        const type = String(editorRoot.find('[data-field="type"]').val() || 'related').trim() || 'related';
+
+        if (!from || !to) {
+            throw new Error(i18n('From/To node is required'));
+        }
+        if (!latest.nodes[from] || !latest.nodes[to]) {
+            throw new Error(i18n('From/To node does not exist'));
+        }
+        if (from === to) {
+            throw new Error(i18n('From and To cannot be the same node'));
+        }
+        const beforeStore = normalizeStoreForRuntime(latest);
+
+        latest.edges[edgeIndex] = {
+            from,
+            to,
+            type,
+        };
+        selectedEdgeIndex = edgeIndex;
+        selectedNodeId = '';
+        await persistLatest(
+            latest,
+            i18nFormat('Edge updated (#${0})', edgeIndex),
+            i18nFormat('Updated edge #${0}.', edgeIndex),
+            { beforeStore },
+        );
+        await rerender();
+    };
+    const deleteNodeById = async (nodeIdHint = '') => {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        const nodeId = String(nodeIdHint || selectedNodeId || '').trim();
+        if (!nodeId) {
+            notifyError(i18n('No node selected. Click a node in graph first.'));
+            return;
+        }
+        const node = latest.nodes?.[nodeId];
+        if (!node) {
+            notifyError(i18nFormat('Node not found: ${0}', nodeId));
+            return;
+        }
+        const confirm = await context.callGenericPopup(
+            i18nFormat(
+                'Delete node ${0}: ${1}? This will remove its subtree and related edges.',
+                nodeId,
+                String(node.title || ''),
+            ),
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: i18n('Delete'), cancelButton: i18n('Cancel') },
+        );
+        if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        const beforeStore = normalizeStoreForRuntime(latest);
+        dropNode(latest, nodeId, true);
+        await persistLatest(
+            latest,
+            i18nFormat('Deleted node ${0}.', nodeId),
+            i18n('Deleted selected node.'),
+            { beforeStore },
+        );
+        selectedNodeId = '';
+        if (!latest.edges?.[selectedEdgeIndex]) {
+            selectedEdgeIndex = -1;
+        }
+        await rerender();
+    };
+    const applySearchControls = async ({ nextQuery = searchQuery, nextType = searchType, restoreCursor = null } = {}) => {
+        searchQuery = String(nextQuery ?? '');
+        searchType = String(nextType || MEMORY_GRAPH_SEARCH_ALL_TYPE).trim() || MEMORY_GRAPH_SEARCH_ALL_TYPE;
+        const searchModel = syncSearchState(getStore());
+        if (searchModel.active) {
+            if (searchModel.matchNodeIds.length > 0) {
+                selectedNodeId = activeSearchNodeId || searchModel.matchNodeIds[0];
+                selectedEdgeIndex = -1;
+            } else {
+                selectedNodeId = '';
+                selectedEdgeIndex = -1;
+                activeSearchNodeId = '';
+            }
+        }
+        await rerender();
+        if (selectedNodeId) {
+            focusNodeInGraph(selectedNodeId);
+        }
+        if (restoreCursor !== null) {
+            const input = getPopupRoot().find('.luker-rpg-memory-graph-search-input').get(0);
+            if (input) {
+                input.focus();
+                const cursor = Math.max(0, Math.min(Number(restoreCursor) || 0, String(input.value || '').length));
+                if (typeof input.setSelectionRange === 'function') {
+                    input.setSelectionRange(cursor, cursor);
+                }
+            }
+        }
+    };
+    const stepSearchResult = (direction = 1) => {
+        const searchModel = syncSearchState(getStore());
+        if (!searchModel.active || searchModel.matchNodeIds.length < 1) {
+            return;
+        }
+        const currentNodeId = searchModel.matchNodeIdSet.has(selectedNodeId)
+            ? selectedNodeId
+            : (searchModel.matchNodeIdSet.has(activeSearchNodeId) ? activeSearchNodeId : searchModel.matchNodeIds[0]);
+        const currentIndex = Math.max(0, searchModel.matchNodeIds.indexOf(currentNodeId));
+        const nextIndex = (currentIndex + direction + searchModel.matchNodeIds.length) % searchModel.matchNodeIds.length;
+        activeSearchNodeId = searchModel.matchNodeIds[nextIndex];
+        selectNodeForInspection(activeSearchNodeId, { focusGraph: true });
+    };
+
+    jQuery(document).off(namespace);
+
+    // --- Tab switching ---
+    const switchToTab = async (tabName) => {
+        if (tabName === currentTab) {
+            return;
+        }
+        currentTab = tabName;
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        popupRoot.find('.luker-graph-tab').each(function () {
+            jQuery(this).toggleClass('is-active', String(jQuery(this).data('tab') || '') === tabName);
+        });
+        popupRoot.find('.luker-graph-tab-panel').each(function () {
+            jQuery(this).toggleClass('is-active', String(jQuery(this).data('panel') || '') === tabName);
+        });
+        if (tabName === 'graph') {
+            if (cy) {
+                requestAnimationFrame(() => {
+                    if (cy) {
+                        cy.resize();
+                        cy.fit(cy.elements(), 20);
+                    }
+                });
+            } else {
+                await mountGraphWithRetry();
+                applySearchGraphState();
+                updateInspectorPanel();
+            }
+        }
+    };
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-tab`, async function () {
+        await switchToTab(String(jQuery(this).data('tab') || 'graph'));
+    });
+
+    // --- Locate node/edge in graph ---
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-locate-node`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        if (!nodeId) return;
+        await switchToTab('graph');
+        selectNodeForInspection(nodeId, { focusGraph: true });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-locate-edge`, async function () {
+        const edgeIndex = Number(jQuery(this).data('edge-index'));
+        if (!Number.isInteger(edgeIndex) || edgeIndex < 0) return;
+        await switchToTab('graph');
+        selectEdgeForInspection(edgeIndex, { focusGraph: true });
+    });
+
+    // --- Search toggle ---
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-search-toggle`, function () {
+        isSearchOpen = !isSearchOpen;
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        jQuery(this).toggleClass('is-active', isSearchOpen);
+        popupRoot.find('.luker-graph-search-collapsible').toggleClass('is-open', isSearchOpen);
+        if (isSearchOpen) {
+            const input = popupRoot.find('.luker-rpg-memory-graph-search-input');
+            if (input.length) {
+                input.trigger('focus');
+            }
+        }
+    });
+
+    // --- Inspector toggle (mobile) ---
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-graph-inspector-toggle`, function () {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const panel = popupRoot.find('.luker-rpg-memory-graph-sidepanel');
+        panel.toggleClass('is-collapsed');
+        const icon = jQuery(this).find('i');
+        if (panel.hasClass('is-collapsed')) {
+            icon.removeClass('fa-chevron-down').addClass('fa-chevron-up');
+        } else {
+            icon.removeClass('fa-chevron-up').addClass('fa-chevron-down');
+        }
+    });
+
+    jQuery(document).on(`compositionstart${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, function () {
+        isSearchComposing = true;
+    });
+    jQuery(document).on(`compositionend${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, async function () {
+        isSearchComposing = false;
+        const cursor = typeof this.selectionStart === 'number' ? this.selectionStart : null;
+        await applySearchControls({
+            nextQuery: jQuery(this).val(),
+            nextType: searchType,
+            restoreCursor: cursor,
+        });
+    });
+    jQuery(document).on(`input${namespace}`, `${selector} .luker-rpg-memory-graph-search-input`, async function (event) {
+        if (isSearchComposing || this.composing || event?.originalEvent?.isComposing) {
+            searchQuery = String(jQuery(this).val() || '');
+            return;
+        }
+        const cursor = typeof this.selectionStart === 'number' ? this.selectionStart : null;
+        await applySearchControls({
+            nextQuery: jQuery(this).val(),
+            nextType: searchType,
+            restoreCursor: cursor,
+        });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-filter`, async function () {
+        await applySearchControls({
+            nextQuery: searchQuery,
+            nextType: String(jQuery(this).data('search-type') || MEMORY_GRAPH_SEARCH_ALL_TYPE),
+        });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-result`, function () {
+        const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        if (!nodeId) {
+            return;
+        }
+        activeSearchNodeId = nodeId;
+        selectNodeForInspection(nodeId, { focusGraph: true });
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-prev`, function () {
+        stepSearchResult(-1);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-next`, function () {
+        stepSearchResult(1);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-search-clear`, async function () {
+        await applySearchControls({
+            nextQuery: '',
+            nextType: MEMORY_GRAPH_SEARCH_ALL_TYPE,
+        });
+        const input = getPopupRoot().find('.luker-rpg-memory-graph-search-input');
+        if (input.length) {
+            input.trigger('focus');
+        }
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-view`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        selectNodeForInspection(nodeId);
+        const latest = getStore();
+        const node = latest?.nodes?.[nodeId];
+        if (!node) {
+            notifyError(i18nFormat('Node not found: ${0}', nodeId));
+            return;
+        }
+        await context.callGenericPopup(
+            `<pre style="white-space:pre-wrap; max-height:68vh; overflow:auto;">${escapeHtml(JSON.stringify(node, null, 2))}</pre>`,
+            context.POPUP_TYPE.TEXT,
+            '',
+            { wide: true, large: true, allowVerticalScrolling: true },
+        );
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-edit`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || '').trim();
+        await switchToTab('graph');
+        selectNodeForInspection(nodeId, { focusGraph: true });
+        return;
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-node-view`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || selectedNodeId || '').trim();
+        const latest = getStore();
+        const node = latest?.nodes?.[nodeId];
+        if (!node) {
+            notifyError(i18nFormat('Node not found: ${0}', nodeId));
+            return;
+        }
+        await context.callGenericPopup(
+            `<pre style="white-space:pre-wrap; max-height:68vh; overflow:auto;">${escapeHtml(JSON.stringify(node, null, 2))}</pre>`,
+            context.POPUP_TYPE.TEXT,
+            '',
+            { wide: true, large: true, allowVerticalScrolling: true },
+        );
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-node-apply`, async function () {
+        const nodeId = String(selectedNodeId || '').trim();
+        if (!nodeId) {
+            notifyError(i18n('No node selected. Click a node in graph first.'));
+            return;
+        }
+        const editorRoot = jQuery(`#${popupId}_inline_node_editor`);
+        try {
+            await applyNodeEditorFromRoot(editorRoot, nodeId);
+        } catch (error) {
+            notifyError(i18nFormat('Node edit failed: ${0}', error?.message || error));
+        }
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-node-delete`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || selectedNodeId || '').trim();
+        await deleteNodeById(nodeId);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-node-delete`, async function () {
+        const nodeId = String(jQuery(this).data('node-id') || selectedNodeId || '').trim();
+        await deleteNodeById(nodeId);
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-add`, async function () {
+        await openEdgeEditor(-1);
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-fit`, function () {
+        if (!cy) {
+            return;
+        }
+        const nodeCount = Number(cy.nodes().length || 0);
+        const padding = nodeCount <= 10 ? 20 : nodeCount <= 24 ? 32 : nodeCount <= 48 ? 48 : 64;
+        const minComfortZoom = nodeCount <= 8 ? 1.2 : nodeCount <= 16 ? 1.0 : nodeCount <= 32 ? 0.85 : 0.65;
+        cy.resize();
+        cy.fit(cy.elements(), padding);
+        if (cy.zoom() < minComfortZoom) {
+            cy.zoom(minComfortZoom);
+        }
+        cy.center();
+        updateSelectionText(i18n('Fitted graph view.'));
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-edit`, async function () {
+        if (!Number.isInteger(selectedEdgeIndex) || selectedEdgeIndex < 0) {
+            notifyError(i18n('No edge selected. Click an edge in graph first.'));
+            return;
+        }
+        await openEdgeEditor(selectedEdgeIndex);
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-edit-row`, async function () {
+        const edgeIndex = Number(jQuery(this).data('edge-index'));
+        if (!Number.isInteger(edgeIndex) || edgeIndex < 0) {
+            return;
+        }
+        await switchToTab('graph');
+        selectEdgeForInspection(edgeIndex, { focusGraph: true });
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-edge-apply`, async function () {
+        if (!Number.isInteger(selectedEdgeIndex) || selectedEdgeIndex < 0) {
+            notifyError(i18n('No edge selected. Click an edge in graph first.'));
+            return;
+        }
+        const editorRoot = jQuery(`#${popupId}_inline_edge_editor`);
+        try {
+            await applyEdgeEditorFromRoot(editorRoot, selectedEdgeIndex);
+        } catch (error) {
+            notifyError(i18nFormat('Edge edit failed: ${0}', error?.message || error));
+        }
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-inline-edge-delete`, async function () {
+        jQuery(`${selector} .luker-rpg-memory-edge-delete`).trigger('click');
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-edge-delete`, async function () {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        if (!Number.isInteger(selectedEdgeIndex) || selectedEdgeIndex < 0 || !latest.edges?.[selectedEdgeIndex]) {
+            notifyError(i18n('No edge selected. Click an edge in graph first.'));
+            return;
+        }
+
+        const edge = latest.edges[selectedEdgeIndex];
+        const confirm = await context.callGenericPopup(
+            i18nFormat(
+                'Delete edge #${0}: ${1} -> ${2} [${3}]?',
+                selectedEdgeIndex,
+                escapeHtml(String(edge.from || '')),
+                escapeHtml(String(edge.to || '')),
+                escapeHtml(String(edge.type || '')),
+            ),
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: i18n('Delete'), cancelButton: i18n('Cancel') },
+        );
+        if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        const beforeStore = normalizeStoreForRuntime(latest);
+        latest.edges.splice(selectedEdgeIndex, 1);
+        await persistLatest(
+            latest,
+            i18nFormat('Deleted edge #${0}.', selectedEdgeIndex),
+            i18n('Deleted selected edge.'),
+            { beforeStore },
+        );
+        selectedEdgeIndex = -1;
+        await rerender();
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-raw-view`, async function () {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+        await context.callGenericPopup(
+            `<pre style="white-space:pre-wrap; max-height:72vh; overflow:auto;">${escapeHtml(JSON.stringify(latest, null, 2))}</pre>`,
+            context.POPUP_TYPE.TEXT,
+            '',
+            { wide: true, large: true, allowVerticalScrolling: true },
+        );
+    });
+
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-rpg-memory-graph-raw-edit`, async function () {
+        const latest = getStore();
+        if (!latest) {
+            return;
+        }
+
+        const editorId = `luker_rpg_memory_graph_editor_${Date.now()}`;
+        const editorHtml = `
+<div class="flex-container flexFlowColumn">
+    <small style="opacity:0.85">${escapeHtml(i18n('Advanced: edit full memory graph JSON for current chat.'))}</small>
+    <textarea id="${editorId}" class="text_pole textarea_compact" style="min-height:68vh; font-family:monospace;">${escapeHtml(JSON.stringify(latest, null, 2))}</textarea>
+</div>`;
+
+        const result = await context.callGenericPopup(
+            editorHtml,
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: i18n('Apply Graph'), cancelButton: i18n('Cancel'), wide: true, large: true, allowVerticalScrolling: true },
+        );
+        if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+
+        try {
+            const raw = String(jQuery(`#${editorId}`).val() || '').trim();
+            const parsed = JSON.parse(raw);
+            const migrated = normalizeStoreForRuntime(parsed);
+            updateStoreSourceState(migrated, context);
+            replacePersistedGraphWithStore(
+                chatKey,
+                migrated,
+                getStoreCoveredSeqTo(migrated),
+            );
+            clearRollbackHistory(chatKey);
+            await persistMemoryStoreByChatKey(context, chatKey, migrated, { syncPersistentProjection: true });
+            refreshUiStats();
+            updateUiStatus(i18n('Applied raw graph JSON edit.'));
+            notifySuccess(i18n('Memory graph JSON updated.'));
+            selectedEdgeIndex = -1;
+            await rerender();
+        } catch (error) {
+            notifyError(i18nFormat('Graph edit failed: ${0}', error?.message || error));
+        }
+    });
+
+    await mountGraphWithRetry();
+    updateInspectorPanel();
+    setTimeout(() => { void mountGraphWithRetry(); }, 0);
+    setTimeout(() => { void mountGraphWithRetry(); }, 180);
+    try {
+        await popupPromise;
+    } finally {
+        jQuery(document).off(namespace);
+        if (cy) {
+            cy.destroy();
+            cy = null;
+        }
+        if (mountRetryTimer) {
+            clearTimeout(mountRetryTimer);
+            mountRetryTimer = null;
+        }
+    }
+}
+
+function notifySuccess(message) {
+    if (typeof toastr !== 'undefined') {
+        toastr.success(String(message));
+    }
+}
+
+function notifyError(message) {
+    if (typeof toastr !== 'undefined') {
+        toastr.error(String(message));
+    }
+}
+
+function notifyInfo(message) {
+    if (typeof toastr !== 'undefined') {
+        toastr.info(String(message));
+    }
+}
+
+function showPersistentRuntimeNotice(message, { level = 'error' } = {}) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    clearPersistentRuntimeNotice();
+    const method = typeof toastr?.[level] === 'function' ? level : 'error';
+    const toast = toastr[method](String(message || ''), i18n('Memory Graph'), {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: true,
+        closeButton: true,
+        progressBar: false,
+        newestOnTop: true,
+        onHidden: () => {
+            if (activePersistentRuntimeNoticeToast === toast) {
+                activePersistentRuntimeNoticeToast = null;
+            }
+        },
+    });
+    if (toast?.length) {
+        toast.addClass('luker-persistent-toast');
+        activePersistentRuntimeNoticeToast = toast;
+    }
+}
+
+function clearPersistentRuntimeNotice() {
+    if (typeof toastr === 'undefined' || !activePersistentRuntimeNoticeToast) {
+        return;
+    }
+    const toast = activePersistentRuntimeNoticeToast;
+    activePersistentRuntimeNoticeToast = null;
+    toastr.clear(toast);
+}
+
+function notifyEventCompressionIfAny(compressionStats) {
+    const eventRounds = getCompressionRoundsByType(compressionStats, 'event');
+    if (eventRounds <= 0) {
+        return;
+    }
+    notifyInfo(i18nFormat('Event compression completed: ${0} round(s).', eventRounds));
+}
+
+function showRuntimeInfoToast(message, { stopLabel = '', onStop = null } = {}) {
+    if (typeof toastr === 'undefined') {
+        return;
+    }
+    clearPersistentRuntimeNotice();
+    if (activeRuntimeInfoToast) {
+        toastr.clear(activeRuntimeInfoToast);
+        activeRuntimeInfoToast = null;
+    }
+    activeRuntimeInfoToast = toastr.info(String(message || ''), '', {
+        timeOut: 0,
+        extendedTimeOut: 0,
+        tapToDismiss: false,
+        closeButton: true,
+        progressBar: false,
+    });
+    const toastBody = activeRuntimeInfoToast ? activeRuntimeInfoToast.find('.toast-message') : null;
+    if (toastBody && toastBody.length > 0) {
+        toastBody.empty();
+        const textNode = jQuery('<div class="luker-rpg-memory-toast-text"></div>');
+        textNode.text(String(message || ''));
+        toastBody.append(textNode);
+        if (typeof onStop === 'function') {
+            const button = jQuery('<button type="button" class="menu_button menu_button_small luker-toast-stop-button"></button>');
+            button.text(String(stopLabel || i18n('Stop')));
+            button.on('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                button.prop('disabled', true);
+                const toastElement = button.closest('.toast');
+                clearRuntimeInfoToast();
+                if (toastElement && toastElement.length > 0) {
+                    toastElement.remove();
+                }
+                onStop();
+            });
+            toastBody.append(button);
+        }
+    }
+}
+
+function updateRuntimeInfoToastMessage(message) {
+    if (!activeRuntimeInfoToast) {
+        return;
+    }
+    const textNode = activeRuntimeInfoToast.find('.luker-rpg-memory-toast-text');
+    if (textNode.length > 0) {
+        textNode.text(String(message || ''));
+    }
+}
+
+function clearRuntimeInfoToast() {
+    if (typeof toastr === 'undefined' || !activeRuntimeInfoToast) {
+        return;
+    }
+    toastr.clear(activeRuntimeInfoToast);
+    activeRuntimeInfoToast = null;
+}
+
+async function stopMemoryRuntimeWork() {
+    clearRuntimeInfoToast();
+    clearPersistentRuntimeNotice();
+
+    for (const timer of extractionTimers.values()) {
+        clearTimeout(timer);
+    }
+    extractionTimers.clear();
+    for (const state of scheduledExtractionSingleFlightStates.values()) {
+        state.rerun = false;
+        state.cancelled = true;
+    }
+
+    const recallRunToken = Number(activeRecallRunToken || 0);
+    if (recallRunToken > 0) {
+        activeRecallRunToken += 1;
+    }
+
+    if (activeRecallAbortController && !activeRecallAbortController.signal.aborted) {
+        activeRecallAbortController.abort();
+    }
+    if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+        activeExtractionAbortController.abort();
+    }
+
+    if (recallRunToken > 0) {
+        await abortActiveRecallRequests(recallRunToken);
+    }
+}
+
+function updateUiStatus(text) {
+    jQuery('#luker_rpg_memory_status').text(String(text || ''));
+}
+
+function refreshUiStats() {
+    const root = jQuery(`#${UI_BLOCK_ID}`);
+    if (!root.length) {
+        return;
+    }
+
+    const context = getContext();
+    const chatKey = getChatKey(context);
+    const store = memoryStoreCache.get(chatKey) || createEmptyStore();
+    const stats = getStoreStats(store);
+
+    root.find('#luker_rpg_memory_stats').text(
+        i18nFormat(
+            'nodes=${0}, edges=${1}, messages=${2}, source=${3}, semantic=${4}',
+            stats.nodeCount,
+            stats.edgeCount,
+            stats.messageCount,
+            stats.sourceMessageCount,
+            stats.levelCount.semantic,
+        ),
+    );
+}
+
+function joinCommaList(list) {
+    if (!Array.isArray(list)) {
+        return '';
+    }
+    return list.map(item => String(item || '').trim()).filter(Boolean).join(', ');
+}
+
+function splitCommaList(value) {
+    return String(value || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+}
+
+function joinKeyValueLines(map) {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) {
+        return '';
+    }
+    return Object.entries(map)
+        .map(([key, value]) => `${String(key || '').trim()}=${String(value || '').trim()}`)
+        .filter(line => !line.startsWith('=') && !line.endsWith('='))
+        .join('\n');
+}
+
+function parseKeyValueLines(value) {
+    const lines = String(value || '').split(/\r?\n/);
+    const result = {};
+    for (const line of lines) {
+        const trimmed = String(line || '').trim();
+        if (!trimmed) {
+            continue;
+        }
+        const idx = trimmed.indexOf('=');
+        if (idx <= 0) {
+            continue;
+        }
+        const key = trimmed.slice(0, idx).trim();
+        const val = trimmed.slice(idx + 1).trim();
+        if (!key || !val) {
+            continue;
+        }
+        result[key] = val;
+    }
+    return result;
+}
+
+function getSchemaTypeTemplate(index = 1) {
+    return {
+        id: `custom_${index}`,
+        label: `Custom Type ${index}`,
+        tableName: `custom_table_${index}`,
+        tableColumns: ['title'],
+        level: LEVEL.SEMANTIC,
+        extractHint: '',
+        keywords: [],
+        columnHints: {},
+        requiredColumns: [],
+        forceUpdate: false,
+        editable: true,
+        alwaysInject: false,
+        latestOnly: false,
+        primaryKeyColumns: [],
+        compression: {
+            mode: 'none',
+            threshold: 6,
+            fanIn: 3,
+            maxDepth: 6,
+            keepRecentLeaves: 0,
+            summarizeInstruction: '',
+        },
+    };
+}
+
+function ensureStyles() {
+    const existingStyle = jQuery(`#${STYLE_ID}`);
+    if (existingStyle.length) {
+        existingStyle.remove();
+    }
+
+    jQuery('head').append(`
+<style id="${STYLE_ID}">
+#${UI_BLOCK_ID} .menu_button,
+#${UI_BLOCK_ID} .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+}
+#${UI_BLOCK_ID} #luker_rpg_memory_schema_summary {
+    display: block;
+    margin: 4px 0 8px;
+    padding: 6px 9px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.45));
+    border-radius: 8px;
+    background: linear-gradient(140deg, rgba(27, 43, 36, 0.2), rgba(24, 30, 44, 0.17));
+    font-variant-numeric: tabular-nums;
+}
+
+.luker-rpg-schema-popup {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    text-align: left;
+}
+
+.luker-rpg-schema-popup .menu_button,
+.luker-rpg-schema-popup .menu_button_small,
+.luker-rpg-memory-graph-popup .menu_button,
+.luker-rpg-memory-graph-popup .menu_button_small,
+.luker-rpg-memory-advanced-popup .menu_button,
+.luker-rpg-memory-advanced-popup .menu_button_small {
+    width: auto;
+    min-width: max-content;
+    white-space: nowrap;
+    display: inline-flex;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+}
+
+.luker-rpg-memory-graph-popup .menu_button,
+.luker-rpg-memory-graph-popup .menu_button_small {
+    min-width: 0;
+    white-space: normal;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) {
+    width: min(96vw, 1480px) !important;
+    max-width: min(96vw, 1480px) !important;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) .popup-body {
+    min-height: 0;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) .popup-content {
+    overflow: hidden !important;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.popup:has(.luker-rpg-memory-graph-popup) .popup-controls {
+    margin-top: 6px;
+}
+
+.luker-rpg-schema-popup .luker-schema-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.45));
+    border-radius: 10px;
+    padding: 10px;
+    background: linear-gradient(155deg, rgba(17, 47, 43, 0.25), rgba(31, 30, 44, 0.2));
+}
+
+.luker-rpg-schema-popup .luker-schema-topbar-title {
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+
+.luker-rpg-schema-popup .luker-schema-topbar-note {
+    opacity: 0.85;
+    margin-top: 3px;
+    font-size: 0.93em;
+}
+
+.luker-rpg-schema-popup .luker-schema-chip-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-schema-popup .luker-schema-chip {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.45));
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 0.82em;
+    background: rgba(255, 255, 255, 0.05);
+    white-space: nowrap;
+}
+
+.luker-rpg-schema-popup .luker-schema-chip.hier {
+    border-color: rgba(69, 164, 133, 0.75);
+}
+
+.luker-rpg-schema-popup .luker-schema-chip.latest {
+    border-color: rgba(68, 136, 215, 0.75);
+}
+
+.luker-rpg-schema-popup .luker-schema-chip.inject {
+    border-color: rgba(194, 146, 76, 0.8);
+}
+
+.luker-rpg-schema-popup .luker-schema-editor-list {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    max-height: 65vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+    gap: 10px;
+}
+
+.luker-rpg-schema-popup .luker-schema-card {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.42));
+    border-radius: 11px;
+    padding: 10px;
+    background: linear-gradient(145deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+    box-shadow: 0 4px 12px rgba(0,0,0,0.16);
+    border-left-width: 4px;
+}
+
+.luker-rpg-schema-popup .luker-schema-card.mode-none {
+    border-left-color: rgba(140, 140, 140, 0.9);
+}
+
+.luker-rpg-schema-popup .luker-schema-card.mode-hierarchical {
+    border-left-color: rgba(58, 173, 118, 0.95);
+}
+
+.luker-rpg-schema-popup .luker-schema-card.is-always {
+    box-shadow: 0 4px 14px rgba(191, 143, 62, 0.25);
+}
+
+.luker-rpg-schema-popup .luker-schema-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.luker-rpg-schema-popup .luker-schema-card-title {
+    font-size: 1.02em;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+
+.luker-rpg-schema-popup .luker-schema-card-sub {
+    opacity: 0.76;
+    font-size: 0.86em;
+}
+
+.luker-rpg-schema-popup .luker-schema-badges {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-schema-popup .luker-schema-badge {
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 0.8em;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.42));
+    background: rgba(255,255,255,0.05);
+}
+
+.luker-rpg-schema-popup .luker-schema-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.luker-rpg-schema-popup .luker-schema-card label:not(.checkbox_label) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    min-width: 0;
+    gap: 3px;
+}
+
+.luker-rpg-schema-popup .text_pole,
+.luker-rpg-schema-popup textarea,
+.luker-rpg-schema-popup input:not([type="checkbox"]),
+.luker-rpg-schema-popup select {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.luker-rpg-schema-popup .luker-schema-card label.checkbox_label {
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    justify-content: flex-start;
+}
+
+.luker-rpg-schema-popup .luker-schema-card label.checkbox_label input[type="checkbox"] {
+    width: auto;
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+    align-self: center;
+}
+
+.luker-rpg-schema-popup .luker-schema-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    margin-top: 6px;
+}
+
+.luker-rpg-schema-popup .luker-schema-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    padding-top: 8px;
+}
+
+.luker-rpg-schema-popup .luker-schema-footer-note {
+    opacity: 0.76;
+    font-size: 0.86em;
+}
+
+.luker-rpg-schema-popup .luker-schema-footer-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.luker-rpg-schema-popup .luker-schema-footer-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.luker-rpg-memory-graph-popup {
+    width: min(1380px, calc(100vw - 32px));
+    max-width: min(1380px, calc(100vw - 32px));
+    min-width: 0;
+    box-sizing: border-box;
+    overflow-x: hidden;
+}
+
+.luker-rpg-memory-graph-popup-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: stretch;
+    text-align: left;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    overflow-x: hidden;
+    min-height: 0;
+    max-height: calc(100vh - 170px);
+    max-height: calc(100dvh - 170px);
+}
+
+/* --- Header --- */
+.luker-graph-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 2px 10px;
+}
+
+.luker-graph-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.luker-graph-title {
+    margin: 0;
+    font-size: 1.1em;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.luker-graph-stats {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-graph-stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 0.82em;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.luker-graph-stat b {
+    font-weight: 700;
+    color: rgba(180, 220, 200, 0.95);
+}
+
+.luker-graph-search-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.luker-graph-search-toggle:hover {
+    border-color: rgba(140, 205, 168, 0.5);
+}
+
+.luker-graph-search-toggle.is-active {
+    border-color: rgba(140, 205, 168, 0.8);
+    background: rgba(40, 86, 68, 0.5);
+}
+
+/* --- Search collapsible --- */
+.luker-graph-search-collapsible {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease, padding 0.25s ease;
+    padding: 0;
+}
+
+.luker-graph-search-collapsible.is-open {
+    max-height: 600px;
+    overflow: visible;
+    padding: 0 0 8px;
+}
+
+/* --- Tab bar --- */
+.luker-graph-tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    margin-bottom: 0;
+}
+
+.luker-graph-tab {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 8px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.9em;
+    opacity: 0.7;
+    transition: opacity 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    white-space: nowrap;
+}
+
+.luker-graph-tab:hover {
+    opacity: 0.9;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.luker-graph-tab.is-active {
+    opacity: 1;
+    border-bottom-color: rgba(140, 205, 168, 0.85);
+    background: rgba(40, 86, 68, 0.15);
+}
+
+.luker-graph-tab i {
+    font-size: 1em;
+}
+
+/* --- Tab panels --- */
+.luker-graph-tab-panel {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 10px;
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+}
+
+.luker-graph-tab-panel.is-active {
+    display: flex;
+}
+
+/* --- Canvas toolbar (icon buttons) --- */
+.luker-graph-canvas-toolbar {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    padding: 4px 0 2px;
+}
+
+.luker-graph-canvas-toolbar .menu_button,
+.luker-graph-canvas-toolbar .menu_button_small {
+    width: 34px;
+    height: 34px;
+    min-width: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+}
+
+/* --- Inspector header with toggle --- */
+.luker-graph-inspector-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.luker-graph-inspector-toggle {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+/* --- Edges toolbar --- */
+.luker-graph-edges-toolbar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+/* --- Row actions (icon buttons in tables) --- */
+.luker-graph-row-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.luker-graph-row-actions .menu_button,
+.luker-graph-row-actions .menu_button_small {
+    width: 30px;
+    height: 30px;
+    min-width: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+}
+
+/* --- Table styles --- */
+.luker-graph-table {
+    font-size: 12px;
+    width: 100%;
+    table-layout: fixed;
+}
+
+.luker-graph-td-summary {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* --- Card list (mobile) --- */
+.luker-graph-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 65vh;
+    overflow-y: auto;
+    padding: 2px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.luker-graph-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.28));
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
+}
+
+.luker-graph-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+}
+
+.luker-graph-card-title {
+    font-weight: 600;
+    font-size: 0.95em;
+    line-height: 1.3;
+    min-width: 0;
+    word-break: break-word;
+    flex: 1;
+}
+
+.luker-graph-card-type {
+    flex-shrink: 1;
+    min-width: 0;
+    font-size: 0.74em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(83, 133, 176, 0.18);
+    color: rgba(223, 239, 255, 0.96);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 50%;
+}
+
+.luker-graph-card-meta {
+    font-size: 0.78em;
+    opacity: 0.65;
+}
+
+.luker-graph-card-body {
+    font-size: 0.88em;
+    line-height: 1.4;
+    opacity: 0.88;
+}
+
+.luker-graph-card-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+}
+
+.luker-graph-card-actions .menu_button,
+.luker-graph-card-actions .menu_button_small {
+    width: 30px;
+    height: 30px;
+    min-width: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+}
+
+/* --- Desktop/mobile visibility --- */
+.luker-graph-desktop-only { display: block; }
+.luker-graph-mobile-only { display: none; }
+
+.luker-rpg-memory-graph-search-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 14px;
+    padding: 10px;
+    background:
+        radial-gradient(circle at top left, rgba(63, 166, 111, 0.18), transparent 42%),
+        linear-gradient(140deg, rgba(20, 24, 33, 0.9), rgba(11, 14, 20, 0.72));
+}
+
+.luker-rpg-memory-graph-search-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.luker-rpg-memory-graph-search-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 8px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(123, 163, 196, 0.28);
+    background: rgba(7, 10, 16, 0.4);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.luker-rpg-memory-graph-search-input-wrap > i {
+    color: rgba(197, 229, 214, 0.92);
+}
+
+.luker-rpg-memory-graph-search-input-wrap .luker-rpg-memory-graph-search-input {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+.luker-rpg-memory-graph-search-input-wrap .luker-rpg-memory-graph-search-input:focus {
+    outline: none;
+}
+
+.luker-rpg-memory-graph-search-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.luker-rpg-memory-graph-search-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.luker-rpg-memory-graph-search-filters {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-memory-graph-search-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(123, 163, 196, 0.24);
+    background: rgba(255, 255, 255, 0.03);
+    color: inherit;
+    cursor: pointer;
+    transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.luker-rpg-memory-graph-search-filter:hover {
+    border-color: rgba(140, 205, 168, 0.48);
+    transform: translateY(-1px);
+}
+
+.luker-rpg-memory-graph-search-filter.is-active {
+    border-color: rgba(140, 205, 168, 0.8);
+    background: linear-gradient(135deg, rgba(40, 86, 68, 0.82), rgba(28, 48, 62, 0.76));
+    color: #f3fff8;
+}
+
+.luker-rpg-memory-graph-search-filter-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 0.82em;
+    opacity: 0.92;
+}
+
+.luker-rpg-memory-graph-search-summary {
+    opacity: 0.82;
+    font-size: 0.9em;
+}
+
+.luker-rpg-memory-graph-search-results {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+}
+
+.luker-rpg-memory-graph-search-result {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(123, 163, 196, 0.22);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.luker-rpg-memory-graph-search-result:hover {
+    transform: translateY(-1px);
+    border-color: rgba(140, 205, 168, 0.5);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+.luker-rpg-memory-graph-search-result.is-active {
+    border-color: rgba(255, 217, 108, 0.82);
+    background: linear-gradient(180deg, rgba(84, 62, 18, 0.34), rgba(38, 28, 10, 0.16));
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.luker-rpg-memory-graph-search-result-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.luker-rpg-memory-graph-search-result-title {
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.luker-rpg-memory-graph-search-result-type {
+    flex-shrink: 0;
+    font-size: 0.76em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(83, 133, 176, 0.18);
+    color: rgba(223, 239, 255, 0.96);
+}
+
+.luker-rpg-memory-graph-search-result-meta {
+    font-size: 0.8em;
+    opacity: 0.74;
+}
+
+.luker-rpg-memory-graph-search-result-summary {
+    font-size: 0.9em;
+    line-height: 1.4;
+    opacity: 0.92;
+}
+
+.luker-rpg-memory-graph-search-empty {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px dashed rgba(123, 163, 196, 0.24);
+    background: rgba(255, 255, 255, 0.02);
+    opacity: 0.86;
+}
+
+.luker-rpg-memory-graph-workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    gap: 10px;
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+.luker-rpg-memory-graph-canvas-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 10px;
+    background: radial-gradient(circle at 20% 20%, rgba(70, 104, 138, 0.2), rgba(21, 24, 31, 0.25));
+    padding: 6px;
+}
+
+.luker-rpg-memory-graph-cy {
+    width: 100%;
+    height: min(58vh, 580px);
+    height: min(58dvh, 580px);
+    border-radius: 8px;
+    background: rgba(10, 12, 16, 0.5);
+    cursor: grab;
+}
+
+.luker-rpg-memory-graph-selection {
+    display: block;
+    opacity: 0.9;
+    font-size: 0.9em;
+}
+
+.luker-rpg-memory-graph-sidepanel {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 10px;
+    background: linear-gradient(150deg, rgba(30, 35, 47, 0.35), rgba(12, 14, 20, 0.4));
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: min(58vh, 580px);
+    max-height: min(58dvh, 580px);
+    overflow: auto;
+}
+
+.luker-rpg-memory-graph-sidehint {
+    opacity: 0.8;
+    font-size: 0.88em;
+}
+
+.luker-rpg-memory-graph-editor-slot {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.luker-rpg-memory-graph-editor-empty {
+    opacity: 0.78;
+    font-size: 0.9em;
+    padding: 8px;
+    border: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.luker-rpg-memory-graph-inline-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-memory-graph-sidepanel .luker-rpg-memory-node-form {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+}
+
+.luker-rpg-memory-graph-sidepanel .luker-rpg-memory-node-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.luker-rpg-memory-graph-sidepanel .luker-rpg-memory-edge-form-grid {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.luker-rpg-memory-graph-table-wrap {
+    max-height: 38vh;
+    overflow: auto;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.32));
+    border-radius: 8px;
+    padding: 4px;
+    background: rgba(0, 0, 0, 0.08);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.luker-rpg-memory-graph-table-wrap table {
+    width: 100%;
+    table-layout: fixed;
+}
+
+.luker-rpg-memory-graph-table-wrap th,
+.luker-rpg-memory-graph-table-wrap td {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.luker-rpg-memory-node-form {
+    gap: 8px;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+}
+
+.luker-rpg-memory-advanced-popup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: stretch;
+    text-align: left;
+}
+
+.luker-rpg-memory-advanced-popup label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.luker-rpg-memory-advanced-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    padding-top: 8px;
+}
+
+.luker-rpg-memory-advanced-footer-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.luker-rpg-memory-advanced-footer-note {
+    opacity: 0.76;
+    font-size: 0.86em;
+}
+
+.luker-rpg-memory-advanced-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.luker-rpg-memory-node-form-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.luker-rpg-memory-node-form-flags {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 2px 0;
+}
+
+.luker-rpg-memory-node-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.luker-rpg-memory-edge-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.luker-rpg-memory-edge-form-grid label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+@media (max-width: 1000px) {
+    .popup:has(.luker-rpg-memory-graph-popup) {
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    .popup:has(.luker-rpg-memory-graph-popup) .popup-content {
+        padding: 0 2px;
+    }
+    .luker-rpg-schema-popup {
+        width: 100%;
+        max-width: 100%;
+    }
+    .luker-rpg-memory-graph-popup {
+        width: 100%;
+        max-width: 100%;
+    }
+    .luker-rpg-memory-graph-search-head {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .luker-rpg-schema-popup .luker-schema-topbar {
+        flex-direction: column;
+    }
+    .luker-rpg-schema-popup .luker-schema-grid-2 {
+        grid-template-columns: 1fr;
+    }
+    .luker-rpg-schema-popup .luker-schema-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .luker-rpg-schema-popup .luker-schema-footer-actions {
+        justify-content: flex-start;
+    }
+    .luker-rpg-memory-advanced-actions {
+        justify-content: flex-start;
+    }
+    .luker-rpg-memory-advanced-footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    /* Graph workspace: single column on mobile */
+    .luker-rpg-memory-graph-workspace {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .luker-rpg-memory-graph-cy {
+        height: min(55vh, 420px);
+    }
+    /* Inspector: bottom panel on mobile */
+    .luker-rpg-memory-graph-sidepanel {
+        max-height: 40vh;
+        border-top: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    }
+    .luker-rpg-memory-graph-sidepanel.is-collapsed {
+        max-height: 38px;
+        overflow: hidden;
+    }
+    .luker-graph-inspector-toggle {
+        display: inline-flex;
+    }
+    /* Show mobile card lists, hide desktop tables */
+    .luker-graph-desktop-only { display: none !important; }
+    .luker-graph-mobile-only { display: flex !important; }
+    .luker-graph-tab-panel {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+    .luker-graph-card-list {
+        padding: 0;
+    }
+    .luker-graph-card {
+        padding: 10px 8px;
+    }
+    .luker-graph-card-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 6px;
+    }
+    .luker-graph-card-type {
+        justify-self: start;
+        max-width: 100%;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        overflow-wrap: anywhere;
+    }
+    /* Header: stack title and stats */
+    .luker-graph-header-left {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+    /* Search actions: compact */
+    .luker-rpg-memory-graph-search-actions {
+        gap: 4px;
+    }
+    .luker-rpg-memory-graph-search-results {
+        grid-template-columns: 1fr;
+    }
+    /* Node form grid: 2 columns on mobile */
+    .luker-rpg-memory-node-form-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 480px) {
+    /* Tab labels: icon only on very small screens */
+    .luker-graph-tab span {
+        display: none;
+    }
+    .luker-graph-tab {
+        gap: 0;
+        padding: 10px 6px;
+    }
+    .luker-graph-stat {
+        font-size: 0.75em;
+        padding: 2px 7px;
+    }
+}
+</style>`);
+}
+
+function renderPrimaryKeyOptions(columns = [], selected = []) {
+    const cols = Array.isArray(columns) ? columns.map(column => String(column || '').trim()).filter(Boolean) : [];
+    const selectedSet = new Set(Array.isArray(selected) ? selected.map(column => String(column || '').trim()).filter(Boolean) : []);
+    if (cols.length === 0) {
+        return `<small style="opacity:0.8">${escapeHtml(i18n('(empty)'))}</small>`;
+    }
+    return cols.map((column) => `
+        <label class="checkbox_label">
+            <input type="checkbox" data-field="primaryKeyColumns" value="${escapeHtml(column)}" ${selectedSet.has(column) ? 'checked' : ''} />
+            ${escapeHtml(column)}
+        </label>
+    `).join('');
+}
+
+function refreshPrimaryKeyOptionsForCard(card) {
+    const root = jQuery(card);
+    if (!root.length) {
+        return;
+    }
+    const columns = splitCommaList(root.find('[data-field="tableColumns"]').val());
+    const checked = root.find('[data-field="primaryKeyColumns"]:checked')
+        .map((_, el) => String(jQuery(el).val() || '').trim())
+        .get()
+        .filter(Boolean);
+    const validChecked = checked.filter(column => columns.includes(column));
+    root.find('.luker-schema-primary-key-options').html(renderPrimaryKeyOptions(columns, validChecked));
+}
+
+function renderNodeTypeSchemaCard(spec, index) {
+        const mode = String(spec?.compression?.mode || 'none');
+    const threshold = Number(spec?.compression?.threshold || 6);
+    const fanIn = Number(spec?.compression?.fanIn || 3);
+    const maxDepth = Number(spec?.compression?.maxDepth || 6);
+    const keepRecentLeaves = Number(spec?.compression?.keepRecentLeaves || 0);
+    const compressionRule = String(spec?.compression?.rule || '');
+    const summarizeInstruction = String(spec?.compression?.summarizeInstruction || '');
+    const latestOnly = Boolean(spec?.latestOnly);
+    const primaryKeyColumns = Array.isArray(spec?.primaryKeyColumns)
+        ? spec.primaryKeyColumns.map(column => String(column || '').trim()).filter(Boolean)
+        : [];
+    const cardTitle = String(spec?.label || `Type ${index + 1}`).trim();
+    const tableName = String(spec?.tableName || spec?.id || '').trim();
+    const cardClass = `mode-${mode}${spec.alwaysInject ? ' is-always' : ''}${spec.forceUpdate ? ' is-force' : ''}`;
+    return `
+<div class="luker-schema-card ${cardClass}" data-index="${index}">
+    <div class="luker-schema-card-header">
+        <div>
+            <div class="luker-schema-card-title">${escapeHtml(cardTitle)}</div>
+            <div class="luker-schema-card-sub">${escapeHtml(i18nFormat('table: ${0}', tableName || i18n('(unset)')))}</div>
+        </div>
+        <div class="luker-schema-badges">
+            <span class="luker-schema-badge">${escapeHtml(i18nFormat('mode: ${0}', mode))}</span>
+            ${spec.editable ? `<span class="luker-schema-badge">${escapeHtml(i18n('Editable'))}</span>` : `<span class="luker-schema-badge">${escapeHtml(i18n('Create-only'))}</span>`}
+            ${spec.alwaysInject ? `<span class="luker-schema-badge">${escapeHtml(i18n('always inject'))}</span>` : ''}
+            ${spec.latestOnly ? `<span class="luker-schema-badge">${escapeHtml(i18n('Latest Only Upsert'))}</span>` : ''}
+            ${spec.forceUpdate ? `<span class="luker-schema-badge">${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}</span>` : ''}
+        </div>
+    </div>
+    <div class="luker-schema-grid-2">
+        <label>${escapeHtml(i18n('Type ID'))}
+            <input data-field="id" class="text_pole" type="text" value="${escapeHtml(spec.id)}" />
+        </label>
+        <label>${escapeHtml(i18n('Label'))}
+            <input data-field="label" class="text_pole" type="text" value="${escapeHtml(spec.label)}" />
+        </label>
+    </div>
+    <div class="luker-schema-grid-2">
+        <label>${escapeHtml(i18n('Table Name'))}
+            <input data-field="tableName" class="text_pole" type="text" value="${escapeHtml(spec.tableName || spec.id)}" />
+        </label>
+        <label class="checkbox_label luker-schema-checkbox"><input data-field="alwaysInject" type="checkbox" ${spec.alwaysInject ? 'checked' : ''} />${escapeHtml(i18n('Always Inject'))}
+        </label>
+    </div>
+    <label class="checkbox_label luker-schema-checkbox"><input data-field="forceUpdate" type="checkbox" ${spec.forceUpdate ? 'checked' : ''} />${escapeHtml(i18n('Force Update (must appear each extraction batch)'))}
+    </label>
+    <label class="checkbox_label luker-schema-checkbox"><input data-field="editable" type="checkbox" ${spec.editable ? 'checked' : ''} />${escapeHtml(i18n('Editable (enable edit/delete tools and graph edit context)'))}
+    </label>
+    <div class="luker-schema-grid-2">
+        <label class="checkbox_label luker-schema-checkbox"><input data-field="latestOnly" type="checkbox" ${latestOnly ? 'checked' : ''} />${escapeHtml(i18n('Latest Only Upsert'))}
+        </label>
+        <div class="luker-schema-latestonly-keys" style="${latestOnly ? '' : 'display:none;'}">
+            <label>${escapeHtml(i18n('Primary Key Columns'))}</label>
+            <div class="luker-schema-primary-key-options">${renderPrimaryKeyOptions(spec.tableColumns, primaryKeyColumns)}</div>
+        </div>
+    </div>
+    <label>${escapeHtml(i18n('Table Columns (comma separated)'))}
+        <input data-field="tableColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.tableColumns))}" />
+    </label>
+    <label>${escapeHtml(i18n('Required Columns (comma separated)'))}
+        <input data-field="requiredColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.requiredColumns))}" />
+    </label>
+    <label>${escapeHtml(i18n('Column Hints (one per line: column=meaning)'))}
+        <textarea data-field="columnHints" class="text_pole textarea_compact" rows="3">${escapeHtml(joinKeyValueLines(spec.columnHints))}</textarea>
+    </label>
+    <label>${escapeHtml(i18n('Keywords (comma separated)'))}
+        <input data-field="keywords" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.keywords))}" />
+    </label>
+    <label>${escapeHtml(i18n('Extract Hint'))}
+        <textarea data-field="extractHint" class="text_pole textarea_compact" rows="2">${escapeHtml(spec.extractHint || '')}</textarea>
+    </label>
+    <label class="checkbox_label luker-schema-checkbox"><input data-field="compression.enabled" type="checkbox" ${mode === 'hierarchical' ? 'checked' : ''} />${escapeHtml(i18n('Enable Hierarchical Compression'))}
+    </label>
+    <div class="luker-schema-grid-2 luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">
+        <label>${escapeHtml(i18n('Threshold'))}
+            <input data-field="compression.threshold" class="text_pole" type="number" min="2" step="1" value="${threshold}" />
+        </label>
+        <label>${escapeHtml(i18n('Fan-In'))}
+            <input data-field="compression.fanIn" class="text_pole" type="number" min="2" step="1" value="${fanIn}" />
+        </label>
+    </div>
+    <div class="luker-schema-grid-2 luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">
+        <label>${escapeHtml(i18n('Max Depth'))}
+            <input data-field="compression.maxDepth" class="text_pole" type="number" min="1" step="1" value="${maxDepth}" />
+        </label>
+        <label>${escapeHtml(i18n('Keep Recent Leaves'))}
+            <input data-field="compression.keepRecentLeaves" class="text_pole" type="number" min="0" step="1" value="${keepRecentLeaves}" />
+        </label>
+    </div>
+    <label class="luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">${escapeHtml(i18n('Compression Rule (optional)'))}
+        <textarea data-field="compression.rule" class="text_pole textarea_compact" rows="2" placeholder="${escapeHtml(i18n('Filter nodes eligible for compression. One condition per line or use &&. Examples: status in resolved,dropped ; semantic_rollup=false'))}">${escapeHtml(compressionRule)}</textarea>
+    </label>
+    <label class="luker-schema-compression-hier" style="${mode === 'hierarchical' ? '' : 'display:none;'}">${escapeHtml(i18n('Summarize Instruction'))}
+        <textarea data-field="compression.summarizeInstruction" class="text_pole textarea_compact" rows="2">${escapeHtml(summarizeInstruction)}</textarea>
+    </label>
+    <div class="luker-schema-actions">
+        <div class="menu_button luker-schema-action" data-action="duplicate">${escapeHtml(i18n('Duplicate Type'))}</div>
+        <div class="menu_button luker-schema-action" data-action="remove">${escapeHtml(i18n('Remove Type'))}</div>
+    </div>
+</div>`;
+}
+
+function updateSchemaCardModeUi(card) {
+    const root = jQuery(card);
+    const enabled = Boolean(root.find('[data-field="compression.enabled"]').prop('checked'));
+    const latestOnlyEnabled = Boolean(root.find('[data-field="latestOnly"]').prop('checked'));
+    root.find('.luker-schema-compression-hier').toggle(enabled);
+    root.find('.luker-schema-latestonly-keys').toggle(latestOnlyEnabled);
+}
+
+function readSchemaCard(card) {
+    const root = jQuery(card);
+    return {
+        id: String(root.find('[data-field="id"]').val() || '').trim(),
+        label: String(root.find('[data-field="label"]').val() || '').trim(),
+        tableName: String(root.find('[data-field="tableName"]').val() || '').trim(),
+        tableColumns: splitCommaList(root.find('[data-field="tableColumns"]').val()),
+        requiredColumns: splitCommaList(root.find('[data-field="requiredColumns"]').val()),
+        columnHints: parseKeyValueLines(root.find('[data-field="columnHints"]').val()),
+        level: LEVEL.SEMANTIC,
+        extractHint: String(root.find('[data-field="extractHint"]').val() || '').trim(),
+        keywords: splitCommaList(root.find('[data-field="keywords"]').val()),
+        forceUpdate: Boolean(root.find('[data-field="forceUpdate"]').prop('checked')),
+        editable: Boolean(root.find('[data-field="editable"]').prop('checked')),
+        alwaysInject: Boolean(root.find('[data-field="alwaysInject"]').prop('checked')),
+        latestOnly: Boolean(root.find('[data-field="latestOnly"]').prop('checked')),
+        primaryKeyColumns: root.find('[data-field="primaryKeyColumns"]:checked')
+            .map((_, el) => String(jQuery(el).val() || '').trim())
+            .get()
+            .filter(Boolean),
+        compression: {
+            mode: Boolean(root.find('[data-field="compression.enabled"]').prop('checked')) ? 'hierarchical' : 'none',
+            threshold: Math.max(2, Number(root.find('[data-field="compression.threshold"]').val()) || 6),
+            fanIn: Math.max(2, Number(root.find('[data-field="compression.fanIn"]').val()) || 3),
+            maxDepth: Math.max(1, Number(root.find('[data-field="compression.maxDepth"]').val()) || 6),
+            keepRecentLeaves: Math.max(0, Number(root.find('[data-field="compression.keepRecentLeaves"]').val()) || 0),
+            rule: String(root.find('[data-field="compression.rule"]').val() || '').trim(),
+            summarizeInstruction: String(root.find('[data-field="compression.summarizeInstruction"]').val() || '').trim(),
+        },
+    };
+}
+
+function readNodeTypeSchemaEditor(root, listSelector = '#luker_rpg_memory_schema_editor_list') {
+    const cards = root.find(`${listSelector} .luker-schema-card`);
+    const raw = [];
+    cards.each((_, card) => raw.push(readSchemaCard(card)));
+    return normalizeNodeTypeSchema(raw);
+}
+
+function renderNodeTypeSchemaEditor(root, schema, listSelector = '#luker_rpg_memory_schema_editor_list') {
+    const list = root.find(listSelector);
+    if (!list.length) {
+        return;
+    }
+    const normalized = normalizeNodeTypeSchema(schema);
+    list.html(normalized.map((spec, index) => renderNodeTypeSchemaCard(spec, index)).join(''));
+    list.find('.luker-schema-card').each((_, card) => updateSchemaCardModeUi(card));
+    list.off('change.lukerSchemaMode input.lukerSchemaMode');
+    list.on('change.lukerSchemaMode', '[data-field="compression.enabled"],[data-field="latestOnly"]', function () {
+        updateSchemaCardModeUi(jQuery(this).closest('.luker-schema-card'));
+        refreshPrimaryKeyOptionsForCard(jQuery(this).closest('.luker-schema-card'));
+    });
+    list.on('input.lukerSchemaMode change.lukerSchemaMode', '[data-field="tableColumns"]', function () {
+        refreshPrimaryKeyOptionsForCard(jQuery(this).closest('.luker-schema-card'));
+    });
+}
+
+function updateSchemaSummary(root, schema) {
+    const normalized = normalizeNodeTypeSchema(schema);
+    const total = normalized.length;
+    const alwaysInject = normalized.filter(item => item.alwaysInject).length;
+    const forceUpdate = normalized.filter(item => item.forceUpdate).length;
+    const editable = normalized.filter(item => item.editable).length;
+    const hierarchical = normalized.filter(item => String(item?.compression?.mode || '') === 'hierarchical').length;
+    root.find('#luker_rpg_memory_schema_summary').text(i18nFormat(
+        'Types: ${0} | Editable: ${1} | Always Inject: ${2} | Force Update: ${3} | Hierarchical: ${4}',
+        total,
+        editable,
+        alwaysInject,
+        forceUpdate,
+        hierarchical,
+    ));
+}
+
+function updateSchemaScopeIndicator(root, scopeInfo) {
+    const scopeText = scopeInfo?.hasOverride
+        ? i18nFormat('Schema scope: character override (${0})', scopeInfo.characterName || scopeInfo.avatar || i18n('(unset)'))
+        : i18n('Schema scope: global');
+    root.find('#luker_rpg_memory_schema_scope').text(scopeText);
+}
+
+function updateAdvancedScopeIndicator(root, scopeInfo) {
+    const scopeText = scopeInfo?.hasOverride
+        ? i18nFormat('Advanced scope: character override (${0})', scopeInfo.characterName || scopeInfo.avatar || i18n('(unset)'))
+        : i18n('Advanced scope: global');
+    root.find('#luker_rpg_memory_advanced_scope').text(scopeText);
+}
+
+async function persistSchemaToGlobal(settings, schema) {
+    settings.nodeTypeSchema = normalizeNodeTypeSchema(schema);
+    await saveSettings();
+}
+
+async function persistSchemaToCharacter(context, avatar, schema) {
+    const targetAvatar = String(avatar || '').trim();
+    if (!targetAvatar) {
+        return false;
+    }
+    return await persistCharacterSchemaOverride(context, targetAvatar, schema);
+}
+
+async function persistAdvancedToGlobal(settings, advancedSettings) {
+    applyAdvancedSettings(settings, advancedSettings);
+    await saveSettings();
+}
+
+async function persistAdvancedToCharacter(context, avatar, advancedSettings) {
+    const targetAvatar = String(avatar || '').trim();
+    if (!targetAvatar) {
+        return false;
+    }
+    return await persistCharacterAdvancedOverride(context, targetAvatar, advancedSettings);
+}
+
+async function openSchemaEditorPopup(context, settings, root) {
+    ensureStyles();
+    const popupId = `luker_rpg_memory_schema_popup_${Date.now()}`;
+    const scopeInfo = getSchemaScopeInfo(context, settings);
+    const popupHtml = buildSchemaEditorPopupHtml({
+        escapeHtml,
+        i18n,
+        i18nFormat,
+        normalizeNodeTypeSchema,
+        renderNodeTypeSchemaCard,
+    }, popupId, scopeInfo);
+    const namespace = `.lukerSchemaPopup_${popupId}`;
+    const selector = `#${popupId}`;
+    const listSelector = '.luker-schema-editor-list';
+
+    const getPopupRoot = () => jQuery(selector);
+    const readCurrentSchema = () => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return null;
+        }
+        return readNodeTypeSchemaEditor(popupRoot, listSelector);
+    };
+    const rerender = (schema) => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        renderNodeTypeSchemaEditor(popupRoot, schema, listSelector);
+    };
+    const setPopupScopeUi = (nextScopeInfo) => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const hasAvatar = Boolean(nextScopeInfo?.hasAvatar);
+        const hasOverride = Boolean(nextScopeInfo?.hasAvatar && nextScopeInfo?.hasOverride);
+        const scopeText = nextScopeInfo?.hasOverride
+            ? i18nFormat('Schema scope: character override (${0})', nextScopeInfo.characterName || nextScopeInfo.avatar || i18n('(unset)'))
+            : i18n('Schema scope: global');
+        popupRoot.find(`#${popupId}_schema_scope`).text(scopeText);
+        popupRoot.find(`#${popupId}_schema_save_character`)
+            .toggle(hasAvatar)
+            .prop('disabled', !hasAvatar);
+        popupRoot.find(`#${popupId}_schema_clear_character_override`)
+            .toggle(hasAvatar)
+            .prop('disabled', !hasOverride);
+    };
+    const syncRootScopeUi = () => {
+        if (!root?.length) {
+            return;
+        }
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        updateSchemaSummary(root, nextScopeInfo.schema);
+        updateSchemaScopeIndicator(root, nextScopeInfo);
+    };
+    const popupPromise = context.callGenericPopup(
+        popupHtml,
+        context.POPUP_TYPE.TEXT,
+        '',
+        {
+            wide: true,
+            large: true,
+            allowVerticalScrolling: true,
+            onOpen: () => {
+                setPopupScopeUi(getSchemaScopeInfo(context, settings));
+            },
+        },
+    );
+    const popupScopeSyncEvents = [
+        context?.eventTypes?.CHAT_CHANGED,
+        context?.eventTypes?.CHARACTER_REPLACED,
+        context?.eventTypes?.CHARACTER_EDITED,
+    ].filter(Boolean);
+    const handlePopupScopeSync = () => setPopupScopeUi(getSchemaScopeInfo(context, settings));
+    for (const eventName of popupScopeSyncEvents) {
+        context?.eventSource?.on?.(eventName, handlePopupScopeSync);
+    }
+
+    jQuery(document).off(namespace);
+    jQuery(document).on(`change${namespace}`, `${selector} [data-field="compression.enabled"], ${selector} [data-field="latestOnly"]`, function () {
+        const card = jQuery(this).closest('.luker-schema-card');
+        updateSchemaCardModeUi(card);
+        refreshPrimaryKeyOptionsForCard(card);
+    });
+    jQuery(document).on(`input${namespace} change${namespace}`, `${selector} [data-field="tableColumns"]`, function () {
+        const card = jQuery(this).closest('.luker-schema-card');
+        refreshPrimaryKeyOptionsForCard(card);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-add`, function () {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const current = readNodeTypeSchemaEditor(popupRoot, listSelector);
+        current.push(getSchemaTypeTemplate(current.length + 1));
+        rerender(current);
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-editor-reset`, function () {
+        if (!window.confirm(i18n('Reset schema editor content to default? This will overwrite current unsaved schema edits.'))) {
+            return;
+        }
+        rerender(normalizeNodeTypeSchema(structuredClone(defaultNodeTypeSchema)));
+        notifySuccess(i18n('Schema reset to default in editor.'));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} .luker-schema-action`, function () {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const card = jQuery(this).closest('.luker-schema-card');
+        const index = Number(card.data('index'));
+        const action = String(jQuery(this).data('action') || '');
+        const current = readNodeTypeSchemaEditor(popupRoot, listSelector);
+        if (!Number.isInteger(index) || index < 0 || index >= current.length) {
+            return;
+        }
+
+        if (action === 'duplicate') {
+            const clone = structuredClone(current[index]);
+            clone.id = `${clone.id || 'custom'}_copy_${Date.now()}`;
+            clone.label = `${clone.label || 'Custom'} Copy`;
+            current.splice(index + 1, 0, clone);
+            rerender(current);
+            return;
+        }
+
+        if (action === 'remove') {
+            current.splice(index, 1);
+            if (current.length === 0) {
+                current.push(getSchemaTypeTemplate(1));
+            }
+            rerender(current);
+        }
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_schema_save_global`, async function () {
+        const nextSchema = readCurrentSchema();
+        if (!Array.isArray(nextSchema) || nextSchema.length === 0) {
+            notifyError(i18n('Failed to read schema from editor.'));
+            return;
+        }
+        await persistSchemaToGlobal(settings, nextSchema);
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        setPopupScopeUi(nextScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18n('Schema saved to global settings.'));
+        updateUiStatus(i18n('Schema saved to global settings.'));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_schema_save_character`, async function () {
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        if (!nextScopeInfo.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const nextSchema = readCurrentSchema();
+        if (!Array.isArray(nextSchema) || nextSchema.length === 0) {
+            notifyError(i18n('Failed to read schema from editor.'));
+            return;
+        }
+        const ok = await persistSchemaToCharacter(context, nextScopeInfo.avatar, nextSchema);
+        if (!ok) {
+            notifyError(i18n('Failed to persist character schema override.'));
+            return;
+        }
+        const refreshedScopeInfo = getSchemaScopeInfo(context, settings);
+        setPopupScopeUi(refreshedScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18nFormat('Schema saved to character override: ${0}.', refreshedScopeInfo.characterName || nextScopeInfo.characterName || nextScopeInfo.avatar));
+        updateUiStatus(i18nFormat('Schema saved to character override: ${0}.', refreshedScopeInfo.characterName || nextScopeInfo.characterName || nextScopeInfo.avatar));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_schema_clear_character_override`, async function () {
+        const nextScopeInfo = getSchemaScopeInfo(context, settings);
+        if (!nextScopeInfo.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await removeCharacterSchemaOverride(context, nextScopeInfo.avatar);
+        if (!ok) {
+            notifyError(i18n('Failed to clear character schema override.'));
+            return;
+        }
+        const refreshedScopeInfo = getSchemaScopeInfo(context, settings);
+        rerender(refreshedScopeInfo.schema);
+        setPopupScopeUi(refreshedScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18nFormat('Cleared character schema override: ${0}.', nextScopeInfo.characterName || nextScopeInfo.avatar));
+        updateUiStatus(i18nFormat('Cleared character schema override: ${0}.', nextScopeInfo.characterName || nextScopeInfo.avatar));
+    });
+
+    try {
+        await popupPromise;
+    } finally {
+        jQuery(document).off(namespace);
+        for (const eventName of popupScopeSyncEvents) {
+            context?.eventSource?.removeListener?.(eventName, handlePopupScopeSync);
+        }
+        bindUi();
+    }
+}
+
+async function openAdvancedSettingsPopup(context, settings, root) {
+    const popupId = `luker_rpg_memory_advanced_popup_${Date.now()}`;
+    const currentScopeInfo = getAdvancedScopeInfo(context, settings);
+    const html = buildAdvancedSettingsPopupHtml({
+        DEFAULT_EXTRACT_SYSTEM_PROMPT,
+        DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT,
+        DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT,
+        defaultSettings,
+        escapeHtml,
+        i18n,
+        i18nFormat,
+        normalizeExtractExcludeRecentTurns,
+    }, popupId, currentScopeInfo);
+    const namespace = `.lukerAdvancedPopup_${popupId}`;
+    const selector = `#${popupId}`;
+    const getPopupRoot = () => jQuery(selector);
+    const getSaveGlobalButton = () => jQuery(`#${popupId}_advanced_save_global`);
+    const getSaveCharacterButton = () => jQuery(`#${popupId}_advanced_save_character`);
+    const getClearCharacterOverrideButton = () => jQuery(`#${popupId}_advanced_clear_character_override`);
+    const applyValuesToPopup = (popupRoot, source) => {
+        if (!popupRoot?.length) {
+            return;
+        }
+        popupRoot.find(`#${popupId}_recent_raw_turns`).val(String(Math.max(0, Number(source.recentRawTurns ?? defaultSettings.recentRawTurns))));
+        popupRoot.find(`#${popupId}_recall_iterations`).val(String(Math.max(2, Math.min(6, Number(source.recallMaxIterations ?? defaultSettings.recallMaxIterations)))));
+        popupRoot.find(`#${popupId}_tool_retries`).val(String(Math.max(0, Math.min(10, Number(source.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))));
+        popupRoot.find(`#${popupId}_extract_context_turns`).val(String(Math.max(1, Math.min(32, Number(source.extractContextTurns ?? defaultSettings.extractContextTurns)))));
+        popupRoot.find(`#${popupId}_extract_exclude_recent_turns`).val(String(normalizeExtractExcludeRecentTurns(source.extractExcludeRecentTurns ?? defaultSettings.extractExcludeRecentTurns)));
+        popupRoot.find(`#${popupId}_recall_query_messages`).val(String(Math.max(1, Math.min(64, Number(source.recallQueryMessages ?? defaultSettings.recallQueryMessages)))));
+        popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val(String(Math.max(0, Math.min(200, Number(source.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))));
+        popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(1, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
+        popupRoot.find(`#${popupId}_extract_system_prompt`).val(String(source.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT));
+        popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
+        popupRoot.find(`#${popupId}_recall_finalize_prompt`).val(String(source.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT));
+    };
+    const setPopupScopeUi = (nextScopeInfo) => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return;
+        }
+        const hasAvatar = Boolean(nextScopeInfo?.hasAvatar);
+        const hasOverride = Boolean(nextScopeInfo?.hasAvatar && nextScopeInfo?.hasOverride);
+        const scopeText = nextScopeInfo?.hasOverride
+            ? i18nFormat('Advanced scope: character override (${0})', nextScopeInfo.characterName || nextScopeInfo.avatar || i18n('(unset)'))
+            : i18n('Advanced scope: global');
+        popupRoot.find(`#${popupId}_advanced_scope`).text(scopeText);
+        getSaveCharacterButton()
+            .toggle(hasAvatar)
+            .prop('disabled', !hasAvatar);
+        getClearCharacterOverrideButton()
+            .toggle(hasAvatar)
+            .prop('disabled', !hasOverride);
+    };
+    const syncRootScopeUi = () => {
+        if (!root?.length) {
+            return;
+        }
+        const schemaScopeInfo = getSchemaScopeInfo(context, settings);
+        const advancedScopeInfo = getAdvancedScopeInfo(context, settings);
+        updateSchemaSummary(root, schemaScopeInfo.schema);
+        updateSchemaScopeIndicator(root, schemaScopeInfo);
+        updateAdvancedScopeIndicator(root, advancedScopeInfo);
+        root.find('#luker_rpg_memory_advanced_save_character').prop('disabled', !advancedScopeInfo.hasAvatar);
+        root.find('#luker_rpg_memory_advanced_clear_character_override').prop('disabled', !(advancedScopeInfo.hasAvatar && advancedScopeInfo.hasOverride));
+    };
+    const readAdvancedValues = () => {
+        const popupRoot = getPopupRoot();
+        if (!popupRoot.length) {
+            return null;
+        }
+        return {
+            recentRawTurnsValue: Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val()),
+            recallIterationsValue: Number(popupRoot.find(`#${popupId}_recall_iterations`).val()),
+            toolRetriesValue: Number(popupRoot.find(`#${popupId}_tool_retries`).val()),
+            extractContextTurnsValue: Number(popupRoot.find(`#${popupId}_extract_context_turns`).val()),
+            extractExcludeRecentTurnsValue: Number(popupRoot.find(`#${popupId}_extract_exclude_recent_turns`).val()),
+            recallQueryMessagesValue: Number(popupRoot.find(`#${popupId}_recall_query_messages`).val()),
+            llmVisibleRecentMessagesValue: Number(popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val()),
+            extractBatchTurnsValue: Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val()),
+            extractSystemPromptValue: String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim(),
+            recallRoutePromptValue: String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim(),
+            recallFinalizePromptValue: String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim(),
+        };
+    };
+    const buildAdvancedSettingsFromValues = (values, fallbackSettings) => normalizeAdvancedSettings({
+        recentRawTurns: values.recentRawTurnsValue,
+        recallMaxIterations: values.recallIterationsValue,
+        toolCallRetryMax: values.toolRetriesValue,
+        extractContextTurns: values.extractContextTurnsValue,
+        extractExcludeRecentTurns: values.extractExcludeRecentTurnsValue,
+        recallQueryMessages: values.recallQueryMessagesValue,
+        llmVisibleRecentMessages: values.llmVisibleRecentMessagesValue,
+        extractBatchTurns: values.extractBatchTurnsValue,
+        extractSystemPrompt: values.extractSystemPromptValue,
+        recallRouteSystemPrompt: values.recallRoutePromptValue,
+        recallFinalizeSystemPrompt: values.recallFinalizePromptValue,
+    }, fallbackSettings);
+
+    const popupPromise = context.callGenericPopup(
+        html,
+        context.POPUP_TYPE.TEXT,
+        '',
+        {
+            okButton: i18n('Cancel'),
+            cancelButton: false,
+            wide: true,
+            large: false,
+            allowVerticalScrolling: true,
+            onOpen: (popup) => {
+                const controls = popup?.buttonControls instanceof HTMLElement ? popup.buttonControls : null;
+                if (controls) {
+                    const okButton = popup?.okButton instanceof HTMLElement ? popup.okButton : null;
+                    const saveGlobalButton = getSaveGlobalButton().get(0);
+                    const saveCharacterButton = getSaveCharacterButton().get(0);
+                    for (const button of [saveGlobalButton, saveCharacterButton]) {
+                        if (!(button instanceof HTMLElement)) {
+                            continue;
+                        }
+                        button.classList.add('popup-button-custom');
+                        controls.insertBefore(button, okButton);
+                    }
+                }
+                setPopupScopeUi(getAdvancedScopeInfo(context, settings));
+            },
+        },
+    );
+    const popupScopeSyncEvents = [
+        context?.eventTypes?.CHAT_CHANGED,
+        context?.eventTypes?.CHARACTER_REPLACED,
+        context?.eventTypes?.CHARACTER_EDITED,
+    ].filter(Boolean);
+    const handlePopupScopeSync = () => setPopupScopeUi(getAdvancedScopeInfo(context, settings));
+    for (const eventName of popupScopeSyncEvents) {
+        context?.eventSource?.on?.(eventName, handlePopupScopeSync);
+    }
+
+    jQuery(document).off(namespace);
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_reset_advanced`, function () {
+        if (!window.confirm(i18n('Reset advanced settings editor to default? This will overwrite current unsaved advanced edits.'))) {
+            return;
+        }
+        applyValuesToPopup(getPopupRoot(), defaultSettings);
+        notifySuccess(i18n('Advanced settings reset to defaults in editor.'));
+    });
+    jQuery(document).on(`click${namespace}`, `#${popupId}_advanced_save_global`, async function () {
+        const values = readAdvancedValues();
+        if (!values) {
+            notifyError(i18n('Failed to read advanced settings.'));
+            return;
+        }
+        const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, getAdvancedScopeInfo(context, settings).settings);
+        await persistAdvancedToGlobal(settings, nextAdvancedSettings);
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        setPopupScopeUi(nextScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18n('Advanced settings saved to global settings.'));
+        updateUiStatus(i18n('Advanced settings saved to global settings.'));
+    });
+    jQuery(document).on(`click${namespace}`, `#${popupId}_advanced_save_character`, async function () {
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        if (!nextScopeInfo.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const values = readAdvancedValues();
+        if (!values) {
+            notifyError(i18n('Failed to read advanced settings.'));
+            return;
+        }
+        const nextAdvancedSettings = buildAdvancedSettingsFromValues(values, nextScopeInfo.settings);
+        const ok = await persistAdvancedToCharacter(context, nextScopeInfo.avatar, nextAdvancedSettings);
+        if (!ok) {
+            notifyError(i18n('Failed to persist character advanced override.'));
+            return;
+        }
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
+        const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
+        setPopupScopeUi(refreshedScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18nFormat('Advanced settings saved to character override: ${0}.', refreshedScopeInfo.characterName || nextScopeInfo.characterName || nextScopeInfo.avatar));
+        updateUiStatus(i18nFormat('Advanced settings saved to character override: ${0}.', refreshedScopeInfo.characterName || nextScopeInfo.characterName || nextScopeInfo.avatar));
+    });
+    jQuery(document).on(`click${namespace}`, `${selector} #${popupId}_advanced_clear_character_override`, async function () {
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        if (!nextScopeInfo.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await removeCharacterAdvancedOverride(context, nextScopeInfo.avatar);
+        if (!ok) {
+            notifyError(i18n('Failed to clear character advanced override.'));
+            return;
+        }
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
+        const refreshedScopeInfo = getAdvancedScopeInfo(context, settings);
+        applyValuesToPopup(getPopupRoot(), refreshedScopeInfo.settings);
+        setPopupScopeUi(refreshedScopeInfo);
+        syncRootScopeUi();
+        notifySuccess(i18nFormat('Cleared character advanced override: ${0}.', nextScopeInfo.characterName || nextScopeInfo.avatar));
+        updateUiStatus(i18nFormat('Cleared character advanced override: ${0}.', nextScopeInfo.characterName || nextScopeInfo.avatar));
+    });
+
+    try {
+        await popupPromise;
+    } finally {
+        jQuery(document).off(namespace);
+        for (const eventName of popupScopeSyncEvents) {
+            context?.eventSource?.removeListener?.(eventName, handlePopupScopeSync);
+        }
+        bindUi();
+    }
+}
+
+function getCompressibleTypeSpecs(settings, context = null) {
+    const schema = getEffectiveNodeTypeSchema(context, settings);
+    const specs = [];
+    for (const item of schema) {
+        const typeId = String(item?.id || '').trim().toLowerCase();
+        if (!typeId) {
+            continue;
+        }
+        const config = getSemanticCompressionConfig(settings, typeId, context);
+        if (config.mode === 'none') {
+            continue;
+        }
+        specs.push({
+            id: typeId,
+            label: String(item?.label || typeId),
+            mode: config.mode,
+        });
+    }
+    return specs;
+}
+
+async function openManualCompressionPopup(context, settings) {
+    const compressibleTypes = getCompressibleTypeSpecs(settings, context);
+    if (compressibleTypes.length === 0) {
+        notifyError(i18n('No compressible types in current schema.'));
+        return;
+    }
+    await ensureMemoryStoreLoaded(context);
+    const store = getMemoryStore(context);
+    if (!store) {
+        notifyError(i18n('No active chat selected.'));
+        return;
+    }
+
+    const popupId = `luker_rpg_memory_manual_compress_${Date.now()}`;
+    const html = buildManualCompressionPopupHtml({
+        escapeHtml,
+        i18n,
+    }, popupId, settings, compressibleTypes);
+    const readValues = () => {
+        const popupRoot = jQuery(`#${popupId}`);
+        if (!popupRoot.length) {
+            return null;
+        }
+        const selectedTypeIds = popupRoot
+            .find('input[data-field="type"]:checked')
+            .map((_, el) => String(jQuery(el).val() || '').trim().toLowerCase())
+            .get()
+            .filter(Boolean);
+        return {
+            scope: String(popupRoot.find(`#${popupId}_scope`).val() || 'all').trim(),
+            mode: String(popupRoot.find(`#${popupId}_mode`).val() || 'schema').trim(),
+            excludeRecent: Math.max(0, Math.floor(Number(popupRoot.find(`#${popupId}_exclude_recent`).val()) || 0)),
+            maxRoundsPerType: Math.max(1, Math.floor(Number(popupRoot.find(`#${popupId}_max_rounds`).val()) || 1)),
+            selectedTypeIds,
+        };
+    };
+
+    let captured = null;
+    const result = await context.callGenericPopup(
+        html,
+        context.POPUP_TYPE.CONFIRM,
+        '',
+        {
+            okButton: i18n('Apply Manual Compression'),
+            cancelButton: i18n('Cancel'),
+            wide: true,
+            large: false,
+            allowVerticalScrolling: true,
+            onClosing: () => {
+                captured = readValues();
+                return true;
+            },
+        },
+    );
+    if (result !== context.POPUP_RESULT.AFFIRMATIVE) {
+        return;
+    }
+    const values = captured || readValues();
+    if (!values) {
+        notifyError(i18n('Failed to read advanced settings.'));
+        return;
+    }
+    if (!Array.isArray(values.selectedTypeIds) || values.selectedTypeIds.length === 0) {
+        notifyError(i18n('Select at least one type to compress.'));
+        return;
+    }
+
+    let maxSeq = null;
+    if (values.scope === 'older') {
+        const latestSeq = Math.max(0, Number(buildPlayableFramesFromContext(context).length || 0));
+        maxSeq = Math.max(0, latestSeq - Math.max(0, values.excludeRecent));
+        if (maxSeq <= 0) {
+            notifyError(i18n('No nodes are eligible for the selected scope.'));
+            return;
+        }
+    }
+
+    const beforeNodes = Object.values(store.nodes || {});
+    const beforeNodeCount = beforeNodes.length;
+    const beforeArchivedCount = beforeNodes.filter(node => Boolean(node?.archived)).length;
+    const beforeStore = normalizeStoreForRuntime(store);
+    const compressionStats = createCompressionStats();
+    const compressionAbortController = new AbortController();
+    activeExtractionAbortController = compressionAbortController;
+    showRuntimeInfoToast(i18n('Memory graph update running...'), {
+        stopLabel: i18n('Stop'),
+        onStop: () => {
+            if (!compressionAbortController.signal.aborted) {
+                compressionAbortController.abort();
+            }
+        },
+    });
+    try {
+        const changed = await runCompressionLoop(context, store, settings, {
+            typeIds: values.selectedTypeIds,
+            force: values.mode === 'force',
+            maxRoundsPerType: values.maxRoundsPerType,
+            maxSeq,
+            compressionStats,
+            abortSignal: compressionAbortController.signal,
+            onRoundApplied: async ({ beforeStore, roundSeqTo }) => {
+                await commitMemoryStoreDiffByChatKey(
+                    context,
+                    getChatKey(context),
+                    beforeStore,
+                    store,
+                    roundSeqTo,
+                    { syncPersistentProjection: true },
+                );
+            },
+        });
+        if (!changed) {
+            notifySuccess(i18n('Manual compression made no changes.'));
+            return;
+        }
+        const afterNodes = Object.values(store.nodes || {});
+        const afterNodeCount = afterNodes.length;
+        const afterArchivedCount = afterNodes.filter(node => Boolean(node?.archived)).length;
+        const createdDelta = Math.max(0, afterNodeCount - beforeNodeCount);
+        const archivedDelta = Math.max(0, afterArchivedCount - beforeArchivedCount);
+        refreshUiStats();
+        const summary = i18nFormat('Manual compression completed. Created=${0}, archived=${1}', createdDelta, archivedDelta);
+        notifySuccess(summary);
+        notifyEventCompressionIfAny(compressionStats);
+        updateUiStatus(summary);
+    } catch (error) {
+        if (isAbortError(error, compressionAbortController.signal)) {
+            updateUiStatus(i18n('Memory graph update cancelled by user.'));
+            return;
+        }
+        console.warn(`[${MODULE_NAME}] Manual compression failed`, error);
+        notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'compress', String(error?.message || error)));
+    } finally {
+        if (activeExtractionAbortController === compressionAbortController) {
+            activeExtractionAbortController = null;
+        }
+        clearRuntimeInfoToast();
+    }
+}
+
+function bindUi() {
+    const context = getContext();
+    const settings = getSettings();
+    const root = jQuery(`#${UI_BLOCK_ID}`);
+
+    if (!root.length) {
+        return;
+    }
+
+    root.find('#luker_rpg_memory_enabled').prop('checked', Boolean(settings.enabled));
+    root.find('#luker_rpg_memory_recall_enabled').prop('checked', Boolean(settings.recallEnabled));
+    root.find('#luker_rpg_memory_recall_inject_position').val(String(normalizeRecallInjectPosition(settings.recallInjectPosition)));
+    root.find('#luker_rpg_memory_recall_inject_depth').val(String(normalizeRecallInjectDepth(settings.recallInjectDepth)));
+    root.find('#luker_rpg_memory_recall_inject_role').val(String(normalizeRecallInjectRole(settings.recallInjectRole)));
+    root.find('#luker_rpg_memory_recall_api_preset').val(String(settings.recallApiPresetName || ''));
+    root.find('#luker_rpg_memory_recall_preset').val(String(settings.recallPresetName || ''));
+    root.find('#luker_rpg_memory_extract_api_preset').val(String(settings.extractApiPresetName || ''));
+    root.find('#luker_rpg_memory_extract_preset').val(String(settings.extractPresetName || ''));
+    root.find('#luker_rpg_memory_include_world_info').prop('checked', Boolean(settings.includeWorldInfoWithPreset));
+    root.find('#luker_rpg_memory_update_every').val(String(settings.updateEvery));
+    const schemaScopeInfo = getSchemaScopeInfo(context, settings);
+    updateSchemaSummary(root, schemaScopeInfo.schema);
+    updateSchemaScopeIndicator(root, schemaScopeInfo);
+    const advancedScopeInfo = getAdvancedScopeInfo(context, settings);
+    updateAdvancedScopeIndicator(root, advancedScopeInfo);
+    root.find('#luker_rpg_memory_advanced_save_character').prop('disabled', !advancedScopeInfo.hasAvatar);
+    root.find('#luker_rpg_memory_advanced_clear_character_override').prop('disabled', !(advancedScopeInfo.hasAvatar && advancedScopeInfo.hasOverride));
+    refreshOpenAIPresetSelectors(root, context, settings);
+
+    ensureMemoryStoreLoaded(context)
+        .then(() => refreshUiStats())
+        .catch(() => refreshUiStats());
+
+    root.find('#luker_rpg_memory_enabled').off('input').on('input', function () {
+        settings.enabled = Boolean(jQuery(this).prop('checked'));
+        syncGenerationVisibleHistoryRuntimeRegexScripts();
+        void syncMemoryLorebookActivation(getContext(), settings);
+        if (settings.enabled) {
+            void syncPersistentProjectionForCurrentChat(getContext());
+        } else {
+            void stopMemoryRuntimeWork();
+            updateUiStatus(i18n('Memory disabled, cleared memory lorebook injections.'));
+        }
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_enabled').off('input').on('input', function () {
+        settings.recallEnabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_inject_position').off('change').on('change', function () {
+        settings.recallInjectPosition = normalizeRecallInjectPosition(jQuery(this).val());
+        jQuery(this).val(String(settings.recallInjectPosition));
+        void syncPersistentProjectionForCurrentChat(getContext());
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_inject_depth').off('change input').on('change input', function (event) {
+        settings.recallInjectDepth = normalizeRecallInjectDepth(jQuery(this).val());
+        jQuery(this).val(String(settings.recallInjectDepth));
+        if (event?.type === 'change') {
+            void syncPersistentProjectionForCurrentChat(getContext());
+        }
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_inject_role').off('change').on('change', function () {
+        settings.recallInjectRole = normalizeRecallInjectRole(jQuery(this).val());
+        jQuery(this).val(String(settings.recallInjectRole));
+        void syncPersistentProjectionForCurrentChat(getContext());
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_api_preset').off('change').on('change', function () {
+        settings.recallApiPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_recall_preset').off('change').on('change', function () {
+        settings.recallPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_extract_api_preset').off('change').on('change', function () {
+        settings.extractApiPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_extract_preset').off('change').on('change', function () {
+        settings.extractPresetName = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_include_world_info').off('input').on('input', function () {
+        settings.includeWorldInfoWithPreset = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_update_every').off('change input').on('change input', function () {
+        const nextValue = Math.max(1, Math.floor(Number(jQuery(this).val()) || defaultSettings.updateEvery));
+        settings.updateEvery = nextValue;
+        jQuery(this).val(String(nextValue));
+        saveSettingsDebounced();
+    });
+
+    root.find('#luker_rpg_memory_open_schema_editor').off('click').on('click', async function () {
+        await openSchemaEditorPopup(context, settings, root);
+    });
+    root.find('#luker_rpg_memory_open_advanced').off('click').on('click', async function () {
+        await openAdvancedSettingsPopup(context, settings, root);
+    });
+    root.find('#luker_rpg_memory_advanced_save_global').off('click').on('click', async function () {
+        const info = getAdvancedScopeInfo(context, settings);
+        await persistAdvancedToGlobal(settings, info.settings);
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        updateAdvancedScopeIndicator(root, nextScopeInfo);
+        root.find('#luker_rpg_memory_advanced_save_character').prop('disabled', !nextScopeInfo.hasAvatar);
+        root.find('#luker_rpg_memory_advanced_clear_character_override').prop('disabled', !(nextScopeInfo.hasAvatar && nextScopeInfo.hasOverride));
+        notifySuccess(i18n('Advanced settings saved to global settings.'));
+        updateUiStatus(i18n('Advanced settings saved to global settings.'));
+        bindUi();
+    });
+    root.find('#luker_rpg_memory_advanced_save_character').off('click').on('click', async function () {
+        const info = getAdvancedScopeInfo(context, settings);
+        if (!info.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await persistAdvancedToCharacter(context, info.avatar, info.settings);
+        if (!ok) {
+            notifyError(i18n('Failed to persist character advanced override.'));
+            return;
+        }
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        updateAdvancedScopeIndicator(root, nextScopeInfo);
+        root.find('#luker_rpg_memory_advanced_save_character').prop('disabled', !nextScopeInfo.hasAvatar);
+        root.find('#luker_rpg_memory_advanced_clear_character_override').prop('disabled', !(nextScopeInfo.hasAvatar && nextScopeInfo.hasOverride));
+        notifySuccess(i18nFormat('Advanced settings saved to character override: ${0}.', nextScopeInfo.characterName || info.characterName || info.avatar));
+        updateUiStatus(i18nFormat('Advanced settings saved to character override: ${0}.', nextScopeInfo.characterName || info.characterName || info.avatar));
+        bindUi();
+    });
+    root.find('#luker_rpg_memory_advanced_clear_character_override').off('click').on('click', async function () {
+        const info = getAdvancedScopeInfo(context, settings);
+        if (!info.hasAvatar) {
+            notifyError(i18n('No active character selected.'));
+            return;
+        }
+        const ok = await removeCharacterAdvancedOverride(context, info.avatar);
+        if (!ok) {
+            notifyError(i18n('Failed to clear character advanced override.'));
+            return;
+        }
+        const nextScopeInfo = getAdvancedScopeInfo(context, settings);
+        updateAdvancedScopeIndicator(root, nextScopeInfo);
+        root.find('#luker_rpg_memory_advanced_save_character').prop('disabled', !nextScopeInfo.hasAvatar);
+        root.find('#luker_rpg_memory_advanced_clear_character_override').prop('disabled', !(nextScopeInfo.hasAvatar && nextScopeInfo.hasOverride));
+        notifySuccess(i18nFormat('Cleared character advanced override: ${0}.', info.characterName || info.avatar));
+        updateUiStatus(i18nFormat('Cleared character advanced override: ${0}.', info.characterName || info.avatar));
+        bindUi();
+    });
+
+    root.find('#luker_rpg_memory_view_graph').off('click').on('click', async function () {
+        await openGraphInspectorPopup(context);
+    });
+
+    root.find('#luker_rpg_memory_fill').off('click').on('click', async function () {
+        await ensureStoreSyncedWithChat(context);
+        const chatKey = getChatKey(context);
+        const store = memoryStoreCache.get(chatKey);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        const runtimeSettings = getEffectiveSettings(context, settings);
+        alignStoreCoverageToChat(store, context, runtimeSettings);
+        const fillAbortController = new AbortController();
+        activeExtractionAbortController = fillAbortController;
+        try {
+            const preview = computeExtractionWindow(context, store, null, runtimeSettings);
+            if (preview.beginSeq > preview.latestSeq) {
+                notifySuccess(i18n('Memory graph is already up to date.'));
+                updateUiStatus(i18n('Memory graph is already up to date.'));
+                refreshUiStats();
+                return;
+            }
+            const extractBatchTurns = Math.max(
+                1,
+                Math.floor(Number(runtimeSettings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+            );
+            const initialEndSeq = Math.min(
+                Number(preview.latestSeq || 0),
+                Number(preview.beginSeq || 1) + extractBatchTurns - 1,
+            );
+            showRuntimeInfoToast(formatExtractionRangeToast(preview.beginSeq, initialEndSeq, preview.latestSeq), {
+                stopLabel: i18n('Stop'),
+                onStop: () => {
+                    if (!fillAbortController.signal.aborted) {
+                        fillAbortController.abort();
+                    }
+                },
+            });
+            const workingStore = normalizeStoreForRuntime(store);
+            let committedStore = normalizeStoreForRuntime(store);
+            await runExtractionForStore(context, workingStore, {
+                force: true,
+                abortSignal: fillAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+                },
+                onBatchApplied: async ({ endSeq }) => {
+                    committedStore = await commitMemoryStoreDiffByChatKey(
+                        context,
+                        chatKey,
+                        committedStore,
+                        workingStore,
+                        endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
+                onCompressionApplied: async ({ beforeStore, roundSeqTo }) => {
+                    committedStore = await commitMemoryStoreDiffByChatKey(
+                        context,
+                        chatKey,
+                        beforeStore,
+                        workingStore,
+                        roundSeqTo,
+                        { syncPersistentProjection: true },
+                    );
+                },
+            });
+            const finalStore = await commitMemoryStoreDiffByChatKey(
+                context,
+                chatKey,
+                committedStore,
+                workingStore,
+                Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
+                { syncPersistentProjection: true },
+            );
+            const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
+            updateUiStatus(i18nFormat(
+                'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
+                debug.extracted ? 'ok' : 'skip',
+                Number(debug.beginSeq || 0),
+                Number(debug.latestSeq || 0),
+                Number(debug.coveredSeqTo || 0),
+            ));
+            refreshUiStats();
+            notifySuccess(i18n('Memory graph incremental fill completed.'));
+        } catch (error) {
+            if (isAbortError(error, fillAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
+                return;
+            }
+            console.warn(`[${MODULE_NAME}] Incremental fill failed`, error);
+            notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'fill', String(error?.message || error)));
+        } finally {
+            if (activeExtractionAbortController === fillAbortController) {
+                activeExtractionAbortController = null;
+            }
+            clearRuntimeInfoToast();
+        }
+    });
+
+    root.find('#luker_rpg_memory_recall_debug').off('click').on('click', async function () {
+        await ensureStoreSyncedWithChat(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        const query = String(root.find('#luker_rpg_memory_debug_query').val() || '');
+        const effectiveSettings = getEffectiveSettings(context, getSettings());
+        const payload = {
+            coreChat: buildRecallDebugCoreChat(context, query, effectiveSettings),
+            forceWorldInfoResimulate: true,
+        };
+
+        const result = await runLLMDrivenRecall(context, store, payload);
+        store.lastRecallTrace = result.trace;
+        updateUiStatus(i18nFormat('Recall ready. selected=${0}', result.selectedNodes.length));
+        refreshUiStats();
+    });
+
+    root.find('#luker_rpg_memory_view_last_injection').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        const html = buildLastRecallCorePacketHtml(store, { showHeader: true });
+        await context.callGenericPopup(html, context.POPUP_TYPE.TEXT, i18n('View Last Injection'), { wide: true, large: true });
+    });
+
+    root.find('#luker_rpg_memory_rebuild').off('click').on('click', async function () {
+        const runtimeSettings = getEffectiveSettings(context, settings);
+        const rebuildLatestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, runtimeSettings);
+        if (rebuildLatestSeq <= 0) {
+            notifyError(i18n('No assistant turns available to rebuild.'));
+            return;
+        }
+        const rebuildAbortController = new AbortController();
+        activeExtractionAbortController = rebuildAbortController;
+        showRuntimeInfoToast(formatExtractionRangeToast(1, Math.min(1, rebuildLatestSeq || 1), Math.max(1, rebuildLatestSeq)), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!rebuildAbortController.signal.aborted) {
+                    rebuildAbortController.abort();
+                }
+            },
+        });
+        try {
+            const store = await rebuildStoreFromCurrentChat(context, {
+                abortSignal: rebuildAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latestSeq));
+                },
+            });
+            if (!store) {
+                notifyError(i18n('No active chat selected.'));
+                return;
+            }
+            refreshUiStats();
+            notifySuccess(i18n('Memory graph rebuilt from current chat.'));
+            notifyEventCompressionIfAny(store?.lastExtractionDebug?.compression);
+            updateUiStatus(i18n('Rebuilt memory graph and compression from chat.'));
+        } catch (error) {
+            if (isAbortError(error, rebuildAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
+                return;
+            }
+            console.warn(`[${MODULE_NAME}] Rebuild failed`, error);
+            notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'rebuild', String(error?.message || error)));
+        } finally {
+            if (activeExtractionAbortController === rebuildAbortController) {
+                activeExtractionAbortController = null;
+            }
+            clearRuntimeInfoToast();
+        }
+    });
+
+    root.find('#luker_rpg_memory_rebuild_recent').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const chatKey = getChatKey(context);
+        let store = memoryStoreCache.get(chatKey);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        const runtimeSettings = getEffectiveSettings(context, settings);
+        alignStoreCoverageToChat(store, context, runtimeSettings);
+        const latestSeq = getExtractableLatestSeq(buildPlayableFramesFromContext(context).length, runtimeSettings);
+        if (latestSeq <= 0) {
+            notifyError(i18n('No assistant turns available to rebuild.'));
+            return;
+        }
+
+        const defaultRecentTurns = Math.min(20, latestSeq);
+        const input = await context.callGenericPopup(
+            i18nFormat('Rebuild recent assistant turns: enter N (1-${0}).', latestSeq),
+            context.POPUP_TYPE.INPUT,
+            String(defaultRecentTurns),
+            { okButton: i18n('Rebuild Recent'), cancelButton: i18n('Cancel') },
+        );
+        if (!input || typeof input !== 'string') {
+            return;
+        }
+        const trimmed = String(input).trim();
+        if (!/^\d+$/.test(trimmed)) {
+            notifyError(i18nFormat('Please enter a valid integer between 1 and ${0}.', latestSeq));
+            return;
+        }
+        const recentTurns = Number(trimmed);
+        if (!Number.isFinite(recentTurns) || recentTurns < 1 || recentTurns > latestSeq) {
+            notifyError(i18nFormat('Please enter a valid integer between 1 and ${0}.', latestSeq));
+            return;
+        }
+
+        const startSeq = Math.max(1, latestSeq - recentTurns + 1);
+        const workingStore = normalizeStoreForRuntime(store);
+        truncateStoreFromSeq(workingStore, startSeq);
+        updateStoreSourceState(workingStore, context);
+        const rebuildAbortController = new AbortController();
+        activeExtractionAbortController = rebuildAbortController;
+        let hasCommittedBatch = false;
+        const extractBatchTurns = Math.max(
+            1,
+            Math.floor(Number(runtimeSettings?.extractBatchTurns || defaultSettings.extractBatchTurns || 1)),
+        );
+        const initialEndSeq = Math.min(
+            latestSeq,
+            startSeq + extractBatchTurns - 1,
+        );
+        showRuntimeInfoToast(formatExtractionRangeToast(startSeq, initialEndSeq, latestSeq), {
+            stopLabel: i18n('Stop'),
+            onStop: () => {
+                if (!rebuildAbortController.signal.aborted) {
+                    rebuildAbortController.abort();
+                }
+            },
+        });
+        try {
+            const extracted = await runExtractionForStore(context, workingStore, {
+                force: true,
+                startSeq,
+                abortSignal: rebuildAbortController.signal,
+                onBatchStart: ({ beginSeq, endSeq, latestSeq: latest }) => {
+                    updateRuntimeInfoToastMessage(formatExtractionRangeToast(beginSeq, endSeq, latest));
+                },
+                onBatchApplied: async ({ beginSeq, endSeq }) => {
+                    if (!hasCommittedBatch) {
+                        const currentBatchEntries = getRollbackHistory(chatKey)
+                            .filter(entry => Number(entry?.seqFrom || 0) === Number(beginSeq || 0) && Number(entry?.seqTo || 0) === Number(endSeq || 0));
+                        trimRollbackHistoryFromSeq(chatKey, startSeq);
+                        for (const entry of currentBatchEntries) {
+                            recordRollbackEntry(chatKey, entry);
+                        }
+                        hasCommittedBatch = true;
+                    }
+                    await commitMemoryStoreReplaceByChatKey(
+                        context,
+                        chatKey,
+                        workingStore,
+                        endSeq,
+                        { syncPersistentProjection: true },
+                    );
+                },
+                onCompressionApplied: async ({ roundSeqTo }) => {
+                    await commitMemoryStoreReplaceByChatKey(
+                        context,
+                        chatKey,
+                        workingStore,
+                        Number(roundSeqTo || latestSeq || getStoreCoveredSeqTo(workingStore) || 0),
+                        { syncPersistentProjection: true },
+                    );
+                },
+            });
+            const debug = workingStore.lastExtractionDebug || {};
+            if (!extracted && Number(debug.latestSeq || 0) >= startSeq && String(debug.reason || '') !== 'no_graph_changes') {
+                throw new Error('Memory extraction returned no graph updates. Existing graph preserved.');
+            }
+            const persistedStore = await commitMemoryStoreReplaceByChatKey(
+                context,
+                chatKey,
+                workingStore,
+                Number(latestSeq || debug.latestSeq || 0),
+                { syncPersistentProjection: true },
+            );
+            const committedDebug = persistedStore?.lastExtractionDebug || debug;
+            refreshUiStats();
+            notifySuccess(i18nFormat('Memory graph rebuilt for recent ${0} assistant turn(s).', recentTurns));
+            updateUiStatus(i18nFormat('Rebuilt recent memory graph range: seq ${0}-${1}.', startSeq, Number(committedDebug.latestSeq || latestSeq)));
+        } catch (error) {
+            if (isAbortError(error, rebuildAbortController.signal)) {
+                updateUiStatus(i18n('Memory graph update cancelled by user.'));
+                refreshUiStats();
+                return;
+            }
+            console.warn(`[${MODULE_NAME}] Recent rebuild failed`, error);
+            notifyError(i18nFormat('Recall injection failed (${0}): ${1}', 'rebuild_recent', String(error?.message || error)));
+        } finally {
+            if (activeExtractionAbortController === rebuildAbortController) {
+                activeExtractionAbortController = null;
+            }
+            clearRuntimeInfoToast();
+        }
+    });
+
+    root.find('#luker_rpg_memory_manual_compress').off('click').on('click', async function () {
+        await openManualCompressionPopup(context, getEffectiveSettings(context, settings));
+    });
+
+    root.find('#luker_rpg_memory_reset').off('click').on('click', async function () {
+        const confirm = await context.callGenericPopup(
+            i18n('Reset current chat memory graph? This cannot be undone.'),
+            context.POPUP_TYPE.CONFIRM,
+            '',
+            { okButton: i18n('Reset'), cancelButton: i18n('Cancel') },
+        );
+        if (confirm !== context.POPUP_RESULT.AFFIRMATIVE) {
+            return;
+        }
+        await stopMemoryRuntimeWork();
+        const chatKey = getChatKey(context);
+        const target = memoryStoreTargets.get(chatKey) || buildMemoryTargetFromContext(context);
+        if (target) {
+            memoryStoreTargets.set(chatKey, target);
+        }
+        memoryStoreCache.set(chatKey, createEmptyStore());
+        memoryStateCache.set(chatKey, createEmptyPersistedMemoryState());
+        clearRollbackHistory(chatKey);
+        if (target) {
+            await deleteMemoryStoreByTarget(context, target);
+        }
+        await clearAllMemoryLorebookProjection(context, settings);
+        refreshUiStats();
+        notifySuccess(i18n('Current chat memory graph reset.'));
+        updateUiStatus(i18n('Reset memory graph for current chat.'));
+    });
+
+    const importFileInput = root.find('#luker_rpg_memory_import_file');
+
+    root.find('#luker_rpg_memory_export').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        const fileName = getMemoryGraphExportFileName(context);
+        download(JSON.stringify(store, null, 2), fileName, 'application/json');
+        notifySuccess(i18n('Memory graph exported for current chat.'));
+        updateUiStatus(i18nFormat('Downloaded memory graph file: ${0}', fileName));
+    });
+
+    root.find('#luker_rpg_memory_import').off('click').on('click', async function () {
+        await ensureMemoryStoreLoaded(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        if (!importFileInput.length) {
+            notifyError(i18n('Memory graph import failed.'));
+            return;
+        }
+        importFileInput.val('');
+        importFileInput.trigger('click');
+    });
+
+    importFileInput.off('change').on('change', async function () {
+        const file = this.files?.[0];
+        this.value = '';
+        if (!file) {
+            return;
+        }
+        await stopMemoryRuntimeWork();
+        await ensureMemoryStoreLoaded(context);
+        const store = getMemoryStore(context);
+        if (!store) {
+            notifyError(i18n('No active chat selected.'));
+            return;
+        }
+        try {
+            const parsed = JSON.parse(await getFileText(file));
+            const imported = await importMemoryGraphStore(context, parsed);
+            if (!imported) {
+                return;
+            }
+            notifySuccess(i18n('Memory graph imported for current chat.'));
+            if (imported.importMode === 'restore') {
+                updateUiStatus(i18nFormat('Imported memory graph and restored exported floor ${0}.', imported.bindFloor));
+            } else if (imported.importMode === 'bind_latest') {
+                updateUiStatus(i18nFormat('Imported memory graph and bound it to latest assistant floor ${0}.', imported.bindFloor));
+            } else {
+                updateUiStatus(i18nFormat('Imported memory graph and bound it to assistant floor ${0}.', imported.bindFloor));
+            }
+        } catch (error) {
+            notifyError(i18nFormat('Import failed: ${0}', error?.message || error));
+            updateUiStatus(i18n('Memory graph import failed.'));
+        }
+    });
+}
+
+function ensureUi() {
+    const host = jQuery('#extensions_settings2');
+    if (!host.length) {
+        return;
+    }
+
+    ensureStyles();
+
+    if (jQuery(`#${UI_BLOCK_ID}`).length) {
+        bindUi();
+        return;
+    }
+
+    const html = buildMemoryGraphSettingsHtml({
+        escapeHtml,
+        extension_prompt_roles,
+        i18n,
+        UI_BLOCK_ID,
+        world_info_position,
+    });
+
+    host.append(html);
+    bindUi();
+}
+
+jQuery(() => {
+    const context = getContext();
+    registerLocaleData();
+    ensureSettings();
+    generationVisibleHistoryRegexProvider = registerManagedRegexProvider(GENERATION_VISIBLE_HISTORY_REGEX_PROVIDER_ID);
+    syncGenerationVisibleHistoryRuntimeRegexScripts();
+    saveSettingsDebounced();
+    ensureUi();
+    void syncPersistentProjectionForCurrentChat();
+
+    const wiAfterEvent = context.eventTypes.GENERATION_AFTER_WORLD_INFO_SCAN;
+    if (wiAfterEvent) {
+        context.eventSource.on(wiAfterEvent, async (payload) => {
+            const runtimeContext = getContext();
+            await safeInjectMemoryPrompts(runtimeContext, payload, 'after_world_info_scan');
+            if (payload?.signal?.aborted) {
+                if (payload && typeof payload === 'object') {
+                    payload.__lukerRpgMemoryNeedRescan = false;
+                    payload.requestRescan = false;
+                }
+                return;
+            }
+            if (payload && typeof payload === 'object' && payload.__lukerRpgMemoryNeedRescan) {
+                payload.requestRescan = true;
+            }
+        });
+    }
+    const clearRuntimeProjectionAfterGeneration = async () => {
+        const runtimeContext = getContext();
+        try {
+            await clearRuntimeLorebookProjection(runtimeContext, getSettings());
+        } catch (error) {
+            console.warn(`[${MODULE_NAME}] Failed to clear runtime lorebook projection after generation`, error);
+        }
+    };
+    const mutationStatusText = i18n('Chat mutation detected. Memory graph will re-sync on next generation.');
+    const mutationInterruptedToastText = i18n('Chat changes interrupted memory graph update. It will re-sync on next generation.');
+    const queueMutationInvalidation = (fromSeq = null, { scheduleReplay = false } = {}) => {
+        const runtimeContext = getContext();
+        const chatKey = getChatKey(runtimeContext);
+        if (!chatKey || chatKey === 'invalid_target') {
+            latestRecallSnapshot = null;
+            return;
+        }
+        const normalizedFromSeq = Number.isFinite(Number(fromSeq)) && Number(fromSeq) > 0
+            ? Math.max(1, Math.floor(Number(fromSeq)))
+            : null;
+        const existing = pendingMutationInvalidations.get(chatKey);
+        if (existing) {
+            existing.fromSeq = normalizedFromSeq === null
+                ? existing.fromSeq
+                : (existing.fromSeq === null ? normalizedFromSeq : Math.min(existing.fromSeq, normalizedFromSeq));
+            existing.scheduleReplay = Boolean(existing.scheduleReplay || scheduleReplay);
+            return;
+        }
+        const task = {
+            fromSeq: normalizedFromSeq,
+            scheduleReplay: Boolean(scheduleReplay),
+            timer: setTimeout(async () => {
+                pendingMutationInvalidations.delete(chatKey);
+                const liveContext = getContext();
+                const isCurrentChat = getChatKey(liveContext) === chatKey;
+                let store = memoryStoreCache.get(chatKey);
+                if (!store) {
+                    latestRecallSnapshot = null;
+                    return;
+                }
+                const preserveLatestRecallSnapshot = shouldPreserveLatestRecallSnapshotForAssistantMutation(liveContext, task.fromSeq);
+                if (!preserveLatestRecallSnapshot) {
+                    latestRecallSnapshot = null;
+                }
+                if (extractionTimers.has(chatKey)) {
+                    clearTimeout(extractionTimers.get(chatKey));
+                    extractionTimers.delete(chatKey);
+                }
+                if (activeExtractionAbortController && !activeExtractionAbortController.signal.aborted) {
+                    if (isCurrentChat) {
+                        clearRuntimeInfoToast();
+                        showPersistentRuntimeNotice(mutationInterruptedToastText, { level: 'warning' });
+                    }
+                    activeExtractionAbortController.abort();
+                }
+                const hasAffectedSeq = Number.isFinite(task.fromSeq) && task.fromSeq > 0;
+                if (!hasAffectedSeq) {
+                    return;
+                }
+                const trimResult = trimPersistedOpLogFromSeq(chatKey, task.fromSeq);
+                store = trimResult.store || store;
+                updateStoreSourceState(store, liveContext);
+                store.lastRecallTrace = [];
+                store.lastRecallProjection = null;
+                try {
+                    await persistMemoryStoreByChatKey(liveContext, chatKey, store);
+                    if (isCurrentChat) {
+                        const effectiveSettings = getEffectiveSettings(liveContext, getSettings());
+                        if (!effectiveSettings.enabled) {
+                            await clearAllMemoryLorebookProjection(liveContext, effectiveSettings);
+                        } else {
+                            await clearRuntimeLorebookProjection(liveContext, effectiveSettings);
+                            await syncPersistentLorebookProjection(liveContext, effectiveSettings, store);
+                        }
+                    }
+                    refreshUiStats();
+                    if (isCurrentChat) {
+                        updateUiStatus(mutationStatusText);
+                    }
+                    if (task.scheduleReplay && isCurrentChat) {
+                        setTimeout(() => {
+                            if (!generationInProgress) {
+                                scheduleExtraction(getContext());
+                            }
+                        }, 0);
+                    }
+                } catch (error) {
+                    console.warn(`[${MODULE_NAME}] Failed to trim memory graph op log for ${chatKey}`, error);
+                    if (isCurrentChat) {
+                        updateUiStatus(mutationStatusText);
+                    }
+                }
+            }, 0),
+        };
+        pendingMutationInvalidations.set(chatKey, task);
+    };
+    if (context.eventTypes.GENERATION_STARTED) {
+        context.eventSource.on(context.eventTypes.GENERATION_STARTED, () => {
+            generationInProgress = true;
+        });
+    }
+    if (context.eventTypes.GENERATION_ENDED) {
+        context.eventSource.on(context.eventTypes.GENERATION_ENDED, async () => {
+            generationInProgress = false;
+            await clearRuntimeProjectionAfterGeneration();
+            clearRuntimeInfoToast();
+            const runtimeContext = getContext();
+            const abortedByUser = Boolean(runtimeContext?.streamingProcessor?.abortController?.signal?.aborted);
+            if (abortedByUser) {
+                updateUiStatus(i18n('Generation aborted. Skipped memory extraction.'));
+                return;
+            }
+            await captureLatestAssistantAfterGeneration();
+        });
+    }
+    if (context.eventTypes.CHAT_BRANCH_CREATED) {
+        context.eventSource.on(context.eventTypes.CHAT_BRANCH_CREATED, async (payload) => {
+            try {
+                await inheritMemoryStoreForBranch(getContext(), payload);
+            } catch (error) {
+                console.warn(`[${MODULE_NAME}] Failed to inherit memory graph for branch`, error);
+            }
+        });
+    }
+    context.eventSource.on(context.eventTypes.MESSAGE_DELETED, async (_messageCount, mutationMeta) => {
+        const runtimeContext = getContext();
+        const assistantFromSeq = Number(mutationMeta?.deletedAssistantSeqFrom || 0);
+        const playableFromSeq = Number(mutationMeta?.deletedPlayableSeqFrom || 0);
+        const fromSeq = Number.isFinite(assistantFromSeq) && assistantFromSeq > 0
+            ? assistantFromSeq
+            : findAssistantSeqFromPlayableSeq(runtimeContext, playableFromSeq);
+        queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+    });
+    if (context.eventTypes.MESSAGE_SWIPED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, async (messageId, meta) => {
+            if (meta?.pendingGeneration === true) {
+                return;
+            }
+            if (await restoreSwipeTailCacheForMessage(getContext(), messageId)) {
+                return;
+            }
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
+    if (context.eventTypes.MESSAGE_SWIPE_DELETED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_SWIPE_DELETED, (payload) => {
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), payload?.messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
+    if (context.eventTypes.MESSAGE_RECEIVED) {
+        context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, (messageId, generationType) => {
+            const normalizedType = String(generationType || '').trim().toLowerCase();
+            if (!['swipe', 'continue', 'append', 'appendfinal'].includes(normalizedType)) {
+                return;
+            }
+            const fromSeq = findAffectedAssistantSeqFromMessageIndex(getContext(), messageId);
+            queueMutationInvalidation(fromSeq, { scheduleReplay: true });
+        });
+    }
+    if (context.eventTypes.PRESET_CHANGED) {
+        context.eventSource.on(context.eventTypes.PRESET_CHANGED, (event) => {
+            if (String(event?.apiId || '') === 'openai') {
+                ensureUi();
+            }
+        });
+    }
+    const connectionProfileEvents = [
+        context.eventTypes.CONNECTION_PROFILE_LOADED,
+        context.eventTypes.CONNECTION_PROFILE_CREATED,
+        context.eventTypes.CONNECTION_PROFILE_DELETED,
+        context.eventTypes.CONNECTION_PROFILE_UPDATED,
+    ].filter(Boolean);
+    for (const eventName of connectionProfileEvents) {
+        context.eventSource.on(eventName, () => ensureUi());
+    }
+    context.eventSource.on(context.eventTypes.CHAT_CHANGED, () => {
+        latestRecallSnapshot = null;
+        ensureUi();
+        void syncPersistentProjectionForCurrentChat();
+    });
+});
