@@ -31,14 +31,16 @@ function renderAgendaAgentBoard(deps, scope, editor) {
     const agents = sanitizePresetMap(editor?.agents);
     const entries = Object.entries(agents).sort((left, right) => left[0].localeCompare(right[0]));
     if (entries.length === 0) {
-        return `<div class="luker_orch_empty_hint">${escapeHtml(i18n('No presets yet.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No presets yet.'))}</div>`;
     }
     const context = getContext();
     return entries.map(([agentId, preset]) => `
-<div class="luker_orch_preset_card">
-    <div class="luker_orch_preset_header">
+<div class="luker-studio-card">
+    <div class="luker-studio-card-header">
         <b>${escapeHtml(agentId)}</b>
-        <div class="menu_button menu_button_small" data-luker-action="agenda-agent-delete" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(i18n('Delete'))}</div>
+        <div class="luker-studio-card-actions">
+            <div class="menu_button menu_button_small" data-luker-action="agenda-agent-delete" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">${escapeHtml(i18n('Delete'))}</div>
+        </div>
     </div>
     <label>${escapeHtml(i18n('Agent API preset (Connection profile, empty = global orchestration API preset)'))}</label>
     <select class="text_pole" data-luker-agenda-agent-field="apiPresetName" data-scope="${safeScope}" data-agent-id="${escapeHtml(agentId)}">
@@ -72,11 +74,11 @@ export function renderAgendaWorkspace(deps, scope, editor, title = '') {
     const planner = createAgendaPlannerDraft(editor?.planner);
     const context = getContext();
     return `
-<div class="luker_orch_workspace" data-luker-scope-root="${safeScope}">
-    <h5 class="margin0">${escapeHtml(title || i18n('Agenda Orchestration'))}</h5>
-    <div class="luker_orch_workspace_grid">
-        <div class="luker_orch_workspace_col">
-            <div class="luker_orch_col_title">${escapeHtml(i18n('Planner Prompt'))}</div>
+<div class="luker-studio-workspace" data-luker-scope-root="${safeScope}">
+    <div class="luker-studio-workspace-title">${escapeHtml(title || i18n('Agenda Orchestration'))}</div>
+    <div class="luker-studio-workspace-grid">
+        <div class="luker-studio-workspace-col">
+            <div class="luker-studio-workspace-col-title">${escapeHtml(i18n('Planner Prompt'))}</div>
             <label for="luker_orch_agenda_planner_api_preset">${escapeHtml(i18n('Planner API preset (Connection profile, empty = global orchestration API preset)'))}</label>
             <select id="luker_orch_agenda_planner_api_preset" data-scope="${safeScope}" class="text_pole">${renderConnectionProfileOptions(planner?.apiPresetName, i18n('(Global orchestration API preset)'))}</select>
             <label for="luker_orch_agenda_planner_prompt_preset">${escapeHtml(i18n('Planner preset (params + prompt, empty = global orchestration preset)'))}</label>
@@ -94,10 +96,10 @@ export function renderAgendaWorkspace(deps, scope, editor, title = '') {
             <label for="luker_orch_agenda_max_total_runs">${escapeHtml(i18n('Max total agent runs'))}</label>
             <input id="luker_orch_agenda_max_total_runs" data-scope="${safeScope}" class="text_pole" type="number" min="1" max="200" step="1" value="${escapeHtml(String(editor?.limits?.maxTotalRuns || 24))}" />
         </div>
-        <div class="luker_orch_workspace_col">
-            <div class="luker_orch_col_title">${escapeHtml(i18n('Agenda Agents'))}</div>
-            <div class="luker_orch_presets">${renderAgendaAgentBoard(deps, safeScope, editor)}</div>
-            <div class="luker_orch_preset_add_row">
+        <div class="luker-studio-workspace-col">
+            <div class="luker-studio-workspace-col-title">${escapeHtml(i18n('Agenda Agents'))}</div>
+            <div>${renderAgendaAgentBoard(deps, safeScope, editor)}</div>
+            <div class="luker-studio-add-row">
                 <input class="text_pole" data-luker-agenda-new-agent="${safeScope}" placeholder="${escapeHtml(i18n('new_preset_id'))}" />
                 <div class="menu_button menu_button_small" data-luker-action="agenda-agent-add" data-scope="${safeScope}">${escapeHtml(i18n('Add Preset'))}</div>
             </div>
@@ -109,18 +111,18 @@ export function renderAgendaWorkspace(deps, scope, editor, title = '') {
 export function renderEditorWorkspace(deps, scope, editor, title) {
     const { escapeHtml, i18n, renderPresetBoard, renderWorkflowBoard } = deps;
     return `
-<div class="luker_orch_workspace" data-luker-scope-root="${scope}">
-    <h5 class="margin0">${escapeHtml(title)}</h5>
-    <div class="luker_orch_workspace_grid">
-        <div class="luker_orch_workspace_col">
-            <div class="luker_orch_col_title">${escapeHtml(i18n('Workflow'))}</div>
-            <div class="luker_orch_flow">${renderWorkflowBoard(scope, editor)}</div>
+<div class="luker-studio-workspace" data-luker-scope-root="${scope}">
+    <div class="luker-studio-workspace-title">${escapeHtml(title)}</div>
+    <div class="luker-studio-workspace-grid">
+        <div class="luker-studio-workspace-col">
+            <div class="luker-studio-workspace-col-title">${escapeHtml(i18n('Workflow'))}</div>
+            <div>${renderWorkflowBoard(scope, editor)}</div>
             <div class="menu_button menu_button_small" data-luker-action="stage-add" data-scope="${scope}">${escapeHtml(i18n('Add Stage'))}</div>
         </div>
-        <div class="luker_orch_workspace_col">
-            <div class="luker_orch_col_title">${escapeHtml(i18n('Agent Presets'))}</div>
-            <div class="luker_orch_presets">${renderPresetBoard(scope, editor)}</div>
-            <div class="luker_orch_preset_add_row">
+        <div class="luker-studio-workspace-col">
+            <div class="luker-studio-workspace-col-title">${escapeHtml(i18n('Agent Presets'))}</div>
+            <div>${renderPresetBoard(scope, editor)}</div>
+            <div class="luker-studio-add-row">
                 <input class="text_pole" data-luker-new-preset="${scope}" placeholder="${escapeHtml(i18n('new_preset_id'))}" />
                 <div class="menu_button menu_button_small" data-luker-action="preset-add" data-scope="${scope}">${escapeHtml(i18n('Add Preset'))}</div>
             </div>
@@ -161,37 +163,35 @@ export function buildOrchestrationEditorPopupPanelHtml(deps, context, settings) 
         const editingLabel = getPopupEditingLabel(isCharacterScope, hasAgendaCharacterOverride, Boolean(agendaOverride?.enabled));
         const profileTitle = getProfileTitleForScope(context, activeAvatar, isCharacterScope, hasAgendaCharacterOverride);
         return `
-<div class="luker_orch_editor_popup">
-    <div class="luker_orch_board">
-        <div class="luker_orch_character_row">
-            <div>
-                <small>${escapeHtml(i18n('Current card:'))} <span>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</span></small><br />
-                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(editingLabel)}</span></small><br />
-                <small>${escapeHtml(i18n('Execution mode'))} <span>${escapeHtml(i18n('Agenda planner'))}</span></small>
-            </div>
-            <div>
-                <label>${escapeHtml(i18n('AI build goal (optional)'))}</label>
-                <textarea class="text_pole textarea_compact" rows="2" data-luker-ai-goal-input placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}">${escapeHtml(String(uiState.aiGoal || ''))}</textarea>
-                <div class="flex-container">
-                    <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
-                </div>
+<div class="luker-studio luker_orch_editor_popup">
+    <div class="luker-studio-editor-topbar">
+        <div class="luker-studio-editor-topbar-left">
+            <div class="luker-studio-editor-topbar-title">${escapeHtml(i18n('Orchestration Editor'))}</div>
+            <div class="luker-studio-editor-topbar-meta">
+                <span class="luker-studio-editor-chip">${escapeHtml(i18n('Current card:'))} <b>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</b></span>
+                <span class="luker-studio-editor-chip">${escapeHtml(i18n('Editing:'))} <b>${escapeHtml(editingLabel)}</b></span>
+                <span class="luker-studio-editor-chip">${escapeHtml(i18n('Execution mode'))} <b>${escapeHtml(i18n('Agenda planner'))}</b></span>
             </div>
         </div>
-        <div class="flex-container">
-            <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
-            <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
-            <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
-            <div class="menu_button" data-luker-action="agenda-copy-from-spec" data-scope="${scope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
-            <div class="menu_button" data-luker-action="spec-copy-from-agenda" data-scope="${scope}">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
-            <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
-            <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
-            ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
-            ${hasActiveCharacter && isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
-            <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
-            <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+        <div class="luker-studio-editor-topbar-right">
+            <textarea class="text_pole textarea_compact" rows="1" data-luker-ai-goal-input placeholder="${escapeHtml(i18n('AI build goal (optional)'))}">${escapeHtml(String(uiState.aiGoal || ''))}</textarea>
+            <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
         </div>
-        ${renderAgendaWorkspace(deps, scope, editor, profileTitle)}
     </div>
+    <div class="luker-studio-actions-bar">
+        <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
+        <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
+        <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
+        <div class="menu_button" data-luker-action="agenda-copy-from-spec" data-scope="${scope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+        <div class="menu_button" data-luker-action="spec-copy-from-agenda" data-scope="${scope}">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
+        <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
+        <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
+        ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
+        ${hasActiveCharacter && isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
+        <div class="menu_button" data-luker-action="view-last-run">${escapeHtml(i18n('View Last Run'))}</div>
+        <div class="menu_button" data-luker-action="view-runtime-trace">${escapeHtml(i18n('View Runtime Trace'))}</div>
+    </div>
+    ${renderAgendaWorkspace(deps, scope, editor, profileTitle)}
 </div>`;
     }
 
@@ -205,35 +205,33 @@ export function buildOrchestrationEditorPopupPanelHtml(deps, context, settings) 
     const hasSpecCharacterOverride = hasCharacterSpecOverride(context, activeAvatar);
     const profileTitle = getProfileTitleForScope(context, activeAvatar, isCharacterScope, hasSpecCharacterOverride);
     return `
-<div class="luker_orch_editor_popup">
-    <div class="luker_orch_board">
-        <div class="luker_orch_character_row">
-            <div>
-                <small>${escapeHtml(i18n('Current card:'))} <span>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</span></small><br />
-                <small>${escapeHtml(i18n('Editing:'))} <span>${escapeHtml(getPopupEditingLabel(isCharacterScope, hasSpecCharacterOverride, Boolean(override?.enabled)))}</span></small>
-            </div>
-            <div>
-                <label>${escapeHtml(i18n('AI build goal (optional)'))}</label>
-                <textarea class="text_pole textarea_compact" rows="2" data-luker-ai-goal-input placeholder="${escapeHtml(i18n('e.g. mystery thriller pacing, strict in-character tone'))}">${escapeHtml(String(uiState.aiGoal || ''))}</textarea>
-                <div class="flex-container">
-                    <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
-                    <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
-                </div>
+<div class="luker-studio luker_orch_editor_popup">
+    <div class="luker-studio-editor-topbar">
+        <div class="luker-studio-editor-topbar-left">
+            <div class="luker-studio-editor-topbar-title">${escapeHtml(i18n('Orchestration Editor'))}</div>
+            <div class="luker-studio-editor-topbar-meta">
+                <span class="luker-studio-editor-chip">${escapeHtml(i18n('Current card:'))} <b>${escapeHtml(activeAvatar ? (getCharacterDisplayNameByAvatar(context, activeAvatar) || activeAvatar) : i18n('(No character card)'))}</b></span>
+                <span class="luker-studio-editor-chip">${escapeHtml(i18n('Editing:'))} <b>${escapeHtml(getPopupEditingLabel(isCharacterScope, hasSpecCharacterOverride, Boolean(override?.enabled)))}</b></span>
             </div>
         </div>
-        <div class="flex-container">
-            <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
-            <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
-            <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
-            <div class="menu_button" data-luker-action="agenda-copy-from-spec" data-scope="${scope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
-            <div class="menu_button" data-luker-action="spec-copy-from-agenda" data-scope="${scope}">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
-            <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
-            <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
-            ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
-            ${hasActiveCharacter && isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
+        <div class="luker-studio-editor-topbar-right">
+            <textarea class="text_pole textarea_compact" rows="1" data-luker-ai-goal-input placeholder="${escapeHtml(i18n('AI build goal (optional)'))}">${escapeHtml(String(uiState.aiGoal || ''))}</textarea>
+            <div class="menu_button menu_button_small" data-luker-action="ai-suggest-character">${escapeHtml(i18n('AI Quick Build'))}</div>
+            <div class="menu_button menu_button_small" data-luker-action="ai-iterate-open">${escapeHtml(i18n('Open AI Iteration Studio'))}</div>
         </div>
-        <div id="luker_orch_effective_visual">${renderEditorWorkspace(deps, scope, editor, profileTitle)}</div>
     </div>
+    <div class="luker-studio-actions-bar">
+        <div class="menu_button" data-luker-action="reload-current">${escapeHtml(i18n('Reload Current'))}</div>
+        <div class="menu_button" data-luker-action="export-profile">${escapeHtml(i18n('Export Profile'))}</div>
+        <div class="menu_button" data-luker-action="import-profile">${escapeHtml(i18n('Import Profile'))}</div>
+        <div class="menu_button" data-luker-action="agenda-copy-from-spec" data-scope="${scope}">${escapeHtml(i18n('Copy Spec Agents To Agenda'))}</div>
+        <div class="menu_button" data-luker-action="spec-copy-from-agenda" data-scope="${scope}">${escapeHtml(i18n('Copy Agenda Agents To Spec'))}</div>
+        <div class="menu_button" data-luker-action="reset-global">${escapeHtml(i18n('Reset Global'))}</div>
+        <div class="menu_button" data-luker-action="save-global">${escapeHtml(i18n('Save To Global'))}</div>
+        ${hasActiveCharacter ? `<div class="menu_button" data-luker-action="save-character">${escapeHtml(i18n('Save To Character Override'))}</div>` : ''}
+        ${hasActiveCharacter && isCharacterScope ? `<div class="menu_button" data-luker-action="clear-character">${escapeHtml(i18n('Clear Character Override'))}</div>` : ''}
+    </div>
+    <div id="luker_orch_effective_visual">${renderEditorWorkspace(deps, scope, editor, profileTitle)}</div>
 </div>`;
 }
 

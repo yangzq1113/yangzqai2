@@ -611,6 +611,7 @@ function registerLocaleData() {
         'AI Build Profile': 'AI 生成编排',
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '打开 AI 迭代工作台',
+        'Orchestration Editor': '编排编辑器',
         'Open Orchestration Editor': '打开编排编辑器',
         'Agenda Orchestration': 'Agenda 编排',
         'Planner Prompt': 'Planner 提示词',
@@ -808,6 +809,7 @@ function registerLocaleData() {
         '(Current preset)': '（当前预设）',
         '(Current API config)': '（当前 API 配置）',
         '(Global orchestration API preset)': '（全局编排 API 预设）',
+        '(Global orchestration prompt preset)': '（全局编排提示词预设）',
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 构建未显式调用 finalize。已直接采用解析结果。',
         'AI build did not call finalize explicitly.': 'AI 构建未显式调用 finalize。',
@@ -896,6 +898,7 @@ function registerLocaleData() {
         'AI Build Profile': 'AI 生成編排',
         'AI Quick Build': 'AI 快速生成',
         'Open AI Iteration Studio': '開啟 AI 迭代工作台',
+        'Orchestration Editor': '編排編輯器',
         'Open Orchestration Editor': '開啟編排編輯器',
         'Agenda Orchestration': 'Agenda 編排',
         'Planner Prompt': 'Planner 提示詞',
@@ -1093,6 +1096,7 @@ function registerLocaleData() {
         '(Current preset)': '（目前預設）',
         '(Current API config)': '（目前 API 設定）',
         '(Global orchestration API preset)': '（全域編排 API 預設）',
+        '(Global orchestration prompt preset)': '（全域編排提示詞預設）',
         '(missing)': '（缺失）',
         'AI build did not call finalize explicitly. Parsed output was used anyway.': 'AI 建構未明確呼叫 finalize。已直接採用解析結果。',
         'AI build did not call finalize explicitly.': 'AI 建構未明確呼叫 finalize。',
@@ -2021,16 +2025,16 @@ function formatReadableTimestamp(value) {
 function renderLastOrchestrationResultHtml(context) {
     const entry = getLatestOrchestrationEntry(context);
     if (!entry || typeof entry !== 'object') {
-        return `<div class="luker_orch_last_run_empty">${escapeHtml(i18n('No recent orchestration result available for this chat.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No recent orchestration result available for this chat.'))}</div>`;
     }
 
     const anchorPlayableFloor = normalizeAnchorPlayableFloor(entry.anchorPlayableFloor);
     const injectedText = String(entry.injectedText || '').trim();
 
     return `
-<div class="luker_orch_last_run_popup">
-    <div class="luker_orch_last_run_meta"><b>${escapeHtml(i18n('Anchored User Turn'))}</b>：${escapeHtml(String(anchorPlayableFloor || 0))}</div>
-    <pre class="luker_orch_last_run_capsule">${escapeHtml(injectedText || i18n('Not set'))}</pre>
+<div class="luker-studio luker_orch_last_run_popup">
+    <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Anchored User Turn'))}</b><span>${escapeHtml(String(anchorPlayableFloor || 0))}</span></div>
+    <pre class="luker-studio-attempt-pre">${escapeHtml(injectedText || i18n('Not set'))}</pre>
 </div>`;
 }
 
@@ -2070,7 +2074,7 @@ function renderOrchestrationRuntimeTraceGraphHtml(trace) {
     const attemptIndex = buildOrchestrationRuntimeTraceNodeIndex(trace);
     const stages = Array.isArray(trace?.stages) ? trace.stages : [];
     if (stages.length === 0) {
-        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No node attempts recorded.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No node attempts recorded.'))}</div>`;
     }
 
     return stages.map((stage, stageIndex) => {
@@ -2082,25 +2086,25 @@ function renderOrchestrationRuntimeTraceGraphHtml(trace) {
             const statusKey = String(latestAttempt?.status || 'idle').trim().toLowerCase() || 'idle';
             const previewText = truncateOrchestrationRuntimePreview(String(latestAttempt?.previewText || ''), 120);
             return `
-<div class="luker_orch_runtime_node luker_orch_runtime_status_${escapeHtml(statusKey)}">
-    <div class="luker_orch_runtime_node_head">
-        <div class="luker_orch_runtime_node_title">${escapeHtml(String(node?.id || ''))}</div>
-        <div class="luker_orch_runtime_status_badge">${escapeHtml(status)}</div>
+<div class="luker-studio-flow-node">
+    <div class="luker-studio-flow-node-head">
+        <div class="luker-studio-flow-node-title">${escapeHtml(String(node?.id || ''))}</div>
+        <span class="luker-studio-badge luker-studio-badge-${escapeHtml(statusKey)}">${escapeHtml(status)}</span>
     </div>
-    <div class="luker_orch_runtime_node_meta">${escapeHtml(String(node?.type || 'worker'))} · ${escapeHtml(String(node?.preset || node?.id || ''))}</div>
-    <div class="luker_orch_runtime_node_meta">${escapeHtml(i18n('Node Attempts'))}: ${escapeHtml(String(attempts.length || 0))}</div>
-    ${previewText ? `<div class="luker_orch_runtime_node_preview">${escapeHtml(previewText)}</div>` : ''}
+    <div class="luker-studio-flow-node-meta">${escapeHtml(String(node?.type || 'worker'))} · ${escapeHtml(String(node?.preset || node?.id || ''))}</div>
+    <div class="luker-studio-flow-node-meta">${escapeHtml(i18n('Node Attempts'))}: ${escapeHtml(String(attempts.length || 0))}</div>
+    ${previewText ? `<div class="luker-studio-flow-node-preview">${escapeHtml(previewText)}</div>` : ''}
 </div>`;
         }).join('');
         return `
-<div class="luker_orch_runtime_stage">
-    <div class="luker_orch_runtime_stage_head">
-        <div class="luker_orch_runtime_stage_title">${escapeHtml(String(stage?.id || `stage_${stageIndex + 1}`))}</div>
-        <div class="luker_orch_runtime_stage_mode">${escapeHtml(String(stage?.mode || 'serial'))}</div>
+<div class="luker-studio-flow-stage">
+    <div class="luker-studio-flow-stage-head">
+        <div class="luker-studio-flow-stage-title">${escapeHtml(String(stage?.id || `stage_${stageIndex + 1}`))}</div>
+        <div class="luker-studio-flow-stage-mode">${escapeHtml(String(stage?.mode || 'serial'))}</div>
     </div>
-    <div class="luker_orch_runtime_stage_nodes">${nodeHtml || `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('Not set'))}</div>`}</div>
+    <div class="luker-studio-flow-stage-nodes">${nodeHtml || `<div class="luker-studio-empty-hint">${escapeHtml(i18n('Not set'))}</div>`}</div>
 </div>
-${stageIndex < stages.length - 1 ? '<div class="luker_orch_runtime_stage_arrow">→</div>' : ''}`;
+${stageIndex < stages.length - 1 ? '<div class="luker-studio-flow-arrow">→</div>' : ''}`;
     }).join('');
 }
 
@@ -2135,16 +2139,16 @@ function formatOrchestrationRuntimeEventSummary(event) {
 function renderOrchestrationRuntimeTraceEventsHtml(trace) {
     const events = Array.isArray(trace?.events) ? trace.events : [];
     if (events.length === 0) {
-        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No events recorded.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No events recorded.'))}</div>`;
     }
-    return events.map((event) => `
-<div class="luker_orch_runtime_event">
-    <div class="luker_orch_runtime_event_seq">#${escapeHtml(String(event?.seq || ''))}</div>
-    <div class="luker_orch_runtime_event_body">
-        <div class="luker_orch_runtime_event_text">${escapeHtml(formatOrchestrationRuntimeEventSummary(event))}</div>
-        <div class="luker_orch_runtime_event_meta">${escapeHtml(formatReadableTimestamp(event?.at))}</div>
+    return `<div class="luker-studio-timeline">${events.map((event) => `
+<div class="luker-studio-timeline-event">
+    <div class="luker-studio-timeline-seq">#${escapeHtml(String(event?.seq || ''))}</div>
+    <div class="luker-studio-timeline-body">
+        <div class="luker-studio-timeline-text">${escapeHtml(formatOrchestrationRuntimeEventSummary(event))}</div>
+        <div class="luker-studio-timeline-time">${escapeHtml(formatReadableTimestamp(event?.at))}</div>
     </div>
-</div>`).join('');
+</div>`).join('')}</div>`;
 }
 
 function renderOrchestrationRuntimeAttemptHtml(attempt, previousOutputText = '', attemptNo = 1) {
@@ -2162,48 +2166,48 @@ function renderOrchestrationRuntimeAttemptHtml(attempt, previousOutputText = '',
     }
 
     return `
-<details class="luker_orch_runtime_attempt luker_orch_runtime_status_${escapeHtml(statusKey)}"${attemptNo > 1 || statusKey === 'running' || statusKey === 'failed' ? ' open' : ''}>
-    <summary class="luker_orch_runtime_attempt_head">
-        <span class="luker_orch_runtime_attempt_title">${escapeHtml(String(attempt?.nodeId || ''))}</span>
-        <span class="luker_orch_runtime_attempt_badges">
-            <span class="luker_orch_runtime_status_badge">${escapeHtml(statusLabel)}</span>
-            <span class="luker_orch_runtime_attempt_seq">#${escapeHtml(String(attempt?.sequence || ''))}</span>
+<details class="luker-studio-attempt"${attemptNo > 1 || statusKey === 'running' || statusKey === 'failed' ? ' open' : ''}>
+    <summary>
+        <span class="luker-studio-attempt-title">${escapeHtml(String(attempt?.nodeId || ''))}</span>
+        <span class="luker-studio-attempt-badges">
+            <span class="luker-studio-badge luker-studio-badge-${escapeHtml(statusKey)}">${escapeHtml(statusLabel)}</span>
+            <span class="luker-studio-attempt-meta">#${escapeHtml(String(attempt?.sequence || ''))}</span>
         </span>
     </summary>
-    <div class="luker_orch_runtime_attempt_meta">${metaItems.map(item => escapeHtml(item)).join(' · ')}</div>
-    <div class="luker_orch_runtime_attempt_meta">${escapeHtml(i18n('Created At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.startedAt))}</div>
-    <div class="luker_orch_runtime_attempt_meta">${escapeHtml(i18n('Finished At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.endedAt || ''))}</div>
-    ${attempt?.rerunReason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Review feedback'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.rerunReason || ''))}</pre>` : ''}
-    ${attempt?.action ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Decision'))}</div><div class="luker_orch_runtime_attempt_meta">${escapeHtml(String(attempt.action || ''))}</div>` : ''}
-    ${Array.isArray(attempt?.targetNodeIds) && attempt.targetNodeIds.length > 0 ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Targets'))}</div><div class="luker_orch_runtime_attempt_meta">${escapeHtml(attempt.targetNodeIds.join(', '))}</div>` : ''}
-    ${attempt?.reason ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Review feedback'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.reason || ''))}</pre>` : ''}
-    ${attempt?.replayResult ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Replay result'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(toReadableYamlText(attempt.replayResult, '{}'))}</pre>` : ''}
-    ${attempt?.error ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Failed'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(String(attempt.error || ''))}</pre>` : ''}
+    <div class="luker-studio-attempt-meta">${metaItems.map(item => escapeHtml(item)).join(' · ')}</div>
+    <div class="luker-studio-attempt-meta">${escapeHtml(i18n('Created At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.startedAt))}</div>
+    <div class="luker-studio-attempt-meta">${escapeHtml(i18n('Finished At'))}: ${escapeHtml(formatReadableTimestamp(attempt?.endedAt || ''))}</div>
+    ${attempt?.rerunReason ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Review feedback'))}</div><pre class="luker-studio-attempt-pre">${escapeHtml(String(attempt.rerunReason || ''))}</pre>` : ''}
+    ${attempt?.action ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Decision'))}</div><div class="luker-studio-attempt-meta">${escapeHtml(String(attempt.action || ''))}</div>` : ''}
+    ${Array.isArray(attempt?.targetNodeIds) && attempt.targetNodeIds.length > 0 ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Targets'))}</div><div class="luker-studio-attempt-meta">${escapeHtml(attempt.targetNodeIds.join(', '))}</div>` : ''}
+    ${attempt?.reason ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Review feedback'))}</div><pre class="luker-studio-attempt-pre">${escapeHtml(String(attempt.reason || ''))}</pre>` : ''}
+    ${attempt?.replayResult ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Replay result'))}</div><pre class="luker-studio-attempt-pre">${escapeHtml(toReadableYamlText(attempt.replayResult, '{}'))}</pre>` : ''}
+    ${attempt?.error ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Failed'))}</div><pre class="luker-studio-attempt-pre">${escapeHtml(String(attempt.error || ''))}</pre>` : ''}
     ${hasOutputDiff ? `
-        <div class="luker_orch_runtime_label">${escapeHtml(i18n('Rerun diff'))}</div>
+        <div class="luker-studio-attempt-label">${escapeHtml(i18n('Rerun diff'))}</div>
         ${renderIterationLineDiffHtml(previousOutputText, outputText, `${attempt?.nodeId || 'node'} rerun diff`)}
-        <div class="luker_orch_runtime_dual">
-            <div class="luker_orch_runtime_dual_col">
-                <div class="luker_orch_runtime_label">${escapeHtml(i18n('Previous result'))}</div>
-                <pre class="luker_orch_runtime_pre">${escapeHtml(previousOutputText)}</pre>
+        <div class="luker-studio-attempt-dual">
+            <div class="luker-studio-attempt-dual-col">
+                <div class="luker-studio-attempt-label">${escapeHtml(i18n('Previous result'))}</div>
+                <pre class="luker-studio-attempt-pre">${escapeHtml(previousOutputText)}</pre>
             </div>
-            <div class="luker_orch_runtime_dual_col">
-                <div class="luker_orch_runtime_label">${escapeHtml(i18n('Current result'))}</div>
-                <pre class="luker_orch_runtime_pre">${escapeHtml(outputText)}</pre>
+            <div class="luker-studio-attempt-dual-col">
+                <div class="luker-studio-attempt-label">${escapeHtml(i18n('Current result'))}</div>
+                <pre class="luker-studio-attempt-pre">${escapeHtml(outputText)}</pre>
             </div>
         </div>` : ''}
-    ${outputText ? `<div class="luker_orch_runtime_label">${escapeHtml(i18n('Output'))}</div><pre class="luker_orch_runtime_pre">${escapeHtml(outputText)}</pre>` : ''}
+    ${outputText ? `<div class="luker-studio-attempt-label">${escapeHtml(i18n('Output'))}</div><pre class="luker-studio-attempt-pre">${escapeHtml(outputText)}</pre>` : ''}
 </details>`;
 }
 
 function renderOrchestrationRuntimeTraceAttemptsHtml(trace) {
     const attempts = Array.isArray(trace?.attempts) ? trace.attempts : [];
     if (attempts.length === 0) {
-        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No node attempts recorded.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No node attempts recorded.'))}</div>`;
     }
     const attemptCountBySlot = new Map();
     const lastOutputBySlot = new Map();
-    return attempts.map((attempt) => {
+    return `<div class="luker-studio-attempts">${attempts.map((attempt) => {
         const slotKey = String(attempt?.slotKey || '');
         const nextCount = Number(attemptCountBySlot.get(slotKey) || 0) + 1;
         attemptCountBySlot.set(slotKey, nextCount);
@@ -2212,13 +2216,13 @@ function renderOrchestrationRuntimeTraceAttemptsHtml(trace) {
             lastOutputBySlot.set(slotKey, String(attempt.outputText || ''));
         }
         return renderOrchestrationRuntimeAttemptHtml(attempt, previousOutputText, nextCount);
-    }).join('');
+    }).join('')}</div>`;
 }
 
 function renderOrchestrationRuntimeTraceHtml(context) {
     const trace = getLatestOrchestrationRuntimeTrace(context);
     if (!trace || typeof trace !== 'object') {
-        return `<div class="luker_orch_runtime_empty">${escapeHtml(i18n('No runtime orchestration trace available for this chat yet.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No runtime orchestration trace available for this chat yet.'))}</div>`;
     }
 
     const notices = [
@@ -2228,36 +2232,36 @@ function renderOrchestrationRuntimeTraceHtml(context) {
     ].filter(Boolean);
 
     return `
-<div class="luker_orch_runtime_popup">
-    <div class="luker_orch_runtime_notice">${notices.map(item => escapeHtml(String(item || ''))).join('<br />')}</div>
-    <div class="luker_orch_runtime_meta_grid">
-        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Status'))}</b><span>${escapeHtml(formatOrchestrationRuntimeStatusLabel(trace.status))}</span></div>
-        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Generation Type'))}</b><span>${escapeHtml(String(trace.generationType || 'normal'))}</span></div>
-        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Target Layer'))}</b><span>${escapeHtml(String(trace.targetLayer || 0))}</span></div>
-        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Node Attempts'))}</b><span>${escapeHtml(String(Array.isArray(trace.attempts) ? trace.attempts.length : 0))}</span></div>
-        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Review Reruns'))}</b><span>${escapeHtml(String(trace.reviewRerunCount || 0))}</span></div>
-        <div class="luker_orch_runtime_meta_card"><b>${escapeHtml(i18n('Updated At'))}</b><span>${escapeHtml(formatReadableTimestamp(trace.updatedAt))}</span></div>
+<div class="luker-studio luker_orch_runtime_popup">
+    <div class="luker-studio-notice">${notices.map(item => escapeHtml(String(item || ''))).join('<br />')}</div>
+    <div class="luker-studio-meta-grid">
+        <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Status'))}</b><span>${escapeHtml(formatOrchestrationRuntimeStatusLabel(trace.status))}</span></div>
+        <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Generation Type'))}</b><span>${escapeHtml(String(trace.generationType || 'normal'))}</span></div>
+        <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Target Layer'))}</b><span>${escapeHtml(String(trace.targetLayer || 0))}</span></div>
+        <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Node Attempts'))}</b><span>${escapeHtml(String(Array.isArray(trace.attempts) ? trace.attempts.length : 0))}</span></div>
+        <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Review Reruns'))}</b><span>${escapeHtml(String(trace.reviewRerunCount || 0))}</span></div>
+        <div class="luker-studio-meta-card"><b>${escapeHtml(i18n('Updated At'))}</b><span>${escapeHtml(formatReadableTimestamp(trace.updatedAt))}</span></div>
     </div>
-    <div class="luker_orch_runtime_grid">
-        <div class="luker_orch_runtime_col">
-            <div class="luker_orch_runtime_col_title">${escapeHtml(i18n('Flow Graph'))}</div>
-            <div class="luker_orch_runtime_flow">${renderOrchestrationRuntimeTraceGraphHtml(trace)}</div>
-            <div class="luker_orch_runtime_col_title">${escapeHtml(i18n('Flow Events'))}</div>
-            <div class="luker_orch_runtime_events">${renderOrchestrationRuntimeTraceEventsHtml(trace)}</div>
+    <div class="luker-studio-columns">
+        <div class="luker-studio-panel">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Flow Graph'))}</div>
+            <div class="luker-studio-flow">${renderOrchestrationRuntimeTraceGraphHtml(trace)}</div>
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Flow Events'))}</div>
+            ${renderOrchestrationRuntimeTraceEventsHtml(trace)}
         </div>
-        <div class="luker_orch_runtime_col">
-            <div class="luker_orch_runtime_col_title">${escapeHtml(i18n('Execution Timeline'))}</div>
-            <div class="luker_orch_runtime_attempts">${renderOrchestrationRuntimeTraceAttemptsHtml(trace)}</div>
+        <div class="luker-studio-panel">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Execution Timeline'))}</div>
+            ${renderOrchestrationRuntimeTraceAttemptsHtml(trace)}
         </div>
     </div>
     ${String(trace?.capsuleText || '').trim() ? `
-        <details class="luker_orch_runtime_raw">
+        <details class="luker-studio-raw">
             <summary>${escapeHtml(i18n('Latest capsule text'))}</summary>
-            <pre class="luker_orch_runtime_pre">${escapeHtml(String(trace.capsuleText || ''))}</pre>
+            <pre class="luker-studio-attempt-pre">${escapeHtml(String(trace.capsuleText || ''))}</pre>
         </details>` : ''}
-    <details class="luker_orch_runtime_raw">
+    <details class="luker-studio-raw">
         <summary>${escapeHtml(i18n('Raw runtime trace'))}</summary>
-        <pre class="luker_orch_runtime_pre">${escapeHtml(JSON.stringify(trace, null, 2))}</pre>
+        <pre class="luker-studio-attempt-pre">${escapeHtml(JSON.stringify(trace, null, 2))}</pre>
     </details>
 </div>`;
 }
@@ -5683,10 +5687,10 @@ function getOpenAIPresetNames(context) {
     return [...new Set(names.map(name => String(name || '').trim()).filter(Boolean))];
 }
 
-function renderOpenAIPresetOptions(context, selectedName = '') {
+function renderOpenAIPresetOptions(context, selectedName = '', emptyLabel = i18n('(Current preset)')) {
     const selected = String(selectedName || '').trim();
     const names = getOpenAIPresetNames(context);
-    const options = [`<option value="">${escapeHtml(i18n('(Current preset)'))}</option>`];
+    const options = [`<option value="">${escapeHtml(String(emptyLabel || i18n('(Current preset)')))}</option>`];
     for (const name of names) {
         options.push(`<option value="${escapeHtml(name)}"${name === selected ? ' selected' : ''}>${escapeHtml(name)}</option>`);
     }
@@ -6524,74 +6528,98 @@ function renderPresetOptions(presets, selectedPreset) {
 function renderWorkflowBoard(scope, editor) {
     const stages = Array.isArray(editor?.spec?.stages) ? editor.spec.stages : [];
     if (stages.length === 0) {
-        return `<div class="luker_orch_empty_hint">${escapeHtml(i18n('No stages yet. Add one stage to start orchestration.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No stages yet. Add one stage to start orchestration.'))}</div>`;
     }
 
-    return stages.map((stage, stageIndex) => {
+    const stageBlocks = stages.map((stage, stageIndex) => {
         const nodes = Array.isArray(stage?.nodes) ? stage.nodes : [];
+        const isParallel = stage.mode === 'parallel';
+        const modeClass = isParallel ? 'parallel' : 'serial';
+        const modeIcon = isParallel ? 'fa-solid fa-arrows-split-up-and-left' : 'fa-solid fa-arrow-down-long';
+        const modeLabel = isParallel ? i18n('Parallel') : i18n('Serial');
+        const nodeType = (type) => normalizeNodeType(type) === ORCH_NODE_TYPE_REVIEW ? 'review' : 'worker';
+        const nodeIcon = (type) => normalizeNodeType(type) === ORCH_NODE_TYPE_REVIEW ? 'fa-solid fa-magnifying-glass' : 'fa-solid fa-gear';
+
         const nodeCards = nodes.map((node, nodeIndex) => `
-<div class="luker_orch_node_card">
-    <div class="luker_orch_node_header">
-        <b>${escapeHtml(i18nFormat('Node ${0}', nodeIndex + 1))}</b>
-        <div class="luker_orch_btnrow">
-            <div class="menu_button menu_button_small" data-luker-action="node-move-up" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">${escapeHtml(i18n('Up'))}</div>
-            <div class="menu_button menu_button_small" data-luker-action="node-move-down" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">${escapeHtml(i18n('Down'))}</div>
-            <div class="menu_button menu_button_small" data-luker-action="node-delete" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">${escapeHtml(i18n('Delete'))}</div>
-        </div>
+<details class="luker-studio-pipeline-node">
+    <summary>
+        <span class="luker-studio-pipeline-node-summary">
+            <i class="luker-studio-pipeline-node-icon ${nodeIcon(node.type)}" aria-hidden="true"></i>
+            <span class="luker-studio-pipeline-node-name">${escapeHtml(node.id || i18nFormat('Node ${0}', nodeIndex + 1))}</span>
+            <span class="luker-studio-pipeline-node-type">${escapeHtml(nodeType(node.type))}</span>
+        </span>
+        <span class="luker-studio-card-actions">
+            <div class="menu_button menu_button_small" data-luker-action="node-move-up" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" title="${escapeHtml(i18n('Up'))}"><i class="fa-solid fa-chevron-up" aria-hidden="true"></i></div>
+            <div class="menu_button menu_button_small" data-luker-action="node-move-down" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" title="${escapeHtml(i18n('Down'))}"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></div>
+            <div class="menu_button menu_button_small" data-luker-action="node-delete" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" title="${escapeHtml(i18n('Delete'))}"><i class="fa-solid fa-trash" aria-hidden="true"></i></div>
+        </span>
+        <i class="luker-studio-pipeline-node-chevron fa-solid fa-chevron-right" aria-hidden="true"></i>
+    </summary>
+    <div class="luker-studio-pipeline-node-body">
+        <label>${escapeHtml(i18n('Node ID'))}</label>
+        <input class="text_pole" data-luker-field="node-id" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" value="${escapeHtml(node.id)}" />
+        <label>${escapeHtml(i18n('Preset'))}</label>
+        <select class="text_pole" data-luker-field="node-preset" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
+            ${renderPresetOptions(editor.presets, node.preset)}
+        </select>
+        <label>${escapeHtml(i18n('Node Type'))}</label>
+        <select class="text_pole" data-luker-field="node-type" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
+            <option value="${ORCH_NODE_TYPE_WORKER}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_WORKER ? ' selected' : ''}>${escapeHtml(i18n('Worker'))}</option>
+            <option value="${ORCH_NODE_TYPE_REVIEW}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_REVIEW ? ' selected' : ''}>${escapeHtml(i18n('Review'))}</option>
+        </select>
+        <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
+        <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result and approved review feedback are auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
     </div>
-    <label>${escapeHtml(i18n('Node ID'))}</label>
-    <input class="text_pole" data-luker-field="node-id" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" value="${escapeHtml(node.id)}" />
-    <label>${escapeHtml(i18n('Preset'))}</label>
-    <select class="text_pole" data-luker-field="node-preset" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
-        ${renderPresetOptions(editor.presets, node.preset)}
-    </select>
-    <label>${escapeHtml(i18n('Node Type'))}</label>
-    <select class="text_pole" data-luker-field="node-type" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}">
-        <option value="${ORCH_NODE_TYPE_WORKER}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_WORKER ? ' selected' : ''}>${escapeHtml(i18n('Worker'))}</option>
-        <option value="${ORCH_NODE_TYPE_REVIEW}"${normalizeNodeType(node.type) === ORCH_NODE_TYPE_REVIEW ? ' selected' : ''}>${escapeHtml(i18n('Review'))}</option>
-    </select>
-    <label>${escapeHtml(i18n('Node Prompt Template (optional)'))}</label>
-    <textarea class="text_pole textarea_compact" rows="4" data-luker-field="node-template" data-scope="${scope}" data-stage-index="${stageIndex}" data-node-index="${nodeIndex}" placeholder="${escapeHtml(i18n('Use {{recent_chat}}, {{last_user}}, {{distiller}}, {{previous_outputs}}. Previous orchestration result and approved review feedback are auto-injected.'))}">${escapeHtml(node.userPromptTemplate)}</textarea>
-</div>`).join('');
+</details>`).join('');
 
         return `
-<div class="luker_orch_stage_card">
-    <div class="luker_orch_stage_header">
-        <div>
-            <div class="luker_orch_stage_label">${escapeHtml(i18nFormat('Stage ${0}', stageIndex + 1))}</div>
+<div class="luker-studio-pipeline-stage" data-mode="${modeClass}">
+    <div class="luker-studio-pipeline-stage-head">
+        <div class="luker-studio-pipeline-stage-id">
             <input class="text_pole" data-luker-field="stage-id" data-scope="${scope}" data-stage-index="${stageIndex}" value="${escapeHtml(stage.id)}" />
         </div>
-        <div>
-            <label>${escapeHtml(i18n('Execution'))}</label>
-            <select class="text_pole" data-luker-field="stage-mode" data-scope="${scope}" data-stage-index="${stageIndex}">
-                <option value="serial"${stage.mode === 'serial' ? ' selected' : ''}>${escapeHtml(i18n('Serial'))}</option>
-                <option value="parallel"${stage.mode === 'parallel' ? ' selected' : ''}>${escapeHtml(i18n('Parallel'))}</option>
-            </select>
-        </div>
-        <div class="luker_orch_btnrow">
-            <div class="menu_button menu_button_small" data-luker-action="stage-move-up" data-scope="${scope}" data-stage-index="${stageIndex}">${escapeHtml(i18n('Up'))}</div>
-            <div class="menu_button menu_button_small" data-luker-action="stage-move-down" data-scope="${scope}" data-stage-index="${stageIndex}">${escapeHtml(i18n('Down'))}</div>
-            <div class="menu_button menu_button_small" data-luker-action="stage-delete" data-scope="${scope}" data-stage-index="${stageIndex}">${escapeHtml(i18n('Delete'))}</div>
-        </div>
+        <span class="luker-studio-pipeline-mode-pill ${modeClass}">
+            <i class="${modeIcon}" aria-hidden="true"></i>
+            ${escapeHtml(modeLabel)}
+        </span>
+        <select class="text_pole" data-luker-field="stage-mode" data-scope="${scope}" data-stage-index="${stageIndex}" style="max-width:110px">
+            <option value="serial"${stage.mode === 'serial' ? ' selected' : ''}>${escapeHtml(i18n('Serial'))}</option>
+            <option value="parallel"${stage.mode === 'parallel' ? ' selected' : ''}>${escapeHtml(i18n('Parallel'))}</option>
+        </select>
+        <span class="luker-studio-card-actions">
+            <div class="menu_button menu_button_small" data-luker-action="stage-move-up" data-scope="${scope}" data-stage-index="${stageIndex}" title="${escapeHtml(i18n('Up'))}"><i class="fa-solid fa-chevron-up" aria-hidden="true"></i></div>
+            <div class="menu_button menu_button_small" data-luker-action="stage-move-down" data-scope="${scope}" data-stage-index="${stageIndex}" title="${escapeHtml(i18n('Down'))}"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></div>
+            <div class="menu_button menu_button_small" data-luker-action="stage-delete" data-scope="${scope}" data-stage-index="${stageIndex}" title="${escapeHtml(i18n('Delete'))}"><i class="fa-solid fa-trash" aria-hidden="true"></i></div>
+        </span>
     </div>
-    <div class="luker_orch_stage_meta">${escapeHtml(stage.mode === 'parallel' ? i18n('Nodes run in parallel.') : i18n('Nodes run in serial order.'))}</div>
-    <div class="luker_orch_nodes_grid">${nodeCards}</div>
-    <div class="menu_button menu_button_small" data-luker-action="node-add" data-scope="${scope}" data-stage-index="${stageIndex}">${escapeHtml(i18n('Add Node'))}</div>
+    <div class="luker-studio-pipeline-nodes">${nodeCards || `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No nodes. Add one to define this stage.'))}</div>`}</div>
+    <div class="luker-studio-pipeline-stage-footer">
+        <div class="menu_button menu_button_small" data-luker-action="node-add" data-scope="${scope}" data-stage-index="${stageIndex}">${escapeHtml(i18n('Add Node'))}</div>
+    </div>
 </div>`;
-    }).join(`<div class="luker_orch_stage_connector">${escapeHtml(i18n('Then'))}</div>`);
+    });
+
+    const connectorHtml = `
+<div class="luker-studio-pipeline-connector">
+    <div class="luker-studio-pipeline-connector-arrow"><i class="fa-solid fa-arrow-down" aria-hidden="true"></i></div>
+</div>`;
+
+    return `<div class="luker-studio-pipeline">${stageBlocks.join(connectorHtml)}</div>`;
 }
 
 function renderPresetBoard(scope, editor) {
     const entries = Object.entries(editor?.presets || {}).sort((a, b) => a[0].localeCompare(b[0]));
     if (entries.length === 0) {
-        return `<div class="luker_orch_empty_hint">${escapeHtml(i18n('No presets yet.'))}</div>`;
+        return `<div class="luker-studio-empty-hint">${escapeHtml(i18n('No presets yet.'))}</div>`;
     }
 
     return entries.map(([presetId, preset]) => `
-<div class="luker_orch_preset_card">
-    <div class="luker_orch_preset_header">
+<div class="luker-studio-card">
+    <div class="luker-studio-card-header">
         <b>${escapeHtml(presetId)}</b>
-        <div class="menu_button menu_button_small" data-luker-action="preset-delete" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(i18n('Delete'))}</div>
+        <div class="luker-studio-card-actions">
+            <div class="menu_button menu_button_small" data-luker-action="preset-delete" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(i18n('Delete'))}</div>
+        </div>
     </div>
     <label>${escapeHtml(i18n('Agent API preset (Connection profile, empty = global orchestration API preset)'))}</label>
     <select class="text_pole" data-luker-field="preset-api-preset" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">
@@ -6599,7 +6627,7 @@ function renderPresetBoard(scope, editor) {
     </select>
     <label>${escapeHtml(i18n('Agent preset (params + prompt, empty = global orchestration preset)'))}</label>
     <select class="text_pole" data-luker-field="preset-prompt-preset" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">
-        ${renderOpenAIPresetOptions(getContext(), preset?.promptPresetName)}
+        ${renderOpenAIPresetOptions(getContext(), preset?.promptPresetName, i18n('(Global orchestration prompt preset)'))}
     </select>
     <label>${escapeHtml(i18n('System Prompt'))}</label>
     <textarea class="text_pole textarea_compact" rows="4" data-luker-field="preset-system-prompt" data-scope="${scope}" data-preset-id="${escapeHtml(presetId)}">${escapeHtml(preset.systemPrompt)}</textarea>
@@ -12301,93 +12329,6 @@ function ensureStyles() {
     margin-top: 8px;
     opacity: 0.82;
 }
-#${UI_BLOCK_ID} .luker_orch_workspace_grid {
-    display: grid;
-    grid-template-columns: 1.2fr 1fr;
-    gap: 10px;
-}
-#${UI_BLOCK_ID} .luker_orch_workspace_col {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.4));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(0,0,0,0.12);
-}
-#${UI_BLOCK_ID} .luker_orch_col_title {
-    font-weight: 600;
-    margin-bottom: 6px;
-}
-#${UI_BLOCK_ID} .luker_orch_stage_card,
-#${UI_BLOCK_ID} .luker_orch_preset_card,
-#${UI_BLOCK_ID} .luker_orch_node_card {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.4));
-    border-radius: 8px;
-    padding: 8px;
-    margin-bottom: 8px;
-    background: rgba(255,255,255,0.02);
-}
-#${UI_BLOCK_ID} .luker_orch_stage_header,
-#${UI_BLOCK_ID} .luker_orch_node_header,
-#${UI_BLOCK_ID} .luker_orch_preset_header {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    align-items: flex-start;
-    margin-bottom: 6px;
-}
-#${UI_BLOCK_ID} .luker_orch_btnrow {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-}
-#${UI_BLOCK_ID} .luker_orch_stage_label {
-    font-size: 0.9em;
-    opacity: 0.85;
-    margin-bottom: 2px;
-}
-#${UI_BLOCK_ID} .luker_orch_stage_meta,
-#${UI_BLOCK_ID} .luker_orch_stage_connector {
-    font-size: 0.85em;
-    opacity: 0.8;
-    margin: 4px 0 8px;
-}
-#${UI_BLOCK_ID} .luker_orch_nodes_grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 8px;
-}
-#${UI_BLOCK_ID} .luker_orch_preset_add_row {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-}
-#${UI_BLOCK_ID} .luker_orch_empty_hint {
-    opacity: 0.8;
-    font-size: 0.9em;
-    padding: 6px;
-    border: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.4));
-    border-radius: 8px;
-}
-#${UI_BLOCK_ID} .luker_orch_character_row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    align-items: end;
-    margin-bottom: 8px;
-}
-.luker_orch_editor_popup .luker_orch_board {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.5));
-    border-radius: 10px;
-    padding: 10px;
-    background: linear-gradient(160deg, rgba(29,46,39,0.28), rgba(21,31,43,0.2));
-}
-.luker_orch_editor_popup .menu_button,
-.luker_orch_editor_popup .menu_button_small {
-    width: auto;
-    min-width: max-content;
-    white-space: nowrap;
-    writing-mode: horizontal-tb;
-    text-orientation: mixed;
-}
 .luker_orch_iter_popup {
     display: flex;
     flex-direction: column;
@@ -12688,230 +12629,10 @@ function ensureStyles() {
     overflow: auto;
     font-size: 0.84rem;
 }
-.luker_orch_last_run_popup {
-    display: grid;
-    gap: 10px;
-}
-.luker_orch_last_run_meta {
-    display: grid;
-    gap: 4px;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(0,0,0,0.16);
-}
-.luker_orch_last_run_capsule_title {
-    font-weight: 600;
-}
-.luker_orch_last_run_capsule {
-    margin: 0;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(0,0,0,0.2);
-    max-height: 60vh;
-    overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.35;
-}
-.luker_orch_last_run_empty {
-    opacity: 0.85;
-    padding: 8px;
-}
-.luker_orch_runtime_popup {
-    display: grid;
-    gap: 10px;
-}
-.luker_orch_runtime_notice {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    padding: 8px 10px;
-    background: rgba(0,0,0,0.16);
-    line-height: 1.45;
-    opacity: 0.92;
-}
-.luker_orch_runtime_meta_grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    gap: 8px;
-}
-.luker_orch_runtime_meta_card,
-.luker_orch_runtime_col,
-.luker_orch_runtime_stage,
-.luker_orch_runtime_event,
-.luker_orch_runtime_attempt {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    background: rgba(0,0,0,0.16);
-}
-.luker_orch_runtime_meta_card {
-    display: grid;
-    gap: 4px;
-    padding: 8px;
-}
-.luker_orch_runtime_grid {
-    display: grid;
-    grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.15fr);
-    gap: 10px;
-}
-.luker_orch_runtime_col {
-    display: grid;
-    gap: 8px;
-    padding: 8px;
-    min-width: 0;
-}
-.luker_orch_runtime_col_title,
-.luker_orch_runtime_label {
-    font-weight: 600;
-}
-.luker_orch_runtime_flow {
-    display: flex;
-    align-items: stretch;
-    gap: 10px;
-    overflow-x: auto;
-    padding-bottom: 2px;
-}
-.luker_orch_runtime_stage {
-    min-width: 240px;
-    padding: 8px;
-    display: grid;
-    gap: 8px;
-}
-.luker_orch_runtime_stage_head,
-.luker_orch_runtime_node_head,
-.luker_orch_runtime_attempt_head,
-.luker_orch_runtime_event {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 8px;
-}
-.luker_orch_runtime_stage_title,
-.luker_orch_runtime_node_title,
-.luker_orch_runtime_attempt_title {
-    font-weight: 600;
-    line-height: 1.35;
-}
-.luker_orch_runtime_stage_mode,
-.luker_orch_runtime_node_meta,
-.luker_orch_runtime_attempt_meta,
-.luker_orch_runtime_event_meta,
-.luker_orch_runtime_attempt_seq {
-    opacity: 0.82;
-    font-size: 0.88rem;
-}
-.luker_orch_runtime_stage_nodes,
-.luker_orch_runtime_attempts,
-.luker_orch_runtime_events {
-    display: grid;
-    gap: 8px;
-}
-.luker_orch_runtime_node {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.28));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(255,255,255,0.03);
-    display: grid;
-    gap: 4px;
-}
-.luker_orch_runtime_node_preview {
-    font-size: 0.84rem;
-    line-height: 1.35;
-    opacity: 0.9;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-.luker_orch_runtime_stage_arrow {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 26px;
-    opacity: 0.72;
-    font-size: 1.2rem;
-}
-.luker_orch_runtime_status_badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2px 8px;
-    border-radius: 999px;
-    font-size: 0.8rem;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    background: rgba(255,255,255,0.06);
-    white-space: nowrap;
-}
-.luker_orch_runtime_status_running .luker_orch_runtime_status_badge { background: color-mix(in oklab, #2196f3 18%, transparent); }
-.luker_orch_runtime_status_completed .luker_orch_runtime_status_badge,
-.luker_orch_runtime_status_reused .luker_orch_runtime_status_badge { background: color-mix(in oklab, #4caf50 18%, transparent); }
-.luker_orch_runtime_status_failed .luker_orch_runtime_status_badge { background: color-mix(in oklab, #d9534f 18%, transparent); }
-.luker_orch_runtime_status_cancelled .luker_orch_runtime_status_badge { background: color-mix(in oklab, #ff9800 18%, transparent); }
-.luker_orch_runtime_attempt {
-    padding: 8px;
-}
-.luker_orch_runtime_attempt > summary {
-    cursor: pointer;
-    list-style: none;
-}
-.luker_orch_runtime_attempt > summary::-webkit-details-marker {
-    display: none;
-}
-.luker_orch_runtime_attempt_badges {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-.luker_orch_runtime_pre {
-    margin: 4px 0 0;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(0,0,0,0.2);
-    max-height: 280px;
-    overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.4;
-}
-.luker_orch_runtime_dual {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 8px;
-    margin-top: 6px;
-}
-.luker_orch_runtime_dual_col {
-    min-width: 0;
-}
-.luker_orch_runtime_event {
-    padding: 8px;
-}
-.luker_orch_runtime_event_seq {
-    min-width: 3em;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    opacity: 0.8;
-}
-.luker_orch_runtime_event_body {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-}
-.luker_orch_runtime_event_text {
-    line-height: 1.35;
-    word-break: break-word;
-}
+/* Runtime trace and last-run styles now use luker-studio classes from luker-studio.css */
 .luker_orch_runtime_empty {
     opacity: 0.84;
     padding: 8px;
-}
-.luker_orch_runtime_raw > summary {
-    cursor: pointer;
-    font-weight: 600;
-}
-@media (max-width: 1100px) {
-    .luker_orch_runtime_grid {
-        grid-template-columns: 1fr;
-    }
 }
 .luker_orch_kb_popup {
     display: grid;
