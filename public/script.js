@@ -433,6 +433,50 @@ function resetLukerGenerationState(api = main_api) {
     lastLukerReplyPersistedByServer = false;
 }
 
+function summarizeLukerPersistTargetForDebug(persistTarget) {
+    if (!persistTarget || typeof persistTarget !== 'object') {
+        return null;
+    }
+
+    if (persistTarget.kind === 'group') {
+        return {
+            kind: 'group',
+            id: String(persistTarget.id || ''),
+        };
+    }
+
+    if (persistTarget.kind === 'character') {
+        return {
+            kind: 'character',
+            avatar_url: String(persistTarget.avatar_url || ''),
+            file_name: String(persistTarget.file_name || ''),
+        };
+    }
+
+    return {
+        kind: String(persistTarget.kind || ''),
+    };
+}
+
+function summarizeLukerGenerationIdsForMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) {
+        return [];
+    }
+
+    return [...new Set(messages
+        .map(message => String(message?.extra?.luker_generation_id || '').trim())
+        .filter(Boolean))]
+        .slice(0, 8);
+}
+
+function logLukerPersistenceDebug(api, phase, details = {}) {
+    console.debug('[LukerPersist]', {
+        api: String(api || main_api || ''),
+        phase: String(phase || ''),
+        ...details,
+    });
+}
+
 function applyLukerGenerationMetaForApi(api = main_api, { generationId = '', persisted = undefined } = {}) {
     if (api === 'openai') {
         return;
@@ -451,10 +495,17 @@ function applyLukerGenerationMetaFromHeaders(api, response) {
     }
     const generationId = response.headers.get('x-luker-generation-id');
     const persistedHeader = response.headers.get('x-luker-server-persisted');
+    const persisted = persistedHeader === '1' ? true : persistedHeader === '0' ? false : undefined;
     applyLukerGenerationMetaForApi(api, {
         generationId,
-        persisted: persistedHeader === '1' ? true : persistedHeader === '0' ? false : undefined,
+        persisted,
     });
+    if (generationId || typeof persisted === 'boolean') {
+        logLukerPersistenceDebug(api, 'response_header_meta', {
+            generation_id: generationId || '',
+            ...(typeof persisted === 'boolean' ? { persisted } : {}),
+        });
+    }
 }
 
 function getLastLukerGenerationIdForApi(api = main_api) {
@@ -493,6 +544,11 @@ function buildLukerGenerationRequestOptions(type, api = main_api) {
 
     const generationId = uuidv4();
     applyLukerGenerationMetaForApi(api, { generationId, persisted: false });
+    logLukerPersistenceDebug(api, 'request_init', {
+        type,
+        generation_id: generationId,
+        persist_target: summarizeLukerPersistTargetForDebug(persistTarget),
+    });
     return {
         job_id: generationId,
         persist_target: persistTarget,
@@ -5766,8 +5822,19 @@ class StreamingProcessor {
             && this.messageId === (chat.length - 1)
             && !chat[this.messageId]?.is_user
             && !serverPersistedReply;
+        const localSaveStrategy = serverPersistedReply ? 'skip_local_save' : canUseIncrementalAppend ? 'append' : 'save';
+        if (shouldUseLukerServerPersistenceForType(this.type)) {
+            logLukerPersistenceDebug(main_api, 'save_decision', {
+                type: this.type,
+                strategy: localSaveStrategy,
+                generation_id: getLastLukerGenerationIdForApi(),
+                server_persisted: serverPersistedReply,
+                aborted: isAborted,
+                message_id: this.messageId,
+            });
+        }
         if (serverPersistedReply) {
-            console.debug('Skipping local save because backend already persisted generation', getLastLukerGenerationIdForApi());
+            // Backend persisted the reply after ACK timeout; avoid writing it again on the client.
         } else if (canUseIncrementalAppend) {
             const appended = await appendChatMessages([chat[this.messageId]]);
             if (!appended) {
@@ -7989,8 +8056,19 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             && chat.length > 0
             && !chat[chat.length - 1]?.is_user
             && !serverPersistedReply;
+        const localSaveStrategy = serverPersistedReply ? 'skip_local_save' : canUseIncrementalAppend ? 'append' : 'save';
+        if (shouldUseLukerServerPersistenceForType(type)) {
+            logLukerPersistenceDebug(main_api, 'save_decision', {
+                type,
+                strategy: localSaveStrategy,
+                generation_id: getLastLukerGenerationIdForApi(),
+                server_persisted: serverPersistedReply,
+                aborted: Boolean(isAborted),
+                message_id: chat.length - 1,
+            });
+        }
         if (serverPersistedReply) {
-            console.debug('Skipping local save because backend already persisted generation', getLastLukerGenerationIdForApi());
+            // Backend persisted the reply after ACK timeout; avoid writing it again on the client.
         } else if (canUseIncrementalAppend) {
             const appended = await appendChatMessages([chat[chat.length - 1]]);
             if (!appended) {
@@ -8610,7 +8688,15 @@ export async function sendStreamingRequest(type, data, options = {}) {
 
     const shouldTrackLukerGenerationState = shouldUseLukerServerPersistenceForType(type) && supportsLukerServerPersistence(main_api);
     const onLukerMeta = shouldTrackLukerGenerationState
-        ? (meta) => applyLukerGenerationMetaForApi(main_api, meta)
+        ? (meta) => {
+            applyLukerGenerationMetaForApi(main_api, meta);
+            if (meta?.generationId || typeof meta?.persisted === 'boolean') {
+                logLukerPersistenceDebug(main_api, 'stream_meta', {
+                    ...(meta?.generationId ? { generation_id: meta.generationId } : {}),
+                    ...(typeof meta?.persisted === 'boolean' ? { persisted: meta.persisted } : {}),
+                });
+            }
+        }
         : null;
     if (main_api !== 'openai') {
         if (shouldTrackLukerGenerationState) {
@@ -11377,6 +11463,7 @@ async function appendChatMessagesInternal(messages, retryCount = 0) {
 
     try {
         const target = resolveChatStateTarget();
+        const generationIds = summarizeLukerGenerationIdsForMessages(messages);
 
         if (selected_group) {
             const group = groups.find(x => x.id == selected_group);
@@ -11399,6 +11486,14 @@ async function appendChatMessagesInternal(messages, retryCount = 0) {
 
             if (response.ok) {
                 const payload = await response.json().catch(() => null);
+                console.debug('[ChatWrite]', {
+                    phase: 'append_result',
+                    target: { kind: 'group', id: String(groupChatId) },
+                    generation_ids: generationIds,
+                    appended: Number(payload?.appended || 0),
+                    skipped: Number(payload?.skipped || 0),
+                    matched_existing_generation_id: Boolean(payload?.matched_existing_generation_id),
+                });
                 if (payload?.matched_existing_generation_id && Number(payload?.appended || 0) === 0) {
                     const refreshed = await refreshChatWriteSnapshotsFromServer(target);
                     return Boolean(refreshed && lodash.isEqual(refreshed.messages, chat));
@@ -11441,6 +11536,14 @@ async function appendChatMessagesInternal(messages, retryCount = 0) {
 
         if (response.ok) {
             const payload = await response.json().catch(() => null);
+            console.debug('[ChatWrite]', {
+                phase: 'append_result',
+                target: { kind: 'character', avatar_url: String(avatar), file_name: String(fileName) },
+                generation_ids: generationIds,
+                appended: Number(payload?.appended || 0),
+                skipped: Number(payload?.skipped || 0),
+                matched_existing_generation_id: Boolean(payload?.matched_existing_generation_id),
+            });
             if (payload?.matched_existing_generation_id && Number(payload?.appended || 0) === 0) {
                 const refreshed = await refreshChatWriteSnapshotsFromServer(target);
                 return Boolean(refreshed && lodash.isEqual(refreshed.messages, chat));
