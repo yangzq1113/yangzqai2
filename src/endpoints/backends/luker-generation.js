@@ -4,6 +4,7 @@
 import path from 'node:path';
 import sanitize from 'sanitize-filename';
 
+import { CHAT_COMPLETION_SOURCES } from '../../constants.js';
 import { appendMessagesToChatFile } from '../chats.js';
 import { getConfigValue } from '../../util.js';
 
@@ -31,35 +32,122 @@ function normalizePersistAvatarDirectory(avatarUrl) {
 }
 
 function extractTextFromOpenAIMessageContent(content) {
+    return extractTextFromStructuredContent(content);
+}
+
+function normalizeGenerationSource(source) {
+    return String(source || '').trim().toLowerCase();
+}
+
+function isStructuredThinkingPart(part) {
+    if (!part || typeof part !== 'object') {
+        return false;
+    }
+
+    return Boolean(part.thought)
+        || part.type === 'thinking'
+        || Array.isArray(part.thinking)
+        || typeof part.thinking === 'string';
+}
+
+function extractTextFromStructuredContent(content, options = {}) {
+    const skipThoughts = options.skipThoughts !== false;
+
     if (typeof content === 'string') {
         return content;
     }
 
     if (Array.isArray(content)) {
-        return content.map(part => {
-            if (typeof part === 'string') {
-                return part;
-            }
-            if (typeof part?.text === 'string') {
-                return part.text;
-            }
-            if (typeof part?.content === 'string') {
-                return part.content;
-            }
-            return '';
-        }).join('');
+        return content.map(part => extractTextFromStructuredContent(part, { skipThoughts })).join('');
     }
 
-    if (content && typeof content === 'object') {
-        if (typeof content.text === 'string') {
-            return content.text;
-        }
-        if (typeof content.content === 'string') {
-            return content.content;
-        }
+    if (!content || typeof content !== 'object') {
+        return '';
+    }
+
+    if (skipThoughts && isStructuredThinkingPart(content)) {
+        return '';
+    }
+
+    if (typeof content.text === 'string') {
+        return content.text;
+    }
+
+    if (typeof content.content === 'string') {
+        return content.content;
+    }
+
+    if (Array.isArray(content.content)) {
+        return extractTextFromStructuredContent(content.content, { skipThoughts });
+    }
+
+    if (content.content && typeof content.content === 'object') {
+        return extractTextFromStructuredContent(content.content, { skipThoughts });
+    }
+
+    if (Array.isArray(content.text)) {
+        return extractTextFromStructuredContent(content.text, { skipThoughts });
+    }
+
+    if (Array.isArray(content.message?.content)) {
+        return extractTextFromStructuredContent(content.message.content, { skipThoughts });
     }
 
     return '';
+}
+
+function extractTextFromGeminiParts(parts, options = {}) {
+    if (!Array.isArray(parts)) {
+        return '';
+    }
+
+    const joiner = typeof options.joiner === 'string' ? options.joiner : '';
+    const nonThoughtText = parts
+        .filter(part => !part?.thought)
+        .map(part => typeof part?.text === 'string' ? part.text : '')
+        .filter(Boolean);
+
+    return nonThoughtText.join(joiner);
+}
+
+function extractTextFromStreamingPayload(payload, source) {
+    const normalizedSource = normalizeGenerationSource(source);
+    const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+    const defaultContent = choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+
+    switch (normalizedSource) {
+        case CHAT_COMPLETION_SOURCES.CLAUDE:
+            return typeof payload?.delta?.text === 'string' ? payload.delta.text : '';
+        case CHAT_COMPLETION_SOURCES.MAKERSUITE:
+        case CHAT_COMPLETION_SOURCES.VERTEXAI:
+            return extractTextFromGeminiParts(payload?.candidates?.[0]?.content?.parts);
+        case CHAT_COMPLETION_SOURCES.COHERE:
+            return payload?.delta?.message?.content?.text ?? payload?.delta?.message?.tool_plan ?? '';
+        case CHAT_COMPLETION_SOURCES.DEEPSEEK:
+        case CHAT_COMPLETION_SOURCES.XAI:
+            return choice?.delta?.content ?? '';
+        case CHAT_COMPLETION_SOURCES.OPENROUTER:
+            return extractTextFromOpenAIMessageContent(defaultContent);
+        case CHAT_COMPLETION_SOURCES.CUSTOM:
+        case CHAT_COMPLETION_SOURCES.POLLINATIONS:
+        case CHAT_COMPLETION_SOURCES.AIMLAPI:
+        case CHAT_COMPLETION_SOURCES.MOONSHOT:
+        case CHAT_COMPLETION_SOURCES.COMETAPI:
+        case CHAT_COMPLETION_SOURCES.ELECTRONHUB:
+        case CHAT_COMPLETION_SOURCES.NANOGPT:
+        case CHAT_COMPLETION_SOURCES.ZAI:
+        case CHAT_COMPLETION_SOURCES.SILICONFLOW:
+        case CHAT_COMPLETION_SOURCES.CHUTES:
+        case CHAT_COMPLETION_SOURCES.AZURE_OPENAI:
+        case CHAT_COMPLETION_SOURCES.AI21:
+            return extractTextFromOpenAIMessageContent(defaultContent);
+        case CHAT_COMPLETION_SOURCES.MISTRALAI: {
+            const content = choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+            return extractTextFromOpenAIMessageContent(content);
+        }
+        default:
+            return extractTextFromOpenAIMessageContent(defaultContent);
+    }
 }
 
 export function extractTextFromFinalPayload(payload) {
@@ -77,41 +165,48 @@ export function extractTextFromFinalPayload(payload) {
 
     const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
     if (choice) {
-        if (typeof choice?.message?.content === 'string') {
-            return choice.message.content;
+        const choiceContent = choice?.message?.content ?? choice?.delta?.content ?? choice?.text ?? '';
+        const extractedChoiceText = extractTextFromOpenAIMessageContent(choiceContent);
+        if (extractedChoiceText) {
+            return extractedChoiceText;
         }
-        if (Array.isArray(choice?.message?.content)) {
-            return extractTextFromOpenAIMessageContent(choice.message.content);
-        }
-        if (typeof choice?.text === 'string') {
-            return choice.text;
-        }
-        if (typeof choice?.delta?.content === 'string') {
-            return choice.delta.content;
-        }
-        if (Array.isArray(choice?.delta?.content)) {
-            return extractTextFromOpenAIMessageContent(choice.delta.content);
+        if (typeof choice?.message?.tool_plan === 'string') {
+            return choice.message.tool_plan;
         }
     }
 
     const result = Array.isArray(payload?.results) ? payload.results[0] : null;
     if (result) {
-        if (typeof result?.text === 'string') {
-            return result.text;
+        const resultContent = result?.message?.content ?? result?.content ?? result?.text ?? '';
+        const extractedResultText = extractTextFromOpenAIMessageContent(resultContent);
+        if (extractedResultText) {
+            return extractedResultText;
         }
-        if (typeof result?.content === 'string') {
-            return result.content;
-        }
-        if (typeof result?.message?.content === 'string') {
-            return result.message.content;
+        if (typeof result?.message?.tool_plan === 'string') {
+            return result.message.tool_plan;
         }
     }
 
+    const responseContentText = extractTextFromGeminiParts(payload?.responseContent?.parts, { joiner: '\n\n' });
+    if (responseContentText) {
+        return responseContentText;
+    }
+
+    const payloadContentText = extractTextFromOpenAIMessageContent(payload?.content);
+    if (payloadContentText) {
+        return payloadContentText;
+    }
+
+    const payloadMessageContentText = extractTextFromOpenAIMessageContent(payload?.message?.content);
+    if (payloadMessageContentText) {
+        return payloadMessageContentText;
+    }
+
+    if (typeof payload?.message?.tool_plan === 'string') {
+        return payload.message.tool_plan;
+    }
     if (typeof payload.response === 'string') {
         return payload.response;
-    }
-    if (typeof payload.content === 'string') {
-        return payload.content;
     }
     if (typeof payload.token === 'string') {
         return payload.token;
@@ -126,7 +221,7 @@ export function extractTextFromFinalPayload(payload) {
     return '';
 }
 
-export function extractTextFromStreamingFrameData(rawData) {
+export function extractTextFromStreamingFrameData(rawData, source = '') {
     if (!rawData || rawData === '[DONE]') {
         return '';
     }
@@ -136,7 +231,7 @@ export function extractTextFromStreamingFrameData(rawData) {
         if (parsed?.luker && typeof parsed.luker === 'object') {
             return '';
         }
-        return extractTextFromFinalPayload(parsed);
+        return extractTextFromStreamingPayload(parsed, source) || extractTextFromFinalPayload(parsed);
     } catch {
         return '';
     }
@@ -287,7 +382,7 @@ export function appendGenerationEvent(job, rawData) {
     }
     job.updatedAt = Date.now();
 
-    const deltaText = extractTextFromStreamingFrameData(rawData);
+    const deltaText = extractTextFromStreamingFrameData(rawData, job?.requestMeta?.api);
     if (deltaText) {
         job.text += deltaText;
     }

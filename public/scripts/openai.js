@@ -260,20 +260,7 @@ export const chat_completion_sources = {
     SILICONFLOW: 'siliconflow',
 };
 
-const lukerServerPersistenceUnsupportedSources = new Set([
-    chat_completion_sources.CLAUDE,
-    chat_completion_sources.AI21,
-    chat_completion_sources.MAKERSUITE,
-    chat_completion_sources.VERTEXAI,
-    chat_completion_sources.MISTRALAI,
-    chat_completion_sources.COHERE,
-    chat_completion_sources.DEEPSEEK,
-    chat_completion_sources.AIMLAPI,
-    chat_completion_sources.XAI,
-    chat_completion_sources.CHUTES,
-    chat_completion_sources.ELECTRONHUB,
-    chat_completion_sources.AZURE_OPENAI,
-]);
+const lukerServerPersistenceUnsupportedSources = new Set();
 
 function isLukerServerPersistenceSupported(source) {
     return !lukerServerPersistenceUnsupportedSources.has(String(source || '').trim().toLowerCase());
