@@ -48,43 +48,43 @@ export function createCompletionPresetAssistantDialogUi(deps) {
             : '';
 
         return `
-<div class="cpa_dialog${isBusy ? ' is_busy' : ''}">
-    <div class="cpa_dialog_meta">
-        ${metaItems.map(item => `<div class="cpa_dialog_meta_item">${escapeHtml(item)}</div>`).join('')}
+<div class="luker-studio cpa_dialog${isBusy ? ' is_busy' : ''}">
+    <div class="luker-studio-meta">
+        ${metaItems.map(item => `<div class="luker-studio-meta-item">${escapeHtml(item)}</div>`).join('')}
     </div>
-    <div class="cpa_dialog_toolbar">
-        <div class="cpa_dialog_toolbar_field">
+    <div class="luker-studio-toolbar">
+        <div class="luker-studio-toolbar-field">
             <label for="cpa_reference_preset">${escapeHtml(i18n('Reference preset'))}</label>
             <select id="cpa_reference_preset" class="text_pole" title="${escapeHtml(i18n('Select reference preset'))}">
                 ${renderSelectOptions(referenceNames, dialogState.session?.referencePresetName || '', true)}
             </select>
         </div>
-        <div class="cpa_dialog_toolbar_actions">
+        <div class="luker-studio-toolbar-actions">
             <div class="menu_button menu_button_small" data-cpa-action="show-reference-diff">${escapeHtml(i18n('Compare with reference'))}</div>
             <div class="menu_button menu_button_small" data-cpa-action="clear-history">${escapeHtml(i18n('Clear history'))}</div>
         </div>
     </div>
-    <div class="cpa_dialog_columns">
-        <div class="cpa_conversation_panel">
-            <div class="cpa_panel_title">${escapeHtml(i18n('Conversation'))}</div>
-            <details class="cpa_history" open>
+    <div class="luker-studio-columns">
+        <div class="luker-studio-panel">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Conversation'))}</div>
+            <details class="luker-studio-history" open>
                 <summary>${escapeHtml(i18n('Conversation history'))}</summary>
                 ${renderPresetConversationHistoryItems(dialogState.sessionStore, dialogState.currentSessionId)}
             </details>
-            <div class="cpa_conversation_list">${renderConversationHtml(dialogState.session, dialogState.journal)}</div>
+            <div class="luker-studio-chat">${renderConversationHtml(dialogState.session, dialogState.journal)}</div>
         </div>
-        <div class="cpa_draft_panel">
-            <div class="cpa_panel_title">${escapeHtml(i18n('Draft diff'))}</div>
+        <div class="luker-studio-panel">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Draft diff'))}</div>
             ${renderDraftHtml(dialogState)}
         </div>
     </div>
-    <div class="cpa_dialog_footer">
+    <div class="luker-studio-composer">
         <textarea id="cpa_dialog_input" class="text_pole" placeholder="${escapeHtml(i18n('Type what to change in this preset...'))}">${escapeHtml(dialogState.inputText || '')}</textarea>
-        <div class="cpa_dialog_footer_actions">
-            <div class="cpa_dialog_footer_meta">
-                <div class="cpa_hint cpa_status_line">${statusHtml}</div>
+        <div class="luker-studio-composer-actions">
+            <div class="luker-studio-composer-meta">
+                <div class="luker-studio-status">${statusHtml}</div>
             </div>
-            <div class="cpa_dialog_footer_buttons">
+            <div class="luker-studio-composer-buttons">
                 <div class="menu_button" data-cpa-action="send-or-stop">${escapeHtml(isBusy ? i18n('Stop') : i18n('Send'))}</div>
                 <div class="menu_button" data-cpa-action="close">${escapeHtml(i18n('Close'))}</div>
             </div>

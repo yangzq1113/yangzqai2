@@ -56,24 +56,26 @@ export function createCharacterEditorUi(deps) {
         const characterName = String(record?.character?.name || '').trim() || '(unknown)';
         const primaryBook = String(getPrimaryLorebookName(record?.character || {}) || i18n('(empty)'));
         return `
-<div class="cea_sync_popup">
-    <div class="cea_sync_intro">${escapeHtml(i18n('Character Editor'))}</div>
-    <div class="cea_sync_meta">
-        <div class="cea_sync_meta_item"><b>Character:</b> ${escapeHtml(characterName)}</div>
-        <div class="cea_sync_meta_item"><b>${escapeHtml(i18n('Target lorebook'))}:</b> ${escapeHtml(primaryBook)}</div>
+<div class="luker-studio cea_sync_popup">
+    <div class="luker-studio-header">
+        <div class="luker-studio-title">${escapeHtml(i18n('Character Editor'))}</div>
     </div>
-    <div class="cea_sync_chat" data-cea-editor-chat></div>
-    <div class="cea_sync_composer">
+    <div class="luker-studio-meta">
+        <div class="luker-studio-meta-item"><b>Character:</b> ${escapeHtml(characterName)}</div>
+        <div class="luker-studio-meta-item"><b>${escapeHtml(i18n('Target lorebook'))}:</b> ${escapeHtml(primaryBook)}</div>
+    </div>
+    <div class="luker-studio-chat" data-cea-editor-chat></div>
+    <div class="luker-studio-composer">
         <textarea class="text_pole textarea_compact" rows="4" data-cea-editor-input placeholder="${escapeHtml(i18n('Type your requirement to continue this conversation...'))}"></textarea>
-        <div class="cea_sync_composer_actions">
+        <div class="luker-studio-composer-buttons">
             <div class="menu_button menu_button_small" data-cea-editor-send>${escapeHtml(i18n('Send'))}</div>
             <div class="menu_button menu_button_small disabled" data-cea-editor-stop>${escapeHtml(i18n('Stop'))}</div>
         </div>
     </div>
     <div data-cea-editor-pending></div>
-    <details class="cea_sync_history">
+    <details class="luker-studio-history">
         <summary>${escapeHtml(i18n('Conversation history'))}</summary>
-        <div class="cea_sync_history_list" data-cea-editor-history></div>
+        <div class="luker-studio-history-list" data-cea-editor-history></div>
     </details>
 </div>`;
     }
@@ -115,11 +117,8 @@ export function createCharacterEditorUi(deps) {
     align-items: center;
     justify-content: center;
 }
-.popup .cea_sync_popup { display:flex; flex-direction:column; gap:10px; text-align:start; }
-.popup .cea_sync_intro { opacity:0.9; }
-.popup .cea_sync_meta { display:flex; flex-wrap:wrap; gap:8px; }
-.popup .cea_sync_meta_item { padding:6px 8px; border-radius:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
-.popup .cea_sync_chat { display:flex; flex-direction:column; gap:8px; }
+/* CEA-specific: chat message scrollable container */
+.popup .cea_sync_popup .luker-studio-chat { max-height:none; }
 .popup .cea_sync_chat_msg { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); border-radius:12px; padding:10px 12px; max-height:40vh; overflow-y:auto; overflow-x:hidden; text-align:left; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
 .popup .cea_sync_chat_msg_assistant { background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
 .popup .cea_sync_chat_msg_user { background:color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); margin-left:12%; }
@@ -134,18 +133,6 @@ export function createCharacterEditorUi(deps) {
 .popup .cea_sync_chat_msg :is(pre, code) { white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
 .popup .cea_sync_chat_msg table { display:block; width:100%; overflow:auto; border-collapse:collapse; }
 .popup .cea_sync_chat_msg th, .popup .cea_sync_chat_msg td { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); padding:4px 6px; vertical-align:top; }
-.popup .cea_sync_popup .menu_button,
-.popup .cea_sync_popup .menu_button_small {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: auto;
-    min-width: max-content;
-    white-space: nowrap;
-    line-height: 1.2;
-    writing-mode: horizontal-tb;
-    text-orientation: mixed;
-}
 .popup .cea_sync_chat_text,
 .popup .cea_sync_chat_text :is(p, ul, ol, li, pre, table, th, td, h1, h2, h3, h4) { text-align:left; }
 .popup .cea_sync_turn_diff { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
@@ -170,7 +157,6 @@ export function createCharacterEditorUi(deps) {
 .popup .cea_line_diff_expand_btn { display:inline-flex; align-items:center; justify-content:center; min-width:2.2em; width:2.2em; padding:0; line-height:1; }
 .popup .cea_line_diff_expand_btn i { pointer-events:none; }
 .popup .cea_sync_popup,
-.popup .cea_sync_chat,
 .popup .cea_sync_chat_msg,
 .popup .cea_sync_turn_diff,
 .popup .cea_sync_turn_diff_item,
@@ -215,31 +201,9 @@ export function createCharacterEditorUi(deps) {
 .popup .cea_sync_turn_diff_raw > summary { cursor:pointer; opacity:0.8; }
 .popup .cea_sync_turn_diff_raw pre { margin-top:6px; max-height:180px; overflow:auto; }
 .popup .cea_sync_turn_diff_empty { opacity:0.8; margin-top:6px; }
-.popup .cea_sync_composer { display:flex; flex-direction:column; gap:8px; }
-.popup .cea_sync_composer [data-cea-sync-send] { align-self:flex-end; }
-.popup .cea_sync_composer_actions { display:flex; justify-content:flex-end; gap:6px; flex-wrap:wrap; }
-.popup .cea_sync_composer [data-cea-sync-send],
-.popup .cea_sync_composer [data-cea-editor-send],
-.popup .cea_sync_composer [data-cea-editor-stop] {
-    width: fit-content;
-    min-width: 4.2em;
-    white-space: nowrap;
-}
 .popup .cea_editor_pending { margin-top:8px; border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:8px; background:color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); }
 .popup .cea_editor_pending_hint { opacity:0.92; font-weight:600; }
 .popup .cea_editor_pending_actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
-.popup .cea_sync_history { margin-top:8px; border-top:1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent); padding-top:8px; }
-.popup .cea_sync_history > summary { cursor:pointer; font-weight:600; opacity:0.9; }
-.popup .cea_sync_history_toolbar { display:flex; justify-content:flex-end; margin:8px 0; }
-.popup .cea_sync_history_list { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
-.popup .cea_sync_history_item { border:1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); border-radius:10px; padding:8px; display:flex; justify-content:space-between; gap:8px; align-items:flex-start; }
-.popup .cea_sync_history_item.active { border-color: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 40%, transparent); background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 10%, transparent); }
-.popup .cea_sync_history_item_main { min-width:0; flex:1; }
-.popup .cea_sync_history_item_actions { display:flex; gap:6px; flex-wrap:wrap; }
-.popup .cea_sync_history_item_summary { font-weight:600; line-height:1.35; word-break:break-word; }
-.popup .cea_sync_history_item_current { display:inline-flex; align-items:center; margin-left:6px; padding:1px 6px; border-radius:999px; font-size:0.8em; background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 16%, transparent); }
-.popup .cea_sync_history_item_time { opacity:0.75; font-size:0.9em; margin-top:4px; }
-.popup .cea_sync_history_empty { opacity:0.8; }
 @media (max-width: 900px) {
     #${UI_BLOCK_ID} .cea_diff_blocks { grid-template-columns:1fr; }
     .popup .cea_line_diff_ln { width:3.2em; }

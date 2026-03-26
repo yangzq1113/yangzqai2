@@ -8271,10 +8271,10 @@ function renderAiIterationMessageBodyHtml(content, { auto = false } = {}) {
     const preview = text.slice(0, 280).trim();
 
     return `
-<details class="luker_orch_iter_msg_folded">
+<details class="luker-studio-msg-folded">
     <summary>${escapeHtml(summary)}</summary>
-    ${preview ? `<div class="luker_orch_iter_msg_preview"><b>${escapeHtml(i18n('Preview'))}:</b> ${escapeHtml(preview)}${text.length > preview.length ? ' ...' : ''}</div>` : ''}
-    <div class="luker_orch_iter_msg_full">${escapeHtml(text)}</div>
+    ${preview ? `<div class="luker-studio-msg-preview"><b>${escapeHtml(i18n('Preview'))}:</b> ${escapeHtml(preview)}${text.length > preview.length ? ' ...' : ''}</div>` : ''}
+    <div class="luker-studio-msg-full">${escapeHtml(text)}</div>
 </details>`;
 }
 
@@ -8338,14 +8338,14 @@ function renderAiIterationMessageDiffHtml(session, item, messageIndex) {
         : (toolState === 'rejected' ? i18n('Rejected changes diff') : i18n('Pending changes diff'));
     const rollbackAction = canRollbackAiIterationAssistantMessage({ messages: [item] }, 0)
         ? `
-    <div class="luker_orch_iter_actions luker_orch_iter_msg_diff_actions">
+    <div class="luker-studio-msg-actions">
         <div class="menu_button menu_button_small" data-luker-orch-action="rollback-message" data-luker-orch-message-index="${messageIndex}">${escapeHtml(i18n('Rollback round'))}</div>
     </div>`
         : '';
     return `
-<details class="luker_orch_iter_pending_diff_inline"${toolState === 'pending' ? ' open' : ''}>
+<details class="luker-studio-pending-diff"${toolState === 'pending' ? ' open' : ''}>
     <summary>${escapeHtml(summaryLabel)}</summary>
-    <div class="luker_orch_iter_diff_popup">
+    <div class="luker-studio-diff">
         ${profileDeltaHtml}
     </div>
     ${rollbackAction}
@@ -8355,9 +8355,9 @@ function renderAiIterationMessageDiffHtml(session, item, messageIndex) {
 function renderAiIterationSessionHistory(historyState, activeSessionId = '', modeFilter = '') {
     const sessions = getAiIterationHistorySessionsByMode(historyState, modeFilter).slice().reverse();
     if (sessions.length === 0) {
-        return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No saved sessions yet.'))}</div>`;
+        return `<div class="luker-studio-empty">${escapeHtml(i18n('No saved sessions yet.'))}</div>`;
     }
-    return `<div class="luker_orch_iter_history_list">${sessions.map((session) => {
+    return `<div class="luker-studio-history-list">${sessions.map((session) => {
         const sessionId = String(session?.id || '').trim();
         const isActive = sessionId && sessionId === String(activeSessionId || '').trim();
         const modeLabel = String(session?.mode || '').trim() === ORCH_EXECUTION_MODE_AGENDA ? 'Agenda' : 'Spec';
@@ -8368,12 +8368,12 @@ function renderAiIterationSessionHistory(historyState, activeSessionId = '', mod
             new Date(Number(session?.updatedAt || session?.createdAt || Date.now())).toLocaleString(),
         ].join(' · ');
         return `
-<div class="luker_orch_iter_history_item${isActive ? ' active' : ''}">
-    <div class="luker_orch_iter_history_main">
-        <div class="luker_orch_iter_history_summary">${escapeHtml(summary || '(session)')}</div>
-        <div class="luker_orch_iter_history_meta">${escapeHtml(meta)}</div>
+<div class="luker-studio-history-item${isActive ? ' active' : ''}">
+    <div class="luker-studio-history-item-main">
+        <div class="luker-studio-history-item-summary">${escapeHtml(summary || '(session)')}</div>
+        <div class="luker-studio-history-item-time">${escapeHtml(meta)}</div>
     </div>
-    <div class="luker_orch_iter_history_actions">
+    <div class="luker-studio-history-item-actions">
         ${isActive ? `<div class="menu_button menu_button_small disabled">${escapeHtml(i18n('Current session'))}</div>` : `<div class="menu_button menu_button_small" data-luker-orch-action="load-session" data-luker-orch-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Load session'))}</div>`}
         <div class="menu_button menu_button_small" data-luker-orch-action="delete-session" data-luker-orch-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Delete session'))}</div>
     </div>
@@ -8384,13 +8384,13 @@ function renderAiIterationSessionHistory(historyState, activeSessionId = '', mod
 function renderAiIterationConversation(session, { loading = false, loadingText = '' } = {}) {
     const items = Array.isArray(session?.messages) ? session.messages : [];
     if (items.length === 0 && !loading) {
-        return `<div class="luker_orch_iter_empty">${escapeHtml(i18n('No messages yet. Start by telling AI what you want to optimize.'))}</div>`;
+        return `<div class="luker-studio-empty">${escapeHtml(i18n('No messages yet. Start by telling AI what you want to optimize.'))}</div>`;
     }
     const html = items.map((item, index) => {
         const role = String(item?.role || 'assistant').toLowerCase();
         const auto = Boolean(item?.auto);
         const label = auto ? 'AUTO' : (role === 'user' ? 'You' : 'AI');
-        const bubbleClass = role === 'user' ? 'user' : 'assistant';
+        const dataRole = role === 'user' ? 'user' : 'assistant';
         const bodyHtml = renderAiIterationMessageBodyHtml(item?.content || '', { auto });
         const toolSummary = String(item?.toolSummary || '').trim();
         const actionButtons = [];
@@ -8398,17 +8398,17 @@ function renderAiIterationConversation(session, { loading = false, loadingText =
             actionButtons.push(`<div class="menu_button menu_button_small" data-luker-orch-action="refresh-message" data-luker-orch-message-index="${index}">${escapeHtml(i18n('Regenerate'))}</div>`);
         }
         const actionsHtml = actionButtons.length > 0
-            ? `<div class="luker_orch_iter_msg_actions">${actionButtons.join('')}</div>`
+            ? `<div class="luker-studio-msg-actions">${actionButtons.join('')}</div>`
             : '';
         const diffHtml = role === 'assistant'
             ? renderAiIterationMessageDiffHtml(session, item, index)
             : '';
         return `
-<div class="luker_orch_iter_msg ${bubbleClass}">
-    <div class="luker_orch_iter_msg_head">${escapeHtml(label)}</div>
-    <div class="luker_orch_iter_msg_body">${bodyHtml}</div>
+<div class="luker-studio-msg" data-role="${dataRole}">
+    <div class="luker-studio-msg-head">${escapeHtml(label)}</div>
+    <div class="luker-studio-msg-body">${bodyHtml}</div>
     ${diffHtml}
-    ${toolSummary ? `<div class="luker_orch_iter_msg_meta">${escapeHtml(toolSummary)}</div>` : ''}
+    ${toolSummary ? `<div class="luker-studio-msg-meta">${escapeHtml(toolSummary)}</div>` : ''}
     ${actionsHtml}
 </div>`;
     }).join('');
@@ -8417,8 +8417,8 @@ function renderAiIterationConversation(session, { loading = false, loadingText =
     }
     const label = String(loadingText || i18n('AI iteration is running...'));
     return `${html}
-<div class="luker_orch_iter_msg assistant loading">
-    <div class="luker_orch_iter_msg_body"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> ${escapeHtml(label)}</div>
+<div class="luker-studio-msg loading" data-role="assistant">
+    <div class="luker-studio-msg-body"><i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i> ${escapeHtml(label)}</div>
 </div>`;
 }
 
@@ -9458,21 +9458,21 @@ function renderAiIterationPendingApproval(session, popupId) {
     const summaryLines = summarizeIterationToolCalls(pending.toolCalls || []);
     const assistantText = stripIterationThoughtForDisplay(pending.assistantText || '');
     return `
-<div class="luker_orch_iter_pending_block">
-    <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Pending approval'))}</div>
-    <div class="luker_orch_iter_pending_hint">${escapeHtml(i18n('AI suggested changes are waiting for approval.'))}</div>
-    ${assistantText ? `<div class="luker_orch_iter_pending_text">${escapeHtml(assistantText)}</div>` : ''}
-    <div class="luker_orch_iter_pending_ops">
-        ${summaryLines.length > 0 ? summaryLines.map(item => `<div class="luker_orch_iter_pending_op">${escapeHtml(item)}</div>`).join('') : `<div class="luker_orch_iter_pending_op">${escapeHtml(i18n('No editable operations were produced.'))}</div>`}
+<div class="luker-studio-pending">
+    <div class="luker-studio-panel-title">${escapeHtml(i18n('Pending approval'))}</div>
+    <div class="luker-studio-pending-hint">${escapeHtml(i18n('AI suggested changes are waiting for approval.'))}</div>
+    ${assistantText ? `<div class="luker-studio-pending-text">${escapeHtml(assistantText)}</div>` : ''}
+    <div class="luker-studio-pending-ops">
+        ${summaryLines.length > 0 ? summaryLines.map(item => `<div class="luker-studio-pending-op">${escapeHtml(item)}</div>`).join('') : `<div class="luker-studio-pending-op">${escapeHtml(i18n('No editable operations were produced.'))}</div>`}
     </div>
     ${pendingProfileDeltaHtml ? `
-    <details class="luker_orch_iter_pending_diff_inline" open>
+    <details class="luker-studio-pending-diff" open>
         <summary>${escapeHtml(i18n('Pending changes diff'))}</summary>
-        <div class="luker_orch_iter_diff_popup">
+        <div class="luker-studio-diff">
             ${pendingProfileDeltaHtml}
         </div>
     </details>` : ''}
-    <div class="luker_orch_iter_actions">
+    <div class="luker-studio-pending-actions">
         <div id="${popupId}_approve" class="menu_button">${escapeHtml(i18n('Approve changes'))}</div>
         <div id="${popupId}_reject" class="menu_button">${escapeHtml(i18n('Reject changes'))}</div>
     </div>
@@ -12393,146 +12393,19 @@ function ensureStyles() {
     flex-direction: column;
     gap: 10px;
 }
-.luker_orch_iter_head {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.luker_orch_iter_title {
-    font-size: 1.05rem;
-    font-weight: 600;
-}
-.luker_orch_iter_sub {
-    opacity: 0.82;
-    font-size: 0.9rem;
-}
-.luker_orch_iter_status {
-    min-height: 1.2em;
-    opacity: 0.82;
-    font-size: 0.9rem;
-}
-.luker_orch_iter_grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-}
-.luker_orch_iter_col {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.4));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(0,0,0,0.16);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-height: 420px;
-}
-.luker_orch_iter_col_title {
-    font-weight: 600;
-}
-.luker_orch_iter_conversation,
 .luker_orch_iter_profile {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
     border-radius: 8px;
     padding: 8px;
-    background: rgba(0,0,0,0.18);
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent);
     overflow: auto;
-}
-.luker_orch_iter_conversation,
-.luker_orch_iter_msg,
-.luker_orch_iter_msg_head,
-.luker_orch_iter_msg_body,
-.luker_orch_iter_pending_text { text-align: left; }
-.luker_orch_iter_conversation {
-    min-height: 260px;
-    max-height: 420px;
-}
-.luker_orch_iter_profile {
     min-height: 350px;
     max-height: 460px;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
 }
-.luker_orch_iter_actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
-.luker_orch_iter_pending_block {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    padding: 8px;
-    background: rgba(255,255,255,0.03);
-    display: grid;
-    gap: 6px;
-}
-.luker_orch_iter_pending_hint {
-    opacity: 0.86;
-    font-size: 0.88rem;
-}
-.luker_orch_iter_pending_text {
-    white-space: pre-wrap;
-    word-break: break-word;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.3));
-    border-radius: 6px;
-    padding: 6px 8px;
-    background: rgba(0,0,0,0.18);
-}
-.luker_orch_iter_pending_ops {
-    display: grid;
-    gap: 4px;
-}
-.luker_orch_iter_pending_op {
-    font-size: 0.9rem;
-    opacity: 0.92;
-}
-.luker_orch_iter_pending_diff_inline {
-    margin-top: 2px;
-    border-top: 1px dashed var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    padding-top: 8px;
-}
-.luker_orch_iter_pending_diff_inline > summary {
-    cursor: pointer;
-    font-weight: 600;
-    opacity: 0.9;
-    margin-bottom: 6px;
-}
-.luker_orch_iter_msg_diff_actions {
-    margin-top: 8px;
-}
-.luker_orch_iter_history {
-    display: grid;
-    gap: 8px;
-}
-.luker_orch_iter_history_list {
-    display: grid;
-    gap: 8px;
-}
-.luker_orch_iter_history_item {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    background: rgba(0,0,0,0.12);
-    padding: 8px;
-    display: grid;
-    gap: 8px;
-}
-.luker_orch_iter_history_item.active {
-    background: rgba(255,255,255,0.04);
-}
-.luker_orch_iter_history_main {
-    min-width: 0;
-}
-.luker_orch_iter_history_summary {
-    font-weight: 600;
-    line-height: 1.35;
-    word-break: break-word;
-}
-.luker_orch_iter_history_meta {
-    margin-top: 4px;
-    opacity: 0.78;
-    font-size: 0.88rem;
-}
-.luker_orch_iter_history_actions {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
+.luker_orch_iter_empty {
+    opacity: 0.8;
 }
 .luker_orch_iter_diff_popup {
     display: grid;
@@ -13127,70 +13000,6 @@ function ensureStyles() {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-}
-.luker_orch_iter_msg {
-    border: 1px solid var(--SmartThemeBorderColor, rgba(130,130,130,0.35));
-    border-radius: 8px;
-    padding: 6px 8px;
-    margin-bottom: 8px;
-}
-.luker_orch_iter_msg.user {
-    background: rgba(43, 95, 190, 0.15);
-}
-.luker_orch_iter_msg.assistant {
-    background: rgba(38, 135, 93, 0.15);
-}
-.luker_orch_iter_msg_head {
-    font-weight: 600;
-    opacity: 0.9;
-    margin-bottom: 4px;
-}
-.luker_orch_iter_msg_body {
-    white-space: pre-wrap;
-    word-break: break-word;
-    line-height: 1.4;
-}
-.luker_orch_iter_msg_meta {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid color-mix(in oklab, var(--SmartThemeBorderColor, rgba(130,130,130,0.35)) 72%, transparent);
-    white-space: pre-wrap;
-    word-break: break-word;
-    opacity: 0.9;
-}
-.luker_orch_iter_msg_actions {
-    margin-top: 8px;
-    display: flex;
-    justify-content: flex-end;
-}
-.luker_orch_iter_msg_folded {
-    margin: 0;
-}
-.luker_orch_iter_msg_folded > summary {
-    cursor: pointer;
-    font-weight: 600;
-    opacity: 0.9;
-}
-.luker_orch_iter_msg_preview {
-    margin-top: 6px;
-    opacity: 0.92;
-}
-.luker_orch_iter_msg_folded[open] .luker_orch_iter_msg_preview {
-    display: none;
-}
-.luker_orch_iter_msg_full {
-    margin-top: 6px;
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-.luker_orch_iter_msg_folded:not([open]) .luker_orch_iter_msg_full {
-    display: none;
-}
-.luker_orch_iter_msg.loading .luker_orch_iter_msg_body {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    opacity: 0.92;
 }
 .luker_orch_iter_empty {
     opacity: 0.8;

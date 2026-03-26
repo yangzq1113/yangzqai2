@@ -2658,16 +2658,16 @@ function renderPresetToolTraceHtml(message) {
     }
     const resultMap = new Map(toolResults.map((item) => [String(item?.tool_call_id || '').trim(), String(item?.content || '')]));
     return `
-<details class="cpa_tool_trace">
+<details class="luker-studio-tool-trace">
     <summary>${escapeHtml(i18nFormat('Tool calls (${0})', toolCalls.length))}</summary>
-    <div class="cpa_tool_trace_list">
+    <div class="luker-studio-tool-trace-list">
         ${toolCalls.map((call) => {
         const result = resultMap.get(String(call?.id || '').trim()) || '';
         return `
-<div class="cpa_tool_trace_item">
-    <div class="cpa_tool_trace_name">${escapeHtml(String(call?.function?.name || 'tool'))}</div>
+<div class="luker-studio-tool-trace-item">
+    <div class="luker-studio-tool-trace-name">${escapeHtml(String(call?.function?.name || 'tool'))}</div>
     <pre>${escapeHtml(String(call?.function?.arguments || '{}'))}</pre>
-    ${result ? `<details class="cpa_tool_trace_result"><summary>${escapeHtml(i18n('Tool result'))}</summary><pre>${escapeHtml(result)}</pre></details>` : ''}
+    ${result ? `<details class="luker-studio-tool-trace-result"><summary>${escapeHtml(i18n('Tool result'))}</summary><pre>${escapeHtml(result)}</pre></details>` : ''}
 </div>`;
     }).join('')}
     </div>
@@ -2682,29 +2682,29 @@ function renderMessageHtml(message, {
         ? i18n('User')
         : (safeMessage.role === 'assistant' ? i18n('Assistant') : i18n('System'));
     const note = safeMessage.summary
-        ? `<div class="cpa_message_note">${escapeHtml(safeMessage.summary)}</div>`
-        : (safeMessage.editCount > 0 ? `<div class="cpa_message_note">${escapeHtml(i18nFormat('Proposed edits: ${0}', safeMessage.editCount))}</div>` : '');
+        ? `<div class="luker-studio-msg-note">${escapeHtml(safeMessage.summary)}</div>`
+        : (safeMessage.editCount > 0 ? `<div class="luker-studio-msg-note">${escapeHtml(i18nFormat('Proposed edits: ${0}', safeMessage.editCount))}</div>` : '');
     const toolSummary = safeMessage.toolSummary
-        ? `<div class="cpa_message_note">${escapeHtml(safeMessage.toolSummary)}</div>`
+        ? `<div class="luker-studio-msg-note">${escapeHtml(safeMessage.toolSummary)}</div>`
         : '';
     const commitBadge = safeMessage.role === 'assistant' && commitCount > 0
-        ? `<span class="cpa_message_badge">${escapeHtml(i18n('Applied'))}</span>`
+        ? `<span class="luker-studio-msg-badge">${escapeHtml(i18n('Applied'))}</span>`
         : '';
     const actions = safeMessage.role === 'assistant' && commitCount > 0
         ? `
-<div class="cpa_message_actions">
+<div class="luker-studio-msg-actions">
     <div class="menu_button menu_button_small" data-cpa-action="show-message-diff" data-cpa-message-id="${escapeHtml(safeMessage.id)}">${escapeHtml(i18n('Applied diff'))}</div>
     <div class="menu_button menu_button_small" data-cpa-action="rollback-to-message" data-cpa-message-id="${escapeHtml(safeMessage.id)}">${escapeHtml(i18n('Rollback to here'))}</div>
 </div>`
         : '';
 
     return `
-<div class="cpa_message ${escapeHtml(safeMessage.role)}">
-    <div class="cpa_message_meta">
-        <span class="cpa_message_meta_group">${escapeHtml(roleLabel)}${commitBadge}</span>
+<div class="luker-studio-msg" data-role="${escapeHtml(safeMessage.role)}">
+    <div class="luker-studio-msg-head">
+        <span class="luker-studio-msg-head-group">${escapeHtml(roleLabel)}${commitBadge}</span>
         <span>${escapeHtml(new Date(safeMessage.createdAt).toLocaleString())}</span>
     </div>
-    <div class="cpa_message_body">${escapeHtml(safeMessage.text || safeMessage.summary || '')}</div>
+    <div class="luker-studio-msg-body">${escapeHtml(safeMessage.text || safeMessage.summary || '')}</div>
     ${note}
     ${toolSummary}
     ${renderPresetToolTraceHtml(safeMessage)}
@@ -2718,11 +2718,11 @@ function renderPresetConversationHistoryItems(sessionStore, currentSessionId = '
         .slice()
         .sort((left, right) => Number(right?.updatedAt || 0) - Number(left?.updatedAt || 0));
     const toolbar = `
-<div class="cpa_history_toolbar">
+<div class="luker-studio-history-toolbar">
     <div class="menu_button menu_button_small" data-cpa-history-action="new-session">${escapeHtml(i18n('New session'))}</div>
 </div>`;
     if (items.length === 0) {
-        return `${toolbar}<div class="cpa_empty">${escapeHtml(i18n('No conversation history yet.'))}</div>`;
+        return `${toolbar}<div class="luker-studio-empty">${escapeHtml(i18n('No conversation history yet.'))}</div>`;
     }
     return `${toolbar}${items.map((item) => {
         const sessionId = String(item?.id || '').trim();
@@ -2731,12 +2731,12 @@ function renderPresetConversationHistoryItems(sessionStore, currentSessionId = '
         const messageCount = Array.isArray(item?.messages) ? item.messages.length : 0;
         const pending = item?.draft ? ` · ${escapeHtml(i18n('Draft ready'))}` : '';
         return `
-<div class="cpa_history_item${isCurrent ? ' active' : ''}">
-    <div class="cpa_history_item_main">
-        <div class="cpa_history_item_summary">${escapeHtml(summary)}${isCurrent ? ` <span class="cpa_history_item_current">${escapeHtml(i18n('Current'))}</span>` : ''}</div>
-        <div class="cpa_history_item_time">${escapeHtml(new Date(Number(item?.updatedAt || Date.now())).toLocaleString())} · ${escapeHtml(String(messageCount))} msgs${pending}</div>
+<div class="luker-studio-history-item${isCurrent ? ' active' : ''}">
+    <div class="luker-studio-history-item-main">
+        <div class="luker-studio-history-item-summary">${escapeHtml(summary)}${isCurrent ? ` <span class="luker-studio-history-item-current">${escapeHtml(i18n('Current'))}</span>` : ''}</div>
+        <div class="luker-studio-history-item-time">${escapeHtml(new Date(Number(item?.updatedAt || Date.now())).toLocaleString())} · ${escapeHtml(String(messageCount))} msgs${pending}</div>
     </div>
-    <div class="cpa_history_item_actions">
+    <div class="luker-studio-history-item-actions">
         ${!isCurrent ? `<div class="menu_button menu_button_small" data-cpa-history-action="load-session" data-cpa-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Load session'))}</div>` : ''}
         <div class="menu_button menu_button_small" data-cpa-history-action="delete-session" data-cpa-session-id="${escapeHtml(sessionId)}">${escapeHtml(i18n('Delete'))}</div>
     </div>
@@ -2747,7 +2747,7 @@ function renderPresetConversationHistoryItems(sessionStore, currentSessionId = '
 function renderConversationHtml(session, journal) {
     const messages = Array.isArray(session?.messages) ? session.messages : [];
     if (messages.length === 0) {
-        return `<div class="cpa_empty">${escapeHtml(i18n('No conversation yet.'))}</div>`;
+        return `<div class="luker-studio-empty">${escapeHtml(i18n('No conversation yet.'))}</div>`;
     }
     const commitMap = getCommittedMessageEntryMap(session, journal);
     return messages.map((item) => renderMessageHtml(item, {
@@ -2758,22 +2758,22 @@ function renderConversationHtml(session, journal) {
 function renderDraftHtml(dialogState) {
     const draft = sanitizeDraft(dialogState.session?.draft);
     if (!draft) {
-        return `<div class="cpa_empty">${escapeHtml(i18n('No draft yet. Ask the assistant to propose changes first.'))}</div>`;
+        return `<div class="luker-studio-empty">${escapeHtml(i18n('No draft yet. Ask the assistant to propose changes first.'))}</div>`;
     }
 
     const diffHtml = renderDeltaHtml(dialogState.liveSnapshot?.body || {}, draft.draftBody || {});
     const editItems = draft.edits.map((edit) => `<li>${escapeHtml(describeEdit(edit))}</li>`).join('');
     return `
-<div class="cpa_draft_summary">
-    <div class="cpa_draft_summary_badge">${escapeHtml(i18n('Draft ready'))}</div>
-    <div class="cpa_draft_summary_badge">${escapeHtml(i18nFormat('Proposed edits: ${0}', draft.edits.length))}</div>
+<div class="luker-studio-draft-summary">
+    <div class="luker-studio-draft-badge">${escapeHtml(i18n('Draft ready'))}</div>
+    <div class="luker-studio-draft-badge">${escapeHtml(i18nFormat('Proposed edits: ${0}', draft.edits.length))}</div>
 </div>
 <div>${escapeHtml(draft.summary || i18n('Change summary'))}</div>
-<div class="cpa_draft_actions">
+<div class="luker-studio-draft-actions">
     <div class="menu_button menu_button_small" data-cpa-action="apply-draft">${escapeHtml(i18n('Apply draft'))}</div>
     <div class="menu_button menu_button_small" data-cpa-action="discard-draft">${escapeHtml(i18n('Discard draft'))}</div>
 </div>
-<div class="cpa_diff_panel">${diffHtml || `<div class="cpa_empty">${escapeHtml(i18n('No diff to display.'))}</div>`}</div>
+<div class="luker-studio-diff">${diffHtml || `<div class="luker-studio-empty">${escapeHtml(i18n('No diff to display.'))}</div>`}</div>
 <details>
     <summary>${escapeHtml(i18n('Change summary'))}</summary>
     <ul>${editItems || `<li>${escapeHtml(i18n('No meaningful changes detected.'))}</li>`}</ul>
@@ -2872,12 +2872,12 @@ async function handleReferenceChange(dialogState, selectValue) {
 async function showDiffPopup(title, beforeLabel, afterLabel, beforeBody, afterBody) {
     const diffHtml = renderDeltaHtml(beforeBody, afterBody);
     const content = `
-<div class="cpa_dialog">
-    <div class="cpa_dialog_meta">
-        <div class="cpa_dialog_meta_item">${escapeHtml(beforeLabel)}</div>
-        <div class="cpa_dialog_meta_item">${escapeHtml(afterLabel)}</div>
+<div class="luker-studio">
+    <div class="luker-studio-meta">
+        <div class="luker-studio-meta-item">${escapeHtml(beforeLabel)}</div>
+        <div class="luker-studio-meta-item">${escapeHtml(afterLabel)}</div>
     </div>
-    <div class="cpa_diff_panel">${diffHtml || `<div class="cpa_empty">${escapeHtml(i18n('No diff to display.'))}</div>`}</div>
+    <div class="luker-studio-diff">${diffHtml || `<div class="luker-studio-empty">${escapeHtml(i18n('No diff to display.'))}</div>`}</div>
 </div>`;
     const popup = new Popup(content, POPUP_TYPE.TEXT, title, {
         okButton: false,

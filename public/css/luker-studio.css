@@ -1,0 +1,1148 @@
+/**
+ * Luker Studio — Unified popup/workspace design system
+ *
+ * Shared by: Orchestrator (AI Iteration Studio), Character Editor Assistant,
+ *            Completion Preset Assistant, and other chat-like popup workspaces.
+ *
+ * Naming convention: .luker-studio-*
+ * All colors use theme-aware color-mix() with CSS custom properties.
+ */
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   1. DESIGN TOKENS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.luker-studio {
+    /* Spacing scale */
+    --ls-space-xs: 4px;
+    --ls-space-sm: 8px;
+    --ls-space-md: 12px;
+    --ls-space-lg: 16px;
+    --ls-space-xl: 20px;
+
+    /* Panel styling */
+    --ls-panel-radius: 12px;
+    --ls-panel-padding: 14px;
+    --ls-panel-border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    --ls-panel-bg: color-mix(in oklab, var(--SmartThemeBlurTintColor) 90%, transparent);
+
+    /* Card styling */
+    --ls-card-radius: 10px;
+    --ls-card-border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    --ls-card-bg: color-mix(in oklab, var(--SmartThemeBodyColor) 6%, transparent);
+
+    /* Message role accents */
+    --ls-accent-user: #2f80ed;
+    --ls-accent-assistant: #34a853;
+    --ls-accent-system: #f0a030;
+
+    /* Diff colors */
+    --ls-diff-add: #4caf50;
+    --ls-diff-del: #d93025;
+
+    /* Subtle text */
+    --ls-muted: 0.78;
+    --ls-hint: 0.85;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   2. ROOT CONTAINER
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-md);
+    text-align: start;
+    min-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   3. HEADER
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-xs);
+}
+
+.popup .luker-studio-title {
+    font-size: 1.08rem;
+    font-weight: 700;
+    line-height: 1.3;
+}
+
+.popup .luker-studio-subtitle {
+    opacity: var(--ls-hint);
+    font-size: 0.92rem;
+    line-height: 1.35;
+}
+
+/* Meta chips row (character name, target lorebook, etc.) */
+.popup .luker-studio-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ls-space-sm);
+}
+
+.popup .luker-studio-meta-item {
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent);
+    font-size: 0.92em;
+    word-break: break-word;
+    line-height: 1.4;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   4. TOOLBAR
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-toolbar {
+    display: flex;
+    gap: var(--ls-space-sm);
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.popup .luker-studio-toolbar-field {
+    display: grid;
+    gap: 6px;
+    flex: 1 1 260px;
+    min-width: 0;
+}
+
+.popup .luker-studio-toolbar-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: var(--ls-space-sm);
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   5. BUTTON OVERRIDES (shared across all studio popups)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio .menu_button,
+.popup .luker-studio .menu_button_small {
+    display: inline-flex;
+    flex: 0 0 auto;
+    width: auto;
+    max-width: none;
+    min-height: 2.2em;
+    min-width: max-content;
+    white-space: nowrap;
+    word-break: keep-all;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.2;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   6. STATUS LINE
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-status {
+    min-height: 1.2em;
+    opacity: var(--ls-hint);
+    font-size: 0.9rem;
+}
+
+.popup .luker-studio-status i {
+    margin-right: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   7. COLUMNS LAYOUT (2-column grid, collapses on mobile)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: var(--ls-space-md);
+    min-height: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   8. PANEL (bordered container for conversation, draft, profile, etc.)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-sm);
+    min-width: 0;
+    min-height: 0;
+    border: var(--ls-panel-border);
+    border-radius: var(--ls-panel-radius);
+    padding: var(--ls-panel-padding);
+    background: var(--ls-panel-bg);
+}
+
+.popup .luker-studio-panel-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    line-height: 1.3;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   9. CHAT MESSAGE LIST
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-chat {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-sm);
+    min-height: 160px;
+    max-height: 52vh;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   10. CHAT MESSAGE
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-msg {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: var(--ls-card-radius);
+    padding: 10px 12px;
+    text-align: left;
+    border-left: 3px solid transparent;
+}
+
+/* Role-based accent via left border + subtle background tint */
+.popup .luker-studio-msg[data-role="user"] {
+    border-left-color: color-mix(in oklab, var(--ls-accent-user) 70%, transparent);
+    background: color-mix(in oklab, var(--ls-accent-user) 8%, transparent);
+}
+
+.popup .luker-studio-msg[data-role="assistant"] {
+    border-left-color: color-mix(in oklab, var(--ls-accent-assistant) 70%, transparent);
+    background: color-mix(in oklab, var(--ls-accent-assistant) 8%, transparent);
+}
+
+.popup .luker-studio-msg[data-role="system"] {
+    border-left-color: color-mix(in oklab, var(--ls-accent-system) 60%, transparent);
+    background: color-mix(in oklab, var(--ls-accent-system) 8%, transparent);
+}
+
+.popup .luker-studio-msg.loading {
+    opacity: 0.9;
+}
+
+.popup .luker-studio-msg.loading .luker-studio-msg-body {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ls-space-sm);
+}
+
+/* Message header (role label + timestamp) */
+.popup .luker-studio-msg-head {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--ls-space-sm);
+    font-size: 0.9em;
+    opacity: 0.82;
+    margin-bottom: 6px;
+    text-align: left;
+}
+
+.popup .luker-studio-msg-head-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* Message body */
+.popup .luker-studio-msg-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.45;
+    text-align: left;
+}
+
+/* Markdown content inside messages */
+.popup .luker-studio-msg-body :is(p, ul, ol, pre, table, h1, h2, h3, h4) {
+    margin: 0 0 8px;
+}
+
+.popup .luker-studio-msg-body :is(pre, code) {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.popup .luker-studio-msg-body table {
+    display: block;
+    width: 100%;
+    overflow: auto;
+    border-collapse: collapse;
+}
+
+.popup .luker-studio-msg-body th,
+.popup .luker-studio-msg-body td {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent);
+    padding: 4px 6px;
+    vertical-align: top;
+}
+
+/* Message note / meta */
+.popup .luker-studio-msg-note {
+    margin-top: 6px;
+    font-size: 0.92em;
+    opacity: 0.82;
+}
+
+.popup .luker-studio-msg-meta {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    white-space: pre-wrap;
+    word-break: break-word;
+    opacity: 0.9;
+}
+
+/* Message badge (e.g. "applied", "pending") */
+.popup .luker-studio-msg-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.82em;
+    background: color-mix(in oklab, var(--ls-accent-assistant) 16%, transparent);
+}
+
+/* Message actions row */
+.popup .luker-studio-msg-actions {
+    margin-top: 8px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* Foldable message (long content with summary/details) */
+.popup .luker-studio-msg-folded {
+    margin: 0;
+}
+
+.popup .luker-studio-msg-folded > summary {
+    cursor: pointer;
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.popup .luker-studio-msg-preview {
+    margin-top: 6px;
+    opacity: 0.92;
+}
+
+.popup .luker-studio-msg-folded[open] .luker-studio-msg-preview {
+    display: none;
+}
+
+.popup .luker-studio-msg-full {
+    margin-top: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.popup .luker-studio-msg-folded:not([open]) .luker-studio-msg-full {
+    display: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   11. TOOL TRACE (collapsible tool call details inside messages)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-tool-trace {
+    margin-top: 8px;
+}
+
+.popup .luker-studio-tool-trace summary {
+    cursor: pointer;
+}
+
+.popup .luker-studio-tool-trace-list {
+    display: grid;
+    gap: var(--ls-space-sm);
+    margin-top: 8px;
+}
+
+.popup .luker-studio-tool-trace-item {
+    display: grid;
+    gap: 6px;
+    padding: 8px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 7%, transparent);
+}
+
+.popup .luker-studio-tool-trace-name {
+    font-weight: 700;
+}
+
+.popup .luker-studio-tool-trace-item pre,
+.popup .luker-studio-tool-trace-result pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Tool summary block (character editor style) */
+.popup .luker-studio-tool-summary {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   12. COMPOSER (textarea + action buttons at bottom)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-composer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-sm);
+}
+
+.popup .luker-studio-composer textarea {
+    min-height: 96px;
+    resize: vertical;
+}
+
+.popup .luker-studio-composer-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: var(--ls-space-sm);
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: end;
+    width: 100%;
+}
+
+.popup .luker-studio-composer-meta {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    flex: 1 1 220px;
+}
+
+.popup .luker-studio-composer-buttons {
+    display: flex;
+    gap: var(--ls-space-sm);
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   13. PENDING APPROVAL BLOCK
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-pending {
+    border: var(--ls-card-border);
+    border-radius: var(--ls-card-radius);
+    padding: var(--ls-space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-sm);
+    background: var(--ls-card-bg);
+}
+
+.popup .luker-studio-pending-hint {
+    opacity: 0.92;
+    font-weight: 600;
+}
+
+.popup .luker-studio-pending-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+    text-align: left;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    border-radius: 6px;
+    padding: 6px 8px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent);
+}
+
+.popup .luker-studio-pending-ops {
+    display: grid;
+    gap: 4px;
+}
+
+.popup .luker-studio-pending-op {
+    font-size: 0.9rem;
+    opacity: 0.92;
+}
+
+.popup .luker-studio-pending-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+}
+
+.popup .luker-studio-pending-diff {
+    margin-top: 2px;
+    border-top: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent);
+    padding-top: 8px;
+}
+
+.popup .luker-studio-pending-diff > summary {
+    cursor: pointer;
+    font-weight: 600;
+    opacity: 0.9;
+    margin-bottom: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   14. SESSION HISTORY (collapsible list of past sessions)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-history {
+    margin-top: 8px;
+    border-top: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent);
+    padding-top: 8px;
+}
+
+.popup .luker-studio-history > summary {
+    cursor: pointer;
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.popup .luker-studio-history-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin: 8px 0;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.popup .luker-studio-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ls-space-sm);
+    margin-top: 8px;
+}
+
+.popup .luker-studio-history-item {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent);
+    border-radius: var(--ls-card-radius);
+    padding: 8px;
+    display: flex;
+    justify-content: space-between;
+    gap: var(--ls-space-sm);
+    align-items: flex-start;
+}
+
+.popup .luker-studio-history-item.active {
+    border-color: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 40%, transparent);
+    background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 7%, transparent);
+    border-radius: 8px;
+    padding-inline: 8px;
+}
+
+.popup .luker-studio-history-item-main {
+    min-width: 0;
+    flex: 1;
+}
+
+.popup .luker-studio-history-item-summary {
+    font-weight: 600;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.popup .luker-studio-history-item-current {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 0.8em;
+    background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4caf50) 16%, transparent);
+}
+
+.popup .luker-studio-history-item-time {
+    opacity: 0.75;
+    font-size: 0.9em;
+    margin-top: 4px;
+}
+
+.popup .luker-studio-history-item-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.popup .luker-studio-history-empty {
+    opacity: 0.8;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   15. OBJECT DIFF (before/after comparison for structured data)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-diff {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: var(--ls-card-radius);
+    padding: 10px;
+    max-height: 52vh;
+    overflow: auto;
+    background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 94%, transparent);
+}
+
+.popup .luker-studio-diff .luker_object_diff {
+    display: grid;
+    gap: 10px;
+}
+
+.popup .luker-studio-diff .luker_object_diff_item {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 90%, transparent);
+}
+
+.popup .luker-studio-diff .luker_object_diff_path {
+    font-weight: 700;
+    word-break: break-word;
+}
+
+.popup .luker-studio-diff .luker_object_diff_grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.popup .luker-studio-diff .luker_object_diff_col {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 8px;
+    border-radius: 8px;
+    border-left: 3px solid transparent;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent);
+}
+
+.popup .luker-studio-diff .luker_object_diff_col.before {
+    border-left-color: color-mix(in oklab, var(--ls-diff-del) 70%, transparent);
+    background: color-mix(in oklab, var(--ls-diff-del) 9%, transparent);
+}
+
+.popup .luker-studio-diff .luker_object_diff_col.after {
+    border-left-color: color-mix(in oklab, var(--ls-diff-add) 72%, transparent);
+    background: color-mix(in oklab, var(--ls-diff-add) 10%, transparent);
+}
+
+.popup .luker-studio-diff .luker_object_diff_col_title {
+    font-size: 0.9em;
+    font-weight: 700;
+    opacity: 0.82;
+}
+
+.popup .luker-studio-diff .luker_object_diff_col pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.popup .luker-studio-diff .luker_object_diff_missing {
+    opacity: 0.75;
+    font-style: italic;
+}
+
+.popup .luker-studio-diff .luker_object_diff_text {
+    min-width: 0;
+}
+
+/* Draft summary + actions (preset assistant style) */
+.popup .luker-studio-draft-summary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.popup .luker-studio-draft-badge {
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent);
+    font-size: 0.9em;
+}
+
+.popup .luker-studio-draft-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.popup .luker-studio-empty {
+    opacity: 0.75;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   16. LINE DIFF (side-by-side resizable split pane diff)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-line-diff {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent);
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.popup .luker-studio-line-diff > summary {
+    cursor: pointer;
+    padding: 6px 8px;
+    font-size: 0.9em;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.popup .luker-studio-line-diff-summary-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.popup .luker-studio-line-diff-meta {
+    opacity: 0.75;
+    font-size: 0.88em;
+}
+
+.popup .luker-studio-line-diff-expand-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.2em;
+    width: 2.2em;
+    padding: 0;
+    line-height: 1;
+}
+
+.popup .luker-studio-line-diff-expand-btn i {
+    pointer-events: none;
+}
+
+/* Unified pre block (single-column diff) */
+.popup .luker-studio-line-diff-pre {
+    margin: 0;
+    padding: 6px;
+    border-top: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent);
+    max-height: 320px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+}
+
+/* Dual-pane split layout */
+.popup .luker-studio-line-diff-dual {
+    --ls-split-left: 50%;
+    --ls-splitter-width: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, var(--ls-split-left)) var(--ls-splitter-width) minmax(0, calc(100% - var(--ls-split-left) - var(--ls-splitter-width)));
+    gap: 0;
+    width: 100%;
+    min-width: 0;
+    align-items: stretch;
+}
+
+/* Splitter handle */
+.popup .luker-studio-line-diff-splitter {
+    position: relative;
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+    background: transparent;
+}
+
+.popup .luker-studio-line-diff-splitter::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 20%, transparent);
+    transition: background-color .12s ease;
+}
+
+.popup .luker-studio-line-diff-splitter:hover::before,
+.popup .luker-studio-line-diff-splitter.active::before {
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 38%, transparent);
+}
+
+/* Side panels */
+.popup .luker-studio-line-diff-side {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 14%, transparent);
+    border-radius: 6px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 4%, transparent);
+    min-width: 0;
+    overflow: hidden;
+}
+
+.popup .luker-studio-line-diff-side-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    touch-action: auto;
+}
+
+/* Diff table */
+.popup .luker-studio-line-diff-table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.82rem;
+    text-align: left;
+}
+
+.popup .luker-studio-line-diff-row td {
+    border-bottom: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    padding: 2px 6px;
+    vertical-align: top;
+    text-align: left;
+}
+
+.popup .luker-studio-line-diff-row:last-child td {
+    border-bottom: none;
+}
+
+/* Line number column */
+.popup .luker-studio-line-diff-ln {
+    width: 3.8em;
+    text-align: right;
+    color: color-mix(in oklab, var(--SmartThemeBodyColor) 72%, transparent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    background-color: var(--SmartThemeBlurTintColor);
+    box-shadow: 1px 0 0 var(--SmartThemeBorderColor);
+    background-image: none;
+    opacity: 1;
+}
+
+/* Text content column */
+.popup .luker-studio-line-diff-text {
+    width: auto;
+    min-width: 0;
+    text-align: left;
+}
+
+.popup .luker-studio-line-diff-text-inner {
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+    user-select: text;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    min-width: max-content;
+    text-align: left;
+}
+
+/* Word-level highlights */
+.popup .luker-studio-line-diff-word-add {
+    background: color-mix(in oklab, var(--ls-diff-add) 30%, transparent);
+    border-radius: 3px;
+    padding: 0 1px;
+}
+
+.popup .luker-studio-line-diff-word-del {
+    background: color-mix(in oklab, var(--ls-diff-del) 30%, transparent);
+    border-radius: 3px;
+    padding: 0 1px;
+}
+
+/* Row-level highlights */
+.popup .luker-studio-line-diff-row-add .luker-studio-line-diff-text.new {
+    background: color-mix(in oklab, var(--ls-diff-add) 12%, transparent);
+}
+
+.popup .luker-studio-line-diff-row-del .luker-studio-line-diff-text.old {
+    background: color-mix(in oklab, var(--ls-diff-del) 12%, transparent);
+}
+
+.popup .luker-studio-line-diff-row-mod .luker-studio-line-diff-text.old {
+    background: color-mix(in oklab, var(--ls-diff-del) 10%, transparent);
+}
+
+.popup .luker-studio-line-diff-row-mod .luker-studio-line-diff-text.new {
+    background: color-mix(in oklab, var(--ls-diff-add) 10%, transparent);
+}
+
+.popup .luker-studio-line-diff-row-eq {
+    background: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   17. EXPANDED DIFF OVERLAY (zoom view for line diffs)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-diff-zoom-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10010;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.popup .luker-studio-diff-zoom-backdrop {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in oklab, #000 70%, transparent);
+}
+
+.popup .luker-studio-diff-zoom-dialog {
+    position: relative;
+    z-index: 1;
+    width: min(1280px, 95vw);
+    height: min(92vh, 920px);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    background: var(--SmartThemeBlurTintColor);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+}
+
+.popup .luker-studio-diff-zoom-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent);
+}
+
+.popup .luker-studio-diff-zoom-title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.popup .luker-studio-diff-zoom-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.2em;
+    width: 2.2em;
+    padding: 0;
+    line-height: 1;
+}
+
+.popup .luker-studio-diff-zoom-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px;
+}
+
+.popup .luker-studio-diff-zoom-body .luker-studio-line-diff-pre {
+    max-height: none;
+    height: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   18. TURN DIFF (per-field diffs within a message turn)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.popup .luker-studio-turn-diff {
+    margin-top: 8px;
+    border-top: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 18%, transparent);
+    padding-top: 8px;
+}
+
+.popup .luker-studio-turn-diff > summary {
+    cursor: pointer;
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.popup .luker-studio-turn-diff-actions {
+    margin-top: 8px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.popup .luker-studio-turn-diff-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.popup .luker-studio-turn-diff-item {
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent);
+    border-radius: var(--ls-card-radius);
+    padding: 8px;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.popup .luker-studio-turn-diff-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.popup .luker-studio-turn-diff-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.popup .luker-studio-turn-diff-status {
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 0.85em;
+    line-height: 1.2;
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 22%, transparent);
+}
+
+.popup .luker-studio-turn-diff-status.approved {
+    background: color-mix(in oklab, var(--ls-diff-add) 18%, transparent);
+}
+
+.popup .luker-studio-turn-diff-status.rejected {
+    background: color-mix(in oklab, var(--ls-diff-del) 16%, transparent);
+}
+
+.popup .luker-studio-turn-diff-status.pending {
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent);
+}
+
+.popup .luker-studio-turn-diff-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.popup .luker-studio-turn-diff-meta-item {
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent);
+}
+
+.popup .luker-studio-turn-diff-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+
+.popup .luker-studio-turn-diff-label {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.popup .luker-studio-turn-diff-raw > summary {
+    cursor: pointer;
+    opacity: 0.8;
+}
+
+.popup .luker-studio-turn-diff-raw pre {
+    margin-top: 6px;
+    max-height: 180px;
+    overflow: auto;
+}
+
+.popup .luker-studio-turn-diff-empty {
+    opacity: 0.8;
+    margin-top: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   19. RESPONSIVE BREAKPOINTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 1000px) {
+    .popup .luker-studio-columns {
+        grid-template-columns: 1fr;
+    }
+
+    .popup .luker-studio-toolbar {
+        align-items: stretch;
+    }
+
+    .popup .luker-studio-toolbar-actions {
+        justify-content: space-between;
+    }
+
+    .popup .luker-studio-chat {
+        min-height: 96px;
+        max-height: 24vh;
+    }
+
+    .popup .luker-studio-diff {
+        max-height: 28vh;
+    }
+
+    .popup .luker-studio-composer {
+        flex-direction: column;
+        align-items: stretch;
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        padding-top: 6px;
+        background: color-mix(in oklab, var(--SmartThemeBlurTintColor) 94%, transparent);
+    }
+
+    .popup .luker-studio-composer textarea {
+        min-height: 72px;
+    }
+
+    .popup .luker-studio-composer-actions {
+        align-items: stretch;
+    }
+
+    .popup .luker-studio-composer-buttons {
+        width: 100%;
+    }
+
+    .popup .luker-studio-composer-buttons .menu_button {
+        align-self: stretch;
+        flex: 1 1 0;
+    }
+
+    .popup .luker-studio-line-diff-ln {
+        width: 3.2em;
+    }
+}

@@ -240,35 +240,37 @@ export function buildOrchestrationEditorPopupPanelHtml(deps, context, settings) 
 export function buildAiIterationPopupHtml(deps, popupId, session, { allowCharacterApply = false, enableSessionHistory = false } = {}) {
     const { escapeHtml, i18n, i18nFormat } = deps;
     return `
-<div id="${popupId}" class="luker_orch_iter_popup">
-    <div class="luker_orch_iter_head">
-        <div class="luker_orch_iter_title">${escapeHtml(i18n('AI Iteration Studio'))}</div>
-        <div id="${popupId}_sub" class="luker_orch_iter_sub">${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</div>
+<div id="${popupId}" class="luker-studio luker_orch_iter_popup">
+    <div class="luker-studio-header">
+        <div class="luker-studio-title">${escapeHtml(i18n('AI Iteration Studio'))}</div>
+        <div id="${popupId}_sub" class="luker-studio-subtitle">${escapeHtml(i18nFormat('Iteration source: ${0}', session?.sourceName || i18n('Global profile')))}</div>
     </div>
-    <div id="${popupId}_status" class="luker_orch_iter_status"></div>
-    <div class="luker_orch_iter_grid">
-        <div class="luker_orch_iter_col">
-            <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Conversation'))}</div>
-            <div id="${popupId}_conversation" class="luker_orch_iter_conversation"></div>
+    <div id="${popupId}_status" class="luker-studio-status"></div>
+    <div class="luker-studio-columns">
+        <div class="luker-studio-panel">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Conversation'))}</div>
+            <div id="${popupId}_conversation" class="luker-studio-chat"></div>
             <div id="${popupId}_pending"></div>
-            <textarea id="${popupId}_input" class="text_pole textarea_compact" rows="4" placeholder="${escapeHtml(i18n('Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...'))}"></textarea>
-            <div class="luker_orch_iter_actions">
-                <div id="${popupId}_send" class="menu_button">${escapeHtml(i18n('Send to AI'))}</div>
-                <div id="${popupId}_stop" class="menu_button">${escapeHtml(i18n('Stop'))}</div>
-                <div id="${popupId}_clear" class="menu_button">${escapeHtml(i18n('Clear Session'))}</div>
+            <div class="luker-studio-composer">
+                <textarea id="${popupId}_input" class="text_pole textarea_compact" rows="4" placeholder="${escapeHtml(i18n('Input request for AI, for example: keep pacing tight and run a simulation with my custom scene...'))}"></textarea>
+                <div class="luker-studio-composer-buttons">
+                    <div id="${popupId}_send" class="menu_button">${escapeHtml(i18n('Send to AI'))}</div>
+                    <div id="${popupId}_stop" class="menu_button">${escapeHtml(i18n('Stop'))}</div>
+                    <div id="${popupId}_clear" class="menu_button">${escapeHtml(i18n('Clear Session'))}</div>
+                </div>
             </div>
         </div>
-        <div class="luker_orch_iter_col">
-            <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Working profile'))}</div>
+        <div class="luker-studio-panel">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Working profile'))}</div>
             <div id="${popupId}_profile" class="luker_orch_iter_profile"></div>
-            <div class="luker_orch_iter_actions">
+            <div class="luker-studio-composer-buttons">
                 <div id="${popupId}_apply_global" class="menu_button">${escapeHtml(i18n('Apply to Global'))}</div>
                 ${allowCharacterApply ? `<div id="${popupId}_apply_character" class="menu_button">${escapeHtml(i18n('Apply to Character'))}</div>` : ''}
             </div>
             ${enableSessionHistory ? `
-            <div class="luker_orch_iter_col_title">${escapeHtml(i18n('Session history'))}</div>
-            <div id="${popupId}_history" class="luker_orch_iter_history"></div>
-            <div class="luker_orch_iter_actions">
+            <div class="luker-studio-panel-title">${escapeHtml(i18n('Session history'))}</div>
+            <div id="${popupId}_history" class="luker-studio-history-list"></div>
+            <div class="luker-studio-composer-buttons">
                 <div id="${popupId}_new_session" class="menu_button">${escapeHtml(i18n('New session'))}</div>
             </div>` : ''}
         </div>
