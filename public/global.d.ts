@@ -58,6 +58,7 @@ declare global {
         integrity?: string;
         scenario?: string;
         persona?: string;
+        world_info?: string | string[];
         [key: string]: any;
     }
 

@@ -2002,6 +2002,7 @@
     "Chat Lorebook": "聊天知识书",
     "Chat Lorebook for": "聊天知识书",
     "chat_world_template_txt": "选定的世界信息将绑定到此聊天。生成 AI 回复时，\n它将与全球和角色传说书中的条目相结合。",
+    "chat_world_template_multi_hint": "这个聊天现在可以同时绑定多个世界书。Alt+单击按钮会打开第一个已选世界书。",
     "chat_rename_1": "输入聊天的新名称：",
     "chat_rename_2": "注意！！与其他文件重名会导致错误！！",
     "chat_rename_3": "此举会将此聊天与标记为“检查点”的聊天解绑。",

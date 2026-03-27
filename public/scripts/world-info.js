@@ -271,6 +271,40 @@ function hasSelectedWorldInfo(name) {
     return selected_world_info.some(entry => areLookupNamesEqual(entry, name));
 }
 
+function getChatWorldInfoNames(metadata = chat_metadata, { resolveNames = true, onlyExisting = true } = {}) {
+    const rawValue = metadata?.[METADATA_KEY];
+    const names = normalizeArray(Array.isArray(rawValue) ? rawValue : [rawValue])
+        .map((name) => resolveNames ? resolveWorldInfoName(name) : String(name || '').trim())
+        .filter(Boolean)
+        .filter(onlyUnique);
+
+    return onlyExisting ? names.filter(hasWorldInfoName) : names;
+}
+
+function getPrimaryChatWorldInfoName(metadata = chat_metadata, options = undefined) {
+    return getChatWorldInfoNames(metadata, options)[0] ?? '';
+}
+
+function hasChatWorldInfoSelection(metadata = chat_metadata) {
+    return getChatWorldInfoNames(metadata).length > 0;
+}
+
+function setChatWorldInfoSelection(names, metadata = chat_metadata) {
+    const normalizedNames = normalizeArray(Array.isArray(names) ? names : [names])
+        .map((name) => resolveWorldInfoName(name))
+        .filter(Boolean)
+        .filter(onlyUnique)
+        .filter(hasWorldInfoName);
+
+    if (!normalizedNames.length) {
+        delete metadata[METADATA_KEY];
+        return [];
+    }
+
+    metadata[METADATA_KEY] = normalizedNames.length === 1 ? normalizedNames[0] : normalizedNames;
+    return normalizedNames;
+}
+
 function getStoredWorldInfoSearchMode() {
     return accountStorage.getItem(SEARCH_MODE_KEY) === WORLD_INFO_SEARCH_MODES.FUZZY
         ? WORLD_INFO_SEARCH_MODES.FUZZY
@@ -1897,7 +1931,7 @@ export function setWorldInfoSettings(settings, data) {
     void refreshWorldInfoManagerMetadata();
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
-        const hasWorldInfo = !!chat_metadata[METADATA_KEY] && hasWorldInfoName(chat_metadata[METADATA_KEY]);
+        const hasWorldInfo = hasChatWorldInfoSelection();
         $('.chat_lorebook_button').toggleClass('world_set', hasWorldInfo);
         // Pre-cache the world info data for the chat for quicker first prompt generation
         await getSortedEntries();
@@ -2096,8 +2130,8 @@ function registerWorldInfoSlashCommands() {
             return '';
         }
 
-        const resolvedChatBook = resolveWorldInfoName(chat_metadata[METADATA_KEY]);
-        if (resolvedChatBook && hasWorldInfoName(resolvedChatBook)) {
+        const resolvedChatBook = getPrimaryChatWorldInfoName();
+        if (resolvedChatBook) {
             return resolvedChatBook;
         }
 
@@ -2107,7 +2141,7 @@ function registerWorldInfoSlashCommands() {
 
         const name = await createWorldWithName(args.name, `Chat Book ${getCurrentChatId()}`.replace(/[^a-z0-9 -]/gi, '_').replace(/_{2,}/g, '_').substring(0, 64));
 
-        chat_metadata[METADATA_KEY] = name;
+        setChatWorldInfoSelection([name]);
         await saveMetadata();
         $('.chat_lorebook_button').addClass('world_set');
         return name;
@@ -7587,6 +7621,7 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
 async function getCharacterLore() {
     const character = characters[this_chid];
     const name = character?.name;
+    const chatWorlds = getChatWorldInfoNames();
     /** @type {Set<string>} */
     let worldsToSearch = new Set();
 
@@ -7608,7 +7643,7 @@ async function getCharacterLore() {
 
     const worldsToLoad = [...worldsToSearch].filter((worldName) =>
         !selected_world_info.includes(worldName)
-        && chat_metadata[METADATA_KEY] !== worldName
+        && !chatWorlds.includes(worldName)
         && power_user.persona_description_lorebook !== worldName);
     const worldData = await loadWorldInfoBatch(worldsToLoad);
     let entries = [];
@@ -7618,7 +7653,7 @@ async function getCharacterLore() {
             continue;
         }
 
-        if (chat_metadata[METADATA_KEY] === worldName) {
+        if (chatWorlds.includes(worldName)) {
             console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in chat lore! Skipping...`);
             continue;
         }
@@ -7660,34 +7695,41 @@ async function getGlobalLore() {
 }
 
 async function getChatLore() {
-    const chatWorld = chat_metadata[METADATA_KEY];
+    const chatWorlds = getChatWorldInfoNames();
 
-    if (!chatWorld) {
+    if (!chatWorlds.length) {
         return [];
     }
 
-    if (selected_world_info.includes(chatWorld)) {
-        console.debug(`[WI] Chat world ${chatWorld} is already activated in global world info! Skipping...`);
-        return [];
+    const worldsToLoad = chatWorlds.filter((worldName) => !selected_world_info.includes(worldName));
+    const worldData = await loadWorldInfoBatch(worldsToLoad);
+    let entries = [];
+
+    for (const worldName of chatWorlds) {
+        if (selected_world_info.includes(worldName)) {
+            console.debug(`[WI] Chat world ${worldName} is already activated in global world info! Skipping...`);
+            continue;
+        }
+
+        const data = worldData.get(worldName);
+        const newEntries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: worldName, ...rest })) : [];
+        entries = entries.concat(newEntries);
     }
 
-    const data = await loadWorldInfo(chatWorld);
-    const entries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: chatWorld, ...rest })) : [];
-
-    console.debug(`[WI] Chat lore has ${entries.length} entries`, [chatWorld]);
+    console.debug(`[WI] Chat lore has ${entries.length} entries`, chatWorlds);
 
     return entries;
 }
 
 async function getPersonaLore() {
-    const chatWorld = chat_metadata[METADATA_KEY];
+    const chatWorlds = getChatWorldInfoNames();
     const personaWorld = power_user.persona_description_lorebook;
 
     if (!personaWorld) {
         return [];
     }
 
-    if (chatWorld === personaWorld) {
+    if (chatWorlds.includes(personaWorld)) {
         console.debug(`[WI] Persona world ${personaWorld} is already activated in chat world! Skipping...`);
         return [];
     }
@@ -9491,10 +9533,10 @@ export function openWorldInfoEditor(worldName) {
  * @returns {Promise<void>}
  */
 export async function assignLorebookToChat(event) {
-    const selectedName = chat_metadata[METADATA_KEY];
+    const selectedNames = getChatWorldInfoNames(chat_metadata, { onlyExisting: false });
 
-    if (selectedName && event.altKey) {
-        openWorldInfoEditor(selectedName);
+    if (selectedNames.length && event.altKey) {
+        openWorldInfoEditor(selectedNames[0]);
         return;
     }
 
@@ -9503,30 +9545,55 @@ export async function assignLorebookToChat(event) {
     const worldSelect = template.find('select');
     const chatName = template.find('.chat_name');
     chatName.text(getCurrentChatId());
+    let pendingSelection = [...selectedNames];
 
     for (const worldName of world_names) {
         const option = document.createElement('option');
         option.value = worldName;
         option.innerText = worldName;
-        option.selected = selectedName === worldName;
+        option.selected = selectedNames.includes(worldName);
         worldSelect.append(option);
     }
 
+    if (worldSelect.length && typeof worldSelect.select2 === 'function') {
+        worldSelect.select2({
+            width: '100%',
+            closeOnSelect: false,
+            placeholder: t`Select lorebooks...`,
+            searchInputPlaceholder: t`Search lorebooks...`,
+        });
+    }
+
     worldSelect.on('change', function () {
-        const worldName = $(this).val();
-
-        if (worldName) {
-            chat_metadata[METADATA_KEY] = worldName;
-            $('.chat_lorebook_button').addClass('world_set');
-        } else {
-            delete chat_metadata[METADATA_KEY];
-            $('.chat_lorebook_button').removeClass('world_set');
-        }
-
-        saveMetadata();
+        pendingSelection = normalizeArray(
+            Array.isArray($(this).val())
+                ? $(this).val()
+                : [$(this).val()],
+        )
+            .map((worldName) => resolveWorldInfoName(worldName))
+            .filter(Boolean)
+            .filter(onlyUnique);
     });
 
-    await callGenericPopup(template, POPUP_TYPE.TEXT);
+    try {
+        await callGenericPopup(template, POPUP_TYPE.TEXT, '', {
+            wide: true,
+            allowVerticalScrolling: true,
+        });
+    } finally {
+        if (worldSelect.length && typeof worldSelect.select2 === 'function' && worldSelect.hasClass('select2-hidden-accessible')) {
+            worldSelect.select2('destroy');
+        }
+    }
+
+    const previousSelection = getChatWorldInfoNames(chat_metadata, { onlyExisting: false });
+    const nextSelection = setChatWorldInfoSelection(pendingSelection);
+
+    $('.chat_lorebook_button').toggleClass('world_set', nextSelection.length > 0);
+
+    if (JSON.stringify(previousSelection) !== JSON.stringify(nextSelection)) {
+        await saveMetadata();
+    }
 }
 
 /**

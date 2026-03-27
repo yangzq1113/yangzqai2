@@ -928,6 +928,7 @@
     "Chat Lorebook": "聊天知識書",
     "Chat Lorebook for": "聊天知識書",
     "chat_world_template_txt": "選定的世界資訊將附加到此聊天。\n在生成 AI 回覆時，它將與全域和角色知識書中的條目結合。",
+    "chat_world_template_multi_hint": "這個聊天現在可以同時綁定多個世界書。Alt+點選按鈕會打開第一個已選世界書。",
     "Select a World Info file for": "選擇世界資訊檔案",
     "Primary Lorebook": "主要知識書",
     "A selected World Info will be bound to this character as its own Lorebook.": "選定的世界資訊將作為此角色的知識書附加到此角色。",

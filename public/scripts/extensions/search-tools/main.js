@@ -1904,7 +1904,10 @@ async function refreshSharedLorebookVisibilityAndSelection(context, selected) {
 
 async function loadLegacyManagedEntries(context) {
     const metadata = context.chatMetadata && typeof context.chatMetadata === 'object' ? context.chatMetadata : {};
-    const existingName = String(metadata?.[CHAT_LOREBOOK_METADATA_KEY] || '').trim();
+    const existingNames = Array.isArray(metadata?.[CHAT_LOREBOOK_METADATA_KEY])
+        ? metadata[CHAT_LOREBOOK_METADATA_KEY].map((name) => String(name || '').trim()).filter(Boolean)
+        : [String(metadata?.[CHAT_LOREBOOK_METADATA_KEY] || '').trim()].filter(Boolean);
+    const existingName = existingNames.find((name) => name !== SHARED_LOREBOOK_NAME) || '';
     if (!existingName || existingName === SHARED_LOREBOOK_NAME) {
         return [];
     }
