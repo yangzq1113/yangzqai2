@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import express from 'express';
 import fetch from 'node-fetch';
 import sanitize from 'sanitize-filename';
+import WebSocket from 'ws';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import FormData from 'form-data';
 import urlJoin from 'url-join';
@@ -561,24 +563,128 @@ comfy.post('/rename-workflow', getFileNameValidationFunction('old_name'), getFil
     }
 });
 
-comfy.post('/generate', async (request, response) => {
-    try {
-        let item;
-        const url = new URL(urlJoin(request.body.url, '/prompt'));
+/**
+ * Wait for ComfyUI prompt completion via WebSocket (preferred) or polling fallback.
+ * WS: single persistent connection, event-driven — ideal for direct ComfyUI connections.
+ * Polling fallback: 2s interval with retry — for setups behind HTTP-only proxies.
+ */
+async function waitForComfyCompletion(baseUrl, promptId, clientId, signal) {
+    const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+    const POLL_INTERVAL_MS = 2000;
+    const POLL_RETRY_MAX = 3;
 
-        const controller = new AbortController();
-        request.socket.removeAllListeners('close');
-        request.socket.on('close', function () {
-            if (!response.writableEnded && !item) {
-                const interruptUrl = new URL(urlJoin(request.body.url, '/interrupt'));
-                fetch(interruptUrl, { method: 'POST', headers: { 'Authorization': getBasicAuthHeader(request.body.auth) } });
-            }
-            controller.abort();
+    // Try WebSocket first
+    try {
+        const parsedBase = new URL(baseUrl);
+        const wsProtocol = parsedBase.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${parsedBase.host}/ws?clientId=${clientId}`;
+        const ws = new WebSocket(wsUrl);
+
+        // Wait for WS open (5s timeout — fail fast to fall back to polling)
+        await new Promise((resolve, reject) => {
+            const openTimeout = setTimeout(() => {
+                ws.terminate();
+                reject(new Error('WS open timeout'));
+            }, 5000);
+            ws.on('open', () => { clearTimeout(openTimeout); resolve(); });
+            ws.on('error', (err) => { clearTimeout(openTimeout); reject(err); });
         });
 
-        const promptResult = await fetch(url, {
+        console.debug('[ComfyUI] WebSocket connected, waiting for completion...');
+
+        return await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                ws.close();
+                reject(new Error('ComfyUI generation timed out'));
+            }, TIMEOUT_MS);
+
+            if (signal) {
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timeout);
+                    ws.close();
+                    reject(new Error('Aborted'));
+                }, { once: true });
+            }
+
+            ws.on('message', (rawData) => {
+                if (typeof rawData !== 'string' && !Buffer.isBuffer(rawData)) return;
+                let msg;
+                try { msg = JSON.parse(rawData.toString()); } catch { return; }
+
+                // ComfyUI completion: "executing" with node=null
+                if (msg.type === 'executing' && msg.data?.prompt_id === promptId && msg.data?.node === null) {
+                    clearTimeout(timeout);
+                    ws.close();
+                    resolve();
+                } else if (msg.type === 'execution_error' && msg.data?.prompt_id === promptId) {
+                    clearTimeout(timeout);
+                    ws.close();
+                    const d = msg.data;
+                    reject(new Error(`ComfyUI generation failed.\n\n${d.node_type || 'Unknown'} [${d.node_id || '?'}] ${d.exception_type || 'Error'}: ${d.exception_message || 'Unknown error'}`));
+                }
+            });
+
+            ws.on('error', (err) => { clearTimeout(timeout); ws.close(); reject(err); });
+            ws.on('close', (code) => {
+                clearTimeout(timeout);
+                reject(new Error(`ComfyUI WebSocket closed (code: ${code})`));
+            });
+        });
+    } catch (wsError) {
+        console.debug(`[ComfyUI] WebSocket unavailable (${wsError.message}), falling back to polling`);
+    }
+
+    // Polling fallback
+    console.debug('[ComfyUI] Using polling fallback (2s interval)...');
+    const deadline = Date.now() + TIMEOUT_MS;
+    const historyUrl = new URL(urlJoin(baseUrl, `/history/${promptId}`));
+
+    while (Date.now() < deadline) {
+        if (signal?.aborted) throw new Error('Aborted');
+
+        let lastError = null;
+        for (let retry = 0; retry < POLL_RETRY_MAX; retry++) {
+            try {
+                const result = await fetch(historyUrl, { signal });
+                if (!result.ok) throw new Error(`HTTP ${result.status}`);
+                /** @type {any} */
+                const history = await result.json();
+                const item = history[promptId];
+                if (item) return; // Done — caller will fetch full history
+                break; // No error, just not ready yet
+            } catch (err) {
+                lastError = err;
+                if (err.name === 'AbortError' || signal?.aborted) throw err;
+                if (retry < POLL_RETRY_MAX - 1) {
+                    await delay(500); // Brief pause before retry
+                }
+            }
+        }
+        // If all retries failed on network error, throw
+        if (lastError && lastError.name !== 'AbortError') {
+            console.warn(`[ComfyUI] Poll attempt failed: ${lastError.message}, will retry...`);
+        }
+        await delay(POLL_INTERVAL_MS);
+    }
+    throw new Error('ComfyUI generation timed out (polling)');
+}
+
+comfy.post('/generate', async (request, response) => {
+    const controller = new AbortController();
+    let settled = false;
+
+    try {
+        const clientId = crypto.randomUUID();
+        const baseUrl = request.body.url;
+
+        // Submit prompt with clientId
+        const promptUrl = new URL(urlJoin(baseUrl, '/prompt'));
+        const promptBody = JSON.parse(request.body.prompt);
+        promptBody.client_id = clientId;
+        const promptResult = await fetch(promptUrl, {
             method: 'POST',
-            body: request.body.prompt,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(promptBody),
         });
         if (!promptResult.ok) {
             const text = await promptResult.text();
@@ -586,38 +692,52 @@ comfy.post('/generate', async (request, response) => {
         }
 
         /** @type {any} */
-        const data = await promptResult.json();
-        const id = data.prompt_id;
-        const historyUrl = new URL(urlJoin(request.body.url, '/history'));
-        while (true) {
-            const result = await fetch(historyUrl);
-            if (!result.ok) {
-                throw new Error('ComfyUI returned an error.');
+        const promptData = await promptResult.json();
+        const promptId = promptData.prompt_id;
+
+        // Handle client disconnect → interrupt ComfyUI
+        request.socket.removeAllListeners('close');
+        request.socket.on('close', function () {
+            if (!settled) {
+                const interruptUrl = new URL(urlJoin(baseUrl, '/interrupt'));
+                fetch(interruptUrl, { method: 'POST', headers: { 'Authorization': getBasicAuthHeader(request.body.auth) } }).catch(() => {});
             }
-            /** @type {any} */
-            const history = await result.json();
-            item = history[id];
-            if (item) {
-                break;
-            }
-            await delay(100);
+            controller.abort();
+        });
+
+        // Wait for completion (WS with polling fallback)
+        await waitForComfyCompletion(baseUrl, promptId, clientId, controller.signal);
+        settled = true;
+
+        // Fetch outputs from history (single request)
+        const historyUrl = new URL(urlJoin(baseUrl, `/history/${promptId}`));
+        const historyResult = await fetch(historyUrl);
+        if (!historyResult.ok) {
+            throw new Error('ComfyUI returned an error fetching history.');
         }
-        if (item.status.status_str === 'error') {
-            // Report node tracebacks if available
-            const errorMessages = item.status?.messages
+        /** @type {any} */
+        const historyData = await historyResult.json();
+        const historyItem = historyData[promptId];
+        if (!historyItem) {
+            throw new Error('ComfyUI history item not found after execution.');
+        }
+
+        if (historyItem.status?.status_str === 'error') {
+            const errorMessages = historyItem.status?.messages
                 ?.filter(it => it[0] === 'execution_error')
                 .map(it => it[1])
                 .map(it => `${it.node_type} [${it.node_id}] ${it.exception_type}: ${it.exception_message}`)
                 .join('\n') || '';
             throw new Error(`ComfyUI generation did not succeed.\n\n${errorMessages}`.trim());
         }
-        const outputs = Object.keys(item.outputs).map(it => item.outputs[it]);
+
+        const outputs = Object.keys(historyItem.outputs).map(it => historyItem.outputs[it]);
         console.debug('ComfyUI outputs:', outputs);
         const imgInfo = outputs.map(it => it.images).flat()[0] ?? outputs.map(it => it.gifs).flat()[0];
         if (!imgInfo) {
             throw new Error('ComfyUI did not return any recognizable outputs.');
         }
-        const imgUrl = new URL(urlJoin(request.body.url, '/view'));
+        const imgUrl = new URL(urlJoin(baseUrl, '/view'));
         imgUrl.search = `?filename=${imgInfo.filename}&subfolder=${imgInfo.subfolder}&type=${imgInfo.type}`;
         const imgResponse = await fetch(imgUrl);
         if (!imgResponse.ok) {
@@ -628,7 +748,9 @@ comfy.post('/generate', async (request, response) => {
         return response.send({ format: format, data: Buffer.from(imgBuffer).toString('base64') });
     } catch (error) {
         console.error('ComfyUI error:', error);
-        response.status(500).send(error.message);
+        if (!response.headersSent) {
+            response.status(500).send(error.message);
+        }
         return response;
     }
 });
