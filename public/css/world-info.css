@@ -907,7 +907,7 @@
 }
 
 .world_entry textarea[name="comment"] {
-    min-height: calc(var(--mainFontSize) + 12px);
+    min-height: max(1.5em, calc(var(--mainFontSize) + 12px));
     overflow-y: hidden;
     resize: none;
 }
