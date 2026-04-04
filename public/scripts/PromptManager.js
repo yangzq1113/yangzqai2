@@ -516,6 +516,11 @@ class PromptManager {
         this.scheduleDeferredTryGenerate = debounce((requestId) => {
             void this.runDeferredTryGenerate(requestId);
         }, debounce_timeout.standard);
+
+        /** Debounced token-only update (no DOM rebuild) */
+        this.updateTokenDisplayDebounced = debounce(() => {
+            this.scheduleTokenUpdate();
+        }, debounce_timeout.relaxed);
     }
 
 
@@ -553,15 +558,27 @@ class PromptManager {
             counts[promptID] = null;
             promptOrderEntry.enabled = nowEnabled;
             this.enqueueToggleUndo(promptID, wasEnabled, nowEnabled);
-            this.render();
+
+            // In-place update: only change the affected <li>, then schedule token refresh
+            if (!this.updateToggleInPlace(promptID, nowEnabled)) {
+                // Fallback to full render if element not found
+                this.render();
+            } else {
+                this.updateTokenDisplayDebounced();
+            }
             this.saveServiceSettings();
         };
 
         this.handlePluginExtraToggle = (event) => {
             const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
             const current = this.isPromptPluginExtra(promptID);
-            this.setPromptPluginExtra(promptID, !current);
-            this.render();
+            const newValue = !current;
+            this.setPromptPluginExtra(promptID, newValue);
+
+            // In-place update: only change the affected <li>
+            if (!this.updatePluginExtraInPlace(promptID, newValue)) {
+                this.render();
+            }
             this.saveServiceSettings();
         };
 
@@ -593,7 +610,7 @@ class PromptManager {
             }
         };
 
-        // Detach selected prompt from list form and close edit form
+        // Detach selected prompt from list form and close edit form (in-place DOM removal)
         this.handleDetach = (event) => {
             if (null === this.activeCharacter) return;
             const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
@@ -608,7 +625,13 @@ class PromptManager {
             this.enqueueDetachUndo(promptID, detached.entry, detached.index);
             this.hidePopup();
             this.clearEditForm();
-            this.render();
+
+            // In-place removal: only remove the affected <li>
+            if (!this.removePromptItemInPlace(promptID)) {
+                this.render();
+            } else {
+                this.updateTokenDisplayDebounced();
+            }
             this.saveServiceSettings();
         };
 
@@ -616,8 +639,9 @@ class PromptManager {
         this.handleSavePrompt = (event) => {
             const promptId = event.target.dataset.pmPrompt;
             const prompt = this.getPromptById(promptId);
+            const isNew = (null === prompt);
 
-            if (null === prompt) {
+            if (isNew) {
                 const newPrompt = {};
                 this.updatePromptWithPromptEditForm(newPrompt);
                 this.addPrompt(newPrompt, promptId);
@@ -625,15 +649,22 @@ class PromptManager {
                 this.updatePromptWithPromptEditForm(prompt);
             }
 
-            if ('main' === promptId) this.updateQuickEdit('main', prompt);
-            if ('nsfw' === promptId) this.updateQuickEdit('nsfw', prompt);
-            if ('jailbreak' === promptId) this.updateQuickEdit('jailbreak', prompt);
+            if ('main' === promptId) this.updateQuickEdit('main', prompt || this.getPromptById(promptId));
+            if ('nsfw' === promptId) this.updateQuickEdit('nsfw', prompt || this.getPromptById(promptId));
+            if ('jailbreak' === promptId) this.updateQuickEdit('jailbreak', prompt || this.getPromptById(promptId));
 
             this.log('Saved prompt: ' + promptId);
 
             this.hidePopup();
             this.clearEditForm();
-            this.render();
+
+            // In-place update: replace just the affected <li>
+            if (!isNew && this.replacePromptItemInPlace(promptId)) {
+                this.updateTokenDisplayDebounced();
+            } else {
+                // New prompt or element not found: full rebuild needed
+                this.render();
+            }
             this.saveServiceSettings();
         };
 
@@ -722,7 +753,7 @@ class PromptManager {
             }
         };
 
-        // Delete selected prompt from list form and close edit form
+        // Delete selected prompt from list form and close edit form (in-place DOM removal)
         this.handleDeletePrompt = async () => {
             const userChoice = await Popup.show.confirm(t`Are you sure you want to delete this prompt?`, null);
             if (!userChoice) {
@@ -750,7 +781,13 @@ class PromptManager {
 
                 this.hidePopup();
                 this.clearEditForm();
-                this.render();
+
+                // In-place removal: only remove the affected <li>
+                if (!this.removePromptItemInPlace(promptID)) {
+                    this.render();
+                } else {
+                    this.updateTokenDisplayDebounced();
+                }
                 await this.saveServiceSettings();
             } catch (error) {
                 this.serviceSettings.prompts.splice(promptIndex, 0, promptSnapshot);
@@ -902,7 +939,14 @@ class PromptManager {
                 }
 
                 this.log('Saved prompt: ' + promptId);
-                this.saveServiceSettings().then(() => this.render());
+                // In-place update: replace just the affected <li>, then refresh tokens
+                this.saveServiceSettings().then(() => {
+                    if (!this.replacePromptItemInPlace(promptId)) {
+                        this.render();
+                    } else {
+                        this.updateTokenDisplayDebounced();
+                    }
+                });
             };
 
             const mainPrompt = this.getPromptById('main');
@@ -918,10 +962,10 @@ class PromptManager {
             document.getElementById(jailbreakElementId).addEventListener('blur', handleQuickEditSave);
         }
 
-        // Re-render when chat history changes.
-        eventSource.on(event_types.MESSAGE_DELETED, () => this.renderDebounced());
-        eventSource.on(event_types.MESSAGE_EDITED, () => this.renderDebounced());
-        eventSource.on(event_types.MESSAGE_RECEIVED, () => this.renderDebounced());
+        // Update token counts when chat history changes (no DOM rebuild needed).
+        eventSource.on(event_types.MESSAGE_DELETED, () => this.updateTokenDisplayDebounced());
+        eventSource.on(event_types.MESSAGE_EDITED, () => this.updateTokenDisplayDebounced());
+        eventSource.on(event_types.MESSAGE_RECEIVED, () => this.updateTokenDisplayDebounced());
 
         // Re-render when chatcompletion settings change
         eventSource.on(event_types.CHATCOMPLETION_SOURCE_CHANGED, () => this.renderDebounced());
@@ -1140,6 +1184,7 @@ class PromptManager {
 
         const targetCharacter = { id: this.toggleUndoBatch.characterId };
         const counts = this.tokenHandler.getCounts();
+        let allUpdatedInPlace = true;
 
         for (const [promptID, change] of this.toggleUndoBatch.changes.entries()) {
             const promptOrderEntry = this.getPromptOrderEntry(targetCharacter, promptID);
@@ -1148,11 +1193,21 @@ class PromptManager {
             }
             promptOrderEntry.enabled = Boolean(change.before);
             counts[promptID] = null;
+
+            // Try in-place update for each toggled item
+            if (!this.updateToggleInPlace(promptID, Boolean(change.before))) {
+                allUpdatedInPlace = false;
+            }
         }
 
         this.toggleUndoBatch = null;
         this.clearToggleUndoToast();
-        this.render();
+
+        if (!allUpdatedInPlace) {
+            this.render();
+        } else {
+            this.updateTokenDisplayDebounced();
+        }
         this.saveServiceSettings();
     }
 
@@ -1293,7 +1348,21 @@ class PromptManager {
 
         this.detachUndoBatch = null;
         this.clearDetachUndoToast();
-        this.render();
+
+        // Try in-place insertion for each restored item
+        let allInsertedInPlace = true;
+        for (const restore of restoreOperations) {
+            if (!this.insertPromptItemInPlace(restore.promptID)) {
+                allInsertedInPlace = false;
+                break;
+            }
+        }
+
+        if (!allInsertedInPlace) {
+            this.render();
+        } else {
+            this.updateTokenDisplayDebounced();
+        }
         this.saveServiceSettings();
     }
 
@@ -1377,7 +1446,346 @@ class PromptManager {
             return;
         }
 
-        this.render(false);
+        // Only update token displays instead of full DOM rebuild
+        this.updateTokenDisplay();
+    }
+
+    /**
+     * Schedule a token-only update: run tryGenerate dry run then update token text nodes.
+     * Does NOT rebuild the DOM.
+     */
+    async scheduleTokenUpdate() {
+        if (main_api !== 'openai') return;
+        if ('character' === this.configuration.promptOrder.strategy && null === this.activeCharacter) return;
+
+        const tokenUpdateId = ++this.deferredTryGenerateRequestId;
+        try {
+            await this.tryGenerate();
+        } catch {
+            // Ignore errors from dry run
+        }
+
+        if (tokenUpdateId !== this.deferredTryGenerateRequestId) {
+            return;
+        }
+
+        this.updateTokenDisplay();
+    }
+
+    /**
+     * Update a single prompt item's toggle state in-place without rebuilding the DOM.
+     * @param {string} promptID - The identifier of the prompt to update
+     * @param {boolean} enabled - The new enabled state
+     * @returns {boolean} True if the element was found and updated
+     */
+    updateToggleInPlace(promptID, enabled) {
+        const { prefix } = this.configuration;
+        const li = this.listElement?.querySelector(`[data-pm-identifier="${CSS.escape(promptID)}"]`);
+        if (!li) return false;
+
+        // Toggle disabled class
+        if (enabled) {
+            li.classList.remove(`${prefix}prompt_manager_prompt_disabled`);
+        } else {
+            li.classList.add(`${prefix}prompt_manager_prompt_disabled`);
+        }
+
+        // Toggle icon
+        const toggleSpan = li.querySelector('.prompt-manager-toggle-action');
+        if (toggleSpan) {
+            toggleSpan.classList.toggle('fa-toggle-on', enabled);
+            toggleSpan.classList.toggle('fa-toggle-off', !enabled);
+        }
+
+        // Clear token display for this item (will be updated by next dry run)
+        const tokenCell = li.querySelector('.prompt-manager-tokens-cell');
+        if (tokenCell) {
+            tokenCell.dataset.pmTokens = '-';
+            tokenCell.innerHTML = '<span> </span>-';
+        }
+
+        return true;
+    }
+
+    /**
+     * Update a single prompt item's plugin-extra state in-place without rebuilding the DOM.
+     * @param {string} promptID - The identifier of the prompt to update
+     * @param {boolean} isExtra - The new plugin-extra state
+     * @returns {boolean} True if the element was found and updated
+     */
+    updatePluginExtraInPlace(promptID, isExtra) {
+        const li = this.listElement?.querySelector(`[data-pm-identifier="${CSS.escape(promptID)}"]`);
+        if (!li) return false;
+
+        // Toggle bookmark icon style
+        const extraSpan = li.querySelector('.prompt-manager-plugin-extra-action');
+        if (extraSpan) {
+            if (isExtra) {
+                extraSpan.classList.replace('fa-regular', 'fa-solid');
+            } else {
+                extraSpan.classList.replace('fa-solid', 'fa-regular');
+            }
+        }
+
+        // Update badge in name meta
+        const nameMeta = li.querySelector('.prompt-manager-name-meta');
+        const existingBadge = li.querySelector('.prompt-manager-plugin-extra-badge');
+        if (isExtra && !existingBadge && nameMeta) {
+            const badge = document.createElement('small');
+            badge.className = 'prompt-manager-plugin-extra-badge';
+            badge.title = 'Excluded from plugin request assembly';
+            badge.textContent = 'extra';
+            nameMeta.prepend(badge);
+        } else if (!isExtra && existingBadge) {
+            existingBadge.remove();
+        }
+
+        return true;
+    }
+
+    /**
+     * Remove a prompt item from the DOM without rebuilding the entire list.
+     * @param {string} promptID - The identifier of the prompt to remove
+     * @returns {boolean} True if the element was found and removed
+     */
+    removePromptItemInPlace(promptID) {
+        const li = this.listElement?.querySelector(`[data-pm-identifier="${CSS.escape(promptID)}"]`);
+        if (!li) return false;
+        li.remove();
+        return true;
+    }
+
+    /**
+     * Build the HTML string for a single prompt list item.
+     * Extracted from renderPromptManagerListItems() for reuse in in-place updates.
+     * @param {Prompt} prompt - The prompt object
+     * @param {object} listEntry - The prompt order entry (with .enabled)
+     * @returns {string} The HTML string for the <li> element
+     */
+    buildPromptItemHtml(prompt, listEntry) {
+        const { prefix } = this.configuration;
+        const enabledClass = listEntry.enabled ? '' : `${prefix}prompt_manager_prompt_disabled`;
+        const draggableClass = `${prefix}prompt_manager_prompt_draggable`;
+        const markerClass = prompt.marker ? `${prefix}prompt_manager_marker` : '';
+        const tokens = this.tokenHandler?.getCounts()[prompt.identifier] ?? 0;
+
+        let warningClass = '';
+        let warningTitle = '';
+        const tokenBudget = this.serviceSettings.openai_max_context - this.serviceSettings.openai_max_tokens;
+        if (this.tokenUsage > tokenBudget * 0.8 && 'chatHistory' === prompt.identifier) {
+            const warningThreshold = this.configuration.warningTokenThreshold;
+            const dangerThreshold = this.configuration.dangerTokenThreshold;
+            if (tokens <= dangerThreshold) {
+                warningClass = 'fa-solid tooltip fa-triangle-exclamation text_danger';
+                warningTitle = 'Very little of your chat history is being sent, consider deactivating some other prompts.';
+            } else if (tokens <= warningThreshold) {
+                warningClass = 'fa-solid tooltip fa-triangle-exclamation text_warning';
+                warningTitle = 'Only a few messages worth chat history are being sent.';
+            }
+        }
+
+        const calculatedTokens = tokens ? tokens : '-';
+
+        let detachSpanHtml = this.isPromptDeletionAllowed(prompt)
+            ? '<span title="Remove" class="prompt-manager-detach-action caution fa-solid fa-chain-broken fa-xs"></span>'
+            : '<span class="fa-solid"></span>';
+
+        let editSpanHtml = this.isPromptEditAllowed(prompt)
+            ? '<span title="edit" class="prompt-manager-edit-action fa-solid fa-pencil fa-xs"></span>'
+            : '<span class="fa-solid"></span>';
+
+        let toggleSpanHtml = this.isPromptToggleAllowed(prompt)
+            ? `<span class="prompt-manager-toggle-action ${listEntry.enabled ? 'fa-solid fa-toggle-on' : 'fa-solid fa-toggle-off'}"></span>`
+            : '<span class="fa-solid"></span>';
+
+        const pluginExtra = this.isPromptPluginExtra(prompt.identifier);
+        const pluginExtraSpanHtml = `<span title="Extra Prompt: exclude from plugin request assembly" class="prompt-manager-plugin-extra-action ${pluginExtra ? 'fa-solid fa-bookmark' : 'fa-regular fa-bookmark'}"></span>`;
+        const pluginExtraBadgeHtml = pluginExtra
+            ? '<small class="prompt-manager-plugin-extra-badge" title="Excluded from plugin request assembly">extra</small>'
+            : '';
+
+        const encodedName = escapeHtml(prompt.name);
+        const isMarkerPrompt = prompt.marker && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE;
+        const isSystemPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && !prompt.forbid_overrides;
+        const isImportantPrompt = !prompt.marker && prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE && prompt.forbid_overrides;
+        const isUserPrompt = !prompt.marker && !prompt.system_prompt && prompt.injection_position !== INJECTION_POSITION.ABSOLUTE;
+        const isInjectionPrompt = prompt.injection_position === INJECTION_POSITION.ABSOLUTE;
+        const isOverriddenPrompt = Array.isArray(this.overriddenPrompts) && this.overriddenPrompts.includes(prompt.identifier);
+        const importantClass = isImportantPrompt ? `${prefix}prompt_manager_important` : '';
+        const iconLookup = prompt.role === 'system' && (prompt.marker || prompt.system_prompt) ? '' : prompt.role;
+
+        const promptRoles = {
+            assistant: { roleIcon: 'fa-robot', roleTitle: 'Prompt will be sent as Assistant' },
+            user: { roleIcon: 'fa-user', roleTitle: 'Prompt will be sent as User' },
+        };
+        const roleIcon = promptRoles[iconLookup]?.roleIcon || '';
+        const roleTitle = promptRoles[iconLookup]?.roleTitle || '';
+        const markerHandleClass = 'prompt-manager-marker-handle';
+        const leadingIconHtml = isMarkerPrompt
+            ? `<span class="fa-fw fa-solid fa-thumb-tack ${markerHandleClass}" title="Marker"></span>`
+            : isSystemPrompt
+                ? `<span class="fa-fw fa-solid fa-square-poll-horizontal ${markerHandleClass}" title="Global Prompt"></span>`
+                : isImportantPrompt
+                    ? `<span class="fa-fw fa-solid fa-star ${markerHandleClass}" title="Important Prompt"></span>`
+                    : isUserPrompt
+                        ? `<span class="fa-fw fa-solid fa-asterisk ${markerHandleClass}" title="Preset Prompt"></span>`
+                        : isInjectionPrompt
+                            ? `<span class="fa-fw fa-solid fa-syringe ${markerHandleClass}" title="In-Chat Injection"></span>`
+                            : '<span class="fa-fw fa-solid prompt-manager-name-leading-placeholder" aria-hidden="true"></span>';
+        const nameTextHtml = this.isPromptInspectionAllowed(prompt)
+            ? `<a title="${encodedName}" class="prompt-manager-inspect-action prompt-manager-name-text">${encodedName}</a>`
+            : `<span title="${encodedName}" class="prompt-manager-name-text">${encodedName}</span>`;
+        const nameMetaHtml = [
+            pluginExtraBadgeHtml,
+            roleIcon ? `<span data-role="${escapeHtml(prompt.role)}" class="fa-xs fa-solid ${roleIcon}" title="${roleTitle}"></span>` : '',
+            isInjectionPrompt ? `<small class="prompt-manager-injection-depth">@ ${escapeHtml(prompt.injection_depth.toString())}</small>` : '',
+            isOverriddenPrompt ? '<small class="fa-solid fa-address-card prompt-manager-overridden" title="Pulled from a character card"></small>' : '',
+        ].filter(Boolean).join('');
+
+        return `
+            <li class="${prefix}prompt_manager_prompt ${draggableClass} ${enabledClass} ${markerClass} ${importantClass}" data-pm-identifier="${escapeHtml(prompt.identifier)}">
+                <span class="${prefix}prompt_manager_prompt_name" data-pm-name="${encodedName}">
+                    <span class="prompt-manager-name-leading">${leadingIconHtml}</span>
+                    <span class="prompt-manager-name-body">
+                        ${nameTextHtml}
+                        ${nameMetaHtml ? `<span class="prompt-manager-name-meta">${nameMetaHtml}</span>` : ''}
+                    </span>
+                </span>
+                <span class="prompt-manager-actions-cell">
+                        <span class="prompt_manager_prompt_controls">
+                            ${detachSpanHtml}
+                            ${editSpanHtml}
+                            ${pluginExtraSpanHtml}
+                            ${toggleSpanHtml}
+                        </span>
+                </span>
+                <span class="prompt_manager_prompt_tokens prompt-manager-tokens-cell" data-pm-tokens="${calculatedTokens}"><span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}</span>
+            </li>
+        `;
+    }
+
+    /**
+     * Replace a single prompt item in the DOM with freshly built HTML.
+     * @param {string} promptID - The identifier of the prompt to replace
+     * @returns {boolean} True if the element was found and replaced
+     */
+    replacePromptItemInPlace(promptID) {
+        const prompt = this.getPromptById(promptID);
+        const listEntry = this.getPromptOrderEntry(this.activeCharacter, promptID);
+        if (!prompt || !listEntry) return false;
+
+        const oldLi = this.listElement?.querySelector(`[data-pm-identifier="${CSS.escape(promptID)}"]`);
+        if (!oldLi) return false;
+
+        const html = this.buildPromptItemHtml(prompt, listEntry);
+        const template = document.createElement('template');
+        template.innerHTML = html.trim();
+        const newLi = template.content.firstElementChild;
+        if (!newLi) return false;
+
+        oldLi.replaceWith(newLi);
+        return true;
+    }
+
+    /**
+     * Insert a prompt item at the correct position in the DOM list.
+     * @param {string} promptID - The identifier of the prompt to insert
+     * @returns {boolean} True if the element was successfully inserted
+     */
+    insertPromptItemInPlace(promptID) {
+        const prompt = this.getPromptById(promptID);
+        const listEntry = this.getPromptOrderEntry(this.activeCharacter, promptID);
+        if (!prompt || !listEntry || !this.listElement) return false;
+
+        const html = this.buildPromptItemHtml(prompt, listEntry);
+        const template = document.createElement('template');
+        template.innerHTML = html.trim();
+        const newLi = template.content.firstElementChild;
+        if (!newLi) return false;
+
+        // Find the correct insertion position based on prompt order
+        const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter);
+        const myIndex = promptOrder.findIndex(e => e.identifier === promptID);
+
+        // Look for the next sibling that exists in the DOM
+        let insertBefore = null;
+        for (let i = myIndex + 1; i < promptOrder.length; i++) {
+            const siblingLi = this.listElement.querySelector(`[data-pm-identifier="${CSS.escape(promptOrder[i].identifier)}"]`);
+            if (siblingLi) {
+                insertBefore = siblingLi;
+                break;
+            }
+        }
+
+        if (insertBefore) {
+            this.listElement.insertBefore(newLi, insertBefore);
+        } else {
+            this.listElement.appendChild(newLi);
+        }
+
+        return true;
+    }
+
+    /**
+     * Update token count text nodes in-place without rebuilding the DOM.
+     * Also updates the total token count in the header.
+     */
+    updateTokenDisplay() {
+        const counts = this.tokenHandler?.getCounts();
+        if (!counts) return;
+
+        const { prefix } = this.configuration;
+        const promptManagerList = this.listElement;
+        if (!promptManagerList) return;
+
+        // Update individual prompt token counts
+        const tokenCells = promptManagerList.querySelectorAll('.prompt-manager-tokens-cell');
+        for (const cell of tokenCells) {
+            const li = cell.closest(`.${prefix}prompt_manager_prompt`);
+            if (!li) continue;
+            const identifier = li.dataset.pmIdentifier;
+            if (!identifier) continue;
+
+            const tokens = counts[identifier] ?? 0;
+            const calculatedTokens = tokens ? tokens : '-';
+            const currentValue = cell.dataset.pmTokens;
+
+            if (String(calculatedTokens) !== String(currentValue)) {
+                cell.dataset.pmTokens = calculatedTokens;
+
+                // Update warning class
+                const tokenBudget = this.serviceSettings.openai_max_context - this.serviceSettings.openai_max_tokens;
+                let warningClass = '';
+                let warningTitle = '';
+
+                if (this.tokenUsage > tokenBudget * 0.8 && 'chatHistory' === identifier) {
+                    const warningThreshold = this.configuration.warningTokenThreshold;
+                    const dangerThreshold = this.configuration.dangerTokenThreshold;
+
+                    if (tokens <= dangerThreshold) {
+                        warningClass = 'fa-solid tooltip fa-triangle-exclamation text_danger';
+                        warningTitle = 'Very little of your chat history is being sent, consider deactivating some other prompts.';
+                    } else if (tokens <= warningThreshold) {
+                        warningClass = 'fa-solid tooltip fa-triangle-exclamation text_warning';
+                        warningTitle = 'Only a few messages worth chat history are being sent.';
+                    }
+                }
+
+                // Rebuild cell content (minimal DOM operation)
+                cell.innerHTML = `<span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}`;
+            }
+        }
+
+        // Update total token count in header
+        this.tokenUsage = this.tokenHandler.getTotal();
+        const headerDiv = this.containerElement?.querySelector(`.${prefix}prompt_manager_header div:last-child`);
+        if (headerDiv) {
+            const totalText = headerDiv.textContent;
+            const match = totalText?.match(/^(.+?)\s*\d+/);
+            if (match) {
+                headerDiv.textContent = `${match[1]} ${this.tokenUsage}`;
+            }
+        }
     }
 
     /**
@@ -2912,26 +3320,58 @@ class PromptManager {
 
         promptManagerList.insertAdjacentHTML('beforeend', listItemHtml);
 
-        // Now that the new elements are in the DOM, you can add the event listeners.
-        Array.from(promptManagerList.getElementsByClassName('prompt-manager-detach-action')).forEach(el => {
-            el.addEventListener('click', this.handleDetach);
-        });
+        // Set up event delegation on the list element (once per list rebuild)
+        this.setupListEventDelegation(promptManagerList);
+    }
 
-        Array.from(promptManagerList.getElementsByClassName('prompt-manager-inspect-action')).forEach(el => {
-            el.addEventListener('click', this.handleInspect);
-        });
+    /**
+     * Set up event delegation on the prompt list element.
+     * Uses a single click handler on the <ul> instead of binding to each individual element.
+     * @param {HTMLElement} listElement - The prompt list <ul> element
+     */
+    setupListEventDelegation(listElement) {
+        // Remove previous delegation handler if any
+        if (this._listDelegationHandler) {
+            listElement.removeEventListener('click', this._listDelegationHandler);
+        }
 
-        Array.from(promptManagerList.getElementsByClassName('prompt-manager-edit-action')).forEach(el => {
-            el.addEventListener('click', this.handleEdit);
-        });
+        this._listDelegationHandler = (event) => {
+            const target = event.target;
+            if (!target) return;
 
-        Array.from(promptManagerList.querySelectorAll('.prompt-manager-toggle-action')).forEach(el => {
-            el.addEventListener('click', this.handleToggle);
-        });
+            // Find the closest action element
+            const detachAction = target.closest('.prompt-manager-detach-action');
+            if (detachAction) {
+                this.handleDetach(event);
+                return;
+            }
 
-        Array.from(promptManagerList.querySelectorAll('.prompt-manager-plugin-extra-action')).forEach(el => {
-            el.addEventListener('click', this.handlePluginExtraToggle);
-        });
+            const inspectAction = target.closest('.prompt-manager-inspect-action');
+            if (inspectAction) {
+                this.handleInspect(event);
+                return;
+            }
+
+            const editAction = target.closest('.prompt-manager-edit-action');
+            if (editAction) {
+                this.handleEdit(event);
+                return;
+            }
+
+            const toggleAction = target.closest('.prompt-manager-toggle-action');
+            if (toggleAction) {
+                this.handleToggle(event);
+                return;
+            }
+
+            const pluginExtraAction = target.closest('.prompt-manager-plugin-extra-action');
+            if (pluginExtraAction) {
+                this.handlePluginExtraToggle(event);
+                return;
+            }
+        };
+
+        listElement.addEventListener('click', this._listDelegationHandler);
     }
 
     /**

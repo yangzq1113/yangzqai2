@@ -639,12 +639,48 @@
     flex-wrap: wrap;
 }
 
+/* --- WI entry header --- */
 .world_entry .inline-drawer-header {
     cursor: initial;
+    gap: 3px;
 }
 
 .world_entry .inline-drawer-header-pointer {
     cursor: pointer;
+}
+
+/* Compact the title/memo textarea so controls don't overflow */
+.world_entry .inline-drawer-header > .world_entry_thin_controls {
+    min-width: 0;
+    flex: 1 1 0;
+    overflow: hidden;
+}
+
+.WIEntryTitleAndStatus {
+    flex: 1 1 6rem;
+    min-width: 0;
+}
+
+.WIEntryTitleAndStatus textarea[name="comment"] {
+    min-width: 0;
+}
+
+/* Header controls: don't grow, stay compact */
+.WIEntryHeaderControls {
+    align-items: center;
+    flex: 0 0 auto;
+    min-width: 0;
+    gap: 2px;
+}
+
+.WIEntryHeaderControls select[name="position"] {
+    max-width: 5em;
+}
+
+.WIEntryHeaderControls input[name="depth"],
+.WIEntryHeaderControls input[name="order"],
+.WIEntryHeaderControls input[name="probability"] {
+    max-width: 3.5em;
 }
 
 .world_entry .killSwitch {
@@ -680,7 +716,7 @@
 }
 
 #world_popup h5 {
-    color: var(--grey70);
+    color: color-mix(in srgb, var(--SmartThemeBodyColor) 65%, transparent);
 }
 
 .world_popup_toolbar {
@@ -853,12 +889,17 @@
     color: var(--SmartThemeQuoteColor);
 }
 
+/* --- WI card entry --- */
 .wi-card-entry {
-    border: 1px solid;
-    border-color: var(--SmartThemeBorderColor);
+    border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
-    padding: 0 5px;
-    margin-bottom: 1px;
+    padding: 2px 8px;
+    margin-bottom: 2px;
+    transition: border-color var(--animation-duration-2x), box-shadow var(--animation-duration-2x);
+}
+
+.wi-card-entry:hover {
+    border-color: color-mix(in srgb, var(--SmartThemeBodyColor) 20%, var(--SmartThemeBorderColor));
 }
 
 .world_entry {
@@ -892,14 +933,16 @@
     display: contents;
 }
 
+/* --- Disabled WI entry (modernized) --- */
 .disabledWIEntry {
-    opacity: 0.4;
-    filter: grayscale(1);
+    opacity: 0.45;
+    filter: grayscale(0.8);
+    transition: opacity var(--animation-duration-3x), filter var(--animation-duration-3x);
 }
 
 .disabledWIEntry:not(input):hover {
-    opacity: 1;
-    filter: grayscale(0.5);
+    opacity: 0.85;
+    filter: grayscale(0.3);
 }
 
 .height32px {

@@ -3161,8 +3161,23 @@ select option[disabled]:not(:checked) {
 
 /*#######################################################################*/
 
+/* --- API panel --- */
 #rm_api_block {
     overflow-y: auto;
+}
+
+#rm_api_block h4 {
+    margin-top: 0.75em;
+    margin-bottom: 0.35em;
+    font-size: calc(var(--mainFontSize) * 1.05);
+}
+
+#rm_api_block form {
+    padding: 4px 0;
+}
+
+#rm_api_block .flex-container.flexFlowColumn {
+    gap: 4px;
 }
 
 .API-logo {
@@ -4041,29 +4056,39 @@ grammarly-extension {
     content: '☐';
 }
 
+/* --- Connection status --- */
 .online_status {
-    opacity: 0.8;
-    margin-top: 2px;
-    margin-bottom: 15px;
+    opacity: 0.85;
+    margin-top: 4px;
+    margin-bottom: 12px;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 60%, transparent);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 40%, transparent);
+    font-size: calc(var(--mainFontSize) * 0.9);
 }
 
 .online_status_indicator.success {
-    background-color: green;
+    background-color: #22c55e;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
 }
 
 .online_status_indicator {
     border-radius: 100%;
-    width: 14px;
-    height: 14px;
-    background-color: red;
+    width: 10px;
+    height: 10px;
+    min-width: 10px;
+    background-color: #ef4444;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
     display: inline-block;
+    transition: background-color var(--animation-duration-2x), box-shadow var(--animation-duration-2x);
 }
 
 .online_status_text {
-    margin-left: 4px;
+    margin-left: 0;
     display: inline-block;
 }
 
@@ -5458,15 +5483,17 @@ body:not(.caption) .mes_img_caption {
 }
 
 .standoutHeader.inline-drawer-header {
-    padding: 5px;
+    padding: 6px 10px;
     margin-bottom: 0;
+    border-radius: 8px;
 }
 
 .standoutHeader~.inline-drawer-content {
     border: 1px solid var(--SmartThemeBorderColor);
-    padding: 5px;
-    border-radius: 10px;
-    background-color: var(--black30a);
+    padding: 8px;
+    border-radius: 0 0 8px 8px;
+    background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, transparent);
+    margin-top: -1px;
 }
 
 #user-settings-block [name="MiscellaneousToggles"],
@@ -5584,22 +5611,38 @@ body:has(#character_popup.open) #top-settings-holder:has(.drawer-content.openDra
     opacity: 0.8;
 }
 
+/* --- Inline drawer --- */
 .custom-drawer-icon,
 .inline-drawer-icon {
     display: block;
     cursor: pointer;
-    font-size: calc(var(--mainFontSize)*1.5);
+    font-size: calc(var(--mainFontSize) * 1.25);
     background-size: cover;
     background-repeat: no-repeat;
-    filter: brightness(75%);
+    opacity: 0.6;
+    transition: opacity var(--animation-duration-2x), transform var(--animation-duration-2x);
+}
+
+.inline-drawer-icon.up {
+    transform: rotate(180deg);
+}
+
+.inline-drawer-header:hover .inline-drawer-icon {
+    opacity: 0.9;
 }
 
 .inline-drawer-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 5px 0;
+    padding: 6px 2px;
     cursor: pointer;
+    border-radius: 6px;
+    transition: background-color var(--animation-duration-2x);
+}
+
+.inline-drawer-header:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 5%, transparent);
 }
 
 .inline-drawer-content {
@@ -5946,14 +5989,18 @@ body:not(.movingUI) .drawer-content.maximized {
     display: none;
 }
 
+/* --- Reverse proxy warning --- */
 .reverse_proxy_warning:not(small) {
     color: var(--warning);
-    background-color: var(--black70a);
+    background-color: color-mix(in srgb, var(--SmartThemeBlurTintColor) 85%, transparent);
     text-shadow: none !important;
-    margin-top: 5px !important;
-    border-radius: 5px;
-    padding: 3px;
-    border: 1px solid var(--SmartThemeBorderColor);
+    margin-top: 8px !important;
+    border-radius: 8px;
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--SmartThemeBorderColor));
+    border-left: 3px solid var(--warning);
+    font-size: calc(var(--mainFontSize) * 0.9);
+    line-height: 1.4;
 }
 
 .neutral_warning {
