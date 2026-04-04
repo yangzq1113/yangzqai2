@@ -70,7 +70,7 @@ export function initActionableSingleSelect(select, {
     const previousNamespace = selectElement.dataset.lukerActionableSingleSelectNamespace;
     if (previousNamespace) {
         $select.off(`select2:selecting${previousNamespace}`);
-        $(document).off(`pointerdown${previousNamespace} mousedown${previousNamespace} mouseup${previousNamespace} touchstart${previousNamespace} touchend${previousNamespace} click${previousNamespace}`);
+        $(document).off(`pointerdown${previousNamespace} mousedown${previousNamespace} mouseup${previousNamespace} touchstart${previousNamespace} touchend${previousNamespace} pointerup${previousNamespace}`);
     }
 
     const ownerKey = buildOwnerKey(selectElement);
@@ -144,8 +144,8 @@ export function initActionableSingleSelect(select, {
         });
 
     $(document)
-        .off(`click${namespace}`)
-        .on(`click${namespace}`, '.luker-action-select2-option__delete', async function (event) {
+        .off(`pointerup${namespace}`)
+        .on(`pointerup${namespace}`, '.luker-action-select2-option__delete', async function (event) {
             if ($(this).data('lukerActionOwner') !== ownerKey || typeof onDelete !== 'function') {
                 return;
             }
