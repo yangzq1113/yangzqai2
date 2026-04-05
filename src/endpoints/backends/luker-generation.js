@@ -7,6 +7,11 @@ import sanitize from 'sanitize-filename';
 import { CHAT_COMPLETION_SOURCES } from '../../constants.js';
 import { appendMessagesToChatFile } from '../chats.js';
 import { getConfigValue } from '../../util.js';
+import {
+    completeInspectionFromStream,
+    failInspection,
+    abortInspection,
+} from '../../request-inspector.js';
 
 const generationJobs = new Map();
 const LUKER_GENERATION_JOB_MAX_ITEMS = 128;
@@ -754,6 +759,7 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
     if (!fetchResponse.ok) {
         const errorText = await fetchResponse.text().catch(() => '');
         failGenerationJob(job, `${fetchResponse.status} ${fetchResponse.statusText}`.trim());
+        failInspection(request, `${fetchResponse.status} ${fetchResponse.statusText}`.trim(), fetchResponse.status);
         if (!clientClosed && !response.writableEnded) {
             response.end(errorText || '');
         }
@@ -799,6 +805,9 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
     } catch (error) {
         if (job.status !== 'cancelled') {
             failGenerationJob(job, error?.message || 'Streaming interrupted');
+            failInspection(request, error?.message || 'Streaming interrupted');
+        } else {
+            abortInspection(request);
         }
         if (!clientClosed && !response.writableEnded) {
             response.end();
@@ -820,12 +829,14 @@ export async function forwardStreamingWithGenerationJob(fetchResponse, response,
     }
 
     if (job.status === 'cancelled') {
+        abortInspection(request);
         if (!clientClosed && !response.writableEnded) {
             response.end();
         }
         return;
     }
 
+    completeInspectionFromStream(request, job.events);
     const persisted = await completeGenerationJobFromText(request, job, job.text, modelName);
     const completionEvent = JSON.stringify({
         luker: {

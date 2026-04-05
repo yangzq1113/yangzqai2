@@ -33,6 +33,12 @@ import {
     uuidv4,
 } from '../../util.js';
 import {
+    startInspection,
+    completeInspection,
+    failInspection,
+    abortInspection,
+} from '../../request-inspector.js';
+import {
     convertClaudeMessages,
     convertGooglePrompt,
     convertTextCompletionPrompt,
@@ -244,7 +250,8 @@ async function forwardStreamingResponseWithJob(request, response, fetchResponse)
     return forwardFetchResponse(fetchResponse, response);
 }
 
-async function finalizePayloadWithJob(request, response, payload) {
+async function finalizePayloadWithJob(request, response, payload, rawApiResponse) {
+    completeInspection(request, payload, rawApiResponse);
     const job = setGenerationIdHeaderIfJob(request, response);
     if (!job || response.headersSent) {
         return;
@@ -441,11 +448,12 @@ async function sendClaudeRequest(request, response) {
 
             // Wrap it back to OAI format + save the original content
             const reply = { choices: [{ 'message': { 'content': responseText } }], content: generateResponseJson.content };
-            await finalizePayloadWithJob(request, response, reply);
+            await finalizePayloadWithJob(request, response, reply, generateResponseJson);
             return response.send(reply);
         }
     } catch (error) {
         console.error(color.red(`Error communicating with Claude: ${error}\n${divider}`));
+        failInspection(request, error?.message || 'Claude request failed', 500);
         if (!response.headersSent) {
             return response.status(500).send({ error: true });
         }
@@ -769,11 +777,12 @@ async function sendMakerSuiteRequest(request, response) {
 
             // Wrap it back to OAI format (responseContent includes thought signatures in parts array)
             const reply = { choices: [{ 'message': { 'content': responseText } }], responseContent };
-            await finalizePayloadWithJob(request, response, reply);
+            await finalizePayloadWithJob(request, response, reply, generateResponseJson);
             return response.send(reply);
         }
     } catch (error) {
         console.error(`Error communicating with ${apiName} API:`, error);
+        failInspection(request, error?.message || `${apiName} request failed`, 500);
         if (!response.headersSent) {
             return response.status(500).send({ error: true });
         }
@@ -852,6 +861,7 @@ async function sendAI21Request(request, response) {
     } catch (error) {
         console.error('Error communicating with AI21 API: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'AI21 request failed');
+        failInspection(request, error?.message || 'AI21 request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -941,6 +951,7 @@ async function sendMistralAIRequest(request, response) {
     } catch (error) {
         console.error('Error communicating with MistralAI API: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'MistralAI request failed');
+        failInspection(request, error?.message || 'MistralAI request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1040,6 +1051,7 @@ async function sendCohereRequest(request, response) {
     } catch (error) {
         console.error('Error communicating with Cohere API: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'Cohere request failed');
+        failInspection(request, error?.message || 'Cohere request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1149,6 +1161,7 @@ async function sendDeepSeekRequest(request, response) {
     } catch (error) {
         console.error('Error communicating with DeepSeek API: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'DeepSeek request failed');
+        failInspection(request, error?.message || 'DeepSeek request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1265,6 +1278,7 @@ async function sendXaiRequest(request, response) {
     } catch (error) {
         console.error('Error communicating with xAI API: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'xAI request failed');
+        failInspection(request, error?.message || 'xAI request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1369,6 +1383,7 @@ async function sendAimlapiRequest(request, response) {
     } catch (error) {
         console.error('Error communicating with AI/ML API: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'AI/ML request failed');
+        failInspection(request, error?.message || 'AI/ML request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1481,6 +1496,7 @@ async function sendElectronHubRequest(request, response) {
     catch (error) {
         console.error('Error communicating with Electron Hub: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'Electron Hub request failed');
+        failInspection(request, error?.message || 'Electron Hub request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1582,6 +1598,7 @@ async function sendChutesRequest(request, response) {
     catch (error) {
         console.error('Error communicating with Chutes: ', error);
         failGenerationJob(getJobFromRequest(request), error?.message || 'Chutes request failed');
+        failInspection(request, error?.message || 'Chutes request failed', 500);
         if (!response.headersSent) {
             response.send({ error: true });
         } else {
@@ -1680,6 +1697,11 @@ async function sendAzureOpenAIRequest(request, response) {
         const message = error.name === 'AbortError'
             ? 'Request was aborted by the client.'
             : (error.message || 'An unknown network error occurred.');
+        if (error.name === 'AbortError') {
+            abortInspection(request);
+        } else {
+            failInspection(request, message, 500);
+        }
         return response.status(500).send({ error: { message, ...error } });
     }
 }
@@ -2274,6 +2296,7 @@ router.post('/bias', async function (request, response) {
 router.post('/generate', async function (request, response) {
     try {
         if (!request.body) return response.status(400).send({ error: true });
+        startInspection(request);
         const requestedLukerGenerationOptions = request.body.luker_generation && typeof request.body.luker_generation === 'object'
             ? request.body.luker_generation
             : null;
@@ -2685,6 +2708,7 @@ router.post('/generate', async function (request, response) {
             const message = fetchResponse.statusText || 'Unknown error occurred';
             const quota_error = fetchResponse.status === 429 && errorData?.error?.type === 'insufficient_quota';
             console.error('Chat completion request error: ', message, responseText);
+            failInspection(request, message, fetchResponse.status);
             if (lukerGenerationJob) {
                 failGenerationJob(lukerGenerationJob, message);
             }
@@ -2699,6 +2723,7 @@ router.post('/generate', async function (request, response) {
         }
     } catch (error) {
         console.error('Generation failed', error);
+        failInspection(request, error?.message || 'Unknown error occurred', 502);
         const job = getJobFromRequest(request);
         if (job) {
             failGenerationJob(job, error?.message || 'Unknown error occurred');
