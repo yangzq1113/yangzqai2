@@ -37,6 +37,7 @@ export const SECRET_KEYS = {
     KOBOLDCPP: 'api_key_koboldcpp',
     LLAMACPP: 'api_key_llamacpp',
     COHERE: 'api_key_cohere',
+    JINA: 'api_key_jina',
     PERPLEXITY: 'api_key_perplexity',
     GROQ: 'api_key_groq',
     AZURE_TTS: 'api_key_azure_tts',

@@ -17,6 +17,7 @@ import { getCohereVector, getCohereBatchVector } from '../vectors/cohere-vectors
 import { getLlamaCppVector, getLlamaCppBatchVector } from '../vectors/llamacpp-vectors.js';
 import { getVllmVector, getVllmBatchVector } from '../vectors/vllm-vectors.js';
 import { getOllamaVector, getOllamaBatchVector } from '../vectors/ollama-vectors.js';
+import { rerank } from '../vectors/rerank.js';
 
 // Don't forget to add new sources to the SOURCES array
 const SOURCES = [
@@ -360,8 +361,9 @@ async function queryCollection(directories, collectionId, source, sourceSettings
     const vector = await getVector(source, sourceSettings, searchText, true, directories);
 
     const result = await store.queryItems(vector, topK);
-    const metadata = result.filter(x => x.score >= threshold).map(x => x.item.metadata);
-    const hashes = result.map(x => Number(x.item.metadata.hash));
+    const filtered = result.filter(x => x.score >= threshold);
+    const metadata = filtered.map(x => ({ ...x.item.metadata, score: x.score }));
+    const hashes = filtered.map(x => Number(x.item.metadata.hash));
     return { metadata, hashes };
 }
 
@@ -404,7 +406,7 @@ async function multiQueryCollection(directories, collectionIds, source, sourceSe
         }
 
         groupedResults[result.collectionId].hashes.push(Number(result.result.item.metadata.hash));
-        groupedResults[result.collectionId].metadata.push(result.result.item.metadata);
+        groupedResults[result.collectionId].metadata.push({ ...result.result.item.metadata, score: result.result.score });
     }
 
     return groupedResults;
@@ -479,6 +481,30 @@ router.post('/query-multi', async (req, res) => {
         return res.json(results);
     } catch (error) {
         return regenerateCorruptedIndexErrorHandler(req, res, error);
+    }
+});
+
+router.post('/rerank', async (req, res) => {
+    try {
+        if (!req.body.query || !Array.isArray(req.body.documents)) {
+            return res.sendStatus(400);
+        }
+
+        const query = String(req.body.query);
+        const documents = req.body.documents;
+        const topK = Number(req.body.topK) || 5;
+        const source = String(req.body.source) || 'cohere';
+        const rerankSettings = {
+            model: String(req.body.model || ''),
+            apiUrl: String(req.body.apiUrl || ''),
+            apiKey: String(req.body.apiKey || ''),
+        };
+
+        const results = await rerank(source, rerankSettings, query, documents, topK, req.user.directories);
+        return res.json(results);
+    } catch (error) {
+        console.error('Rerank failed:', error);
+        return res.status(500).json({ error: error.message });
     }
 });
 
