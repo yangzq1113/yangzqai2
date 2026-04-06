@@ -110,6 +110,13 @@ const settings = {
     enabled_world_info: false,
     enabled_for_all: false,
     max_entries: 5,
+
+    // Rerank
+    rerank_enabled: false,
+    rerank_source: 'cohere',
+    rerank_model: 'rerank-v3.5',
+    rerank_api_url: '',
+    rerank_api_key: '',
 };
 
 const moduleWorker = new ModuleWorkerWrapper(synchronizeChat);
@@ -941,6 +948,7 @@ async function deleteVectorItems(collectionId, hashes) {
  * @returns {Promise<{ hashes: number[], metadata: object[]}>} - Hashes of the results
  */
 async function queryCollection(collectionId, searchText, topK) {
+    const retrieveK = settings.rerank_enabled ? Math.max(topK * 4, 20) : topK;
     const args = await getAdditionalArgs([searchText]);
     const response = await fetch('/api/vector/query', {
         method: 'POST',
@@ -949,7 +957,7 @@ async function queryCollection(collectionId, searchText, topK) {
             ...getVectorsRequestBody(args),
             collectionId: collectionId,
             searchText: searchText,
-            topK: topK,
+            topK: retrieveK,
             source: settings.source,
             threshold: settings.score_threshold,
         }),
@@ -959,7 +967,17 @@ async function queryCollection(collectionId, searchText, topK) {
         throw new Error(`Failed to query collection ${collectionId}`);
     }
 
-    return await response.json();
+    const result = await response.json();
+
+    if (settings.rerank_enabled && result.metadata?.length > 0) {
+        const reranked = await rerankResults(searchText, result.metadata, topK);
+        return {
+            hashes: reranked.map(m => Number(m.hash)),
+            metadata: reranked,
+        };
+    }
+
+    return result;
 }
 
 /**
@@ -971,6 +989,7 @@ async function queryCollection(collectionId, searchText, topK) {
  * @returns {Promise<Record<string, { hashes: number[], metadata: object[] }>>} - Results mapped to collection IDs
  */
 async function queryMultipleCollections(collectionIds, searchText, topK, threshold) {
+    const retrieveK = settings.rerank_enabled ? Math.max(topK * 4, 20) : topK;
     const args = await getAdditionalArgs([searchText]);
     const response = await fetch('/api/vector/query-multi', {
         method: 'POST',
@@ -979,7 +998,7 @@ async function queryMultipleCollections(collectionIds, searchText, topK, thresho
             ...getVectorsRequestBody(args),
             collectionIds: collectionIds,
             searchText: searchText,
-            topK: topK,
+            topK: retrieveK,
             source: settings.source,
             threshold: threshold ?? settings.score_threshold,
         }),
@@ -989,7 +1008,77 @@ async function queryMultipleCollections(collectionIds, searchText, topK, thresho
         throw new Error('Failed to query multiple collections');
     }
 
-    return await response.json();
+    const result = await response.json();
+
+    if (settings.rerank_enabled) {
+        // Flatten all results from all collections with collection ID tag
+        const allDocs = [];
+        for (const [collId, data] of Object.entries(result)) {
+            for (const meta of data.metadata) {
+                allDocs.push({ ...meta, _collectionId: collId });
+            }
+        }
+
+        if (allDocs.length > 0) {
+            const reranked = await rerankResults(searchText, allDocs, topK);
+
+            // Re-group by collection ID
+            const grouped = {};
+            for (const doc of reranked) {
+                const collId = doc._collectionId;
+                delete doc._collectionId;
+                if (!grouped[collId]) {
+                    grouped[collId] = { hashes: [], metadata: [] };
+                }
+                grouped[collId].hashes.push(Number(doc.hash));
+                grouped[collId].metadata.push(doc);
+            }
+            return grouped;
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Reranks query results using a reranking model for better relevance.
+ * @param {string} queryText - The original query text
+ * @param {object[]} metadata - The metadata array from query results (must include text and score)
+ * @param {number} topK - Number of top results to return after reranking
+ * @returns {Promise<object[]>} - Reranked metadata array
+ */
+async function rerankResults(queryText, metadata, topK) {
+    if (!settings.rerank_enabled || !metadata || metadata.length === 0) {
+        return metadata;
+    }
+
+    try {
+        const response = await fetch('/api/vector/rerank', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                query: queryText,
+                documents: metadata,
+                topK: topK,
+                source: settings.rerank_source,
+                model: settings.rerank_model,
+                apiUrl: settings.rerank_api_url,
+                apiKey: settings.rerank_api_key,
+            }),
+        });
+
+        if (!response.ok) {
+            console.warn('Rerank failed, falling back to original order:', response.statusText);
+            return metadata.slice(0, topK);
+        }
+
+        const reranked = await response.json();
+        console.log(`Vectors: Reranked ${metadata.length} candidates to ${reranked.length} results`);
+        return reranked;
+    } catch (error) {
+        console.error('Vectors: Rerank error, falling back to original order:', error);
+        return metadata.slice(0, topK);
+    }
 }
 
 /**
@@ -1117,6 +1206,25 @@ function toggleSettings() {
             loadNanoGPTModels();
             break;
     }
+}
+
+function toggleRerankSettings() {
+    $('#vectors_rerank_settings').toggle(settings.rerank_enabled);
+}
+
+function toggleRerankSourceSettings() {
+    $('#rerank_cohere_model').toggle(settings.rerank_source === 'cohere');
+    $('#rerank_jina_model').toggle(settings.rerank_source === 'jina');
+    $('#rerank_custom_settings').toggle(settings.rerank_source === 'custom');
+}
+
+function updateRerankModelFromSource() {
+    const defaults = {
+        cohere: 'rerank-v3.5',
+        jina: 'jina-reranker-v2-base-multilingual',
+        custom: '',
+    };
+    settings.rerank_model = defaults[settings.rerank_source] || '';
 }
 
 async function loadChutesModels() {
@@ -1892,6 +2000,54 @@ jQuery(async () => {
         Object.assign(extension_settings.vectors, settings);
         saveSettingsDebounced();
     });
+
+    $('#vectors_rerank_enabled').prop('checked', settings.rerank_enabled).on('input', () => {
+        settings.rerank_enabled = !!$('#vectors_rerank_enabled').prop('checked');
+        Object.assign(extension_settings.vectors, settings);
+        toggleRerankSettings();
+        saveSettingsDebounced();
+    });
+
+    $('#vectors_rerank_source').val(settings.rerank_source).on('change', () => {
+        settings.rerank_source = String($('#vectors_rerank_source').val());
+        updateRerankModelFromSource();
+        toggleRerankSourceSettings();
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+
+    $('#vectors_rerank_cohere_model').val(settings.rerank_model).on('change', () => {
+        settings.rerank_model = String($('#vectors_rerank_cohere_model').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+
+    $('#vectors_rerank_jina_model').val(settings.rerank_model).on('change', () => {
+        settings.rerank_model = String($('#vectors_rerank_jina_model').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+
+    $('#vectors_rerank_custom_model').val(settings.rerank_model).on('input', () => {
+        settings.rerank_model = String($('#vectors_rerank_custom_model').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+
+    $('#vectors_rerank_api_url').val(settings.rerank_api_url).on('input', () => {
+        settings.rerank_api_url = String($('#vectors_rerank_api_url').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+
+    $('#vectors_rerank_api_key').val(settings.rerank_api_key).on('input', () => {
+        settings.rerank_api_key = String($('#vectors_rerank_api_key').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+
+    toggleRerankSettings();
+    toggleRerankSourceSettings();
 
     $('#vectors_ollama_pull').on('click', (e) => {
         const presetModel = extension_settings.vectors.ollama_model || '';

@@ -223,6 +223,78 @@
 
             <hr>
 
+            <h4 data-i18n="Rerank settings">
+                Rerank settings
+            </h4>
+
+            <label class="checkbox_label" for="vectors_rerank_enabled" title="Enable reranking of vector search results for better relevance. Retrieves more candidates and uses a reranking model to select the most relevant ones.">
+                <input id="vectors_rerank_enabled" type="checkbox" class="checkbox">
+                <span data-i18n="Enable Rerank">Enable Rerank</span>
+            </label>
+
+            <div id="vectors_rerank_settings" class="marginTopBot5">
+                <div class="flex-container flexFlowColumn">
+                    <label for="vectors_rerank_source" data-i18n="Rerank Source">
+                        Rerank Source
+                    </label>
+                    <select id="vectors_rerank_source" class="text_pole">
+                        <option value="cohere">Cohere</option>
+                        <option value="jina">Jina</option>
+                        <option value="custom">Custom (OpenAI-compatible)</option>
+                    </select>
+                </div>
+                <div class="flex-container flexFlowColumn" id="rerank_cohere_model">
+                    <label for="vectors_rerank_cohere_model" data-i18n="Rerank Model">
+                        Rerank Model
+                    </label>
+                    <select id="vectors_rerank_cohere_model" class="text_pole">
+                        <option value="rerank-v3.5">rerank-v3.5</option>
+                        <option value="rerank-english-v3.0">rerank-english-v3.0</option>
+                        <option value="rerank-multilingual-v3.0">rerank-multilingual-v3.0</option>
+                        <option value="rerank-english-v2.0">rerank-english-v2.0</option>
+                    </select>
+                    <small>
+                        <i data-i18n="Hint: Uses the same Cohere API key from API Connections.">Hint: Uses the same Cohere API key from API Connections.</i>
+                    </small>
+                </div>
+                <div class="flex-container flexFlowColumn" id="rerank_jina_model">
+                    <label for="vectors_rerank_jina_model" data-i18n="Rerank Model">
+                        Rerank Model
+                    </label>
+                    <select id="vectors_rerank_jina_model" class="text_pole">
+                        <option value="jina-reranker-v2-base-multilingual">jina-reranker-v2-base-multilingual</option>
+                        <option value="jina-reranker-v1-base-en">jina-reranker-v1-base-en</option>
+                        <option value="jina-reranker-v1-turbo-en">jina-reranker-v1-turbo-en</option>
+                        <option value="jina-reranker-v1-tiny-en">jina-reranker-v1-tiny-en</option>
+                    </select>
+                    <div class="flex-container alignItemsCenter">
+                        <label for="api_key_jina" class="flex1">
+                            <span data-i18n="Jina API Key">Jina API Key</span>
+                        </label>
+                        <div id="api_key_jina" class="menu_button menu_button_icon manage-api-keys" data-key="api_key_jina">
+                            <i class="fa-solid fa-key"></i>
+                            <span data-i18n="Click to set">Click to set</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex-container flexFlowColumn" id="rerank_custom_settings">
+                    <label for="vectors_rerank_custom_model">
+                        <small data-i18n="Rerank Model">Rerank Model</small>
+                    </label>
+                    <input id="vectors_rerank_custom_model" class="text_pole" type="text" placeholder="e.g. BAAI/bge-reranker-v2-m3" />
+                    <label for="vectors_rerank_api_url">
+                        <small data-i18n="Rerank API URL">Rerank API URL</small>
+                    </label>
+                    <input id="vectors_rerank_api_url" class="text_pole" type="text" placeholder="e.g. http://localhost:11434/v1" />
+                    <label for="vectors_rerank_api_key">
+                        <small data-i18n="Rerank API Key">Rerank API Key</small>
+                    </label>
+                    <input id="vectors_rerank_api_key" class="text_pole" type="password" placeholder="(Optional)" />
+                </div>
+            </div>
+
+            <hr>
+
             <h4 data-i18n="World Info settings">
                 World Info settings
             </h4>
