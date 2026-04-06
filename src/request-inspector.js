@@ -38,6 +38,7 @@ export function startInspection(request) {
 
  const entry = {
  id: randomUUID(),
+ type: 'chat',
  handle,
  timestamp: Date.now(),
  source: String(body.chat_completion_source || body.api_type || 'unknown'),
@@ -263,6 +264,259 @@ export function abortInspection(request) {
  entry.durationMs = Date.now() - entry.timestamp;
 }
 
+// ---- ComfyUI Workflow Parsing ----
+
+/**
+ * Best-effort extraction of generation parameters from a ComfyUI workflow JSON.
+ * @param {string|object} promptData - The workflow (body.prompt is a JSON string)
+ * @returns {object}
+ */
+function parseComfyWorkflow(promptData) {
+    const result = { prompt: '', negativePrompt: '', model: '', width: null, height: null, steps: null, cfgScale: null, seed: null, sampler: null };
+    let workflow;
+    try {
+        workflow = typeof promptData === 'string' ? JSON.parse(promptData) : promptData;
+    } catch {
+        return result;
+    }
+    if (!workflow || typeof workflow !== 'object') return result;
+
+    const nodes = Object.values(workflow);
+    for (const node of nodes) {
+        const cls = node?.class_type;
+        const inputs = node?.inputs;
+        if (!cls || !inputs) continue;
+
+        if (cls === 'KSampler' || cls === 'KSamplerAdvanced') {
+            result.steps = inputs.steps ?? result.steps;
+            result.cfgScale = inputs.cfg ?? result.cfgScale;
+            result.seed = inputs.seed ?? inputs.noise_seed ?? result.seed;
+            result.sampler = inputs.sampler_name ?? result.sampler;
+        } else if (cls === 'CLIPTextEncode') {
+            const text = typeof inputs.text === 'string' ? inputs.text : '';
+            // Heuristic: shorter CLIP texts or ones with "negative" in node title are negative prompts
+            if (!result.prompt) {
+                result.prompt = text;
+            } else if (!result.negativePrompt && text.length < result.prompt.length) {
+                result.negativePrompt = text;
+            }
+        } else if (cls === 'CheckpointLoaderSimple' || cls === 'CheckpointLoader') {
+            result.model = inputs.ckpt_name ?? result.model;
+        } else if (cls === 'EmptyLatentImage') {
+            result.width = inputs.width ?? result.width;
+            result.height = inputs.height ?? result.height;
+        }
+    }
+    return result;
+}
+
+// ---- Image Inspection ----
+
+/**
+ * Extract normalized image generation metadata from various backend request bodies.
+ * @param {string} source - Backend identifier
+ * @param {object} body - request.body
+ * @returns {object} Normalized meta
+ */
+export function extractImageMeta(source, body) {
+    const meta = {
+        source,
+        prompt: '',
+        negativePrompt: '',
+        model: '',
+        width: null,
+        height: null,
+        steps: null,
+        cfgScale: null,
+        seed: null,
+        sampler: null,
+    };
+
+    switch (source) {
+        case 'comfyui':
+        case 'comfyui_runpod': {
+            const parsed = parseComfyWorkflow(body.prompt);
+            Object.assign(meta, parsed);
+            break;
+        }
+        case 'sd_webui':
+            meta.prompt = body.prompt || '';
+            meta.negativePrompt = body.negative_prompt || '';
+            meta.model = body.override_settings?.sd_model_checkpoint || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.cfgScale = body.cfg_scale ?? null;
+            meta.seed = body.seed ?? null;
+            meta.sampler = body.sampler_name || null;
+            break;
+        case 'sd_cpp':
+            meta.prompt = body.prompt || '';
+            meta.negativePrompt = body.negative_prompt || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.cfgScale = body.cfg_scale ?? null;
+            meta.seed = body.seed ?? null;
+            meta.sampler = body.sampler_name || null;
+            break;
+        case 'drawthings':
+            meta.prompt = body.prompt || '';
+            meta.negativePrompt = body.negative_prompt || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.cfgScale = body.cfg_scale ?? null;
+            meta.seed = body.seed ?? null;
+            break;
+        case 'together':
+            meta.prompt = body.prompt || '';
+            meta.negativePrompt = body.negative_prompt || '';
+            meta.model = body.model || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.seed = body.seed ?? null;
+            break;
+        case 'pollinations':
+            meta.prompt = body.prompt || '';
+            meta.negativePrompt = body.negative_prompt || '';
+            meta.model = body.model || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.seed = body.seed ?? null;
+            break;
+        case 'stability':
+            meta.prompt = body.payload?.prompt || '';
+            meta.model = body.model || '';
+            meta.seed = body.payload?.seed ?? null;
+            break;
+        case 'electronhub': {
+            meta.prompt = body.prompt || '';
+            meta.model = body.model || '';
+            if (typeof body.size === 'string' && body.size.includes('x')) {
+                const [w, h] = body.size.split('x').map(Number);
+                if (w && h) { meta.width = w; meta.height = h; }
+            }
+            break;
+        }
+        case 'chutes':
+            meta.prompt = body.prompt || '';
+            meta.negativePrompt = body.negative_prompt || '';
+            meta.model = body.model || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.cfgScale = body.guidance ?? null;
+            meta.seed = body.seed ?? null;
+            break;
+        case 'bfl':
+            meta.prompt = body.prompt || '';
+            meta.model = body.model || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.cfgScale = body.guidance ?? null;
+            meta.seed = body.seed ?? null;
+            break;
+        case 'falai':
+            meta.prompt = body.prompt || '';
+            meta.model = body.model || '';
+            meta.width = body.width ?? null;
+            meta.height = body.height ?? null;
+            meta.steps = body.steps ?? null;
+            meta.cfgScale = body.guidance ?? null;
+            meta.seed = body.seed ?? null;
+            break;
+        default:
+            // huggingface, nanogpt, xai, and any future backends
+            meta.prompt = body.prompt || body.inputs || '';
+            meta.model = body.model || '';
+            break;
+    }
+
+    // Truncate long strings
+    if (typeof meta.prompt === 'string' && meta.prompt.length > 500) {
+        meta.prompt = meta.prompt.slice(0, 500);
+    }
+    if (typeof meta.negativePrompt === 'string' && meta.negativePrompt.length > 200) {
+        meta.negativePrompt = meta.negativePrompt.slice(0, 200);
+    }
+
+    return meta;
+}
+
+/**
+ * Start tracking an image generation request.
+ * @param {import('express').Request} request
+ * @param {object} meta - from extractImageMeta()
+ */
+export function startImageInspection(request, meta) {
+    const handle = String(request?.user?.profile?.handle || '');
+    if (!handle) return;
+
+    const entry = {
+        id: randomUUID(),
+        type: 'image',
+        handle,
+        timestamp: Date.now(),
+        source: String(meta.source || 'unknown'),
+        prompt: String(meta.prompt || ''),
+        negativePrompt: String(meta.negativePrompt || ''),
+        model: String(meta.model || ''),
+        width: meta.width ?? null,
+        height: meta.height ?? null,
+        steps: meta.steps ?? null,
+        cfgScale: meta.cfgScale ?? null,
+        seed: meta.seed ?? null,
+        sampler: meta.sampler || null,
+        durationMs: null,
+        status: 'running',
+        httpStatus: null,
+        error: '',
+        outputFormat: null,
+        outputSizeBytes: null,
+    };
+
+    pushEntry(handle, entry);
+    request.__inspectorId = entry.id;
+    request.__inspectorTimestamp = entry.timestamp;
+}
+
+/**
+ * Complete an image inspection with success.
+ * @param {import('express').Request} request
+ * @param {object} [resultMeta] - { format, sizeBytes }
+ */
+export function completeImageInspection(request, resultMeta) {
+    const entry = findEntry(request);
+    if (!entry) return;
+
+    entry.status = 'success';
+    entry.durationMs = Date.now() - entry.timestamp;
+    entry.httpStatus = 200;
+    if (resultMeta) {
+        entry.outputFormat = resultMeta.format || null;
+        entry.outputSizeBytes = resultMeta.sizeBytes ?? null;
+    }
+}
+
+/**
+ * Mark an image inspection as failed.
+ * @param {import('express').Request} request
+ * @param {string} errorMessage
+ * @param {number} [httpStatus]
+ */
+export function failImageInspection(request, errorMessage, httpStatus) {
+    const entry = findEntry(request);
+    if (!entry) return;
+
+    entry.status = 'error';
+    entry.durationMs = Date.now() - entry.timestamp;
+    entry.httpStatus = httpStatus ?? null;
+    entry.error = String(errorMessage || 'Unknown error');
+}
+
 // ---- Express Router ----
 
 export const router = express.Router();
@@ -272,21 +526,33 @@ router.get('/list', (req, res) => {
  if (!handle) return res.status(401).send({ error: 'Unauthorized' });
 
  const buf = getBuffer(handle);
- const summaries = buf.map(e => ({
+ const summaries = buf.map(e => {
+ const base = {
  id: e.id,
+ type: e.type || 'chat',
  timestamp: e.timestamp,
  source: e.source,
  model: e.model,
- stream: e.stream,
- messageCount: e.messageCount,
- promptCharLength: e.promptCharLength,
- maxTokens: e.maxTokens,
- usage: e.usage,
  durationMs: e.durationMs,
  status: e.status,
  httpStatus: e.httpStatus,
  error: e.error,
- }));
+ };
+ if (e.type === 'image') {
+ base.prompt = (e.prompt || '').slice(0, 80);
+ base.width = e.width;
+ base.height = e.height;
+ base.outputFormat = e.outputFormat;
+ base.outputSizeBytes = e.outputSizeBytes;
+ } else {
+ base.stream = e.stream;
+ base.messageCount = e.messageCount;
+ base.promptCharLength = e.promptCharLength;
+ base.maxTokens = e.maxTokens;
+ base.usage = e.usage;
+ }
+ return base;
+ });
 
  summaries.reverse();
  return res.json(summaries);

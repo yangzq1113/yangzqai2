@@ -16,6 +16,7 @@ import { delay, getBasicAuthHeader, isValidUrl, tryParse } from '../util.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
 import { getFileNameValidationFunction } from '../middleware/validateFileName.js';
 import { AIMLAPI_HEADERS } from '../constants.js';
+import { startImageInspection, completeImageInspection, failImageInspection, abortInspection, extractImageMeta } from '../request-inspector.js';
 
 /**
  * Gets the comfy workflows.
@@ -299,6 +300,7 @@ router.post('/set-model', async (request, response) => {
 });
 
 router.post('/generate', async (request, response) => {
+    startImageInspection(request, extractImageMeta('sd_webui', request.body));
     try {
         try {
             const optionsUrl = new URL(request.body.url);
@@ -346,8 +348,10 @@ router.post('/generate', async (request, response) => {
         }
 
         const data = await result.json();
+        completeImageInspection(request);
         return response.send(data);
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -670,6 +674,7 @@ async function waitForComfyCompletion(baseUrl, promptId, clientId, signal) {
 }
 
 comfy.post('/generate', async (request, response) => {
+    startImageInspection(request, extractImageMeta('comfyui', request.body));
     const controller = new AbortController();
     let settled = false;
 
@@ -701,6 +706,7 @@ comfy.post('/generate', async (request, response) => {
             if (!settled) {
                 const interruptUrl = new URL(urlJoin(baseUrl, '/interrupt'));
                 fetch(interruptUrl, { method: 'POST', headers: { 'Authorization': getBasicAuthHeader(request.body.auth) } }).catch(() => {});
+                abortInspection(request);
             }
             controller.abort();
         });
@@ -745,8 +751,10 @@ comfy.post('/generate', async (request, response) => {
         }
         const format = path.extname(imgInfo.filename).slice(1).toLowerCase() || 'png';
         const imgBuffer = await imgResponse.arrayBuffer();
+        completeImageInspection(request, { format, sizeBytes: imgBuffer.byteLength });
         return response.send({ format: format, data: Buffer.from(imgBuffer).toString('base64') });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error('ComfyUI error:', error);
         if (!response.headersSent) {
             response.status(500).send(error.message);
@@ -797,6 +805,8 @@ comfyRunPod.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('comfyui_runpod', request.body));
+
         let jobId;
         let item;
         const url = new URL(urlJoin(request.body.url, '/run'));
@@ -807,6 +817,7 @@ comfyRunPod.post('/generate', async (request, response) => {
             if (!response.writableEnded && !item) {
                 const interruptUrl = new URL(urlJoin(request.body.url, `/cancel/${jobId}`));
                 fetch(interruptUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${key}` } });
+                abortInspection(request);
             }
             controller.abort();
         });
@@ -849,8 +860,10 @@ comfyRunPod.post('/generate', async (request, response) => {
             await delay(500);
         }
         const format = path.extname(item.filename).slice(1).toLowerCase() || 'png';
+        completeImageInspection(request, { format });
         return response.send({ format: format, data: item.data });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error('ComfyUI error:', error);
         response.status(500).send(error.message);
         return response;
@@ -907,6 +920,7 @@ together.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('together', request.body));
         console.debug('TogetherAI request:', request.body);
 
         const result = await fetch('https://api.together.xyz/v1/images/generations', {
@@ -945,8 +959,10 @@ together.post('/generate', async (request, response) => {
             b64_json = Buffer.from(buffer).toString('base64');
         }
 
+        completeImageInspection(request, { format: 'jpg', sizeBytes: Math.round(b64_json.length * 0.75) });
         return response.send({ format: 'jpg', data: b64_json });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -972,6 +988,7 @@ sdcpp.post('/ping', async (request, response) => {
 });
 
 sdcpp.post('/generate', async (request, response) => {
+    startImageInspection(request, extractImageMeta('sd_cpp', request.body));
     try {
         const url = new URL(request.body.url);
         url.pathname = '/sdapi/v1/txt2img';
@@ -1012,8 +1029,10 @@ sdcpp.post('/generate', async (request, response) => {
         }
 
         const data = await result.json();
+        completeImageInspection(request);
         return response.send(data);
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1080,6 +1099,7 @@ drawthings.post('/get-upscaler', async (request, response) => {
 });
 
 drawthings.post('/generate', async (request, response) => {
+    startImageInspection(request, extractImageMeta('drawthings', request.body));
     try {
         console.debug('SD DrawThings API request:', request.body);
 
@@ -1106,8 +1126,10 @@ drawthings.post('/generate', async (request, response) => {
         }
 
         const data = await result.json();
+        completeImageInspection(request);
         return response.send(data);
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1148,6 +1170,7 @@ pollinations.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('pollinations', request.body));
         const promptUrl = new URL(`https://gen.pollinations.ai/image/${encodeURIComponent(request.body.prompt)}`);
         const params = new URLSearchParams({
             model: String(request.body.model),
@@ -1179,8 +1202,10 @@ pollinations.post('/generate', async (request, response) => {
         const format = result.headers.get('Content-Type')?.toString() || 'image/jpeg';
         const buffer = await result.arrayBuffer();
         const image = Buffer.from(buffer).toString('base64');
+        completeImageInspection(request, { format: mime.extension(format) || 'jpg', sizeBytes: buffer.byteLength });
         return response.send({ image, format: mime.extension(format) || 'jpg' });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1197,6 +1222,7 @@ stability.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('stability', request.body));
         const { payload, model } = request.body;
 
         console.debug('Stability AI request:', model, payload);
@@ -1239,8 +1265,10 @@ stability.post('/generate', async (request, response) => {
         }
 
         const buffer = await result.arrayBuffer();
+        completeImageInspection(request, { sizeBytes: buffer.byteLength });
         return response.send(Buffer.from(buffer).toString('base64'));
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1257,6 +1285,7 @@ huggingface.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('huggingface', request.body));
         console.debug('Hugging Face request:', request.body);
 
         const result = await fetch(`https://api-inference.huggingface.co/models/${request.body.model}`, {
@@ -1276,10 +1305,12 @@ huggingface.post('/generate', async (request, response) => {
         }
 
         const buffer = await result.arrayBuffer();
+        completeImageInspection(request, { sizeBytes: buffer.byteLength });
         return response.send({
             image: Buffer.from(buffer).toString('base64'),
         });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1336,6 +1367,7 @@ electronhub.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('electronhub', request.body));
         let bodyParams = {
             model: request.body.model,
             prompt: request.body.prompt,
@@ -1378,8 +1410,10 @@ electronhub.post('/generate', async (request, response) => {
             return response.sendStatus(500);
         }
 
+        completeImageInspection(request, { sizeBytes: Math.round(image.length * 0.75) });
         return response.send({ image });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1456,6 +1490,7 @@ chutes.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('chutes', request.body));
         const bodyParams = {
             model: request.body.model,
             prompt: request.body.prompt,
@@ -1486,9 +1521,11 @@ chutes.post('/generate', async (request, response) => {
         const buffer = await result.arrayBuffer();
         const base64 = Buffer.from(buffer).toString('base64');
 
+        completeImageInspection(request, { sizeBytes: buffer.byteLength });
         return response.send({ image: base64 });
     }
     catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1545,6 +1582,7 @@ nanogpt.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('nanogpt', request.body));
         console.debug('NanoGPT request:', request.body);
 
         const result = await fetch('https://nano-gpt.com/api/generate-image', {
@@ -1570,9 +1608,11 @@ nanogpt.post('/generate', async (request, response) => {
             return response.sendStatus(500);
         }
 
+        completeImageInspection(request, { sizeBytes: Math.round(image.length * 0.75) });
         return response.send({ image });
     }
     catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1589,6 +1629,7 @@ bfl.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('bfl', request.body));
         const requestBody = {
             prompt: request.body.prompt,
             steps: request.body.steps,
@@ -1681,12 +1722,14 @@ bfl.post('/generate', async (request, response) => {
                 const fetchResult = await fetch(sample);
                 const fetchData = await fetchResult.arrayBuffer();
                 const image = Buffer.from(fetchData).toString('base64');
+                completeImageInspection(request, { format: 'jpeg', sizeBytes: fetchData.byteLength });
                 return response.send({ image: image });
             }
 
             throw new Error('BFL failed to generate image.', { cause: statusData });
         }
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1751,6 +1794,7 @@ falai.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('falai', request.body));
         const requestBody = {
             prompt: request.body.prompt,
             image_size: { 'width': request.body.width, 'height': request.body.height },
@@ -1826,12 +1870,14 @@ falai.post('/generate', async (request, response) => {
 
                 const fetchData = await imageFetch.arrayBuffer();
                 const image = Buffer.from(fetchData).toString('base64');
+                completeImageInspection(request, { sizeBytes: fetchData.byteLength });
                 return response.send({ image: image });
             }
 
             throw new Error('FAL.AI failed to generate image.', { cause: statusData });
         }
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error(error);
         return response.status(500).send(error.cause || error.message);
     }
@@ -1848,6 +1894,7 @@ xai.post('/generate', async (request, response) => {
             return response.sendStatus(400);
         }
 
+        startImageInspection(request, extractImageMeta('xai', request.body));
         const requestBody = {
             prompt: request.body.prompt,
             model: request.body.model,
@@ -1880,8 +1927,10 @@ xai.post('/generate', async (request, response) => {
             return response.sendStatus(500);
         }
 
+        completeImageInspection(request, { sizeBytes: Math.round(image.length * 0.75) });
         return response.send({ image });
     } catch (error) {
+        failImageInspection(request, error.message, 500);
         console.error('Error communicating with xAI', error);
         return response.sendStatus(500);
     }
