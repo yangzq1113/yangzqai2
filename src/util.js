@@ -1055,6 +1055,32 @@ export function trimV1(str) {
 }
 
 /**
+ * Normalizes a user-provided URL to a proper OpenAI-compatible base URL.
+ * Handles common mistakes: missing /v1, trailing slash, full endpoint paths.
+ *
+ * Examples:
+ *   https://api.example.com           → https://api.example.com/v1
+ *   https://api.example.com/          → https://api.example.com/v1
+ *   https://api.example.com/v1        → https://api.example.com/v1
+ *   https://api.example.com/v1/       → https://api.example.com/v1
+ *   https://api.example.com/v1/chat/completions → https://api.example.com/v1
+ *   https://api.example.com/api/v1    → https://api.example.com/api/v1
+ *
+ * @param {string} str Input URL string
+ * @returns {string} Normalized base URL ending with /v1 (or similar versioned path)
+ */
+export function normalizeOpenAIBaseUrl(str) {
+    let url = String(str ?? '').replace(/\/$/, '');
+    // Strip known endpoint suffixes that users might paste by mistake
+    url = url.replace(/\/(chat\/completions|completions|models|embeddings|moderations|images\/generations)$/, '');
+    // If the path doesn't already end with a version segment like /v1, /v2, etc., append /v1
+    if (!/\/v\d+$/.test(url)) {
+        url += '/v1';
+    }
+    return url;
+}
+
+/**
  * Removes trailing slash from a string.
  * @param {string} str Input string
  * @returns {string} String with trailing slash removed

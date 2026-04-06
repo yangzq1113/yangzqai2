@@ -28,6 +28,7 @@ import {
     getConfigValue,
     mergeObjectWithYaml,
     flattenSchema,
+    normalizeOpenAIBaseUrl,
     trimTrailingSlash,
     tryParse,
     uuidv4,
@@ -1806,7 +1807,7 @@ router.post('/status', async function (request, statusResponse) {
         let queryParams = {};
 
         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENAI) {
-            apiUrl = new URL(request.body.reverse_proxy || API_OPENAI).toString();
+            apiUrl = normalizeOpenAIBaseUrl(request.body.reverse_proxy || API_OPENAI);
             apiKey = request.body.reverse_proxy ? request.body.proxy_password : readProviderSecret(request, SECRET_KEYS.OPENAI);
             headers = {};
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENROUTER) {
@@ -1819,7 +1820,7 @@ router.post('/status', async function (request, statusResponse) {
             apiKey = request.body.reverse_proxy ? request.body.proxy_password : readProviderSecret(request, SECRET_KEYS.MISTRALAI);
             headers = {};
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
-            apiUrl = request.body.custom_url;
+            apiUrl = normalizeOpenAIBaseUrl(request.body.custom_url);
             apiKey = readProviderSecret(request, SECRET_KEYS.CUSTOM);
             headers = {};
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
@@ -2338,7 +2339,7 @@ router.post('/generate', async function (request, response) {
         const isTextCompletion = Boolean(request.body.model && TEXT_COMPLETION_MODELS.includes(request.body.model)) || typeof request.body.messages === 'string';
 
         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENAI) {
-            apiUrl = new URL(request.body.reverse_proxy || API_OPENAI).toString();
+            apiUrl = normalizeOpenAIBaseUrl(request.body.reverse_proxy || API_OPENAI);
             apiKey = request.body.reverse_proxy ? request.body.proxy_password : readProviderSecret(request, SECRET_KEYS.OPENAI);
             headers = {};
             bodyParams = {
@@ -2441,7 +2442,7 @@ router.post('/generate', async function (request, response) {
                 bodyParams['safety_settings'] = GEMINI_SAFETY;
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
-            apiUrl = request.body.custom_url;
+            apiUrl = normalizeOpenAIBaseUrl(request.body.custom_url);
             apiKey = readProviderSecret(request, SECRET_KEYS.CUSTOM);
             headers = {};
             bodyParams = {
