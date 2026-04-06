@@ -13953,6 +13953,26 @@ jQuery(() => {
     if (context.eventTypes.MESSAGE_SWIPED) {
         context.eventSource.on(context.eventTypes.MESSAGE_SWIPED, async (messageId, meta) => {
             if (meta?.pendingGeneration === true) {
+                // Swipe with pending generation: rollback the last assistant floor's
+                // opLog entries so the upcoming generation starts from a clean state.
+                // Without this, extraction results from the previous swipe remain in
+                // the graph and leak into the injected memory prompt.
+                const runtimeContext = getContext();
+                const fromSeq = findAffectedAssistantSeqFromMessageIndex(runtimeContext, messageId);
+                if (Number.isFinite(fromSeq) && fromSeq > 0) {
+                    const chatKey = getChatKey(runtimeContext);
+                    if (chatKey && chatKey !== 'invalid_target') {
+                        const trimResult = trimPersistedOpLogFromSeq(chatKey, fromSeq);
+                        if (trimResult.changed && trimResult.store) {
+                            updateStoreSourceState(trimResult.store, runtimeContext);
+                            try {
+                                await persistMemoryStoreByChatKey(runtimeContext, chatKey, trimResult.store);
+                            } catch (error) {
+                                console.warn(`[${MODULE_NAME}] Failed to persist store after swipe rollback`, error);
+                            }
+                        }
+                    }
+                }
                 return;
             }
             if (await restoreSwipeTailCacheForMessage(getContext(), messageId)) {
