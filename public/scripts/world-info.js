@@ -199,6 +199,12 @@ const WI_ENTRY_EDIT_TEMPLATE = $('#entry_edit_template .world_entry_edit');
 
 export let world_info = {};
 export let selected_world_info = [];
+
+/**
+ * Flag to suppress the legacy select MutationObserver sync.
+ * Set to true before internal DOM updates to #world_info, reset after.
+ */
+let _suppressLegacySelectSync = false;
 /** @type {string[]} */
 export let world_names;
 export let world_info_depth = 2;
@@ -1906,6 +1912,7 @@ export function setWorldInfoSettings(settings, data) {
         .filter(onlyUnique);
 
     if (world_names.length > 0) {
+        _suppressLegacySelectSync = true;
         $('#world_info').empty();
     }
 
@@ -1913,6 +1920,7 @@ export function setWorldInfoSettings(settings, data) {
         $('#world_info').append(`<option value='${i}'${selected_world_info.includes(item) ? ' selected' : ''}>${item}</option>`);
         $('#world_editor_select').append(`<option value='${i}'>${item}</option>`);
     });
+    _suppressLegacySelectSync = false;
 
     setWorldInfoManagerPageSize(getWorldInfoManagerPageSize());
     $('#world_info_manager_page_size').val(String(worldInfoManagerState.pageSize));
@@ -3090,6 +3098,7 @@ export async function updateWorldInfoList() {
             .map((name) => resolveWorldInfoName(name))
             .filter(Boolean)
             .filter(onlyUnique);
+        _suppressLegacySelectSync = true;
         $('#world_info').find('option[value!=""]').remove();
         $('#world_editor_select').find('option[value!=""]').remove();
 
@@ -3101,6 +3110,7 @@ export async function updateWorldInfoList() {
             $('#world_info').append(globalListOption);
             $('#world_editor_select').append(editorListOption);
         });
+        _suppressLegacySelectSync = false;
 
         const nextEditorIndex = editorSelected ? world_names.indexOf(editorSelected) : -1;
         $('#world_editor_select').val(nextEditorIndex === -1 ? '' : String(nextEditorIndex));
@@ -3144,6 +3154,7 @@ function syncGlobalWorldInfoSelectionUi() {
         return;
     }
 
+    _suppressLegacySelectSync = true;
     const selectedValues = [];
     world_names.forEach((item, index) => {
         const option = selector.find(`option[value="${index}"]`).get(0);
@@ -3158,6 +3169,7 @@ function syncGlobalWorldInfoSelectionUi() {
 
     selector.val(selectedValues);
     selector.trigger('change.select2');
+    _suppressLegacySelectSync = false;
     renderWorldInfoManager();
 }
 
@@ -9354,6 +9366,7 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
 }
 
 export function onWorldInfoChange(args, text) {
+    _suppressLegacySelectSync = true;
     if (args !== '__notSlashCommand__') { // if it's a slash command
         const silent = isTrueBoolean(args.silent);
         if (text.trim() !== '') { // and args are provided
@@ -9422,6 +9435,7 @@ export function onWorldInfoChange(args, text) {
         selected_world_info = tempWorldInfo;
     }
 
+    _suppressLegacySelectSync = false;
     saveSettingsDebounced();
     eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
     return '';
@@ -9816,6 +9830,62 @@ export function initWorldInfo() {
 
         onWorldInfoChange('__notSlashCommand__');
     });
+
+    // Monitor the hidden legacy <select#world_info> for external DOM mutations.
+    // Third-party scripts (e.g. JS-Slash-Runner) may directly manipulate the select's
+    // options and selected_world_info array without triggering 'change' or calling
+    // syncGlobalWorldInfoSelectionUi(). This observer detects such changes and
+    // syncs the World Info Manager UI accordingly.
+    const legacySelect = document.getElementById('world_info');
+    if (legacySelect) {
+        const syncFromLegacySelect = debounce(() => {
+            if (_suppressLegacySelectSync) return;
+
+            // Read the current selected names from the legacy select DOM
+            const domSelected = [];
+            for (const option of legacySelect.options) {
+                if (option.selected && option.value !== '') {
+                    const index = Number(option.value);
+                    const name = world_names[index];
+                    if (name) domSelected.push(name);
+                }
+            }
+
+            // Also check selected_world_info directly — external scripts may have
+            // modified the array without touching the DOM at all
+            const currentSet = [...selected_world_info].sort().join('\0');
+            const domSet = [...domSelected].sort().join('\0');
+
+            // If the DOM disagrees with selected_world_info, prefer selected_world_info
+            // (the script already wrote to it). Just sync the UI.
+            // If they agree, check against what the Manager UI currently shows.
+            if (currentSet !== domSet) {
+                // DOM and array disagree — the external script likely wrote to both
+                // but with different values. Trust selected_world_info as source of truth.
+                console.debug('[WI] Legacy select observer: DOM and selected_world_info disagree, syncing UI from array');
+            } else {
+                console.debug('[WI] Legacy select observer: external mutation detected, syncing UI');
+            }
+
+            syncGlobalWorldInfoSettingsState();
+            syncGlobalWorldInfoSelectionUi();
+            requestAsyncDiffForNextSettingsSave();
+            saveSettingsDebounced();
+            eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+        }, 100);
+
+        const legacySelectObserver = new MutationObserver(() => {
+            if (_suppressLegacySelectSync) return;
+            syncFromLegacySelect();
+        });
+
+        legacySelectObserver.observe(legacySelect, {
+            childList: true,           // option added/removed
+            subtree: true,             // changes within option elements
+            attributes: true,          // selected attribute changes
+            attributeFilter: ['selected'],
+        });
+    }
     setWorldInfoManagerPageSize(getWorldInfoManagerPageSize());
     $('#world_info_manager_page_size').val(String(worldInfoManagerState.pageSize));
     updateWorldInfoEditorDisplaySettingsButton();
