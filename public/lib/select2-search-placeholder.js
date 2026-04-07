@@ -22,4 +22,17 @@
         return $rendered;
     };
 
+    // Mobile: prevent virtual keyboard from auto-popping when select2 opens.
+    // Sets the search field to readOnly momentarily so the browser won't summon
+    // the IME. After 300ms readOnly is lifted — user can still tap the field to
+    // type a search query manually.
+    $(document).on('select2:open', function () {
+        if (!/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) return;
+        var searchField = document.querySelector('.select2-container--open .select2-search__field');
+        if (searchField) {
+            searchField.readOnly = true;
+            setTimeout(function () { searchField.readOnly = false; }, 300);
+        }
+    });
+
 })(window.jQuery);
