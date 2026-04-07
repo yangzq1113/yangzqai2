@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
-// Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
 
 import { extension_prompt_roles, extension_prompt_types, resolveChatStateTarget, saveSettings, saveSettingsDebounced } from '../../../script.js';
 import { extension_settings, getContext } from '../../extensions.js';
@@ -23,6 +22,15 @@ import {
     buildMemoryGraphSettingsHtml,
     buildSchemaEditorPopupHtml,
 } from './ui-templates.js';
+import { runHybridRecall } from './retriever.js';
+import {
+    getVectorConfigFromSettings,
+    validateVectorConfig,
+    syncVectorIndex,
+} from './vector-index.js';
+import {
+    isEntityType,
+} from './diffusion.js';
 
 const MODULE_NAME = 'memory_graph';
 const CHAT_STATE_NAMESPACE = MODULE_NAME;
@@ -74,6 +82,7 @@ const defaultNodeTypeSchema = [
         label: 'Event',
         tableName: 'event_table',
         tableColumns: ['summary', 'key_sentences'],
+        embeddingColumns: ['summary', 'key_sentences'],
         columnHints: {
             summary: DEFAULT_EVENT_SUMMARY_COLUMN_HINT,
             key_sentences: DEFAULT_EVENT_KEY_SENTENCES_COLUMN_HINT,
@@ -101,6 +110,7 @@ const defaultNodeTypeSchema = [
         label: 'Character Sheet',
         tableName: 'character_table',
         tableColumns: ['name', 'aliases', 'traits', 'identity', 'state', 'goal', 'inventory', 'language_sample', 'core_note', 'addressing_user'],
+        embeddingColumns: ['name', 'aliases', 'traits', 'identity', 'state', 'goal', 'core_note'],
         columnHints: {
             name: 'Canonical character name only. Do not include aliases, English names, titles, translations, or any parenthetical/bracketed clarification here.',
             aliases: 'Nicknames, aliases, titles, English names, translated names, or alternative names used in dialogue. Store them here instead of appending them to name.',
@@ -136,6 +146,7 @@ const defaultNodeTypeSchema = [
         label: 'Location State',
         tableName: 'location_table',
         tableColumns: ['name', 'aliases', 'controller', 'danger', 'resources', 'state'],
+        embeddingColumns: ['name', 'aliases', 'controller', 'state', 'danger'],
         columnHints: {
             name: 'Canonical location name only. Do not include aliases, English names, translations, or any parenthetical/bracketed clarification here.',
             aliases: 'Alternative location names, English names, translated names, short names, or colloquial references. Store them here instead of appending them to name.',
@@ -167,6 +178,7 @@ const defaultNodeTypeSchema = [
         label: 'Rule Constraint',
         tableName: 'rule_table',
         tableColumns: ['title', 'constraint', 'scope', 'status'],
+        embeddingColumns: ['title', 'constraint', 'scope'],
         columnHints: {
             title: 'Short rule name.',
             constraint: 'Non-negotiable rule text.',
@@ -341,6 +353,7 @@ const defaultSettings = {
     updateEvery: 1,
     maxTurns: 900,
     recallEnabled: true,
+    recallMethod: 'llm',
     recallInjectPosition: world_info_position.atDepth,
     recallInjectDepth: 9999,
     recallInjectRole: extension_prompt_roles.SYSTEM,
@@ -363,6 +376,17 @@ const defaultSettings = {
     lorebookNameOverride: '',
     lorebookEntryOrderBase: 9800,
     nodeTypeSchema: defaultNodeTypeSchema,
+    embeddingSource: 'transformers',
+    embeddingModel: '',
+    vectorTopK: 20,
+    diffusionSteps: 2,
+    diffusionDecay: 0.6,
+    diffusionTopK: 100,
+    diffusionTeleportAlpha: 0.0,
+    hybridMaxResults: 15,
+    enableRerank: false,
+    rerankSource: 'cohere',
+    rerankModel: '',
 };
 
 function i18n(text) {
@@ -390,6 +414,23 @@ function registerLocaleData() {
         'Memory': '记忆',
         'Enabled': '启用',
         'Enable recall injection': '启用记忆召回注入',
+        'Recall method': '召回方法',
+        'LLM Recall (default)': 'LLM 召回（默认）',
+        'Hybrid Pipeline (vector + graph diffusion)': '混合管线（向量+图扩散）',
+        'Hybrid + Rerank': '混合+重排',
+        'Hybrid + LLM Rerank': '混合+LLM 精排',
+        'Embedding source': '嵌入源',
+        'Embedding model (empty = source default)': '嵌入模型（留空=源默认）',
+        'Vector pre-filter Top-K': '向量预筛 Top-K',
+        'Max recall results': '最大召回结果数',
+        'Rerank source': '重排源',
+        'Rerank model (empty = default)': '重排模型（留空=默认）',
+        'Graph Diffusion Parameters': '图扩散参数',
+        'Diffusion steps': '扩散步数',
+        'Diffusion decay factor': '扩散衰减因子',
+        'Diffusion Top-K (per step)': '扩散 Top-K（每步）',
+        'PPR teleport alpha (0 = disabled)': 'PPR 回拉概率（0=禁用）',
+        'Embedding Columns (comma separated, empty = all table columns)': '嵌入字段（逗号分隔，留空=全部表字段）',
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定义前',
         'After Character Definitions': '角色定义后',
@@ -690,6 +731,23 @@ function registerLocaleData() {
         'Memory': '記憶',
         'Enabled': '啟用',
         'Enable recall injection': '啟用記憶召回注入',
+        'Recall method': '召回方法',
+        'LLM Recall (default)': 'LLM 召回（預設）',
+        'Hybrid Pipeline (vector + graph diffusion)': '混合管線（向量+圖擴散）',
+        'Hybrid + Rerank': '混合+重排',
+        'Hybrid + LLM Rerank': '混合+LLM 精排',
+        'Embedding source': '嵌入源',
+        'Embedding model (empty = source default)': '嵌入模型（留空=源預設）',
+        'Vector pre-filter Top-K': '向量預篩 Top-K',
+        'Max recall results': '最大召回結果數',
+        'Rerank source': '重排源',
+        'Rerank model (empty = default)': '重排模型（留空=預設）',
+        'Graph Diffusion Parameters': '圖擴散參數',
+        'Diffusion steps': '擴散步數',
+        'Diffusion decay factor': '擴散衰減因子',
+        'Diffusion Top-K (per step)': '擴散 Top-K（每步）',
+        'PPR teleport alpha (0 = disabled)': 'PPR 回拉概率（0=停用）',
+        'Embedding Columns (comma separated, empty = all table columns)': '嵌入欄位（逗號分隔，留空=全部表欄位）',
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定義前',
         'After Character Definitions': '角色定義後',
@@ -1092,11 +1150,15 @@ function normalizeNodeTypeSchema(schema) {
                     .filter(column => allowedKeyColumns.has(column)),
             ));
             const latestOnly = requestedLatestOnly;
+            const embeddingColumns = Array.isArray(item.embeddingColumns)
+                ? item.embeddingColumns.map(x => String(x || '').trim()).filter(col => col && tableColumns.includes(col))
+                : tableColumns.slice();
             return {
                 id: rawId,
                 label: String(item.label || item.id || `Type ${index + 1}`).trim(),
                 tableName: String(item.tableName || item.id || `table_${index + 1}`).trim(),
                 tableColumns,
+                embeddingColumns,
                 level: String(item.level || LEVEL.SEMANTIC),
                 extractHint: String(item.extractHint || '').trim(),
                 keywords: Array.isArray(item.keywords) ? item.keywords.map(x => String(x || '').trim()).filter(Boolean) : [],
@@ -8433,7 +8495,88 @@ async function injectMemoryPrompts(context, payload) {
         return Boolean(persistentSync.changed || runtimeSync.changed);
     }
 
-    const { selectedNodes, trace } = await runLLMDrivenRecall(context, store, payload);
+    const recallMethod = String(settings.recallMethod || 'llm').trim().toLowerCase();
+    let selectedNodes;
+    let trace;
+
+    if (recallMethod === 'hybrid' || recallMethod === 'hybrid_rerank' || recallMethod === 'hybrid_llm') {
+        const queryBundle = getRecallQueryBundle(payload, context, settings);
+        const queryText = normalizeText(queryBundle.fullText || '');
+        const currentSeq = getLatestSeqIndex(store);
+        const enableRerank = recallMethod === 'hybrid_rerank';
+        const rerankConfig = enableRerank ? {
+            source: String(settings.rerankSource || 'cohere'),
+            model: String(settings.rerankModel || ''),
+        } : null;
+
+        const hybridResult = await runHybridRecall(store, queryText, chatKey, settings, {
+            currentSeq,
+            maxResults: Number(settings.hybridMaxResults) || 15,
+            vectorTopK: Number(settings.vectorTopK) || 20,
+            enableRerank,
+            rerankConfig,
+            signal: payload?.signal,
+        });
+        throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+
+        const alwaysInjectNodes = collectAlwaysInjectNodes(store, settings, context);
+        const alwaysInjectSet = new Set(alwaysInjectNodes.map(n => n?.id).filter(Boolean));
+        const latestSeqIndex = getLatestSeqIndex(store);
+        const excludeMessages = Math.max(0, Number(settings.recentRawTurns ?? defaultSettings.recentRawTurns));
+
+        selectedNodes = hybridResult.candidates
+            .map(c => store.nodes?.[c.nodeId])
+            .filter(node => node && !node.archived && !alwaysInjectSet.has(node.id))
+            .filter(node => !isNodeInRecentExcludeWindow(node, latestSeqIndex, excludeMessages))
+            .sort(compareNodesByTimeline);
+
+        trace = [{
+            step: 'hybrid_recall',
+            method: recallMethod,
+            meta: hybridResult.meta,
+            selected_ids: selectedNodes.map(n => n.id),
+        }];
+
+        if (recallMethod === 'hybrid_llm' && selectedNodes.length > 0) {
+            const llmResult = await chooseFocusNodes(context, settings, {
+                store,
+                query: queryText,
+                queryBundle,
+                route: {
+                    action: 'finalize',
+                    reason: 'LLM rerank hybrid candidates',
+                },
+                candidates: selectedNodes,
+                alwaysInjectIds: alwaysInjectNodes.map(node => String(node?.id || '')).filter(Boolean),
+                worldInfoMessages: Array.isArray(payload?.coreChat) ? payload.coreChat : [],
+                runtimeWorldInfo: buildRuntimeWorldInfoFromPayload(payload),
+                forceWorldInfoResimulate: Boolean(payload?.forceWorldInfoResimulate),
+                abortSignal: payload?.signal || null,
+                recallRunToken,
+            });
+            throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
+            const rerankedIds = Array.isArray(llmResult?.selected_node_ids)
+                ? llmResult.selected_node_ids.map(id => String(id || '').trim()).filter(Boolean)
+                : [];
+            if (rerankedIds.length > 0) {
+                const nodeById = new Map(selectedNodes.map(node => [String(node?.id || ''), node]));
+                const reranked = rerankedIds.map(id => nodeById.get(id)).filter(Boolean);
+                if (reranked.length > 0) {
+                    selectedNodes = reranked;
+                }
+            }
+            trace.push({
+                step: 'hybrid_llm_rerank',
+                reason: String(llmResult?.reason || ''),
+                selected_ids: selectedNodes.map(n => n.id),
+            });
+        }
+    } else {
+        const llmResult = await runLLMDrivenRecall(context, store, payload);
+        selectedNodes = llmResult.selectedNodes;
+        trace = llmResult.trace;
+    }
+
     throwIfRecallRunInvalid(recallRunToken, payload?.signal, 'Memory recall aborted.');
     store.lastRecallTrace = trace;
 
@@ -8732,6 +8875,27 @@ async function runScheduledExtractionPass(chatKey) {
             Number(preview.latestSeq || workingStore?.lastExtractionDebug?.latestSeq || 0),
             { syncPersistentProjection: true },
         );
+        // Sync vector index after extraction (only if using hybrid recall)
+        const effectiveStore = finalStore || workingStore;
+        const recallMethod = String(settings.recallMethod || 'llm').trim().toLowerCase();
+        if (recallMethod !== 'llm' && effectiveStore) {
+            try {
+                const vectorConfig = getVectorConfigFromSettings(settings);
+                if (validateVectorConfig(vectorConfig).valid) {
+                    const chatIdForVector = String(chatKey || '').trim();
+                    const effectiveSchema = settings.nodeTypeSchema || defaultSettings.nodeTypeSchema;
+                    await syncVectorIndex(effectiveStore, vectorConfig, chatIdForVector, {
+                        signal: extractionAbortController.signal,
+                        schema: effectiveSchema,
+                    });
+                }
+            } catch (vecError) {
+                if (!isAbortError(vecError, extractionAbortController.signal)) {
+                    console.warn(`[${MODULE_NAME}] Vector index sync after extraction failed`, vecError);
+                }
+            }
+        }
+
         const debug = finalStore?.lastExtractionDebug || workingStore.lastExtractionDebug || {};
         updateUiStatus(i18nFormat(
             'Extraction ${0}: begin=${1} latest=${2} covered=${3}',
@@ -12555,6 +12719,9 @@ function renderNodeTypeSchemaCard(spec, index) {
     <label>${escapeHtml(i18n('Required Columns (comma separated)'))}
         <input data-field="requiredColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.requiredColumns))}" />
     </label>
+    <label>${escapeHtml(i18n('Embedding Columns (comma separated, empty = all table columns)'))}
+        <input data-field="embeddingColumns" class="text_pole" type="text" value="${escapeHtml(joinCommaList(spec.embeddingColumns || []))}" placeholder="${escapeHtml(joinCommaList(spec.tableColumns))}" />
+    </label>
     <label>${escapeHtml(i18n('Column Hints (one per line: column=meaning)'))}
         <textarea data-field="columnHints" class="text_pole textarea_compact" rows="3">${escapeHtml(joinKeyValueLines(spec.columnHints))}</textarea>
     </label>
@@ -12611,6 +12778,7 @@ function readSchemaCard(card) {
         tableName: String(root.find('[data-field="tableName"]').val() || '').trim(),
         tableColumns: splitCommaList(root.find('[data-field="tableColumns"]').val()),
         requiredColumns: splitCommaList(root.find('[data-field="requiredColumns"]').val()),
+        embeddingColumns: splitCommaList(root.find('[data-field="embeddingColumns"]').val()),
         columnHints: parseKeyValueLines(root.find('[data-field="columnHints"]').val()),
         level: LEVEL.SEMANTIC,
         extractHint: String(root.find('[data-field="extractHint"]').val() || '').trim(),
@@ -12948,6 +13116,12 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         popupRoot.find(`#${popupId}_recall_query_messages`).val(String(Math.max(1, Math.min(64, Number(source.recallQueryMessages ?? defaultSettings.recallQueryMessages)))));
         popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val(String(Math.max(0, Math.min(200, Number(source.llmVisibleRecentMessages ?? defaultSettings.llmVisibleRecentMessages)))));
         popupRoot.find(`#${popupId}_extract_batch_turns`).val(String(Math.max(1, Number(source.extractBatchTurns ?? defaultSettings.extractBatchTurns))));
+        popupRoot.find(`#${popupId}_diffusion_steps`).val(String(Number(source.diffusionSteps || defaultSettings.diffusionSteps || 2)));
+        popupRoot.find(`#${popupId}_diffusion_decay`).val(String(Number(source.diffusionDecay || defaultSettings.diffusionDecay || 0.6)));
+        popupRoot.find(`#${popupId}_diffusion_topk`).val(String(Number(source.diffusionTopK || defaultSettings.diffusionTopK || 100)));
+        popupRoot.find(`#${popupId}_diffusion_teleport`).val(String(Number(source.diffusionTeleportAlpha || defaultSettings.diffusionTeleportAlpha || 0)));
+        const isHybridMode = String(settings.recallMethod || 'llm').startsWith('hybrid');
+        popupRoot.find(`#${popupId}_diffusion_settings`).toggle(isHybridMode);
         popupRoot.find(`#${popupId}_extract_system_prompt`).val(String(source.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_route_prompt`).val(String(source.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT));
         popupRoot.find(`#${popupId}_recall_finalize_prompt`).val(String(source.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT));
@@ -12996,6 +13170,10 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             recallQueryMessagesValue: Number(popupRoot.find(`#${popupId}_recall_query_messages`).val()),
             llmVisibleRecentMessagesValue: Number(popupRoot.find(`#${popupId}_llm_visible_recent_messages`).val()),
             extractBatchTurnsValue: Number(popupRoot.find(`#${popupId}_extract_batch_turns`).val()),
+            diffusionStepsValue: Number(popupRoot.find(`#${popupId}_diffusion_steps`).val()),
+            diffusionDecayValue: Number(popupRoot.find(`#${popupId}_diffusion_decay`).val()),
+            diffusionTopKValue: Number(popupRoot.find(`#${popupId}_diffusion_topk`).val()),
+            diffusionTeleportAlphaValue: Number(popupRoot.find(`#${popupId}_diffusion_teleport`).val()),
             extractSystemPromptValue: String(popupRoot.find(`#${popupId}_extract_system_prompt`).val() || '').trim(),
             recallRoutePromptValue: String(popupRoot.find(`#${popupId}_recall_route_prompt`).val() || '').trim(),
             recallFinalizePromptValue: String(popupRoot.find(`#${popupId}_recall_finalize_prompt`).val() || '').trim(),
@@ -13010,6 +13188,10 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         recallQueryMessages: values.recallQueryMessagesValue,
         llmVisibleRecentMessages: values.llmVisibleRecentMessagesValue,
         extractBatchTurns: values.extractBatchTurnsValue,
+        diffusionSteps: values.diffusionStepsValue,
+        diffusionDecay: values.diffusionDecayValue,
+        diffusionTopK: values.diffusionTopKValue,
+        diffusionTeleportAlpha: values.diffusionTeleportAlphaValue,
         extractSystemPrompt: values.extractSystemPromptValue,
         recallRouteSystemPrompt: values.recallRoutePromptValue,
         recallFinalizeSystemPrompt: values.recallFinalizePromptValue,
@@ -13340,6 +13522,56 @@ function bindUi() {
 
     root.find('#luker_rpg_memory_recall_enabled').off('input').on('input', function () {
         settings.recallEnabled = Boolean(jQuery(this).prop('checked'));
+        saveSettingsDebounced();
+    });
+
+    // Recall method selector + hybrid settings visibility
+    root.find('#luker_rpg_memory_recall_method').val(String(settings.recallMethod || 'llm'));
+    root.find('#luker_rpg_memory_embedding_source').val(String(settings.embeddingSource || 'transformers'));
+    root.find('#luker_rpg_memory_embedding_model').val(String(settings.embeddingModel || ''));
+    root.find('#luker_rpg_memory_vector_topk').val(String(settings.vectorTopK || 20));
+    root.find('#luker_rpg_memory_hybrid_max_results').val(String(settings.hybridMaxResults || 15));
+    root.find('#luker_rpg_memory_rerank_source').val(String(settings.rerankSource || 'cohere'));
+    root.find('#luker_rpg_memory_rerank_model').val(String(settings.rerankModel || ''));
+
+    function updateHybridSettingsVisibility() {
+        const method = String(root.find('#luker_rpg_memory_recall_method').val() || 'llm');
+        const isHybrid = method.startsWith('hybrid');
+        const isRerank = method === 'hybrid_rerank';
+        root.find('#luker_rpg_memory_hybrid_settings').toggle(isHybrid);
+        root.find('#luker_rpg_memory_rerank_settings').toggle(isRerank);
+    }
+    updateHybridSettingsVisibility();
+
+    root.find('#luker_rpg_memory_recall_method').off('change').on('change', function () {
+        settings.recallMethod = String(jQuery(this).val() || 'llm').trim();
+        updateHybridSettingsVisibility();
+        saveSettingsDebounced();
+    });
+    root.find('#luker_rpg_memory_embedding_source').off('change').on('change', function () {
+        settings.embeddingSource = String(jQuery(this).val() || 'transformers').trim();
+        saveSettingsDebounced();
+    });
+    root.find('#luker_rpg_memory_embedding_model').off('change input').on('change input', function () {
+        settings.embeddingModel = String(jQuery(this).val() || '').trim();
+        saveSettingsDebounced();
+    });
+    root.find('#luker_rpg_memory_vector_topk').off('change input').on('change input', function () {
+        settings.vectorTopK = Math.max(5, Math.min(100, Math.floor(Number(jQuery(this).val()) || 20)));
+        jQuery(this).val(String(settings.vectorTopK));
+        saveSettingsDebounced();
+    });
+    root.find('#luker_rpg_memory_hybrid_max_results').off('change input').on('change input', function () {
+        settings.hybridMaxResults = Math.max(3, Math.min(50, Math.floor(Number(jQuery(this).val()) || 15)));
+        jQuery(this).val(String(settings.hybridMaxResults));
+        saveSettingsDebounced();
+    });
+    root.find('#luker_rpg_memory_rerank_source').off('change').on('change', function () {
+        settings.rerankSource = String(jQuery(this).val() || 'cohere').trim();
+        saveSettingsDebounced();
+    });
+    root.find('#luker_rpg_memory_rerank_model').off('change input').on('change input', function () {
+        settings.rerankModel = String(jQuery(this).val() || '').trim();
         saveSettingsDebounced();
     });
 

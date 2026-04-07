@@ -86,6 +86,21 @@ export function buildAdvancedSettingsPopupHtml(deps, popupId, scopeInfo) {
     <label>${escapeHtml(i18n('Extract batch assistant turns'))}
         <input id="${popupId}_extract_batch_turns" class="text_pole" type="number" min="1" step="1" value="${Math.max(1, Number(settings.extractBatchTurns || defaultSettings.extractBatchTurns))}" />
     </label>
+    <div id="${popupId}_diffusion_settings" style="border-top:1px solid var(--SmartThemeBorderColor,#555);margin-top:8px;padding-top:8px">
+        <b>${escapeHtml(i18n('Graph Diffusion Parameters'))}</b>
+        <label>${escapeHtml(i18n('Diffusion steps'))}
+            <input id="${popupId}_diffusion_steps" class="text_pole" type="number" min="1" max="5" step="1" value="${Number(settings.diffusionSteps || defaultSettings.diffusionSteps || 2)}" />
+        </label>
+        <label>${escapeHtml(i18n('Diffusion decay factor'))}
+            <input id="${popupId}_diffusion_decay" class="text_pole" type="number" min="0.1" max="1.0" step="0.05" value="${Number(settings.diffusionDecay || defaultSettings.diffusionDecay || 0.6)}" />
+        </label>
+        <label>${escapeHtml(i18n('Diffusion Top-K (per step)'))}
+            <input id="${popupId}_diffusion_topk" class="text_pole" type="number" min="10" max="500" step="10" value="${Number(settings.diffusionTopK || defaultSettings.diffusionTopK || 100)}" />
+        </label>
+        <label>${escapeHtml(i18n('PPR teleport alpha (0 = disabled)'))}
+            <input id="${popupId}_diffusion_teleport" class="text_pole" type="number" min="0" max="0.5" step="0.05" value="${Number(settings.diffusionTeleportAlpha || defaultSettings.diffusionTeleportAlpha || 0)}" />
+        </label>
+    </div>
     <label>${escapeHtml(i18n('Extract Table Fill Prompt'))}
         <textarea id="${popupId}_extract_system_prompt" class="text_pole textarea_compact" rows="8">${escapeHtml(extractPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT)}</textarea>
     </label>
@@ -165,6 +180,44 @@ export function buildMemoryGraphSettingsHtml(deps) {
         <div class="inline-drawer-content">
             <label class="checkbox_label"><input id="luker_rpg_memory_enabled" type="checkbox" /> ${escapeHtml(i18n('Enabled'))}</label>
             <label class="checkbox_label"><input id="luker_rpg_memory_recall_enabled" type="checkbox" /> ${escapeHtml(i18n('Enable recall injection'))}</label>
+            <label for="luker_rpg_memory_recall_method">${escapeHtml(i18n('Recall method'))}</label>
+            <select id="luker_rpg_memory_recall_method" class="text_pole">
+                <option value="llm">${escapeHtml(i18n('LLM Recall (default)'))}</option>
+                <option value="hybrid">${escapeHtml(i18n('Hybrid Pipeline (vector + graph diffusion)'))}</option>
+                <option value="hybrid_rerank">${escapeHtml(i18n('Hybrid + Rerank'))}</option>
+                <option value="hybrid_llm">${escapeHtml(i18n('Hybrid + LLM Rerank'))}</option>
+            </select>
+            <div id="luker_rpg_memory_hybrid_settings" style="display:none">
+                <label for="luker_rpg_memory_embedding_source">${escapeHtml(i18n('Embedding source'))}</label>
+                <select id="luker_rpg_memory_embedding_source" class="text_pole">
+                    <option value="transformers">Transformers (local)</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="cohere">Cohere</option>
+                    <option value="mistral">Mistral</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="llamacpp">LlamaCpp</option>
+                    <option value="vllm">vLLM</option>
+                    <option value="nomicai">NomicAI</option>
+                    <option value="makersuite">Google AI</option>
+                    <option value="chutes">Chutes</option>
+                    <option value="nanogpt">NanoGPT</option>
+                    <option value="electronhub">ElectronHub</option>
+                </select>
+                <label for="luker_rpg_memory_embedding_model">${escapeHtml(i18n('Embedding model (empty = source default)'))}</label>
+                <input id="luker_rpg_memory_embedding_model" class="text_pole" type="text" placeholder="text-embedding-3-small" />
+                <label>${escapeHtml(i18n('Vector pre-filter Top-K'))} <input id="luker_rpg_memory_vector_topk" class="text_pole" type="number" min="5" max="100" step="1" /></label>
+                <label>${escapeHtml(i18n('Max recall results'))} <input id="luker_rpg_memory_hybrid_max_results" class="text_pole" type="number" min="3" max="50" step="1" /></label>
+            </div>
+            <div id="luker_rpg_memory_rerank_settings" style="display:none">
+                <label for="luker_rpg_memory_rerank_source">${escapeHtml(i18n('Rerank source'))}</label>
+                <select id="luker_rpg_memory_rerank_source" class="text_pole">
+                    <option value="cohere">Cohere</option>
+                    <option value="jina">Jina</option>
+                </select>
+                <label for="luker_rpg_memory_rerank_model">${escapeHtml(i18n('Rerank model (empty = default)'))}</label>
+                <input id="luker_rpg_memory_rerank_model" class="text_pole" type="text" placeholder="" />
+            </div>
             <label for="luker_rpg_memory_recall_inject_position">${escapeHtml(i18n('Injection position'))}</label>
             <select id="luker_rpg_memory_recall_inject_position" class="text_pole">
                 <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>
