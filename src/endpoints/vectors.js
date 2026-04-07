@@ -356,15 +356,25 @@ async function deleteVectorItems(directories, collectionId, source, sourceSettin
  * @param {number} threshold - The threshold for the search
  * @returns {Promise<{hashes: number[], metadata: object[]}>} - The metadata of the items that match the search text
  */
-async function queryCollection(directories, collectionId, source, sourceSettings, searchText, topK, threshold) {
+async function queryCollection(directories, collectionId, source, sourceSettings, searchText, topK, threshold, includeVectors = false) {
     const store = await getIndex(directories, collectionId, source, sourceSettings);
     const vector = await getVector(source, sourceSettings, searchText, true, directories);
 
     const result = await store.queryItems(vector, topK);
     const filtered = result.filter(x => x.score >= threshold);
-    const metadata = filtered.map(x => ({ ...x.item.metadata, score: x.score }));
+    const metadata = filtered.map(x => {
+        const entry = { ...x.item.metadata, score: x.score };
+        if (includeVectors && Array.isArray(x.item.vector)) {
+            entry.vector = x.item.vector;
+        }
+        return entry;
+    });
     const hashes = filtered.map(x => Number(x.item.metadata.hash));
-    return { metadata, hashes };
+    const response = { metadata, hashes };
+    if (includeVectors && Array.isArray(vector)) {
+        response.queryVector = vector;
+    }
+    return response;
 }
 
 /**
@@ -456,9 +466,41 @@ router.post('/query', async (req, res) => {
         const threshold = Number(req.body.threshold) || 0.0;
         const source = String(req.body.source) || 'transformers';
         const sourceSettings = getSourceSettings(source, req);
+        const includeVectors = Boolean(req.body.includeVectors);
 
-        const results = await queryCollection(req.user.directories, collectionId, source, sourceSettings, searchText, topK, threshold);
+        const results = await queryCollection(req.user.directories, collectionId, source, sourceSettings, searchText, topK, threshold, includeVectors);
         return res.json(results);
+    } catch (error) {
+        return regenerateCorruptedIndexErrorHandler(req, res, error);
+    }
+});
+
+router.post('/query-by-vector', async (req, res) => {
+    try {
+        if (!req.body.collectionId || !Array.isArray(req.body.vector) || req.body.vector.length === 0) {
+            return res.sendStatus(400);
+        }
+
+        const collectionId = String(req.body.collectionId);
+        const vector = req.body.vector.map(x => Number(x) || 0);
+        const topK = Number(req.body.topK) || 10;
+        const threshold = Number(req.body.threshold) || 0.0;
+        const source = String(req.body.source) || 'transformers';
+        const sourceSettings = getSourceSettings(source, req);
+        const includeVectors = Boolean(req.body.includeVectors);
+
+        const store = await getIndex(req.user.directories, collectionId, source, sourceSettings);
+        const result = await store.queryItems(vector, topK);
+        const filtered = result.filter(x => x.score >= threshold);
+        const metadata = filtered.map(x => {
+            const entry = { ...x.item.metadata, score: x.score };
+            if (includeVectors && Array.isArray(x.item.vector)) {
+                entry.vector = x.item.vector;
+            }
+            return entry;
+        });
+        const hashes = filtered.map(x => Number(x.item.metadata.hash));
+        return res.json({ metadata, hashes });
     } catch (error) {
         return regenerateCorruptedIndexErrorHandler(req, res, error);
     }
