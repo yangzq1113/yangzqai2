@@ -9256,12 +9256,73 @@ function getLastRecallCorePacketText(store) {
     return normalizeMultilineText(projection?.corePacket || '');
 }
 
+function parseMarkdownTableToHtml(mdTable) {
+    const lines = String(mdTable || '').split('\n').filter(l => l.trim());
+    if (lines.length < 2) {
+        return '';
+    }
+    const parseLine = (line) => {
+        const trimmed = line.trim();
+        const inner = trimmed.startsWith('|') ? trimmed.slice(1) : trimmed;
+        const chopped = inner.endsWith('|') ? inner.slice(0, -1) : inner;
+        return chopped.split('|').map(cell => cell.trim().replaceAll('\\|', '|'));
+    };
+    const headers = parseLine(lines[0]);
+    if (headers.length === 0) {
+        return '';
+    }
+    const sepLine = lines[1].trim();
+    const startIdx = /^\|?\s*-{2,}/.test(sepLine) ? 2 : 1;
+    const dataRows = lines.slice(startIdx).map(parseLine);
+    if (dataRows.length === 0) {
+        return '';
+    }
+    const thCells = headers.map(h => `<th style="padding:6px 10px;text-align:left;font-weight:600;white-space:nowrap;border-bottom:2px solid var(--SmartThemeBorderColor, #555);">${escapeHtml(h)}</th>`).join('');
+    const bodyRows = dataRows.map(row => {
+        const cells = headers.map((_, i) => {
+            const val = row[i] ?? '';
+            const isLong = val.length > 60;
+            const style = isLong
+                ? 'padding:6px 10px;border-bottom:1px solid var(--SmartThemeBorderColor, #333);line-height:1.45;'
+                : 'padding:6px 10px;white-space:nowrap;border-bottom:1px solid var(--SmartThemeBorderColor, #333);';
+            return `<td style="${style}">${escapeHtml(val)}</td>`;
+        }).join('');
+        return `<tr>${cells}</tr>`;
+    }).join('');
+    return `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+<thead><tr>${thCells}</tr></thead>
+<tbody>${bodyRows}</tbody>
+</table>`;
+}
+
+function renderPacketSectionsAsHtml(packetText) {
+    if (!packetText || !packetText.trim()) {
+        return '';
+    }
+    const sectionRegex = /\[Table:\s*(.+?)\]\s*\n((?:(?!\[Table:)[\s\S])*)/g;
+    const sections = [];
+    let match;
+    while ((match = sectionRegex.exec(packetText)) !== null) {
+        sections.push({ title: match[1].trim(), body: match[2].trim() });
+    }
+    if (sections.length === 0) {
+        return `<pre style="white-space:pre-wrap;font-size:13px;opacity:0.9;">${escapeHtml(packetText)}</pre>`;
+    }
+    return sections.map(section => {
+        const tableHtml = parseMarkdownTableToHtml(section.body);
+        const content = tableHtml || `<pre style="white-space:pre-wrap;font-size:13px;">${escapeHtml(section.body)}</pre>`;
+        return `<div style="margin-bottom:12px;">
+<div style="font-size:12px;font-weight:600;padding:3px 8px;border-radius:4px;display:inline-block;margin-bottom:6px;background:var(--SmartThemeBlurTintColor, rgba(100,100,255,0.15));color:var(--SmartThemeBodyColor, #ccc);">${escapeHtml(section.title)}</div>
+${content}
+</div>`;
+    }).join('');
+}
+
 function buildLastRecallCorePacketHtml(store, options = {}) {
     const projection = getLastRecallProjection(store);
     if (!projection) {
         return `<div style="opacity:0.8;">${escapeHtml(i18n('No recall injection result yet.'))}</div>`;
     }
-    const corePacket = getLastRecallCorePacketText(store);
     const showHeader = options?.showHeader !== false;
     const at = Number(projection?.at);
     const renderedAt = Number.isFinite(at) ? new Date(at).toLocaleString() : '';
@@ -9271,11 +9332,44 @@ function buildLastRecallCorePacketHtml(store, options = {}) {
     const timeLine = renderedAt
         ? `<div style="font-size:12px; opacity:0.8; margin-bottom:8px;">${escapeHtml(renderedAt)}</div>`
         : '';
-    return `
+    const corePacket = normalizeMultilineText(projection?.blocks?.corePacket || '');
+    const focusPacket = normalizeMultilineText(projection?.blocks?.focusPacket || '');
+    if (!corePacket && !focusPacket) {
+        const legacyText = normalizeMultilineText(projection?.corePacket || '');
+        if (!legacyText) {
+            return `
 <div style="display:flex; flex-direction:column; gap:4px;">
     ${header}
     ${timeLine}
-    <pre style="white-space:pre-wrap; max-height:65vh; overflow:auto;">${escapeHtml(corePacket || i18n('Injection content is empty.'))}</pre>
+    <div style="opacity:0.8;">${escapeHtml(i18n('Injection content is empty.'))}</div>
+</div>`;
+        }
+        return `
+<div style="display:flex; flex-direction:column; gap:4px;">
+    ${header}
+    ${timeLine}
+    ${renderPacketSectionsAsHtml(legacyText)}
+</div>`;
+    }
+    const packetBadgeStyle = 'font-size:11px;font-weight:700;letter-spacing:0.5px;padding:2px 8px;border-radius:3px;display:inline-block;margin-bottom:6px;';
+    const blocks = [];
+    if (corePacket) {
+        blocks.push(`<div style="margin-bottom:16px;">
+<div style="${packetBadgeStyle}background:rgba(76,175,80,0.2);color:#81c784;">CORE</div>
+${renderPacketSectionsAsHtml(corePacket)}
+</div>`);
+    }
+    if (focusPacket) {
+        blocks.push(`<div style="margin-bottom:16px;">
+<div style="${packetBadgeStyle}background:rgba(33,150,243,0.2);color:#64b5f6;">FOCUS</div>
+${renderPacketSectionsAsHtml(focusPacket)}
+</div>`);
+    }
+    return `
+<div style="display:flex; flex-direction:column; gap:4px; max-height:70vh; overflow:auto;">
+    ${header}
+    ${timeLine}
+    ${blocks.join('')}
 </div>`;
 }
 
