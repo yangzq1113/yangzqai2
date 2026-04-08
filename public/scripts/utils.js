@@ -684,6 +684,44 @@ export function focusWithoutVirtualKeyboard(element, restoreDelay = 300) {
     }, restoreDelay);
 }
 
+const programmaticFocusOverrides = new WeakMap();
+
+/**
+ * Prevents scripts from focusing an element on mobile.
+ * Native user taps still work because they do not call this method.
+ * @param {HTMLElement|null|undefined} element
+ */
+export function blockProgrammaticFocus(element) {
+    if (!(element instanceof HTMLElement) || !isMobile()) {
+        return;
+    }
+
+    if (programmaticFocusOverrides.has(element)) {
+        return;
+    }
+
+    programmaticFocusOverrides.set(element, element.focus);
+    element.focus = function () {};
+}
+
+/**
+ * Restores the original focus method after programmatic focus blocking.
+ * @param {HTMLElement|null|undefined} element
+ */
+export function restoreProgrammaticFocus(element) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    const originalFocus = programmaticFocusOverrides.get(element);
+    if (!originalFocus) {
+        return;
+    }
+
+    element.focus = originalFocus;
+    programmaticFocusOverrides.delete(element);
+}
+
 /**
  * Map of debounced functions to their timers.
  * Weak map is used to avoid memory leaks.

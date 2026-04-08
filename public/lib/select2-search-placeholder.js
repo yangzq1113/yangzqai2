@@ -1,8 +1,12 @@
 (function($) {
-
     var isMobileUA = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
     var SELECT2_USER_FOCUS_GRACE_MS = 900;
     var lastSelect2SearchUserIntentTs = 0;
+    var lastSendTextareaUserIntentTs = 0;
+
+    function isSendTextarea(target) {
+        return target instanceof HTMLTextAreaElement && target.id === 'send_textarea';
+    }
 
     function isSelect2SearchField(target) {
         return target instanceof HTMLInputElement && target.classList.contains('select2-search__field')
@@ -18,6 +22,38 @@
         if (event.target.closest('.select2-container--open .select2-search__field')) {
             lastSelect2SearchUserIntentTs = Date.now();
         }
+
+        if (event.target.closest('#send_textarea')) {
+            lastSendTextareaUserIntentTs = Date.now();
+        }
+    }
+
+    function installMobileFocusPrototypeGuard() {
+        if (!isMobileUA || !HTMLElement || HTMLElement.prototype.__lukerMobileFocusGuardInstalled) {
+            return;
+        }
+
+        var nativeFocus = HTMLElement.prototype.focus;
+
+        Object.defineProperty(HTMLElement.prototype, '__lukerMobileFocusGuardInstalled', {
+            value: true,
+            writable: false,
+            configurable: true,
+        });
+
+        HTMLElement.prototype.focus = function () {
+            var now = Date.now();
+
+            if (isSelect2SearchField(this) && (now - lastSelect2SearchUserIntentTs) > SELECT2_USER_FOCUS_GRACE_MS) {
+                return;
+            }
+
+            if (isSendTextarea(this) && (now - lastSendTextareaUserIntentTs) > SELECT2_USER_FOCUS_GRACE_MS) {
+                return;
+            }
+
+            return nativeFocus.apply(this, arguments);
+        };
     }
 
     function guardProgrammaticSelect2Focus(event) {
@@ -77,6 +113,7 @@
     document.addEventListener('pointerdown', markSelect2UserIntent, true);
     document.addEventListener('touchstart', markSelect2UserIntent, true);
     document.addEventListener('mousedown', markSelect2UserIntent, true);
+    installMobileFocusPrototypeGuard();
     document.addEventListener('focusin', guardProgrammaticSelect2Focus, true);
 
 })(window.jQuery);

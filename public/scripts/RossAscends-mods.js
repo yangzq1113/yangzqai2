@@ -880,6 +880,25 @@ const chatBlock = document.getElementById('chat');
 const isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
 const sendTextareaCssAutofit = CSS.supports('field-sizing', 'content');
 
+const sendTextareaFocusOverride = new WeakMap();
+
+function blockProgrammaticFocus(element) {
+    if (!(element instanceof HTMLElement) || !isMobile()) {
+        return;
+    }
+
+    if (sendTextareaFocusOverride.has(element)) {
+        return;
+    }
+
+    sendTextareaFocusOverride.set(element, element.focus);
+    element.focus = function () {};
+}
+
+if (sendTextArea instanceof HTMLTextAreaElement) {
+    blockProgrammaticFocus(sendTextArea);
+}
+
 /**
  * this makes the chat input text area resize vertically to match the text size (limited by CSS at 50% window height)
  */
