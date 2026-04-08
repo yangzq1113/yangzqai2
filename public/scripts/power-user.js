@@ -1372,10 +1372,34 @@ function applyToastrPosition() {
     $(`#toastr_position option[value="${power_user.toastr_position}"]`).prop('selected', true);
 }
 
+function shouldForceAndroidFullWidthChatLayout() {
+    if (!(typeof window !== 'undefined' && typeof window.LukerAndroid === 'object')) {
+        return false;
+    }
+
+    const viewportWidth = Number(window.innerWidth) || 0;
+    const screenWidth = Number(window.screen?.width) || 0;
+    const screenHeight = Number(window.screen?.height) || 0;
+    const hasScreenSize = screenWidth > 0 && screenHeight > 0;
+    const minScreenDimension = hasScreenSize ? Math.min(screenWidth, screenHeight) : 0;
+    const isLikelyPhoneByScreen = hasScreenSize && minScreenDimension <= 600;
+    const isLikelyPhoneByUA = typeof navigator !== 'undefined' && /Android\s+\d+/i.test(String(navigator.userAgent || ''));
+
+    // Some Android WebView builds occasionally report a desktop-sized viewport on phones.
+    // In that case, force full-width layout to avoid rendering the app in a narrow desktop column.
+    return viewportWidth > 1000 && (isLikelyPhoneByScreen || isLikelyPhoneByUA);
+}
+
+function getAppliedChatWidthValue() {
+    return shouldForceAndroidFullWidthChatLayout() ? 100 : power_user.chat_width;
+}
+
 function applyChatWidth(type) {
+    const appliedChatWidth = getAppliedChatWidthValue();
+
     if (type === 'forced') {
         let r = document.documentElement;
-        r.style.setProperty('--sheldWidth', `${power_user.chat_width}vw`);
+        r.style.setProperty('--sheldWidth', `${appliedChatWidth}vw`);
         $('#chat_width_slider').val(power_user.chat_width);
         //document.documentElement.style.setProperty('--sheldWidth', power_user.chat_width);
     } else {
@@ -1384,7 +1408,7 @@ function applyChatWidth(type) {
             // This is a hack for Firefox to let it render before applying the block width.
             // Otherwise it takes the incorrect slider position with the new value AFTER the resizing.
             await delay(1);
-            document.documentElement.style.setProperty('--sheldWidth', `${power_user.chat_width}vw`);
+            document.documentElement.style.setProperty('--sheldWidth', `${getAppliedChatWidthValue()}vw`);
             await delay(1);
         });
     }
@@ -3600,6 +3624,10 @@ jQuery(() => {
             const currentViewportWidth = window.innerWidth;
             const didWidthChange = didMobileLayoutWidthChange(previousMobileViewportWidth, currentViewportWidth);
             previousMobileViewportWidth = currentViewportWidth;
+
+            if (didWidthChange) {
+                applyChatWidth('forced');
+            }
 
             if (!didWidthChange && isWorldInfoEditorInputFocused()) {
                 return;
