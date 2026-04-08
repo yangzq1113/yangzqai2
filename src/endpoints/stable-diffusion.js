@@ -668,7 +668,6 @@ async function waitForComfyCompletion(baseUrl, promptId, clientId, signal) {
 
     // Polling fallback
     console.debug('[ComfyUI] Using polling fallback (2s interval)...');
-    const deadline = Date.now() + TIMEOUT_MS;
     const historyUrl = new URL(urlJoin(baseUrl, `/history/${promptId}`));
 
     while (Date.now() < deadline) {
