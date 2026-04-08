@@ -569,73 +569,101 @@ comfy.post('/rename-workflow', getFileNameValidationFunction('old_name'), getFil
 
 /**
  * Wait for ComfyUI prompt completion via WebSocket (preferred) or polling fallback.
- * WS: single persistent connection, event-driven — ideal for direct ComfyUI connections.
+ * WS with auto-reconnect: if the connection drops mid-wait, retries up to WS_MAX_RETRIES
+ * times before falling back to polling.
  * Polling fallback: 2s interval with retry — for setups behind HTTP-only proxies.
  */
 async function waitForComfyCompletion(baseUrl, promptId, clientId, signal) {
     const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
     const POLL_INTERVAL_MS = 2000;
     const POLL_RETRY_MAX = 3;
+    const WS_MAX_RETRIES = 3;
+    const WS_RETRY_DELAY_MS = 2000;
+    const WS_OPEN_TIMEOUT_MS = 5000;
 
-    // Try WebSocket first
-    try {
-        const parsedBase = new URL(baseUrl);
-        const wsProtocol = parsedBase.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${parsedBase.host}/ws?clientId=${clientId}`;
-        const ws = new WebSocket(wsUrl);
+    const parsedBase = new URL(baseUrl);
+    const wsProtocol = parsedBase.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${parsedBase.host}/ws?clientId=${clientId}`;
+    const deadline = Date.now() + TIMEOUT_MS;
 
-        // Wait for WS open (5s timeout — fail fast to fall back to polling)
-        await new Promise((resolve, reject) => {
-            const openTimeout = setTimeout(() => {
-                ws.terminate();
-                reject(new Error('WS open timeout'));
-            }, 5000);
-            ws.on('open', () => { clearTimeout(openTimeout); resolve(); });
-            ws.on('error', (err) => { clearTimeout(openTimeout); reject(err); });
-        });
+    // Try WebSocket with retries
+    for (let attempt = 0; attempt <= WS_MAX_RETRIES; attempt++) {
+        if (signal?.aborted) throw new Error('Aborted');
+        if (Date.now() >= deadline) break;
 
-        console.debug('[ComfyUI] WebSocket connected, waiting for completion...');
+        try {
+            const ws = new WebSocket(wsUrl);
 
-        return await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                ws.close();
-                reject(new Error('ComfyUI generation timed out'));
-            }, TIMEOUT_MS);
+            // Wait for WS open
+            await new Promise((resolve, reject) => {
+                const openTimeout = setTimeout(() => {
+                    ws.terminate();
+                    reject(new Error('WS open timeout'));
+                }, WS_OPEN_TIMEOUT_MS);
+                ws.on('open', () => { clearTimeout(openTimeout); resolve(); });
+                ws.on('error', (err) => { clearTimeout(openTimeout); reject(err); });
+            });
 
-            if (signal) {
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timeout);
-                    ws.close();
-                    reject(new Error('Aborted'));
-                }, { once: true });
+            if (attempt > 0) {
+                console.debug(`[ComfyUI] WebSocket reconnected (attempt ${attempt + 1})`);
+            } else {
+                console.debug('[ComfyUI] WebSocket connected, waiting for completion...');
             }
 
-            ws.on('message', (rawData) => {
-                if (typeof rawData !== 'string' && !Buffer.isBuffer(rawData)) return;
-                let msg;
-                try { msg = JSON.parse(rawData.toString()); } catch { return; }
+            // Wait for completion message
+            const result = await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    ws.close();
+                    reject(new Error('ComfyUI generation timed out'));
+                }, Math.max(deadline - Date.now(), 1000));
 
-                // ComfyUI completion: "executing" with node=null
-                if (msg.type === 'executing' && msg.data?.prompt_id === promptId && msg.data?.node === null) {
-                    clearTimeout(timeout);
-                    ws.close();
-                    resolve();
-                } else if (msg.type === 'execution_error' && msg.data?.prompt_id === promptId) {
-                    clearTimeout(timeout);
-                    ws.close();
-                    const d = msg.data;
-                    reject(new Error(`ComfyUI generation failed.\n\n${d.node_type || 'Unknown'} [${d.node_id || '?'}] ${d.exception_type || 'Error'}: ${d.exception_message || 'Unknown error'}`));
+                if (signal) {
+                    signal.addEventListener('abort', () => {
+                        clearTimeout(timeout);
+                        ws.close();
+                        reject(new Error('Aborted'));
+                    }, { once: true });
                 }
+
+                ws.on('message', (rawData) => {
+                    if (typeof rawData !== 'string' && !Buffer.isBuffer(rawData)) return;
+                    let msg;
+                    try { msg = JSON.parse(rawData.toString()); } catch { return; }
+
+                    if (msg.type === 'executing' && msg.data?.prompt_id === promptId && msg.data?.node === null) {
+                        clearTimeout(timeout);
+                        ws.close();
+                        resolve('done');
+                    } else if (msg.type === 'execution_error' && msg.data?.prompt_id === promptId) {
+                        clearTimeout(timeout);
+                        ws.close();
+                        const d = msg.data;
+                        reject(new Error(`ComfyUI generation failed.\n\n${d.node_type || 'Unknown'} [${d.node_id || '?'}] ${d.exception_type || 'Error'}: ${d.exception_message || 'Unknown error'}`));
+                    }
+                });
+
+                ws.on('error', (err) => { clearTimeout(timeout); ws.close(); reject(err); });
+                ws.on('close', (code) => {
+                    clearTimeout(timeout);
+                    reject(new Error(`ComfyUI WebSocket closed (code: ${code})`));
+                });
             });
 
-            ws.on('error', (err) => { clearTimeout(timeout); ws.close(); reject(err); });
-            ws.on('close', (code) => {
-                clearTimeout(timeout);
-                reject(new Error(`ComfyUI WebSocket closed (code: ${code})`));
-            });
-        });
-    } catch (wsError) {
-        console.debug(`[ComfyUI] WebSocket unavailable (${wsError.message}), falling back to polling`);
+            if (result === 'done') return; // Success — exit the function
+        } catch (wsError) {
+            const isRetryable = wsError.message?.includes('WebSocket closed') || wsError.message?.includes('WS open timeout');
+            if (!isRetryable || wsError.message === 'Aborted') {
+                // Non-retryable error (execution_error, timeout, abort) — don't retry
+                throw wsError;
+            }
+
+            if (attempt < WS_MAX_RETRIES) {
+                console.debug(`[ComfyUI] WebSocket dropped (${wsError.message}), retrying in ${WS_RETRY_DELAY_MS}ms (${attempt + 1}/${WS_MAX_RETRIES})...`);
+                await delay(WS_RETRY_DELAY_MS);
+            } else {
+                console.debug(`[ComfyUI] WebSocket failed after ${WS_MAX_RETRIES + 1} attempts, falling back to polling`);
+            }
+        }
     }
 
     // Polling fallback
