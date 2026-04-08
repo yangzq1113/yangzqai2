@@ -664,6 +664,10 @@ export function focusWithoutVirtualKeyboard(element, restoreDelay = 300) {
         return;
     }
 
+    if (isMobile() && element.id === 'send_textarea') {
+        return;
+    }
+
     if (!isMobile() || !(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
         element.focus();
         return;

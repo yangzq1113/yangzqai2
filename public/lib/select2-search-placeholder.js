@@ -1,5 +1,25 @@
 (function($) {
 
+    var isMobileUA = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+    var unlockedByField = new WeakMap();
+    var unlockHandlerByField = new WeakMap();
+
+    function unlockSearchField(searchField) {
+        if (!(searchField instanceof HTMLInputElement || searchField instanceof HTMLTextAreaElement)) {
+            return;
+        }
+
+        if (unlockHandlerByField.has(searchField)) {
+            searchField.removeEventListener('pointerdown', unlockHandlerByField.get(searchField));
+            searchField.removeEventListener('touchstart', unlockHandlerByField.get(searchField));
+            searchField.removeEventListener('mousedown', unlockHandlerByField.get(searchField));
+            unlockHandlerByField.delete(searchField);
+        }
+
+        searchField.readOnly = false;
+        unlockedByField.set(searchField, true);
+    }
+
     var Defaults = $.fn.select2.amd.require('select2/defaults');
 
     $.extend(Defaults.defaults, {
@@ -23,16 +43,38 @@
     };
 
     // Mobile: prevent virtual keyboard from auto-popping when select2 opens.
-    // Sets the search field to readOnly momentarily so the browser won't summon
-    // the IME. After 300ms readOnly is lifted — user can still tap the field to
-    // type a search query manually.
+    // Keep the search input readOnly until the user explicitly taps it.
     $(document).on('select2:open', function () {
-        if (!/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) return;
+        if (!isMobileUA) return;
         var searchField = document.querySelector('.select2-container--open .select2-search__field');
-        if (searchField) {
-            searchField.readOnly = true;
-            setTimeout(function () { searchField.readOnly = false; }, 300);
+        if (!(searchField instanceof HTMLInputElement || searchField instanceof HTMLTextAreaElement)) return;
+
+        if (unlockedByField.get(searchField) === true) {
+            return;
         }
+
+        searchField.readOnly = true;
+
+        if (document.activeElement === searchField) {
+            searchField.blur();
+        }
+
+        var unlockOnPointer = function () {
+            unlockSearchField(searchField);
+            // Re-focus after unlocking so manual tap still allows typing immediately.
+            setTimeout(function () { searchField.focus(); }, 0);
+        };
+
+        unlockHandlerByField.set(searchField, unlockOnPointer);
+        searchField.addEventListener('pointerdown', unlockOnPointer, { once: true });
+        searchField.addEventListener('touchstart', unlockOnPointer, { once: true });
+        searchField.addEventListener('mousedown', unlockOnPointer, { once: true });
+    });
+
+    $(document).on('select2:close', function () {
+        if (!isMobileUA) return;
+        unlockedByField = new WeakMap();
+        unlockHandlerByField = new WeakMap();
     });
 
 })(window.jQuery);

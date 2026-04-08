@@ -63,17 +63,20 @@ var retry_delay = 500;
 let counterNonce = Date.now();
 let navPanelPinsInitialized = false;
 let sendTextareaStateInitialized = false;
+let sendTextareaFocusGuardInitialized = false;
 let userInputRestored = false;
 let swipeGuardChatEl = null;
 let swipeGuardLastChatScrollTs = 0;
 let swipeGuardLastChatScrollTop = null;
 let swipeGuardLastChatScrollDeltaPx = 0;
+let sendTextareaLastUserFocusIntentTs = 0;
 
 const SWIPE_GUARD_MIN_DX_PX = 60;
 const SWIPE_GUARD_DX_DY_RATIO = 1.8;
 const SWIPE_GUARD_SCROLL_BLOCK_MS = 180;
 const SWIPE_GUARD_MEANINGFUL_SCROLL_DELTA_PX = 8;
 const SWIPE_GUARD_TIMEOUT_MS = 500;
+const SEND_TEXTAREA_USER_FOCUS_GRACE_MS = 900;
 
 const observerConfig = { childList: true, subtree: true };
 const countTokensDebounced = debounce(RA_CountCharTokens, debounce_timeout.relaxed);
@@ -880,9 +883,42 @@ function onSendTextareaInput() {
     }
 }
 
+function initMobileSendTextareaFocusGuard() {
+    if (sendTextareaFocusGuardInitialized || !sendTextArea || !isMobile()) {
+        return;
+    }
+
+    const markUserFocusIntent = (event) => {
+        if (!(event.target instanceof Element)) {
+            return;
+        }
+
+        if (event.target.closest('#send_textarea')) {
+            sendTextareaLastUserFocusIntentTs = Date.now();
+        }
+    };
+
+    const preventProgrammaticFocus = () => {
+        const elapsed = Date.now() - sendTextareaLastUserFocusIntentTs;
+        if (elapsed <= SEND_TEXTAREA_USER_FOCUS_GRACE_MS) {
+            return;
+        }
+
+        sendTextArea.blur();
+    };
+
+    document.addEventListener('pointerdown', markUserFocusIntent, true);
+    document.addEventListener('touchstart', markUserFocusIntent, true);
+    document.addEventListener('mousedown', markUserFocusIntent, true);
+    sendTextArea.addEventListener('focus', preventProgrammaticFocus, true);
+
+    sendTextareaFocusGuardInitialized = true;
+}
+
 export function initSendTextareaState() {
     if (!sendTextareaStateInitialized) {
         sendTextArea.addEventListener('input', onSendTextareaInput);
+        initMobileSendTextareaFocusGuard();
         sendTextareaStateInitialized = true;
     }
 
