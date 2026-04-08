@@ -36,8 +36,8 @@ let wss = null;
  */
 const jobs = new Map();
 
-const JOB_TTL = 5 * 60 * 1000;       // 5 minutes — auto-cleanup orphaned jobs
-const JOB_CLEANUP_INTERVAL = 60_000;  // check every 60s
+const JOB_ORPHAN_TTL = 5 * 60 * 1000;  // 5 min — cleanup orphaned (disconnected + idle) jobs
+const JOB_CLEANUP_INTERVAL = 60_000;   // check every 60s
 
 /**
  * @typedef {object} Job
@@ -49,7 +49,7 @@ const JOB_CLEANUP_INTERVAL = 60_000;  // check every 60s
  * @property {string[]} buffer                — buffered base64 chunks
  * @property {boolean} done                   — response fully received
  * @property {string|null} error              — error message if failed
- * @property {number} createdAt
+ * @property {number} lastActivity             — updated on every chunk/head/end
  * @property {object} ctx                     — { cookie, csrfToken, localOrigin, originalHost }
  */
 
@@ -82,7 +82,9 @@ export function initWsProxy(servers) {
 function cleanupJobs() {
     const now = Date.now();
     for (const [id, job] of jobs) {
-        if (now - job.createdAt > JOB_TTL) {
+        // Only clean up orphaned jobs: no WS attached AND idle for too long
+        // Active jobs (ws connected or recently active) are never killed by cleanup
+        if (!job.ws && now - job.lastActivity > JOB_ORPHAN_TTL) {
             job.ac.abort();
             jobs.delete(id);
         }
@@ -224,7 +226,7 @@ async function startJob(ws, msg, ctx) {
         buffer: [],
         done: false,
         error: null,
-        createdAt: Date.now(),
+        lastActivity: Date.now(),
         ctx,
     };
     jobs.set(id, job);
@@ -264,6 +266,7 @@ async function startJob(ws, msg, ctx) {
                     const b64 = Buffer.from(value).toString('base64');
                     // Always buffer (for resume support)
                     job.buffer.push(b64);
+                    job.lastActivity = Date.now();
                     // Send to WS if connected
                     wsSend(job.ws, { type: 'chunk', id, data: b64 });
                 }
