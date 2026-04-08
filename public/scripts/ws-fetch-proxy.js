@@ -43,6 +43,7 @@
     let reconnectDelay = RECONNECT_BASE;
     let heartbeatTimer = null;
     let pongTimer = null;
+    let lastMessageAt = 0;
     let csrfToken = '';
     let intentionalClose = false;
 
@@ -105,6 +106,7 @@
         ws.onopen = () => {
             console.log('[ws-proxy] Connected');
             reconnectDelay = RECONNECT_BASE;
+            lastMessageAt = Date.now();
             startHeartbeat();
 
             // Resume any in-flight requests that survived the disconnect
@@ -112,6 +114,13 @@
         };
 
         ws.onmessage = (event) => {
+            // Any inbound frame means the socket is alive, not only explicit pong.
+            lastMessageAt = Date.now();
+            if (pongTimer) {
+                clearTimeout(pongTimer);
+                pongTimer = null;
+            }
+
             let msg;
             try {
                 msg = JSON.parse(event.data);
@@ -162,7 +171,12 @@
                 // the server to replay from where we left off.
                 // For requests that haven't received head yet, the server
                 // will replay everything from the beginning.
-                ws.send(JSON.stringify({ type: 'resume', id }));
+                ws.send(JSON.stringify({
+                    type: 'resume',
+                    id,
+                    // Resume from the next chunk we have not received yet.
+                    fromChunk: entry.receivedChunks || 0,
+                }));
                 entry.resumed = true;
             }
         }
@@ -186,10 +200,21 @@
         stopHeartbeat();
         heartbeatTimer = setInterval(() => {
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (pongTimer) {
+                return;
+            }
+
             ws.send(JSON.stringify({ type: 'ping' }));
+            const sentAt = Date.now();
             pongTimer = setTimeout(() => {
+                // If we have received any frame after ping, treat it as healthy.
+                if (lastMessageAt > sentAt) {
+                    pongTimer = null;
+                    return;
+                }
                 console.warn('[ws-proxy] Pong timeout, closing');
                 if (ws) ws.close();
+                pongTimer = null;
             }, HEARTBEAT_TIMEOUT);
         }, HEARTBEAT_INTERVAL);
     }
@@ -252,6 +277,7 @@
 
             case 'chunk': {
                 const bytes = b64ToUint8(msg.data);
+                req.receivedChunks = (req.receivedChunks || 0) + 1;
                 if (req.controller) {
                     try {
                         req.controller.enqueue(bytes);
@@ -361,6 +387,7 @@
                 headReceived: false,
                 controller: null,
                 chunks: [],
+                receivedChunks: 0,
                 status: 0,
                 headers: {},
                 resumed: false,

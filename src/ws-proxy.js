@@ -142,7 +142,7 @@ function handleConnection(ws, req) {
         }
 
         if (msg.type === 'resume') {
-            handleResume(ws, msg.id, ownedJobs);
+            handleResume(ws, msg.id, ownedJobs, msg.fromChunk);
             return;
         }
 
@@ -173,7 +173,7 @@ function handleConnection(ws, req) {
 /**
  * Resume a job after WS reconnect — replay buffered data.
  */
-function handleResume(ws, id, ownedJobs) {
+function handleResume(ws, id, ownedJobs, fromChunk = 0) {
     const job = jobs.get(id);
     if (!job) {
         // Job expired or never existed
@@ -190,8 +190,10 @@ function handleResume(ws, id, ownedJobs) {
         wsSend(ws, { type: 'head', id, status: job.head.status, headers: job.head.headers });
     }
 
-    // Replay buffered chunks
-    for (const b64 of job.buffer) {
+    // Replay buffered chunks from the requested offset to avoid duplicates.
+    const start = Number.isFinite(fromChunk) ? Math.max(0, Math.floor(fromChunk)) : 0;
+    for (let i = start; i < job.buffer.length; i++) {
+        const b64 = job.buffer[i];
         wsSend(ws, { type: 'chunk', id, data: b64 });
     }
 
