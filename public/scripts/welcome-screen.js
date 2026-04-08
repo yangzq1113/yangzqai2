@@ -37,7 +37,7 @@ import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { flashHighlight, isElementInViewport, sortMoments, timestampToMoment } from './utils.js';
+import { flashHighlight, focusWithoutVirtualKeyboard, isElementInViewport, sortMoments, timestampToMoment } from './utils.js';
 
 const assistantAvatarKey = 'assistant';
 const pinnedChatsKey = 'pinnedChats';
@@ -397,7 +397,7 @@ async function sendWelcomePanel(chats, expand = false) {
             button.addEventListener('click', async () => {
                 await newAssistantChat({ temporary: true });
                 if (sendTextArea instanceof HTMLTextAreaElement) {
-                    sendTextArea.focus();
+                    focusWithoutVirtualKeyboard(sendTextArea);
                 }
             });
         });

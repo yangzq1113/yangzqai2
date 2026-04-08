@@ -1,7 +1,7 @@
 import dialogPolyfill from '../lib/dialog-polyfill.esm.js';
 import { shouldSendOnEnter } from './RossAscends-mods.js';
 import { power_user, toastPositionClasses } from './power-user.js';
-import { removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
+import { focusWithoutVirtualKeyboard, removeFromArray, runAfterAnimation, uuidv4 } from './utils.js';
 
 /** @readonly */
 /** @enum {Number} */
@@ -652,7 +652,7 @@ export class Popup {
                 const id = activeDialog?.getAttribute('data-id');
                 const popup = Popup.util.popups.find(x => x.id == id);
                 if (popup) {
-                    if (popup.lastFocus) popup.lastFocus.focus();
+                    if (popup.lastFocus) focusWithoutVirtualKeyboard(popup.lastFocus);
                     else popup.setAutoFocus();
                 }
             }

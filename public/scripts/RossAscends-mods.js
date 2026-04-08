@@ -34,7 +34,7 @@ import {
     SECRET_KEYS,
     secret_state,
 } from './secrets.js';
-import { debounce, getStringHash, isValidUrl } from './utils.js';
+import { debounce, focusWithoutVirtualKeyboard, getStringHash, isValidUrl } from './utils.js';
 import { chat_completion_sources, oai_settings } from './openai.js';
 import { getTokenCountAsync } from './tokenizers.js';
 import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
@@ -1099,12 +1099,12 @@ export async function initRossMods() {
             const reasoningMesDone = $('.mes_reasoning_edit_done:visible');
             if (editMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
-                $('#send_textarea').trigger('focus');
+                focusWithoutVirtualKeyboard(sendTextArea);
                 editMesDone.trigger('click');
                 return;
             } else if (reasoningMesDone.length > 0) {
                 console.debug('Accepting edits with Ctrl+Enter');
-                $('#send_textarea').trigger('focus');
+                focusWithoutVirtualKeyboard(sendTextArea);
                 reasoningMesDone.trigger('click');
                 return;
             }

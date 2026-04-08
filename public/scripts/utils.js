@@ -655,6 +655,32 @@ export function copyText(text) {
 }
 
 /**
+ * Focuses an input element without summoning the mobile virtual keyboard.
+ * @param {HTMLElement|null|undefined} element
+ * @param {number} [restoreDelay=300]
+ */
+export function focusWithoutVirtualKeyboard(element, restoreDelay = 300) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+
+    if (!isMobile() || !(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement)) {
+        element.focus();
+        return;
+    }
+
+    const previousReadOnly = element.readOnly;
+    element.readOnly = true;
+    element.focus();
+
+    setTimeout(() => {
+        if (element.isConnected) {
+            element.readOnly = previousReadOnly;
+        }
+    }, restoreDelay);
+}
+
+/**
  * Map of debounced functions to their timers.
  * Weak map is used to avoid memory leaks.
  * @type {WeakMap<function, any>}
