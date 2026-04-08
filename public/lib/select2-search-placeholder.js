@@ -1,23 +1,41 @@
 (function($) {
 
     var isMobileUA = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-    var unlockedByField = new WeakMap();
-    var unlockHandlerByField = new WeakMap();
+    var SELECT2_USER_FOCUS_GRACE_MS = 900;
+    var lastSelect2SearchUserIntentTs = 0;
 
-    function unlockSearchField(searchField) {
-        if (!(searchField instanceof HTMLInputElement || searchField instanceof HTMLTextAreaElement)) {
+    function isSelect2SearchField(target) {
+        return target instanceof HTMLInputElement && target.classList.contains('select2-search__field')
+            || target instanceof HTMLTextAreaElement && target.classList.contains('select2-search__field');
+    }
+
+    function markSelect2UserIntent(event) {
+        if (!isMobileUA) return;
+        if (!(event.target instanceof Element)) {
             return;
         }
 
-        if (unlockHandlerByField.has(searchField)) {
-            searchField.removeEventListener('pointerdown', unlockHandlerByField.get(searchField));
-            searchField.removeEventListener('touchstart', unlockHandlerByField.get(searchField));
-            searchField.removeEventListener('mousedown', unlockHandlerByField.get(searchField));
-            unlockHandlerByField.delete(searchField);
+        if (event.target.closest('.select2-container--open .select2-search__field')) {
+            lastSelect2SearchUserIntentTs = Date.now();
+        }
+    }
+
+    function guardProgrammaticSelect2Focus(event) {
+        if (!isMobileUA) return;
+
+        var target = event.target;
+        if (!isSelect2SearchField(target)) {
+            return;
         }
 
-        searchField.readOnly = false;
-        unlockedByField.set(searchField, true);
+        var elapsed = Date.now() - lastSelect2SearchUserIntentTs;
+        if (elapsed <= SELECT2_USER_FOCUS_GRACE_MS) {
+            target.readOnly = false;
+            return;
+        }
+
+        target.readOnly = true;
+        target.blur();
     }
 
     var Defaults = $.fn.select2.amd.require('select2/defaults');
@@ -43,38 +61,22 @@
     };
 
     // Mobile: prevent virtual keyboard from auto-popping when select2 opens.
-    // Keep the search input readOnly until the user explicitly taps it.
+    // Keep the search input readOnly and only unlock it on explicit user tap.
     $(document).on('select2:open', function () {
         if (!isMobileUA) return;
         var searchField = document.querySelector('.select2-container--open .select2-search__field');
         if (!(searchField instanceof HTMLInputElement || searchField instanceof HTMLTextAreaElement)) return;
-
-        if (unlockedByField.get(searchField) === true) {
-            return;
-        }
 
         searchField.readOnly = true;
 
         if (document.activeElement === searchField) {
             searchField.blur();
         }
-
-        var unlockOnPointer = function () {
-            unlockSearchField(searchField);
-            // Re-focus after unlocking so manual tap still allows typing immediately.
-            setTimeout(function () { searchField.focus(); }, 0);
-        };
-
-        unlockHandlerByField.set(searchField, unlockOnPointer);
-        searchField.addEventListener('pointerdown', unlockOnPointer, { once: true });
-        searchField.addEventListener('touchstart', unlockOnPointer, { once: true });
-        searchField.addEventListener('mousedown', unlockOnPointer, { once: true });
     });
 
-    $(document).on('select2:close', function () {
-        if (!isMobileUA) return;
-        unlockedByField = new WeakMap();
-        unlockHandlerByField = new WeakMap();
-    });
+    document.addEventListener('pointerdown', markSelect2UserIntent, true);
+    document.addEventListener('touchstart', markSelect2UserIntent, true);
+    document.addEventListener('mousedown', markSelect2UserIntent, true);
+    document.addEventListener('focusin', guardProgrammaticSelect2Focus, true);
 
 })(window.jQuery);
