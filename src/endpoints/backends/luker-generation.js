@@ -449,6 +449,7 @@ async function persistGeneratedReply(job, text, generationId = '', modelName = '
             filePath: chatFilePath,
             messages: [message],
             chatMetadata: persistTarget.chat_metadata || {},
+            integritySlug: persistTarget.integrity || '',
             force: Boolean(persistTarget.force),
         });
         return true;
@@ -470,6 +471,7 @@ async function persistGeneratedReply(job, text, generationId = '', modelName = '
             filePath: chatFilePath,
             messages: [message],
             chatMetadata: persistTarget.chat_metadata || {},
+            integritySlug: persistTarget.integrity || '',
             force: Boolean(persistTarget.force),
         });
         return true;
