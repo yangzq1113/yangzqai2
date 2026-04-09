@@ -6036,8 +6036,9 @@ function renderJournalItems(state) {
 
 function canUseToolsInCurrentContext(context) {
     try {
-        getActiveCharacterRecord(context);
-        return true;
+        const record = getActiveCharacterRecord(context);
+        const avatar = String(record?.avatar || '').trim();
+        return Boolean(avatar) && editorStudioDialogLocks.has(avatar);
     } catch {
         return false;
     }
@@ -6069,7 +6070,7 @@ function registerTools(context) {
         name: TOOL_NAMES.UPDATE_FIELDS,
         displayName: 'Update Character Fields',
         description: 'Update current character card fields (description, personality, scenario, first_mes, alternate_greetings, mes_example, system_prompt, creator_notes, etc).',
-        shouldRegister: async () => canUseToolsInCurrentContext(getContext()),
+        shouldRegister: async () => false,
         parameters: {
             type: 'object',
             properties: {
@@ -6097,7 +6098,7 @@ function registerTools(context) {
         name: TOOL_NAMES.SET_PRIMARY_BOOK,
         displayName: 'Set Primary Lorebook',
         description: 'Set or clear current character primary lorebook binding. Optionally create lorebook if missing.',
-        shouldRegister: async () => canUseToolsInCurrentContext(getContext()),
+        shouldRegister: async () => false,
         parameters: {
             type: 'object',
             properties: {
@@ -6114,7 +6115,7 @@ function registerTools(context) {
         name: TOOL_NAMES.UPSERT_ENTRY,
         displayName: 'Upsert Lorebook Entry',
         description: 'Create or update one lorebook entry in current character primary lorebook (or an explicit lorebook name).',
-        shouldRegister: async () => canUseToolsInCurrentContext(getContext()),
+        shouldRegister: async () => false,
         parameters: {
             type: 'object',
             properties: {
@@ -6143,7 +6144,7 @@ function registerTools(context) {
         name: TOOL_NAMES.DELETE_ENTRY,
         displayName: 'Delete Lorebook Entry',
         description: 'Delete one lorebook entry by UID in current character primary lorebook (or an explicit lorebook name).',
-        shouldRegister: async () => canUseToolsInCurrentContext(getContext()),
+        shouldRegister: async () => false,
         parameters: {
             type: 'object',
             properties: {
