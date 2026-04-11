@@ -80,7 +80,7 @@
     align-items: stretch;
     border: none;
     border-left: 3px solid transparent;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 5em;
     grid-template-rows: auto auto;
     padding: 0.5em 0.65em;
     row-gap: 0.4em;
