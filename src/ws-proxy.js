@@ -118,6 +118,12 @@ function handleConnection(ws, req) {
     /** Track which job IDs this connection owns */
     const ownedJobs = new Set();
 
+    // Server-side keepalive: send WS protocol-level pings every 30s
+    // to detect dead TCP connections (NAT timeout, network switch, etc.)
+    const wsPingInterval = setInterval(() => {
+        if (ws.readyState === 1) ws.ping();
+    }, 30000);
+
     ws.on('message', (raw) => {
         let msg;
         try {
@@ -154,6 +160,7 @@ function handleConnection(ws, req) {
     });
 
     ws.on('close', () => {
+        clearInterval(wsPingInterval);
         // Detach WS from all owned jobs — but do NOT abort them.
         // The backend fetch continues running, buffering chunks.
         for (const id of ownedJobs) {

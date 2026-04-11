@@ -30,7 +30,7 @@
     ];
 
     const HEARTBEAT_INTERVAL = 25000;  // 25s ping
-    const HEARTBEAT_TIMEOUT  = 10000;  // 10s pong deadline
+    const HEARTBEAT_TIMEOUT  = 60000;  // 60s pong deadline
     const RECONNECT_BASE     = 1000;   // initial reconnect delay
     const RECONNECT_MAX      = 30000;  // max reconnect delay
     const RECONNECT_JITTER   = 0.3;    // ±30% jitter
