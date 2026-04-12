@@ -250,6 +250,63 @@ describe('packCardAppFiles', () => {
     });
 });
 
+describe('extractCardAppFiles - edge cases', () => {
+    test('should handle null/undefined charData gracefully', () => {
+        expect(extractCardAppFiles(null, 'test', cardAppsDir)).toBe(false);
+        expect(extractCardAppFiles(undefined, 'test', cardAppsDir)).toBe(false);
+        expect(extractCardAppFiles({}, 'test', cardAppsDir)).toBe(false);
+    });
+
+    test('should skip files with path traversal attempts', () => {
+        const charData = {
+            data: {
+                extensions: {
+                    card_app: {
+                        enabled: true,
+                        files: {
+                            '../../../etc/passwd': 'malicious content',
+                            'safe.js': 'safe content',
+                        },
+                    },
+                },
+            },
+        };
+
+        const result = extractCardAppFiles(charData, 'traversal-test', cardAppsDir);
+        expect(result).toBe(true);
+
+        // Safe file should exist
+        expect(fs.existsSync(path.join(cardAppsDir, 'traversal-test', 'safe.js'))).toBe(true);
+
+        // Malicious path should NOT have created files outside the char directory
+        expect(fs.existsSync(path.join(cardAppsDir, '..', '..', '..', 'etc', 'passwd'))).toBe(false);
+    });
+
+    test('should handle non-string file content gracefully', () => {
+        const charData = {
+            data: {
+                extensions: {
+                    card_app: {
+                        enabled: true,
+                        files: {
+                            'number.js': 12345,
+                            'null.js': null,
+                            'valid.js': 'valid content',
+                        },
+                    },
+                },
+            },
+        };
+
+        // Should not throw
+        const result = extractCardAppFiles(charData, 'type-test', cardAppsDir);
+        expect(result).toBe(true);
+
+        // Valid file should exist
+        expect(fs.existsSync(path.join(cardAppsDir, 'type-test', 'valid.js'))).toBe(true);
+    });
+});
+
 describe('deleteCardAppFiles', () => {
     test('should delete the character card-app directory', () => {
         const charId = 'delete-test';
