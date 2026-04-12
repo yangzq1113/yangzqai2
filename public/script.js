@@ -4681,7 +4681,7 @@ export function addOneMessage(mes, { type = 'normal', insertAfter = null, scroll
 
     applyCharacterTagsToMessageDivs({ mesIds: messageId });
     updateEditArrowClasses();
-    return messageElement;
+    return newMessage;
 }
 
 /**
