@@ -335,6 +335,8 @@ export function buildOrchestratorSettingsHtml(deps) {
             <input id="luker_orch_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" />
             <label for="luker_orch_agent_timeout">${escapeHtml(i18n('Per-agent timeout seconds (0 = disabled)'))}</label>
             <input id="luker_orch_agent_timeout" class="text_pole" type="number" min="0" max="3600" step="1" />
+            <label for="luker_orch_rpm_limit">${escapeHtml(i18n('RPM limit (0 = unlimited)'))}</label>
+            <input id="luker_orch_rpm_limit" class="text_pole" type="number" min="0" max="600" step="1" />
             <label for="luker_orch_capsule_position">${escapeHtml(i18n('Injection position'))}</label>
             <select id="luker_orch_capsule_position" class="text_pole">
                 <option value="${world_info_position.before}">${escapeHtml(i18n('Before Character Definitions'))}</option>

@@ -374,6 +374,7 @@ const defaultSettings = {
     aiSuggestApiPresetName: '',
     aiSuggestPresetName: '',
     aiSuggestSystemPrompt: getDefaultAiSuggestSystemPrompt(),
+    rpmLimit: 0,
 };
 
 function i18n(text) {
@@ -565,6 +566,7 @@ function registerLocaleData() {
         'Review rerun max rounds (N)': 'Review 重跑最大轮数（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具调用重试次数（无效/缺失时）',
         'Per-agent timeout seconds (0 = disabled)': '单 Agent 超时秒数（0=禁用）',
+        'RPM limit (0 = unlimited)': 'RPM 限制（0 = 不限制）',
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定义前',
         'After Character Definitions': '角色定义后',
@@ -853,6 +855,7 @@ function registerLocaleData() {
         'Review rerun max rounds (N)': 'Review 重跑最大輪數（N）',
         'Tool-call retries on invalid/missing tool call (N)': '工具呼叫重試次數（無效/缺失時）',
         'Per-agent timeout seconds (0 = disabled)': '單 Agent 超時秒數（0=禁用）',
+        'RPM limit (0 = unlimited)': 'RPM 限制（0 = 不限制）',
         'Injection position': '注入位置',
         'Before Character Definitions': '角色定義前',
         'After Character Definitions': '角色定義後',
@@ -1347,6 +1350,10 @@ function ensureSettings() {
     extension_settings[MODULE_NAME].toolCallRetryMax = Math.max(
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
+    );
+    extension_settings[MODULE_NAME].rpmLimit = Math.max(
+        0,
+        Math.floor(Number(extension_settings[MODULE_NAME].rpmLimit) || 0),
     );
     extension_settings[MODULE_NAME].nodeIterationMaxRounds = Math.max(
         1,
@@ -2914,6 +2921,29 @@ function createAttemptAbortController(baseAbortSignal = null, timeoutMs = 0) {
     };
 }
 
+const _rpmTimestamps = [];
+
+async function waitForRpmSlot(settings, abortSignal = null) {
+    const limit = Math.max(0, Math.floor(Number(settings?.rpmLimit) || 0));
+    if (limit <= 0) return;
+    const windowMs = 60_000;
+    const pollMs = 200;
+    while (true) {
+        if (isAbortSignalLike(abortSignal) && abortSignal.aborted) return;
+        const now = Date.now();
+        while (_rpmTimestamps.length > 0 && _rpmTimestamps[0] <= now - windowMs) {
+            _rpmTimestamps.shift();
+        }
+        if (_rpmTimestamps.length < limit) {
+            _rpmTimestamps.push(now);
+            return;
+        }
+        const waitUntil = _rpmTimestamps[0] + windowMs;
+        const delay = Math.min(pollMs, Math.max(10, waitUntil - now));
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+}
+
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
@@ -2962,6 +2992,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             };
+            await waitForRpmSlot(settings, abortSignal);
             const responseData = await sendOpenAIRequest('quiet', promptMessages, attemptController.signal, {
                 ...requestOptions,
             });
@@ -3038,6 +3069,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
                     protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
                 },
             };
+            await waitForRpmSlot(settings, abortSignal);
             const responseData = await sendOpenAIRequest('quiet', promptMessages, attemptController.signal, {
                 ...requestOptions,
             });
@@ -11442,6 +11474,7 @@ function bindUi() {
     root.find('#luker_orch_review_reruns').val(String(settings.reviewRerunMaxRounds ?? 2));
     root.find('#luker_orch_tool_retries').val(String(settings.toolCallRetryMax ?? 2));
     root.find('#luker_orch_agent_timeout').val(String(settings.agentTimeoutSeconds ?? 0));
+    root.find('#luker_orch_rpm_limit').val(settings.rpmLimit || 0);
     root.find('#luker_orch_capsule_position').val(String(Number(settings.capsuleInjectPosition)));
     root.find('#luker_orch_capsule_depth').val(String(Number(settings.capsuleInjectDepth || 0)));
     root.find('#luker_orch_capsule_role').val(String(Number(settings.capsuleInjectRole)));
@@ -11593,6 +11626,11 @@ function bindUi() {
 
     root.on('change.lukerOrch', '#luker_orch_agent_timeout', function () {
         settings.agentTimeoutSeconds = Math.max(0, Math.min(3600, Math.floor(Number(jQuery(this).val()) || 0)));
+        saveSettingsDebounced();
+    });
+
+    root.on('change.lukerOrch', '#luker_orch_rpm_limit', function () {
+        settings.rpmLimit = Math.max(0, Math.floor(Number(jQuery(this).val()) || 0));
         saveSettingsDebounced();
     });
 
