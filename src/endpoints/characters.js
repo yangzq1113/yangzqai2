@@ -25,6 +25,7 @@ import { getChatInfo } from './chats.js';
 import { ByafParser } from '../byaf.js';
 import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
+import { extractCardAppFiles, packCardAppFiles, deleteCardAppFiles } from './card-app.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -1606,6 +1607,9 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         }
     }
 
+    // Clean up CardApp files
+    deleteCardAppFiles(dir_name, request.user.directories.cardApps);
+
     return response.sendStatus(200);
 });
 
@@ -1969,6 +1973,22 @@ router.post('/import', async function (request, response) {
             invalidateThumbnail(request.user.directories, 'avatar', `${preservedFileName}.png`);
         }
 
+        // Extract CardApp files from character data to independent directory
+        try {
+            const charId = fileName.replace('.png', '');
+            const charFilePath = path.join(request.user.directories.characters, `${fileName}.png`);
+            const rawData = await readCharacterData(charFilePath);
+            if (rawData) {
+                const charData = JSON.parse(rawData);
+                if (extractCardAppFiles(charData, charId, request.user.directories.cardApps)) {
+                    // Re-write character data without the embedded files
+                    await writeCharacterData(charFilePath, JSON.stringify(charData), charId, request, undefined, { requireExistingOutput: true });
+                }
+            }
+        } catch (cardAppErr) {
+            console.warn('[card-app] Failed to extract CardApp files during import:', cardAppErr);
+        }
+
         response.send({ file_name: fileName });
     } catch (err) {
         console.error(err);
@@ -2034,6 +2054,9 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                 const jsonObject = getStoredCharaCardV2(JSON.parse(rawData), request.user.directories);
                 syncCharacterBookFromWorldInfo(jsonObject, request.user.directories, _.get(jsonObject, 'data.extensions.world'));
                 unsetPrivateFields(jsonObject);
+                // Pack CardApp files into export data
+                const exportCharId = sanitize(request.body.avatar_url).replace('.png', '');
+                packCardAppFiles(jsonObject, exportCharId, request.user.directories.cardApps);
                 const mutatedBuffer = write(rawBuffer, JSON.stringify(toStoredV2Character(jsonObject)));
                 const contentType = mime.lookup(filename) || 'image/png';
                 response.setHeader('Content-Type', contentType);
@@ -2047,6 +2070,9 @@ router.post('/export', validateAvatarUrlMiddleware, async function (request, res
                     const jsonObject = getStoredCharaCardV2(JSON.parse(json), request.user.directories);
                     syncCharacterBookFromWorldInfo(jsonObject, request.user.directories, _.get(jsonObject, 'data.extensions.world'));
                     unsetPrivateFields(jsonObject);
+                    // Pack CardApp files into export data
+                    const exportCharIdJson = sanitize(request.body.avatar_url).replace('.png', '');
+                    packCardAppFiles(jsonObject, exportCharIdJson, request.user.directories.cardApps);
                     return response.type('json').send(JSON.stringify(toStoredV2Character(jsonObject), null, 4));
                 }
                 catch {
