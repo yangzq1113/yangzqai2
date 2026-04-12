@@ -136,6 +136,15 @@ export function buildContext(container, charId, config) {
         },
 
         /**
+         * Regenerate the last AI message (delete and re-generate).
+         * @returns {Promise<void>}
+         */
+        async regenerate() {
+            const { Generate } = await import('../../../script.js');
+            await Generate('regenerate');
+        },
+
+        /**
          * Stop the current generation.
          */
         stopGeneration() {
