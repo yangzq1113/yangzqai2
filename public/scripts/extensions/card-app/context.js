@@ -2,7 +2,7 @@
  * CardApp Context - builds the ctx object passed to CardApp's init() function.
  */
 
-import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders, openCharacterChat, doNewChat, closeCurrentChat, getPastCharacterChats } from '../../../script.js';
+import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders, openCharacterChat, doNewChat, closeCurrentChat, getPastCharacterChats, deleteMessage as lukerDeleteMessage, deleteLastMessage, swipe_right } from '../../../script.js';
 import { getContext, saveMetadataDebounced } from '../../extensions.js';
 import { executeSlashCommandsWithOptions } from '../../slash-commands.js';
 
@@ -114,11 +114,17 @@ export function buildContext(container, charId, config) {
          * @returns {Promise<void>}
          */
         async deleteMessage(messageId) {
-            const context = getContext();
             if (messageId >= 0 && messageId < chat.length) {
-                chat.splice(messageId, 1);
-                await context.saveChat();
+                await lukerDeleteMessage(messageId);
             }
+        },
+
+        /**
+         * Delete the last message in the chat.
+         * @returns {Promise<void>}
+         */
+        async deleteLastMessage() {
+            await deleteLastMessage();
         },
 
         /**
@@ -126,8 +132,7 @@ export function buildContext(container, charId, config) {
          * @returns {Promise<void>}
          */
         async swipe() {
-            const context = getContext();
-            await context.Generate('swipe');
+            await swipe_right();
         },
 
         /**
@@ -145,8 +150,8 @@ export function buildContext(container, charId, config) {
          * @returns {Promise<void>}
          */
         async continueGeneration() {
-            const context = getContext();
-            await context.Generate('continue');
+            const { Generate } = await import('../../../script.js');
+            await Generate('continue');
         },
 
         // ==================== Data ====================
