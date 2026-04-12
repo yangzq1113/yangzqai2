@@ -6,6 +6,7 @@ import { eventSource, event_types, getRequestHeaders } from '../../../script.js'
 import { getContext } from '../../extensions.js';
 import { createContainer, destroyContainer, injectScopedCSS, loadEntryModule, showError } from './loader.js';
 import { buildContext } from './context.js';
+import { activateRendererBridge, deactivateRendererBridge } from './renderer.js';
 
 const MODULE_NAME = 'card-app';
 
@@ -83,6 +84,9 @@ async function activateCardApp() {
         // Still mark as active so deactivate can clean up
     }
 
+    // 5. Activate renderer bridge to push messages to CardApp
+    activateRendererBridge(ctx);
+
     isCardAppActive = true;
     currentCardApp = { charId, config };
 }
@@ -118,6 +122,9 @@ async function deactivateCardApp() {
     if (!isCardAppActive) return;
 
     console.log(`[${MODULE_NAME}] Deactivating CardApp`);
+
+    // Deactivate renderer bridge
+    deactivateRendererBridge();
 
     // Dispose context (cleans up intervals, timeouts, event listeners, user callbacks)
     if (currentCtx) {
