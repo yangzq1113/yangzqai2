@@ -71,6 +71,9 @@ export function buildAdvancedSettingsPopupHtml(deps, popupId, scopeInfo) {
     <label>${escapeHtml(i18n('Tool-call retries'))}
         <input id="${popupId}_tool_retries" class="text_pole" type="number" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Number(settings.toolCallRetryMax ?? defaultSettings.toolCallRetryMax)))}" />
     </label>
+    <label>${escapeHtml(i18n('RPM limit (0 = unlimited)'))}
+        <input id="${popupId}_rpm_limit" class="text_pole" type="number" min="0" max="600" step="1" value="${Math.max(0, Number(settings.rpmLimit ?? defaultSettings.rpmLimit))}" />
+    </label>
     <label>${escapeHtml(i18n('Extract context assistant turns'))}
         <input id="${popupId}_extract_context_turns" class="text_pole" type="number" min="1" max="32" step="1" value="${Math.max(1, Math.min(32, Number(settings.extractContextTurns || defaultSettings.extractContextTurns)))}" />
     </label>

@@ -387,6 +387,7 @@ const defaultSettings = {
     enableRerank: false,
     rerankSource: 'cohere',
     rerankModel: '',
+    rpmLimit: 0,
 };
 
 function i18n(text) {
@@ -457,6 +458,7 @@ function registerLocaleData() {
         'Extract batch assistant turns': '每次生成图处理的 Assistant 回复条数',
         'Exclude latest N assistant turns from graph extraction': '生成图时排除最近 N 条 Assistant 回复',
         'Tool-call retries': '工具调用重试次数',
+        'RPM limit (0 = unlimited)': 'RPM 限制（0 = 不限制）',
         'Plain-text function-call mode': '纯文本函数调用模式',
         'Extract Table Fill Prompt': '生成图提示词',
         'Recall Stage 1 Prompt (Route/Drill)': '召回阶段1提示词（路由/深挖）',
@@ -774,6 +776,7 @@ function registerLocaleData() {
         'Extract batch assistant turns': '每次生成圖處理的 Assistant 回覆條數',
         'Exclude latest N assistant turns from graph extraction': '生成圖時排除最近 N 條 Assistant 回覆',
         'Tool-call retries': '工具呼叫重試次數',
+        'RPM limit (0 = unlimited)': 'RPM 限制（0 = 不限制）',
         'Plain-text function-call mode': '純文字函式呼叫模式',
         'Extract Table Fill Prompt': '生成圖提示詞',
         'Recall Stage 1 Prompt (Route/Drill)': '召回階段1提示詞（路由/深挖）',
@@ -1250,6 +1253,10 @@ function ensureSettings() {
         0,
         Math.min(10, Math.floor(Number(extension_settings[MODULE_NAME].toolCallRetryMax) || 0)),
     );
+    extension_settings[MODULE_NAME].rpmLimit = Math.max(
+        0,
+        Math.floor(Number(extension_settings[MODULE_NAME].rpmLimit) || 0),
+    );
     if (!hasRecallInjectPositionSchemaVersion) {
         extension_settings[MODULE_NAME].recallInjectPosition = migrateLegacyRecallInjectPosition(
             extension_settings[MODULE_NAME].recallInjectPosition,
@@ -1319,6 +1326,7 @@ function normalizeAdvancedSettings(source = null, fallbackSource = null) {
     const llmVisibleRecentMessagesRaw = Number(input.llmVisibleRecentMessages);
     const recallIterationsRaw = Number(input.recallMaxIterations);
     const toolRetryRaw = Number(input.toolCallRetryMax);
+    const rpmLimitRaw = Number(input.rpmLimit);
     return {
         recentRawTurns: Math.max(
             0,
@@ -1353,6 +1361,10 @@ function normalizeAdvancedSettings(source = null, fallbackSource = null) {
             1,
             Math.floor(Number.isFinite(extractBatchTurnsRaw) ? extractBatchTurnsRaw : Number(base.extractBatchTurns || defaultSettings.extractBatchTurns)),
         ),
+        rpmLimit: Math.max(
+            0,
+            Math.floor(Number.isFinite(rpmLimitRaw) ? rpmLimitRaw : Number(base.rpmLimit ?? defaultSettings.rpmLimit)),
+        ),
         extractSystemPrompt: String(input.extractSystemPrompt || '').trim() || String(base.extractSystemPrompt || DEFAULT_EXTRACT_SYSTEM_PROMPT),
         recallRouteSystemPrompt: String(input.recallRouteSystemPrompt || '').trim() || String(base.recallRouteSystemPrompt || DEFAULT_RECALL_ROUTE_SYSTEM_PROMPT),
         recallFinalizeSystemPrompt: String(input.recallFinalizeSystemPrompt || '').trim() || String(base.recallFinalizeSystemPrompt || DEFAULT_RECALL_FINALIZE_SYSTEM_PROMPT),
@@ -1368,6 +1380,7 @@ function applyAdvancedSettings(target, values) {
     target.llmVisibleRecentMessages = normalized.llmVisibleRecentMessages;
     target.recallMaxIterations = normalized.recallMaxIterations;
     target.toolCallRetryMax = normalized.toolCallRetryMax;
+    target.rpmLimit = normalized.rpmLimit;
     target.extractExcludeRecentTurns = normalized.extractExcludeRecentTurns;
     target.extractContextTurns = normalized.extractContextTurns;
     target.recallQueryMessages = normalized.recallQueryMessages;
@@ -4308,6 +4321,29 @@ async function abortActiveRecallRequests(runToken, timeoutMs = 400) {
     ]);
 }
 
+const _rpmTimestamps = [];
+
+async function waitForRpmSlot(settings, abortSignal = null) {
+    const limit = Math.max(0, Math.floor(Number(settings?.rpmLimit) || 0));
+    if (limit <= 0) return;
+    const windowMs = 60_000;
+    const pollMs = 200;
+    while (true) {
+        if (isAbortSignalLike(abortSignal) && abortSignal.aborted) return;
+        const now = Date.now();
+        while (_rpmTimestamps.length > 0 && _rpmTimestamps[0] <= now - windowMs) {
+            _rpmTimestamps.shift();
+        }
+        if (_rpmTimestamps.length < limit) {
+            _rpmTimestamps.push(now);
+            return;
+        }
+        const waitUntil = _rpmTimestamps[0] + windowMs;
+        const delay = Math.min(pollMs, Math.max(10, waitUntil - now));
+        await new Promise(resolve => setTimeout(resolve, delay));
+    }
+}
+
 async function requestToolCallWithRetry(settings, promptMessages, {
     functionName = '',
     functionDescription = '',
@@ -4341,6 +4377,7 @@ async function requestToolCallWithRetry(settings, promptMessages, {
         const activeRequestState = registerActiveRecallRequest(recallRunToken, requestController.controller);
         try {
             throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            await waitForRpmSlot(settings, abortSignal);
             const responseData = await sendOpenAIRequest('quiet', promptMessages, requestController.signal, {
                 tools,
                 toolChoice,
@@ -4407,6 +4444,7 @@ async function requestToolCallsWithRetry(settings, promptMessages, {
         const activeRequestState = registerActiveRecallRequest(recallRunToken, requestController.controller);
         try {
             throwIfRecallRunInvalid(recallRunToken, abortSignal, 'Memory recall aborted.');
+            await waitForRpmSlot(settings, abortSignal);
             const responseData = await sendOpenAIRequest('quiet', promptMessages, requestController.signal, {
                 tools,
                 toolChoice,
@@ -13165,6 +13203,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
             recentRawTurnsValue: Number(popupRoot.find(`#${popupId}_recent_raw_turns`).val()),
             recallIterationsValue: Number(popupRoot.find(`#${popupId}_recall_iterations`).val()),
             toolRetriesValue: Number(popupRoot.find(`#${popupId}_tool_retries`).val()),
+            rpmLimitValue: Number(popupRoot.find(`#${popupId}_rpm_limit`).val()),
             extractContextTurnsValue: Number(popupRoot.find(`#${popupId}_extract_context_turns`).val()),
             extractExcludeRecentTurnsValue: Number(popupRoot.find(`#${popupId}_extract_exclude_recent_turns`).val()),
             recallQueryMessagesValue: Number(popupRoot.find(`#${popupId}_recall_query_messages`).val()),
@@ -13183,6 +13222,7 @@ async function openAdvancedSettingsPopup(context, settings, root) {
         recentRawTurns: values.recentRawTurnsValue,
         recallMaxIterations: values.recallIterationsValue,
         toolCallRetryMax: values.toolRetriesValue,
+        rpmLimit: values.rpmLimitValue,
         extractContextTurns: values.extractContextTurnsValue,
         extractExcludeRecentTurns: values.extractExcludeRecentTurnsValue,
         recallQueryMessages: values.recallQueryMessagesValue,
