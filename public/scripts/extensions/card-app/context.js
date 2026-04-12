@@ -3,7 +3,7 @@
  */
 
 import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders, openCharacterChat, doNewChat, closeCurrentChat, getPastCharacterChats } from '../../../script.js';
-import { getContext } from '../../extensions.js';
+import { getContext, saveMetadataDebounced } from '../../extensions.js';
 import { executeSlashCommandsWithOptions } from '../../slash-commands.js';
 
 /**
@@ -180,6 +180,7 @@ export function buildContext(container, charId, config) {
                 chat_metadata.variables = {};
             }
             chat_metadata.variables[key] = value;
+            saveMetadataDebounced();
         },
 
         /**
