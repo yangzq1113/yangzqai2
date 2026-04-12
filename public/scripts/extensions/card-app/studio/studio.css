@@ -1,0 +1,104 @@
+/* ===== CardApp Studio - Side Panels ===== */
+body.card-app-studio-active #sheld {
+    margin-left: 350px;
+    margin-right: 400px;
+    transition: margin 0.3s ease;
+}
+.card-app-studio-panel {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 1000;
+    background: var(--SmartThemeBlurTintColor, #1a1a2e);
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: card-app-studio-slide-in 0.3s ease;
+}
+.card-app-studio-panel.left { left: 0; width: 350px; border-left: none; --slide-dir: -20px; }
+.card-app-studio-panel.right { right: 0; width: 400px; border-right: none; --slide-dir: 20px; }
+@keyframes card-app-studio-slide-in {
+    from { opacity: 0; transform: translateX(var(--slide-dir, -20px)); }
+    to { opacity: 1; transform: translateX(0); }
+}
+.card-app-studio-panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--SmartThemeBorderColor, #333); flex-shrink: 0;
+}
+.card-app-studio-title { font-weight: 700; font-size: 14px; color: var(--SmartThemeBodyColor, #ccc); }
+.card-app-studio-header-actions { display: flex; gap: 6px; }
+.card-app-studio-close-btn {
+    background: none; border: none; color: var(--SmartThemeBodyColor, #999);
+    font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 4px;
+}
+.card-app-studio-close-btn:hover { color: var(--SmartThemeBodyColor, #fff); background: color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); }
+.card-app-studio-btn {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent);
+    color: var(--SmartThemeBodyColor, #ccc); font-size: 13px; cursor: pointer; font-family: inherit;
+}
+.card-app-studio-btn:hover { background: color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); }
+.card-app-studio-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.card-app-studio-btn.primary { background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 25%, transparent); border-color: color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 40%, transparent); }
+.card-app-studio-btn.primary:hover { background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 35%, transparent); }
+.card-app-studio-btn.small { padding: 3px 8px; font-size: 12px; }
+/* Chat */
+.card-app-studio-chat { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.card-app-studio-chat-msg { padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; word-break: break-word; }
+.card-app-studio-chat-msg.user { background: color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); margin-left: 10%; }
+.card-app-studio-chat-msg.assistant { background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent); }
+.card-app-studio-chat-msg.loading { opacity: 0.7; animation: card-app-studio-pulse 1.5s ease-in-out infinite; }
+@keyframes card-app-studio-pulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 0.4; } }
+.card-app-studio-chat-msg.tool { padding: 6px 10px; background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent); border: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); font-size: 12px; }
+.card-app-studio-tool-call { display: flex; align-items: center; gap: 6px; }
+.card-app-studio-tool-call .tool-icon { font-size: 12px; flex-shrink: 0; }
+.card-app-studio-tool-call .tool-name { font-weight: 600; font-family: monospace; font-size: 11px; color: var(--SmartThemeQuoteColor, #4a9eff); }
+.card-app-studio-tool-call .tool-detail { opacity: 0.7; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Composer */
+.card-app-studio-composer { padding: 10px 12px; border-top: 1px solid var(--SmartThemeBorderColor, #333); flex-shrink: 0; }
+.card-app-studio-input {
+    width: 100%; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent);
+    color: var(--SmartThemeBodyColor, #ccc); font-size: 13px; font-family: inherit;
+    resize: vertical; outline: none; box-sizing: border-box;
+}
+.card-app-studio-input:focus { border-color: var(--SmartThemeQuoteColor, #4a9eff); }
+.card-app-studio-composer-buttons { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+/* Code Editor */
+.card-app-studio-editor-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.card-app-studio-file-tabs { display: flex; border-bottom: 1px solid var(--SmartThemeBorderColor, #333); flex-shrink: 0; overflow-x: auto; }
+.card-app-studio-tab { padding: 6px 14px; font-size: 12px; color: var(--SmartThemeBodyColor, #999); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+.card-app-studio-tab.active { color: var(--SmartThemeBodyColor, #fff); border-bottom-color: var(--SmartThemeQuoteColor, #4a9eff); }
+.card-app-studio-code {
+    flex: 1; width: 100%; padding: 12px; border: none; background: transparent;
+    color: var(--SmartThemeBodyColor, #ccc); font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px; line-height: 1.6; resize: none; outline: none; overflow: auto; tab-size: 4; box-sizing: border-box;
+}
+/* File Tree */
+.card-app-studio-file-tree { border-top: 1px solid var(--SmartThemeBorderColor, #333); flex-shrink: 0; max-height: 200px; overflow-y: auto; }
+.card-app-studio-file-tree-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; font-size: 13px; font-weight: 600; color: var(--SmartThemeBodyColor, #ccc); }
+.card-app-studio-file-list { padding: 0 8px 8px; }
+.card-app-studio-file-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; color: var(--SmartThemeBodyColor, #aaa); }
+.card-app-studio-file-item:hover { background: color-mix(in oklab, var(--SmartThemeBodyColor) 10%, transparent); }
+.card-app-studio-file-item.active { background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 15%, transparent); color: var(--SmartThemeBodyColor, #fff); }
+.card-app-studio-file-item i { font-size: 14px; width: 16px; text-align: center; flex-shrink: 0; }
+.card-app-studio-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-app-studio-file-size { font-size: 11px; opacity: 0.5; flex-shrink: 0; }
+.card-app-studio-empty { padding: 12px; text-align: center; color: var(--SmartThemeBodyColor, #666); font-size: 12px; }
+/* Scrollbar */
+.card-app-studio-panel ::-webkit-scrollbar { width: 5px; }
+.card-app-studio-panel ::-webkit-scrollbar-track { background: transparent; }
+.card-app-studio-panel ::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--SmartThemeBodyColor) 20%, transparent); border-radius: 3px; }
+/* Responsive */
+@media (max-width: 1200px) {
+    .card-app-studio-panel.left { width: 300px; }
+    .card-app-studio-panel.right { width: 350px; }
+    body.card-app-studio-active #sheld { margin-left: 300px; margin-right: 350px; }
+}
+@media (max-width: 900px) {
+    .card-app-studio-panel.left { width: 280px; }
+    .card-app-studio-panel.right { width: 300px; }
+    body.card-app-studio-active #sheld { margin-left: 280px; margin-right: 300px; }
+}

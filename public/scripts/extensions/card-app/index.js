@@ -157,7 +157,38 @@ async function onChatChanged() {
     }
 }
 
+/**
+ * Hot-reload the CardApp (deactivate then reactivate).
+ * Used by CardApp Studio after file modifications.
+ */
+export async function reloadCardApp() {
+    await deactivateCardApp();
+    const config = getCardAppConfig();
+    if (config) {
+        await activateCardApp();
+    }
+}
+
+/**
+ * Check if a CardApp is currently active.
+ * @returns {boolean}
+ */
+export function isActive() {
+    return isCardAppActive;
+}
+
 // Register event listeners
 eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+
+// CardApp Studio button in character advanced settings
+$(document).on('click', '#card_app_open_studio', async function () {
+    const charId = getCharId();
+    if (!charId) {
+        toastr.warning('No character selected or character has no avatar.');
+        return;
+    }
+    const { openCardAppStudio } = await import('./studio/studio.js');
+    await openCardAppStudio(charId);
+});
 
 console.log(`[${MODULE_NAME}] Extension loaded`);

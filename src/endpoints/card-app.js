@@ -10,6 +10,185 @@ import { resolvePathWithinParent } from '../util.js';
 export const router = express.Router();
 
 /**
+ * List all files in a CardApp directory (recursive).
+ * GET /api/card-app/:charId/files
+ */
+router.get('/:charId/files', (request, response) => {
+    try {
+        const charId = sanitize(String(request.params.charId));
+        if (!charId) {
+            return response.sendStatus(400);
+        }
+
+        const charDir = path.join(request.user.directories.cardApps, charId);
+        if (!fs.existsSync(charDir)) {
+            return response.json({ files: [] });
+        }
+
+        const files = [];
+        function walk(dir, prefix = '') {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    files.push({ path: relativePath, type: 'directory' });
+                    walk(fullPath, relativePath);
+                } else if (entry.isFile()) {
+                    const stat = fs.statSync(fullPath);
+                    files.push({ path: relativePath, type: 'file', size: stat.size });
+                }
+            }
+        }
+        walk(charDir);
+        return response.json({ files });
+    } catch (err) {
+        console.error('[card-app] Error listing files:', err);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Write (create or overwrite) a CardApp file.
+ * PUT /api/card-app/:charId/*
+ */
+router.put('/:charId/*', express.json({ limit: '5mb' }), (request, response) => {
+    try {
+        const charId = sanitize(String(request.params.charId));
+        const filePath = decodeURIComponent(request.params[0]);
+
+        if (!charId || !filePath) {
+            return response.sendStatus(400);
+        }
+
+        const charDir = path.join(request.user.directories.cardApps, charId);
+        const fullPath = resolvePathWithinParent(charDir, filePath);
+
+        if (!fullPath) {
+            return response.status(400).json({ error: 'Invalid file path' });
+        }
+
+        const dir = path.dirname(fullPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        const content = request.body?.content;
+        if (typeof content !== 'string') {
+            return response.status(400).json({ error: 'Missing content field' });
+        }
+
+        fs.writeFileSync(fullPath, content, 'utf8');
+        return response.json({ ok: true });
+    } catch (err) {
+        console.error('[card-app] Error writing file:', err);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Delete a CardApp file.
+ * DELETE /api/card-app/:charId/*
+ */
+router.delete('/:charId/*', (request, response) => {
+    try {
+        const charId = sanitize(String(request.params.charId));
+        const filePath = decodeURIComponent(request.params[0]);
+
+        if (!charId || !filePath) {
+            return response.sendStatus(400);
+        }
+
+        const charDir = path.join(request.user.directories.cardApps, charId);
+        const fullPath = resolvePathWithinParent(charDir, filePath);
+
+        if (!fullPath || !fs.existsSync(fullPath)) {
+            return response.sendStatus(404);
+        }
+
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+            fs.rmSync(fullPath, { recursive: true, force: true });
+        } else {
+            fs.unlinkSync(fullPath);
+        }
+        return response.json({ ok: true });
+    } catch (err) {
+        console.error('[card-app] Error deleting file:', err);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Rename/move a CardApp file.
+ * POST /api/card-app/:charId/rename
+ */
+router.post('/:charId/rename', express.json(), (request, response) => {
+    try {
+        const charId = sanitize(String(request.params.charId));
+        const fromPath = String(request.body?.from || '').trim();
+        const toPath = String(request.body?.to || '').trim();
+
+        if (!charId || !fromPath || !toPath) {
+            return response.status(400).json({ error: 'Missing charId, from, or to' });
+        }
+
+        const charDir = path.join(request.user.directories.cardApps, charId);
+        const fullFrom = resolvePathWithinParent(charDir, fromPath);
+        const fullTo = resolvePathWithinParent(charDir, toPath);
+
+        if (!fullFrom || !fullTo) {
+            return response.status(400).json({ error: 'Invalid file path' });
+        }
+
+        if (!fs.existsSync(fullFrom)) {
+            return response.sendStatus(404);
+        }
+
+        const toDir = path.dirname(fullTo);
+        if (!fs.existsSync(toDir)) {
+            fs.mkdirSync(toDir, { recursive: true });
+        }
+
+        fs.renameSync(fullFrom, fullTo);
+        return response.json({ ok: true });
+    } catch (err) {
+        console.error('[card-app] Error renaming file:', err);
+        return response.sendStatus(500);
+    }
+});
+
+/**
+ * Create a directory in a CardApp.
+ * POST /api/card-app/:charId/mkdir
+ */
+router.post('/:charId/mkdir', express.json(), (request, response) => {
+    try {
+        const charId = sanitize(String(request.params.charId));
+        const dirPath = String(request.body?.path || '').trim();
+
+        if (!charId || !dirPath) {
+            return response.status(400).json({ error: 'Missing charId or path' });
+        }
+
+        const charDir = path.join(request.user.directories.cardApps, charId);
+        const fullPath = resolvePathWithinParent(charDir, dirPath);
+
+        if (!fullPath) {
+            return response.status(400).json({ error: 'Invalid directory path' });
+        }
+
+        if (!fs.existsSync(fullPath)) {
+            fs.mkdirSync(fullPath, { recursive: true });
+        }
+        return response.json({ ok: true });
+    } catch (err) {
+        console.error('[card-app] Error creating directory:', err);
+        return response.sendStatus(500);
+    }
+});
+
+/**
  * Serve CardApp files for a character.
  * GET /api/card-app/:charId/*
  */
