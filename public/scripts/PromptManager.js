@@ -1527,18 +1527,25 @@ class PromptManager {
             }
         }
 
-        // Update badge in name meta
-        const nameMeta = li.querySelector('.prompt-manager-name-meta');
-        const existingBadge = li.querySelector('.prompt-manager-plugin-extra-badge');
-        if (isExtra && !existingBadge && nameMeta) {
-            const badge = document.createElement('small');
-            badge.className = 'prompt-manager-plugin-extra-badge';
-            badge.title = 'Excluded from plugin request assembly';
-            badge.textContent = 'extra';
-            nameMeta.prepend(badge);
-        } else if (!isExtra && existingBadge) {
-            existingBadge.remove();
-        }
+ // Update badge in name meta (create container if absent, e.g. system-role prompts)
+ let nameMeta = li.querySelector('.prompt-manager-name-meta');
+ const existingBadge = li.querySelector('.prompt-manager-plugin-extra-badge');
+ if (isExtra && !existingBadge) {
+ if (!nameMeta) {
+ nameMeta = document.createElement('span');
+ nameMeta.className = 'prompt-manager-name-meta';
+ li.querySelector('.prompt-manager-name-body')?.appendChild(nameMeta);
+ }
+ const badge = document.createElement('small');
+ badge.className = 'prompt-manager-plugin-extra-badge';
+ badge.title = 'Excluded from plugin request assembly';
+ badge.textContent = 'extra';
+ nameMeta.prepend(badge);
+ } else if (!isExtra && existingBadge) {
+ existingBadge.remove();
+ // Clean up empty meta container
+ if (nameMeta && !nameMeta.children.length) nameMeta.remove();
+ }
 
         return true;
     }
