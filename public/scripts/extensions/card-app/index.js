@@ -1,12 +1,18 @@
-import { eventSource, event_types } from '../../../script.js';
+/**
+ * CardApp Extension - enables character cards to carry custom frontend UI.
+ */
+
+import { eventSource, event_types, getRequestHeaders } from '../../../script.js';
 import { getContext } from '../../extensions.js';
+import { createContainer, destroyContainer, injectScopedCSS, loadEntryModule, showError } from './loader.js';
+import { buildContext } from './context.js';
 
 const MODULE_NAME = 'card-app';
 
 // State
 let isCardAppActive = false;
 let currentCardApp = null;
-let cleanupFunctions = [];
+let currentCtx = null;
 
 /**
  * Check if the current character has a CardApp enabled.
@@ -44,15 +50,65 @@ async function activateCardApp() {
 
     console.log(`[${MODULE_NAME}] Activating CardApp for character: ${charId}`);
 
-    // TODO: Phase 2 - implement full activation
-    // 1. Hide default chat UI
-    // 2. Create #card-app-container
-    // 3. Load CSS with auto-scoping
-    // 4. Load entry JS via dynamic import
-    // 5. Call init(ctx)
+    // 1. Create container and hide default chat UI
+    const container = createContainer();
+
+    // 2. Load and inject scoped CSS (if any CSS files exist)
+    try {
+        const cssFiles = await findCSSFiles(charId, config);
+        for (const cssContent of cssFiles) {
+            injectScopedCSS(cssContent);
+        }
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] Failed to load CSS:`, err);
+    }
+
+    // 3. Build context object
+    const ctx = buildContext(container, charId, config);
+    currentCtx = ctx;
+
+    // 4. Load entry JS module and call init(ctx)
+    const entry = config.entry || 'index.js';
+    try {
+        const module = await loadEntryModule(charId, entry);
+
+        if (typeof module.init !== 'function') {
+            throw new Error(`CardApp entry module does not export an init() function`);
+        }
+
+        await module.init(ctx);
+    } catch (err) {
+        console.error(`[${MODULE_NAME}] Failed to initialize CardApp:`, err);
+        showError(container, err, () => deactivateCardApp());
+        // Still mark as active so deactivate can clean up
+    }
 
     isCardAppActive = true;
     currentCardApp = { charId, config };
+}
+
+/**
+ * Find and fetch CSS files for a CardApp.
+ * @param {string} charId
+ * @param {object} config
+ * @returns {Promise<string[]>} Array of CSS content strings
+ */
+async function findCSSFiles(charId, config) {
+    const cssFiles = [];
+
+    // Check for style.css by convention
+    try {
+        const response = await fetch(`/api/card-app/${encodeURIComponent(charId)}/style.css`, {
+            headers: getRequestHeaders(),
+        });
+        if (response.ok) {
+            cssFiles.push(await response.text());
+        }
+    } catch {
+        // No style.css, that's fine
+    }
+
+    return cssFiles;
 }
 
 /**
@@ -63,23 +119,18 @@ async function deactivateCardApp() {
 
     console.log(`[${MODULE_NAME}] Deactivating CardApp`);
 
-    // Run all cleanup functions
-    for (const fn of cleanupFunctions) {
+    // Dispose context (cleans up intervals, timeouts, event listeners, user callbacks)
+    if (currentCtx) {
         try {
-            fn();
+            currentCtx._dispose();
         } catch (err) {
-            console.error(`[${MODULE_NAME}] Cleanup error:`, err);
+            console.error(`[${MODULE_NAME}] Context dispose error:`, err);
         }
+        currentCtx = null;
     }
-    cleanupFunctions = [];
 
-    // TODO: Phase 2 - implement full deactivation
-    // 1. Call onDispose callbacks
-    // 2. Remove injected CSS
-    // 3. Remove script tags
-    // 4. Remove #card-app-container
-    // 5. Restore default chat UI
-    // 6. Restore Quick Reply UI
+    // Remove container and restore default UI
+    destroyContainer();
 
     isCardAppActive = false;
     currentCardApp = null;
