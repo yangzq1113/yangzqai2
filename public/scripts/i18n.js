@@ -272,6 +272,11 @@ async function getMissingTranslations() {
     toastr.success(`Found ${uniqueMissingData.length} missing translations. See browser console for details.`);
 }
 
+/**
+ * Applies localization to a given root element or HTML string.
+ * @param {Document|string} root The root element or HTML string to apply localization to
+ * @returns {Document|string} Translated root, in the same format as the input (Document or HTML string)
+ */
 export function applyLocale(root = document) {
     if (!localeData || Object.keys(localeData).length === 0) {
         return root;
@@ -293,8 +298,8 @@ function addLanguagesToDropdown() {
     const uiLanguageSelects = $('#ui_language_select, #onboarding_ui_language_select');
     for (const langObj of langs) { // Set the value to the language code
         const option = document.createElement('option');
-        option.value = langObj['lang']; // Set the value to the language code
-        option.innerText = langObj['display']; // Set the display text to the language name
+        option.value = langObj.lang; // Set the value to the language code
+        option.innerText = langObj.display; // Set the display text to the language name
         uiLanguageSelects.append(option);
     }
 

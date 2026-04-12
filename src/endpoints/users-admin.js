@@ -554,6 +554,20 @@ router.post('/set-quota', requireAdminMiddleware, async (request, response) => {
     }
 });
 
+/**
+ * Slugifies a given text string.
+ * - Converts to lowercase
+ * - Trims whitespace
+ * - Replaces spaces and special characters with hyphens
+ * - Removes leading and trailing hyphens
+ * - Uses lodash.deburr to remove diacritical marks
+ * @param {string} text Text to slugify
+ * @returns {string} Slugified text
+ */
+function slugify(text) {
+    return lodash.deburr(String(text ?? '').toLowerCase().trim()).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 router.post('/get', requireAdminMiddleware, async (_request, response) => {
     try {
         /** @type {import('../users.js').User[]} */
@@ -700,7 +714,7 @@ router.post('/create', requireAdminMiddleware, async (request, response) => {
         }
 
         const handles = await getAllUserHandles();
-        const handle = lodash.kebabCase(String(request.body.handle).toLowerCase().trim());
+        const handle = slugify(request.body.handle);
 
         if (!handle) {
             console.warn('Create user failed: Invalid handle');
@@ -781,7 +795,7 @@ router.post('/slugify', requireAdminMiddleware, async (request, response) => {
             return response.status(400).json({ error: 'Missing required fields' });
         }
 
-        const text = lodash.kebabCase(String(request.body.text).toLowerCase().trim());
+        const text = slugify(request.body.text);
 
         return response.send(text);
     } catch (error) {

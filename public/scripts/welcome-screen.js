@@ -154,6 +154,7 @@ class PinnedChatsManager {
     }
 }
 
+
 export function getPermanentAssistantAvatar() {
     const assistantAvatar = accountStorage.getItem(assistantAvatarKey);
     if (assistantAvatar === null) {
@@ -796,8 +797,7 @@ export async function openPermanentAssistantChat({ tryCreate = true, created = f
             console.log(`Character not found for avatar ID: ${avatar}. Creating new assistant.`);
             await createPermanentAssistant();
             return openPermanentAssistantChat({ tryCreate: false, created: true });
-        }
-        catch (error) {
+        } catch (error) {
             console.error('Error creating permanent assistant:', error);
             toastr.error(t`Failed to create ${neutralCharacterName}. See console for details.`);
             return;

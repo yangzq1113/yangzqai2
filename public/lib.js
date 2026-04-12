@@ -27,6 +27,7 @@ import coreBundle, {
     yaml,
     chevrotain,
 } from './lib.core.bundle.js';
+import { gzipSync, gzip } from 'fflate';
 
 let optionalBundlePromise = null;
 
@@ -108,6 +109,8 @@ export default {
     ...coreBundle,
     getReadability,
     getDiff2Html,
+    gzipSync,
+    gzip,
 };
 
 export {
@@ -131,4 +134,6 @@ export {
     chalk,
     yaml,
     chevrotain,
+    gzipSync,
+    gzip,
 };

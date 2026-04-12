@@ -80,8 +80,6 @@ export class AutoComplete {
     }
 
 
-
-
     /**
      * @param {HTMLTextAreaElement|HTMLInputElement} textarea The textarea to receive autocomplete.
      * @param {() => boolean} checkIfActivate Function should return true only if under the current conditions, autocomplete should display (e.g., for slash commands: autoComplete.text[0] == '/')
@@ -465,7 +463,6 @@ export class AutoComplete {
     }
 
 
-
     /**
      * Create updated DOM.
      */
@@ -512,7 +509,6 @@ export class AutoComplete {
     getLayer() {
         return this.textarea.closest('dialog, body');
     }
-
 
 
     /**

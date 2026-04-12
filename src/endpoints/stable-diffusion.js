@@ -161,7 +161,6 @@ router.post('/samplers', async (request, response) => {
         const data = await result.json();
         const names = data.map(x => x.name);
         return response.send(names);
-
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -233,7 +232,7 @@ router.post('/get-model', async (request, response) => {
         });
         /** @type {any} */
         const data = await result.json();
-        return response.send(data['sd_model_checkpoint']);
+        return response.send(data.sd_model_checkpoint);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -282,8 +281,8 @@ router.post('/set-model', async (request, response) => {
             /** @type {any} */
             const progressState = await getProgress();
 
-            const progress = progressState['progress'];
-            const jobCount = progressState['state']['job_count'];
+            const progress = progressState.progress;
+            const jobCount = progressState.state.job_count;
             if (progress === 0.0 && jobCount === 0) {
                 break;
             }
@@ -540,6 +539,7 @@ comfy.post('/delete-workflow', async (request, response) => {
 });
 
 comfy.post('/rename-workflow', getFileNameValidationFunction('old_name'), getFileNameValidationFunction('new_name'), async (request, response) => {
+
     try {
         const oldName = sanitize(String(request.body.old_name));
         const newName = sanitize(String(request.body.new_name));
@@ -1099,7 +1099,7 @@ drawthings.post('/get-model', async (request, response) => {
         /** @type {any} */
         const data = await result.json();
 
-        return response.send(data['model']);
+        return response.send(data.model);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -1118,7 +1118,7 @@ drawthings.post('/get-upscaler', async (request, response) => {
         /** @type {any} */
         const data = await result.json();
 
-        return response.send(data['upscaler']);
+        return response.send(data.upscaler);
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -1501,8 +1501,7 @@ chutes.post('/models', async (request, response) => {
         const chutesData = /** @type {{items: Array<{name: string}>}} */ (data);
         const models = chutesData.items.map(x => ({ value: x.name, text: x.name })).sort((a, b) => a?.text?.localeCompare(b?.text));
         return response.send(models);
-    }
-    catch (error) {
+    } catch (error) {
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1593,8 +1592,7 @@ nanogpt.post('/models', async (request, response) => {
 
         const models = Object.values(imageModels).map(x => ({ value: x.model, text: x.name }));
         return response.send(models);
-    }
-    catch (error) {
+    } catch (error) {
         console.error(error);
         return response.sendStatus(500);
     }
@@ -1925,6 +1923,8 @@ xai.post('/generate', async (request, response) => {
         const requestBody = {
             prompt: request.body.prompt,
             model: request.body.model,
+            aspect_ratio: request.body.aspect_ratio,
+            resolution: request.body.resolution,
             response_format: 'b64_json',
         };
 
@@ -1948,14 +1948,20 @@ xai.post('/generate', async (request, response) => {
         /** @type {any} */
         const data = await result.json();
 
-        const image = data?.data?.[0]?.b64_json;
-        if (!image) {
+        // Can either be a base64 buffer (always JPEG) or a data URL (with MIME type)
+        const encodedImage = String(data?.data?.[0]?.b64_json || '');
+        if (!encodedImage) {
             console.warn('xAI returned invalid data.');
             return response.sendStatus(500);
         }
 
+        const dataUrlMatch = encodedImage.match(/^data:(.+);base64,(.+)$/);
+        const mimeType = dataUrlMatch?.[1] || 'image/jpeg';
+        const format = mime.extension(mimeType) || 'jpg';
+        const image = dataUrlMatch?.[2] || encodedImage;
+
         completeImageInspection(request, { sizeBytes: Math.round(image.length * 0.75) });
-        return response.send({ image });
+        return response.send({ image, format });
     } catch (error) {
         failImageInspection(request, error.message, 500);
         console.error('Error communicating with xAI', error);
@@ -2060,6 +2066,7 @@ zai.post('/generate', async (request, response) => {
 
         console.debug('Z.AI image request:', request.body);
 
+        // Always use Common API for image generation (Coding API has stricter rate limits)
         const generateResponse = await fetch('https://api.z.ai/api/paas/v4/images/generations', {
             method: 'POST',
             headers: {

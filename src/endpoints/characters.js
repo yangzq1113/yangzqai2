@@ -358,9 +358,8 @@ async function tryReadImage(imgPath, crop) {
     try {
         const rawImg = await Jimp.read(imgPath);
         return await applyAvatarCropResize(rawImg, crop);
-    }
-    // If it's an unsupported type of image (APNG) - just read the file as buffer
-    catch (error) {
+    } catch (error) {
+        // If it's an unsupported type of image (APNG) - just read the file as buffer
         console.error(`Failed to read image: ${imgPath}`, error);
         return fs.readFileSync(imgPath);
     }
@@ -441,6 +440,7 @@ const toShallow = (character) => {
                 luker: {
                     dedicated_personas: normalizedDedicatedPersonas,
                 },
+                world: _.get(character, 'data.extensions.world', ''),
             },
         },
     };
@@ -464,19 +464,18 @@ const processCharacter = async (item, directories, { shallow }) => {
         let jsonObject = getCharaCardV2(JSON.parse(imgData), directories, false);
         jsonObject.avatar = item;
         const character = jsonObject;
-        character['json_data'] = imgData;
+        character.json_data = imgData;
         const charStat = fs.statSync(path.join(directories.characters, item));
-        character['date_added'] = charStat.ctimeMs;
-        character['create_date'] = jsonObject['create_date'] || new Date(Math.round(charStat.ctimeMs)).toISOString();
+        character.date_added = charStat.ctimeMs;
+        character.create_date = jsonObject.create_date || new Date(Math.round(charStat.ctimeMs)).toISOString();
         const chatsDirectory = path.join(directories.chats, item.replace('.png', ''));
 
         const { chatSize, dateLastChat } = calculateChatSize(chatsDirectory);
-        character['chat_size'] = chatSize;
-        character['date_last_chat'] = dateLastChat;
-        character['data_size'] = calculateDataSize(jsonObject?.data);
+        character.chat_size = chatSize;
+        character.date_last_chat = dateLastChat;
+        character.data_size = calculateDataSize(jsonObject?.data);
         return shallow ? toShallow(character) : character;
-    }
-    catch (err) {
+    } catch (err) {
         console.error(`Could not process character: ${item}`);
 
         if (err instanceof SyntaxError) {
@@ -621,7 +620,7 @@ function unsetPrivateFields(char) {
 
 function projectRuntimeCharacterFields(char) {
     if (_.isUndefined(char.data)) {
-        console.warn(`Char ${char['name']} has Spec v2 data missing`);
+        console.warn(`Char ${char.name} has Spec v2 data missing`);
         return char;
     }
 
@@ -1181,7 +1180,8 @@ async function importFromJson(uploadPath, { request }, preservedFileName) {
         let charJSON = JSON.stringify(char);
         const result = await writeCharacterData(DEFAULT_AVATAR_PATH, charJSON, pngName, request);
         return result ? pngName : '';
-    } else if (jsonData.char_name !== undefined) {//json Pygmalion notepad
+    } else if (jsonData.char_name !== undefined) {
+        //json Pygmalion notepad
         console.info('Importing from gradio json');
         jsonData.char_name = sanitize(jsonData.char_name);
         if (jsonData.creator_notes) {
@@ -1343,8 +1343,7 @@ router.post('/rename', validateAvatarUrlMiddleware, async function (request, res
 
         // Return new avatar name to ST
         return response.send({ avatar: newAvatarName });
-    }
-    catch (err) {
+    } catch (err) {
         console.error(err);
         return response.sendStatus(500);
     }
@@ -2010,8 +2009,7 @@ router.post('/duplicate', validateAvatarUrlMiddleware, async function (request, 
         fs.copyFileSync(filename, newFilename);
         console.info(`${filename} was copied to ${newFilename}`);
         response.send({ path: path.parse(newFilename).base });
-    }
-    catch (error) {
+    } catch (error) {
         console.error(error);
         return response.send({ error: true });
     }

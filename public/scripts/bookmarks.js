@@ -2,6 +2,7 @@ import {
     characters,
     saveChat,
     system_message_types,
+    syncSwipeToMes,
     this_chid,
     openCharacterChat,
     chat_metadata,
@@ -16,6 +17,7 @@ import {
     event_types,
     getCharacterName,
     isCharacterFavorite,
+    getCurrentChatDetails,
 } from '../script.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
 import {
@@ -28,7 +30,7 @@ import {
     saveGroupBookmarkChat,
     selected_group,
 } from './group-chats.js';
-import { hideLoader, showLoader } from './loader.js';
+import { loader } from './action-loader.js';
 import { getLastMessageId } from './macros.js';
 import { Popup } from './popup.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -37,6 +39,7 @@ import { commonEnumProviders } from './slash-commands/SlashCommandCommonEnumsPro
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { createTagMapFromList } from './tags.js';
 import { renderTemplateAsync } from './templates.js';
+import { compressRequest } from './request-compression.js';
 import { t } from './i18n.js';
 
 import {
@@ -121,39 +124,42 @@ async function getExistingChatNames() {
 }
 
 async function getBookmarkName({ isReplace = false, forceName = null } = {}) {
-    const chatNames = await getExistingChatNames();
+    const mainChatName = (getCurrentChatDetails()).sessionName;
 
-    const body = await renderTemplateAsync('createCheckpoint', { isReplace: isReplace });
-    let name = forceName ?? await Popup.show.input('Create Checkpoint', body);
+    function buildCheckpointName(name, i) {
+        // Strip off existing suffixes, then build new name
+        let cleanName = name.replace(new RegExp(` - ${bookmarkNameToken}\\d+$`), '');
+        // Strip off legacy old name prefix too
+        cleanName = cleanName.replace(new RegExp(`^${bookmarkNameToken}\\d+ - `), '');
+        return `${cleanName} - ${bookmarkNameToken}${i}`;
+    }
+    const existingChats = await getExistingChatNames();
+    const suggestedName = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildCheckpointName });
+
+    const body = await renderTemplateAsync('createCheckpoint', { isReplace: isReplace, suggestedName: suggestedName });
+    let name = forceName ?? await Popup.show.input('Create Checkpoint', body, suggestedName);
     // Special handling for confirmed empty input (=> auto-generate name)
     if (name === '') {
-        for (let i = chatNames.length; i < 1000; i++) {
-            name = bookmarkNameToken + i;
-            if (!chatNames.includes(name)) {
-                break;
-            }
-        }
+        name = suggestedName;
     }
     if (!name) {
         return null;
     }
 
-    return `${name} - ${humanizedDateTime()}`;
+    return name;
 }
 
 function getMainChatName() {
     if (chat_metadata) {
-        if (chat_metadata['main_chat']) {
-            return chat_metadata['main_chat'];
-        }
-        // groups didn't support bookmarks before chat metadata was introduced
-        else if (selected_group) {
+        if (chat_metadata.main_chat) {
+            return chat_metadata.main_chat;
+        } else if (selected_group) {
+            // groups didn't support bookmarks before chat metadata was introduced
             return null;
-        }
-        else if (characters[this_chid].chat && characters[this_chid].chat.includes(bookmarkNameToken)) {
+        } else if (characters[this_chid].chat && characters[this_chid].chat.includes(bookmarkNameToken)) {
             const tokenIndex = characters[this_chid].chat.lastIndexOf(bookmarkNameToken);
-            chat_metadata['main_chat'] = characters[this_chid].chat.substring(0, tokenIndex).trim();
-            return chat_metadata['main_chat'];
+            chat_metadata.main_chat = characters[this_chid].chat.substring(0, tokenIndex).trim();
+            return chat_metadata.main_chat;
         }
     }
     return null;
@@ -167,7 +173,7 @@ export function showBookmarksButtons() {
             $('#option_convert_to_group').show();
         }
 
-        if (chat_metadata['main_chat']) {
+        if (chat_metadata.main_chat) {
             // In bookmark chat
             $('#option_back_to_main').show();
             $('#option_new_bookmark').show();
@@ -180,8 +186,7 @@ export function showBookmarksButtons() {
             $('#option_back_to_main').hide();
             $('#option_new_bookmark').show();
         }
-    }
-    catch {
+    } catch {
         $('#option_back_to_main').hide();
         $('#option_new_bookmark').hide();
         $('#option_convert_to_group').hide();
@@ -197,8 +202,28 @@ async function saveBookmarkMenu() {
     return await createNewBookmark(chat.length - 1);
 }
 
+/**
+ * Builds the branch chat snapshot, optionally selecting a specific swipe for the target message.
+ * @param {number} mesId
+ * @param {{swipeId?: number|null}} [options={}]
+ * @returns {ChatMessage[]|null}
+ */
+function getBranchChatSnapshot(mesId, { swipeId = null } = {}) {
+    const snapshot = structuredClone(chat.slice(0, Number(mesId) + 1));
+
+    if (swipeId === null) {
+        return snapshot;
+    }
+
+    if (!syncSwipeToMes(null, swipeId, snapshot[mesId])) {
+        return null;
+    }
+
+    return snapshot;
+}
+
 // Export is used by Timelines extension. Do not remove.
-export async function createBranch(mesId) {
+export async function createBranch(mesId, { swipeId = null } = {}) {
     if (!chat.length) {
         toastr.warning('The chat is empty.', 'Branch creation failed');
         return;
@@ -210,16 +235,43 @@ export async function createBranch(mesId) {
     }
 
     const lastMes = chat[mesId];
+    const mainChatName = (getCurrentChatDetails()).sessionName;
     const mainChat = selected_group ? groups?.find(x => x.id == selected_group)?.chat_id : characters[this_chid].chat;
     const newMetadata = { main_chat: mainChat };
-    let name = `Branch #${mesId} - ${humanizedDateTime()}`;
+    const selectedSwipeId = swipeId === null ? null : Number(swipeId);
+
+    if (selectedSwipeId !== null && (!Number.isInteger(selectedSwipeId) || selectedSwipeId < 0 || selectedSwipeId >= (lastMes?.swipes?.length ?? 0))) {
+        toastr.warning('Invalid swipe ID.', 'Branch creation failed');
+        return;
+    }
+
+    function buildBranchName(name, i) {
+        // Strip off existing suffixes, then build new name
+        let cleanName = name.replace(/ - Branch #\d+$/, '');
+        // Strip off legacy old name prefix too
+        cleanName = cleanName.replace(/^Branch #\d+ - /, '');
+        return `${cleanName} - Branch #${i}`;
+    }
+    const existingChats = await getExistingChatNames();
+    const name = getUniqueName(mainChatName, (x) => existingChats.includes(x), { nameBuilder: buildBranchName });
+    if (!name) {
+        console.error('Could not generate a unique branch name.');
+        toastr.error('Could not generate a unique branch name.', 'Branch creation failed');
+        return;
+    }
     const { sourceTarget, targetTarget } = buildBranchChatStateTarget(name);
     const assistantMessageCount = countAssistantMessagesThroughIndex(mesId);
 
+    const branchChatSnapshot = getBranchChatSnapshot(mesId, { swipeId: selectedSwipeId });
+    if (!branchChatSnapshot) {
+        toastr.warning('Could not prepare the selected swipe for branching.', 'Branch creation failed');
+        return;
+    }
+
     if (selected_group) {
-        await saveGroupBookmarkChat(selected_group, name, newMetadata, mesId);
+        await saveGroupBookmarkChat(selected_group, name, newMetadata, mesId, branchChatSnapshot);
     } else {
-        await saveChat({ chatName: name, withMetadata: newMetadata, mesId });
+        await saveChat({ chatName: name, withMetadata: newMetadata, mesId, chatData: branchChatSnapshot });
     }
     if (sourceTarget && targetTarget) {
         await eventSource.emit(event_types.CHAT_BRANCH_CREATED, {
@@ -235,10 +287,10 @@ export async function createBranch(mesId) {
     if (typeof lastMes.extra !== 'object') {
         lastMes.extra = {};
     }
-    if (typeof lastMes.extra['branches'] !== 'object') {
-        lastMes.extra['branches'] = [];
+    if (typeof lastMes.extra.branches !== 'object') {
+        lastMes.extra.branches = [];
     }
-    lastMes.extra['branches'].push(name);
+    lastMes.extra.branches.push(name);
     return name;
 }
 
@@ -287,7 +339,7 @@ export async function createNewBookmark(mesId, { forceName = null } = {}) {
         await saveChat({ chatName: name, withMetadata: newMetadata, mesId });
     }
 
-    lastMes.extra['bookmark_link'] = name;
+    lastMes.extra.bookmark_link = name;
 
     const mes = $(`.mes[mesid="${mesId}"]`);
     updateBookmarkDisplay(mes, name);
@@ -420,11 +472,12 @@ export async function convertSoloToGroupChat() {
     }
 
     // Save group chat
-    const createChatResponse = await fetch('/api/chats/group/save', {
+    const createChatRequest = await compressRequest({
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({ id: chatName, chat: [chatHeader, ...groupChat] }),
     });
+    const createChatResponse = await fetch('/api/chats/group/save', createChatRequest);
 
     if (!createChatResponse.ok) {
         console.error('Group chat creation unsuccessful');
@@ -442,15 +495,20 @@ export async function convertSoloToGroupChat() {
 /**
  * Creates a new branch from the message with the given ID
  * @param {number} mesId Message ID
+ * @param {{swipeId?: number|null}} [options={}] Branch options
  * @returns {Promise<string?>} Branch file name
  */
-export async function branchChat(mesId) {
+export async function branchChat(mesId, { swipeId = null } = {}) {
     if (this_chid === undefined && !selected_group) {
         toastr.info('No character selected.', 'Create Branch');
         return null;
     }
 
-    const fileName = await createBranch(mesId);
+    const fileName = await createBranch(mesId, { swipeId });
+    if (!fileName) {
+        return null;
+    }
+
     await saveItemizedPrompts(fileName);
 
     if (selected_group) {
@@ -693,15 +751,20 @@ export function initBookmarks() {
             return;
         }
 
+        const loaderHandle = loader.show({
+            title: t`Chat History`,
+            message: t`Loading chat…`,
+            toastMode: loader.ToastMode.STATIC,
+        });
+
         try {
-            showLoader();
             if (selected_group) {
                 await openGroupChat(selected_group, fileName);
             } else {
                 await openCharacterChat(fileName);
             }
         } finally {
-            await hideLoader();
+            await loaderHandle.hide();
         }
 
         $('#shadow_select_chat_popup').css('display', 'none');

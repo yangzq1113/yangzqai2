@@ -8,7 +8,7 @@ import express from 'express';
 import { getConfigValue, mergeObjectWithYaml, excludeKeysByYaml, trimV1, delay } from '../util.js';
 import { setAdditionalHeaders } from '../additional-headers.js';
 import { readSecret, SECRET_KEYS } from './secrets.js';
-import { AIMLAPI_HEADERS, OPENROUTER_HEADERS, ZAI_ENDPOINT } from '../constants.js';
+import { AIMLAPI_HEADERS, OPENROUTER_HEADERS, SILICONFLOW_ENDPOINT, ZAI_ENDPOINT } from '../constants.js';
 
 export const router = express.Router();
 
@@ -97,7 +97,12 @@ router.post('/caption-image', async (request, response) => {
             bodyParams.max_tokens = 4096; // default is 1024
         }
 
-        const noKeyTypes = ['custom', 'ooba', 'koboldcpp', 'vllm', 'llamacpp', 'pollinations'];
+        if (request.body.api === 'pollinations') {
+            key = readSecret(request.user.directories, SECRET_KEYS.POLLINATIONS);
+            bodyParams.seed = Math.floor(Math.random() * Math.pow(2, 32));
+        }
+
+        const noKeyTypes = ['custom', 'ooba', 'koboldcpp', 'vllm', 'llamacpp'];
         if (!key && !request.body.reverse_proxy && !noKeyTypes.includes(request.body.api)) {
             console.warn('No key found for API', request.body.api);
             return response.sendStatus(400);
@@ -173,8 +178,7 @@ router.post('/caption-image', async (request, response) => {
         }
 
         if (request.body.api === 'pollinations') {
-            headers = { Authorization: '' };
-            apiUrl = 'https://text.pollinations.ai/openai/chat/completions';
+            apiUrl = 'https://gen.pollinations.ai/v1/chat/completions';
         }
 
         if (request.body.api === 'moonshot' && !request.body.reverse_proxy) {
@@ -258,8 +262,7 @@ router.post('/caption-image', async (request, response) => {
         }
 
         return response.json({ caption });
-    }
-    catch (error) {
+    } catch (error) {
         console.error(error);
         response.status(500).send('Internal server error');
     }
@@ -400,9 +403,9 @@ router.post('/electronhub/models', async (request, response) => {
             console.warn('ElectronHub models request failed', result.statusText, text);
             return response.status(500).send(text);
         }
-
+        /** @type {any} */
         const data = await result.json();
-        const models = data && Array.isArray(data['data']) ? data['data'] : [];
+        const models = data && Array.isArray(data.data) ? data.data : [];
         return response.json(models);
     } catch (error) {
         console.error('ElectronHub models fetch failed', error);
@@ -522,6 +525,47 @@ router.post('/nanogpt/models/embedding', async (request, response) => {
         return response.json(data.data);
     } catch (error) {
         console.error('NanoGPT embedding models fetch failed', error);
+        response.sendStatus(500);
+    }
+});
+
+router.post('/siliconflow/models/embedding', async (request, response) => {
+    try {
+        const key = readSecret(request.user.directories, SECRET_KEYS.SILICONFLOW);
+
+        if (!key) {
+            console.warn('No SiliconFlow key found');
+            return response.sendStatus(400);
+        }
+
+        const apiUrl = request.body.siliconflow_endpoint === SILICONFLOW_ENDPOINT.CN
+            ? 'https://api.siliconflow.cn/v1/models?type=text&sub_type=embedding'
+            : 'https://api.siliconflow.com/v1/models?type=text&sub_type=embedding';
+
+        const result = await fetch(apiUrl, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${key}`,
+            },
+        });
+
+        if (!result.ok) {
+            const text = await result.text();
+            console.warn('SiliconFlow embedding models request failed', result.statusText, text);
+            return response.status(500).send(text);
+        }
+
+        /** @type {any} */
+        const data = await result.json();
+
+        if (!Array.isArray(data?.data)) {
+            console.warn('SiliconFlow embedding models response invalid', data);
+            return response.sendStatus(500);
+        }
+
+        return response.json(data.data);
+    } catch (error) {
+        console.error('SiliconFlow embedding models fetch failed', error);
         response.sendStatus(500);
     }
 });

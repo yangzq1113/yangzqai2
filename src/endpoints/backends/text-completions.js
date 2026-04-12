@@ -337,10 +337,10 @@ router.post('/props', async function (request, response) {
         /** @type {any} */
         const props = await propsReply.json();
         // TEMPORARY: llama.cpp's /props endpoint has a bug which replaces the last newline with a \0
-        if (apiType === TEXTGEN_TYPES.LLAMACPP && props['chat_template'] && props['chat_template'].endsWith('\u0000')) {
-            props['chat_template'] = props['chat_template'].slice(0, -1) + '\n';
+        if (apiType === TEXTGEN_TYPES.LLAMACPP && props.chat_template && props.chat_template.endsWith('\u0000')) {
+            props.chat_template = props.chat_template.slice(0, -1) + '\n';
         }
-        props['chat_template_hash'] = createHash('sha256').update(props['chat_template']).digest('hex');
+        props.chat_template_hash = createHash('sha256').update(props.chat_template).digest('hex');
         console.debug(`Model properties: ${JSON.stringify(props)}`);
         return response.send(props);
     } catch (error) {
@@ -473,7 +473,7 @@ router.post('/generate', async function (request, response) {
             const keepAlive = Number(getConfigValue('ollama.keepAlive', -1, 'number'));
             const numBatch = Number(getConfigValue('ollama.batchSize', -1, 'number'));
             if (numBatch > 0) {
-                request.body['num_batch'] = numBatch;
+                request.body.num_batch = numBatch;
             }
             args.body = JSON.stringify({
                 model: request.body.model,
@@ -506,7 +506,7 @@ router.post('/generate', async function (request, response) {
 
                 // Map InfermaticAI response to OAI completions format
                 if (apiType === TEXTGEN_TYPES.INFERMATICAI) {
-                    data['choices'] = (data?.choices || []).map(choice => ({ text: choice?.message?.content || choice.text, logprobs: choice?.logprobs, index: choice?.index }));
+                    data.choices = (data?.choices || []).map(choice => ({ text: choice?.message?.content || choice.text, logprobs: choice?.logprobs, index: choice?.index }));
                 }
 
                 if (lukerGenerationJob) {
@@ -640,7 +640,6 @@ llamacpp.post('/props', async function (request, response) {
         console.debug('LlamaCpp props response:', data);
 
         return response.send(data);
-
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -690,7 +689,6 @@ llamacpp.post('/slots', async function (request, response) {
         console.debug('LlamaCpp slots response:', data);
 
         return response.send(data);
-
     } catch (error) {
         console.error(error);
         return response.sendStatus(500);
@@ -721,7 +719,7 @@ tabby.post('/download', async function (request, response) {
             /** @type {any} */
             const permissionJson = await permissionResponse.json();
 
-            if (permissionJson['permission'] !== 'admin') {
+            if (permissionJson.permission !== 'admin') {
                 return response.status(403).send({ error: true });
             }
         } else {

@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import express from 'express';
 import { load } from 'cheerio';
+import ipRegex from 'ip-regex';
 
 import { decode } from 'html-entities';
 import { readSecret, SECRET_KEYS } from './secrets.js';
@@ -346,7 +347,7 @@ function validateVisitUrl(url) {
         throw new Error('Invalid port');
     }
 
-    if (urlObj.hostname.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+    if (ipRegex.v4({ exact: true }).test(urlObj.hostname) || ipRegex.v6({ exact: true }).test(urlObj.hostname)) {
         throw new Error('Invalid hostname');
     }
 
@@ -458,7 +459,7 @@ async function extractTranscript(videoPageBody, lang) {
         } catch (e) {
             return undefined;
         }
-    })()?.['playerCaptionsTracklistRenderer'];
+    })()?.playerCaptionsTracklistRenderer;
 
     if (!captions) {
         throw new Error('Transcript disabled');

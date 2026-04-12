@@ -160,5 +160,4 @@ class SileroTtsProvider {
     async fetchTtsFromHistory(history_item_id) {
         return Promise.resolve(history_item_id);
     }
-
 }

@@ -72,8 +72,7 @@ async function setImageIcon() {
         const sendButton = $('#send_picture .extensionsMenuExtensionButton');
         sendButton.addClass('fa-image');
         sendButton.removeClass('fa-hourglass-half');
-    }
-    catch (error) {
+    } catch (error) {
         console.log(error);
     }
 }
@@ -86,8 +85,7 @@ async function setSpinnerIcon() {
         const sendButton = $('#send_picture .extensionsMenuExtensionButton');
         sendButton.removeClass('fa-image');
         sendButton.addClass('fa-hourglass-half');
-    }
-    catch (error) {
+    } catch (error) {
         console.log(error);
     }
 }
@@ -208,7 +206,7 @@ async function sendCaptionedMessage(caption, image, mimeType) {
             inline_image: !!extension_settings.caption.show_in_chat,
         },
     };
-    chat_metadata['tainted'] = true;
+    chat_metadata.tainted = true;
     context.chat.push(message);
     const messageId = context.chat.length - 1;
     await eventSource.emit(event_types.MESSAGE_SENT, messageId);
@@ -348,14 +346,12 @@ async function getCaptionForFile(file, prompt, quiet) {
             await sendCaptionedMessage(caption, imagePath, file.type);
         }
         return caption;
-    }
-    catch (error) {
+    } catch (error) {
         const errorMessage = error.message || 'Unknown error';
         toastr.error(errorMessage, 'Failed to caption');
         console.error(error);
         return '';
-    }
-    finally {
+    } finally {
         setImageIcon();
     }
 }
@@ -478,6 +474,7 @@ jQuery(async function () {
                         'nanogpt': SECRET_KEYS.NANOGPT,
                         'chutes': SECRET_KEYS.CHUTES,
                         'electronhub': SECRET_KEYS.ELECTRONHUB,
+                        'pollinations': SECRET_KEYS.POLLINATIONS,
                     };
 
                     if (chatCompletionApis[api] && secret_state[chatCompletionApis[api]]) {
@@ -501,7 +498,7 @@ jQuery(async function () {
                     }
 
                     // Custom API doesn't need additional checks
-                    if (api === 'custom' || api === 'pollinations') {
+                    if (api === 'custom') {
                         return true;
                     }
                 }

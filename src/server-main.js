@@ -1,4 +1,5 @@
 // native node modules
+import fs from 'node:fs';
 import path from 'node:path';
 import util from 'node:util';
 import net from 'node:net';
@@ -164,16 +165,6 @@ if (cliArgs.listen) {
     app.use(accessLoggerMiddleware());
 }
 
-if (cliArgs.enableCorsProxy) {
-    app.use('/proxy/:url(*)', corsProxyMiddleware);
-} else {
-    app.use('/proxy/:url(*)', async (_, res) => {
-        const message = 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.';
-        console.log(message);
-        res.status(404).send(message);
-    });
-}
-
 app.use(cookieSession({
     name: getCookieSessionName(),
     sameSite: 'lax',
@@ -203,6 +194,9 @@ if (!cliArgs.disableCsrf) {
                 return;
             }
             req.session.csrfToken = token;
+        },
+        skipCsrfProtection: (req) => {
+            return cliArgs.enableCorsProxy ? /^\/proxy\//.test(req.path) : false;
         },
         size: 32,
     });
@@ -271,6 +265,16 @@ app.post('/api/ping', (request, response) => {
 
     response.sendStatus(204);
 });
+
+if (cliArgs.enableCorsProxy) {
+    app.use('/proxy/:url(*)', corsProxyMiddleware);
+} else {
+    app.use('/proxy/:url(*)', async (_, res) => {
+        const message = 'CORS proxy is disabled. Enable it in config.yaml or use the --corsProxy flag.';
+        console.log(message);
+        res.status(404).send(message);
+    });
+}
 
 // File uploads
 const uploadsPath = path.join(cliArgs.dataRoot, UPLOADS_DIRECTORY);
@@ -347,7 +351,7 @@ async function preSetupTasks() {
     initRequestProxy({ enabled: cliArgs.requestProxyEnabled, url: cliArgs.requestProxyUrl, bypass: cliArgs.requestProxyBypass });
 
     // Wait for frontend libs to compile
-    await webpackMiddleware.runWebpackCompiler();
+    await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
 }
 
 /**
@@ -392,6 +396,28 @@ async function postSetupTasks(result) {
         }
     } else if (cliArgs.browserLaunchEnabled && isAndroid) {
         console.log('Skipping automatic browser launch on Android runtime.');
+    }
+
+    if (cliArgs.heartbeatInterval > 0) {
+        // Convert seconds to milliseconds for the timer
+        const intervalMs = cliArgs.heartbeatInterval * 1000;
+        const heartbeatPath = path.join(globalThis.DATA_ROOT, 'heartbeat.json');
+
+        console.log(`Heartbeat enabled. Updating ${color.green(heartbeatPath)} every ${cliArgs.heartbeatInterval} seconds`);
+
+        const writeHeartbeat = () => {
+            try {
+                fs.writeFileSync(heartbeatPath, JSON.stringify({ timestamp: Date.now() }));
+            } catch (err) {
+                console.error(`Failed to write heartbeat file at ${color.green(heartbeatPath)}:`, err.message);
+            }
+        };
+
+        // Write immediately
+        writeHeartbeat();
+
+        // Loop using the converted milliseconds
+        setInterval(writeHeartbeat, intervalMs).unref();
     }
 
     setWindowTitle('Luker WebServer');

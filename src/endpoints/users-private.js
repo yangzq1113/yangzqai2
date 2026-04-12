@@ -15,7 +15,7 @@ import yauzl from 'yauzl';
 import { getUserAvatar, toKey, getPasswordHash, getPasswordSalt, createBackupArchive, ensurePublicDirectoriesExist, toAvatarKey, getUserDirectories, getUserBackupTargets, normalizeUserBackupSelection } from '../users.js';
 import { SETTINGS_FILE, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from '../constants.js';
 import { checkForNewContent, CONTENT_TYPES } from './content-manager.js';
-import { color, Cache, ensureDirectory, isValidUrl, normalizeZipEntryPath, trimTrailingSlash } from '../util.js';
+import { color, Cache, getConfigValue, ensureDirectory, isValidUrl, normalizeZipEntryPath, trimTrailingSlash } from '../util.js';
 import { createLanMigrationOffer, LAN_MIGRATION_PATH_PREFIX } from '../lan-migration.js';
 
 const RESET_CACHE = new Cache(5 * 60 * 1000);
@@ -679,6 +679,13 @@ router.post('/change-password', async (request, response) => {
 
 router.post('/backup', async (request, response) => {
     try {
+        const allowFullDataBackup = !!getConfigValue('backups.allowFullDataBackup', true, 'boolean');
+
+        if (!allowFullDataBackup) {
+            console.warn('Backup failed: Full data backup is disabled in configuration');
+            return response.status(403).json({ error: 'Full data backup is disabled' });
+        }
+
         const handle = request.body.handle;
 
         if (!handle) {

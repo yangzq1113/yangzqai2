@@ -231,11 +231,9 @@ function onExtensionFloatingCharaPromptInput() {
         !existingCharaNote.useChara
     ) {
         extension_settings.note.chara.splice(existingCharaNoteIndex, 1);
-    }
-    else if (extension_settings.note.chara && existingCharaNote) {
+    } else if (extension_settings.note.chara && existingCharaNote) {
         Object.assign(existingCharaNote, tempCharaNote);
-    }
-    else if (avatarName && tempPrompt.length > 0) {
+    } else if (avatarName && tempPrompt.length > 0) {
         if (!extension_settings.note.chara) {
             extension_settings.note.chara = [];
         }
@@ -594,7 +592,7 @@ function registerAuthorsNoteMacros() {
             handler: () => chat_metadata[metadata_keys.prompt] ?? '',
         });
         macros.register('charAuthorsNote', {
-            category: MacroCategory.CHARACTER,
+            category: MacroCategory.PROMPTS,
             description: t`The contents of the Character Author's Note`,
             handler: () => this_chid !== undefined ? (extension_settings.note.chara.find((e) => e.name === getCharaFilename())?.prompt ?? '') : '',
         });

@@ -1886,7 +1886,6 @@ class PromptManager {
      * @returns {void}
      */
     addPrompt(prompt, identifier) {
-
         if (typeof prompt !== 'object' || prompt === null) throw new Error('Object is not a prompt');
 
         const newPrompt = {
@@ -2755,7 +2754,7 @@ class PromptManager {
         const prompt = this.getPromptById(identifier);
         const textareaIdentifier = `${identifier}_prompt_quick_edit_textarea`;
         const html = `<div class="range-block m-t-1">
-                        <div class="justifyLeft" data-i18n="${title}">${title}</div>
+                        <div class="justifyLeft">${title}</div>
                         <div class="wide100p">
                             <textarea id="${textareaIdentifier}" class="text_pole textarea_compact" rows="6" placeholder="">${prompt.content}</textarea>
                         </div>
@@ -2772,7 +2771,6 @@ class PromptManager {
             this.updatePromptByIdentifier(identifier, prompt);
             debouncedSaveServiceSettings().then(() => this.render());
         });
-
     }
 
     /**

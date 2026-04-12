@@ -106,7 +106,7 @@ const EXPORTABLE_KEYS = [
     SECRET_KEYS.DEEPLX_URL,
 ];
 
-const allowKeysExposure = !!getConfigValue('allowKeysExposure', false, 'boolean');
+export const allowKeysExposure = !!getConfigValue('allowKeysExposure', false, 'boolean');
 
 /**
  * SecretManager class to handle all secret operations
@@ -638,4 +638,8 @@ router.post('/rename', (request, response) => {
         console.error('Error renaming secret:', error);
         return response.sendStatus(500);
     }
+});
+
+router.post('/settings', async (_request, response) => {
+    return response.send({ allowKeysExposure });
 });

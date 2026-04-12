@@ -93,6 +93,19 @@
                 </div>
                 <i data-i18n="The server must be accessible from the Luker host machine.">The server must be accessible from the Luker host machine.</i>
             </div>
+            <div data-sd-source="sdcpp">
+                <label for="sd_sdcpp_url">stable-diffusion.cpp URL</label>
+                <div class="flex-container flexnowrap">
+                    <input id="sd_sdcpp_url" type="text" class="text_pole" placeholder="Example: {{sdcpp_url}}" value="{{sdcpp_url}}" />
+                    <div id="sd_sdcpp_validate" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-check"></i>
+                        <span data-i18n="Connect">
+                            Connect
+                        </span>
+                    </div>
+                </div>
+                <i data-i18n="The server must be accessible from the SillyTavern host machine.">The server must be accessible from the SillyTavern host machine.</i>
+            </div>
             <div data-sd-source="drawthings">
                 <label for="sd_drawthings_url">DrawThings API URL</label>
                 <div class="flex-container flexnowrap">
@@ -283,9 +296,14 @@
                 </div>
             </div>
             <div data-sd-source="pollinations">
-                <p>
-                    <a href="https://pollinations.ai">Pollinations.ai</a>
-                </p>
+                <a href="https://enter.pollinations.ai">Pollinations.ai</a>
+                <div class="flex-container flexnowrap alignItemsBaseline marginBot5">
+                    <strong class="flex1" data-i18n="API Key">API Key</strong>
+                    <div id="sd_pollinations_key" class="menu_button menu_button_icon manage-api-keys" data-key="api_key_pollinations">
+                        <i class="fa-fw fa-solid fa-key"></i>
+                        <span data-i18n="Click to set">Click to set</span>
+                    </div>
+                </div>
                 <div class="flex-container">
                     <label class="flex1 checkbox_label" for="sd_pollinations_enhance" data-i18n="[title]Enables prompt enhancing (passes prompts through an LLM to add detail)." title="Enables prompt enhancing (passes prompts through an LLM to add detail).">
                         <input id="sd_pollinations_enhance" type="checkbox" />
@@ -592,7 +610,7 @@
                     <span data-i18n="Shareable">
                         Shareable
                     </span>
-                    <small class="flexBasis100p">
+                    <small class="flexBasis100p" data-i18n="When checked, character-specific prompts will be saved with the character card data.">
                         When checked, character-specific prompts will be saved with the character card data.
                     </small>
                 </label>

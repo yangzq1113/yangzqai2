@@ -35,10 +35,16 @@ export const localizePagination = function (container) {
 
 /**
  * Checks if the current environment supports negative lookbehind in regular expressions.
+ * @type {{ (): boolean; result?: boolean }} Defines the function as a memoized object with a cached result.
  * @returns {boolean} True if negative lookbehind is supported, false otherwise.
  */
 export function canUseNegativeLookbehind() {
-    let result = canUseNegativeLookbehind['result'];
+    /**
+     * A reference to the function itself, typed as a callable object with a cache property.
+     * @type {{ (): boolean; result?: boolean }}
+     */
+    const fn = canUseNegativeLookbehind;
+    let result = fn.result;
     if (typeof result !== 'boolean') {
         try {
             new RegExp('(?<!_)');
@@ -46,7 +52,7 @@ export function canUseNegativeLookbehind() {
         } catch (e) {
             result = false;
         }
-        canUseNegativeLookbehind['result'] = result;
+        fn.result = result;
     }
     return result;
 }
@@ -282,6 +288,15 @@ export function isValidUrl(value) {
     } catch (_) {
         return false;
     }
+}
+
+/**
+ * Checks if a URL is external to the current domain.
+ * @param {string} url URL to check
+ * @returns {boolean} True if the URL is external, false otherwise
+ */
+export function isExternalUrl(url) {
+    return (url.indexOf('://') > 0 || url.indexOf('//') === 0) && !url.startsWith(window.location.origin);
 }
 
 /**
@@ -852,18 +867,28 @@ export function isElementInViewport(el) {
 
 /**
  * Returns a name that is unique among the names that exist.
- * @param {string} name The name to check.
+ * @param {string} baseName The name to check.
  * @param {{ (name: string): boolean; }} exists Function to check if name exists.
- * @returns {string} A unique name.
+ * @param {Object} [options] The options.
+ * @param {((baseName: string, i: number) => string)|null} [options.nameBuilder=null] Function to build the name.
+ *        Starts with the index provided by `startIndex` (default is 1). If not provided, uses "${baseName} (${i})".
+ * @param {number} [options.maxTries=1000] The maximum number of tries to find a unique name. Default is 1000.
+ * @param {number} [options.startIndex=1] The index to start with when building the name. Default is 1.
+ *        When set to 0, the intention is to also check if the basename (without applied index) is free.
+ * @returns {string|null} A unique name. Null if no unique name could be found in `maxTries`.
  */
-export function getUniqueName(name, exists) {
-    let i = 1;
-    let baseName = name;
-    while (exists(name)) {
-        name = `${baseName} (${i})`;
+export function getUniqueName(baseName, exists, { nameBuilder = null, maxTries = 1000, startIndex = 1 } = {}) {
+    nameBuilder ??= (baseName, i) => i === 0 ? baseName : `${baseName} (${i})`;
+    let i = startIndex;
+    let name;
+    while (i < maxTries + startIndex) {
+        name = nameBuilder(baseName, i);
+        if (!exists(name)) {
+            return name;
+        }
         i++;
     }
-    return name;
+    return null;
 }
 
 /**
@@ -1896,23 +1921,26 @@ export function loadFileToDocument(url, type) {
 }
 
 /**
+ *  An array of all supported image MIME types.
+ */
+export const supportedImageMimeTypes = Object.freeze([
+    'image/jpeg',
+    'image/png',
+    'image/bmp',
+    'image/tiff',
+    'image/gif',
+    'image/apng',
+    'image/webp',
+    'image/avif',
+]);
+
+/**
  * Ensure that we can import war crime image formats like WEBP and AVIF.
  * @param {File} file Input file
  * @returns {Promise<File>} A promise that resolves to the supported file.
  */
 export async function ensureImageFormatSupported(file) {
-    const supportedTypes = [
-        'image/jpeg',
-        'image/png',
-        'image/bmp',
-        'image/tiff',
-        'image/gif',
-        'image/apng',
-        'image/webp',
-        'image/avif',
-    ];
-
-    if (supportedTypes.includes(file.type) || !file.type.startsWith('image/')) {
+    if (supportedImageMimeTypes.includes(file.type) || !file.type.startsWith('image/')) {
         return file;
     }
 
@@ -2475,7 +2503,6 @@ export function highlightRegex(regexStr) {
                 flags: new RegExp('(?<=\\/)([gimsuy]*)$', 'g'),  // Match trailing flags
                 delimiters: new RegExp('^\\/|(?<![\\\\<])\\/', 'g'),  // Match leading or trailing delimiters
             };
-
         } catch (error) {
             return {
                 brackets: new RegExp('(\\\\)?\\[.*?\\]', 'g'),  // Non-escaped square brackets
@@ -2621,8 +2648,8 @@ export async function fetchFaFile(name) {
     const sheet = style.sheet;
     style.remove();
     return [...sheet.cssRules]
-        .filter(rule => rule.style?.content)
-        .map(rule => rule.selectorText.split(/,\s*/).map(selector => selector.split('::').shift().slice(1)))
+        .filter(rule => (rule instanceof CSSStyleRule && rule.style?.content))
+        .map(rule => rule['selectorText'].split(/,\s*/).map(selector => selector.split('::').shift().slice(1)))
     ;
 }
 
@@ -3017,6 +3044,15 @@ export function logSlashCommandWarn(message, args, valueObj = null) {
 }
 
 /**
+ * Logs a warning to the console for slash command executions.
+ * Strips internal arguments (starting with '_') from the args object for cleaner logging.
+ * @param {string} message - The warning message to log.
+ * @param {Object} args - The arguments object from the slash command, including named arguments and internal values.
+ * @param {{[unnamedArgName: string]: string}} [valueObj=null] - The user-built object containing context for the warning (e.g., { uid: uid }).
+ * @returns {void}
+ */
+
+/**
  * Sets up the scroll-to-top button functionality.
  * @param {object} params Parameters object
  * @param {string} params.scrollContainerId Scrollable container element ID
@@ -3176,4 +3212,47 @@ export function createTimeout(ms, errorMessage = '') {
     return new Promise((_, reject) => {
         setTimeout(() => reject(new Error(errorMessage)), ms);
     });
+}
+
+/**
+ * Registers a long-press (touch hold) event as an alternative to modifier+click.
+ * Supports event delegation for dynamically created elements.
+ * @param {string} selector CSS selector for target elements
+ * @param {function} callback Callback to invoke on long-press, `this` is the matched element
+ * @param {number} [delay=500] Long-press duration in ms
+ */
+export function addLongPressEvent(selector, callback, delay = 500) {
+    let timer = null;
+    let fired = false;
+    let target = null;
+
+    document.addEventListener('touchstart', function (event) {
+        const el = event.target.closest(selector);
+        if (!el) return;
+        target = el;
+        fired = false;
+        timer = setTimeout(() => {
+            fired = true;
+            event.preventDefault();
+            callback.call(el, event);
+        }, delay);
+    }, { passive: false });
+
+    document.addEventListener('touchend', cancelTimer);
+    document.addEventListener('touchmove', cancelTimer);
+    document.addEventListener('touchcancel', cancelTimer);
+
+    document.addEventListener('click', function (event) {
+        if (fired && target && target.contains(event.target)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            fired = false;
+            target = null;
+        }
+    }, true);
+
+    function cancelTimer() {
+        clearTimeout(timer);
+        timer = null;
+    }
 }

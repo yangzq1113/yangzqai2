@@ -185,6 +185,7 @@ const INPUT_MAP = {
     [SECRET_KEYS.ZAI]: '#api_key_zai',
     [SECRET_KEYS.SILICONFLOW]: '#api_key_siliconflow',
     [SECRET_KEYS.COMFY_RUNPOD]: '#api_key_comfy_runpod',
+    [SECRET_KEYS.POLLINATIONS]: '#api_key_pollinations',
 };
 
 const getLabel = () => moment().format('L LT');
@@ -276,6 +277,29 @@ function getActiveSecretLabel(key) {
         return activeSecret.label || activeSecret.value || t`[No label]`;
     }
     return '';
+}
+
+/**
+ * Checks if secrets can be viewed based on server configuration.
+ * @returns {Promise<boolean|null>} A boolean value, or null if the request fails.
+ */
+export async function canViewSecrets() {
+    try {
+        const response = await fetch('/api/secrets/settings', {
+            method: 'POST',
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+
+        if (!response.ok) {
+            return null;
+        }
+
+        const data = await response.json();
+        return data?.allowKeysExposure === true;
+    } catch (error) {
+        console.error('Error getting secrets settings:', error);
+        return null;
+    }
 }
 
 async function viewSecrets() {
@@ -507,7 +531,14 @@ export async function renameSecret(key, id, label) {
 /**
  * Redirects the user to authorize OpenRouter.
  */
-function authorizeOpenRouter() {
+async function authorizeOpenRouter() {
+    if (secret_state[SECRET_KEYS.OPENROUTER]) {
+        const confirmed = await Popup.show.confirm(t`OpenRouter API key already exists`, t`Do you really wish to create a new OpenRouter key? Your existing key will not be deleted.`);
+        if (!confirmed) {
+            return;
+        }
+    }
+
     const redirectUrl = new URL('/callback/openrouter', window.location.origin);
     const openRouterUrl = `https://openrouter.ai/auth?callback_url=${encodeURIComponent(redirectUrl.toString())}`;
     location.href = openRouterUrl;
@@ -615,11 +646,11 @@ async function openKeyManagerDialog(key) {
     template.find('button[data-action="add-secret"]').on('click', async function () {
         let label = '';
         let result = POPUP_RESULT.CANCELLED;
-        const value = await Popup.show.input(t`Add Secret`, t`Enter the secret value (can be empty):`, '', {
+        const value = await Popup.show.input(t`Add Secret`, t`Secret value (can be empty):`, '', {
             customInputs: [{
                 id: 'newSecretLabel',
                 type: 'text',
-                label: t`Enter a label for the secret (optional):`,
+                label: t`Label (optional):`,
             }],
             onClose: popup => {
                 if (popup.result) {

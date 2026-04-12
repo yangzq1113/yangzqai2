@@ -7,6 +7,7 @@ import {
 } from './frontend-log-manager.js';
 import { t } from './i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, callGenericPopup } from './popup.js';
+import { canViewSecrets } from './secrets.js';
 import { renderTemplateAsync } from './templates.js';
 import { copyText, debounce, ensureImageFormatSupported, getBase64Async, humanFileSize } from './utils.js';
 
@@ -662,6 +663,11 @@ async function backupUserData(handle, callback, selection = BACKUP_DEFAULT_SELEC
             const data = await response.json().catch(() => ({}));
             toastr.error(data.error || t`Unknown error`, t`Failed to backup user data`);
             throw new Error('Failed to backup user data');
+        }
+
+        const includesSecrets = await canViewSecrets();
+        if (includesSecrets === false) {
+            toastr.warning('The backup will not include secrets due to a server configuration.', 'Secrets Not Included');
         }
 
         const blob = await response.blob();
@@ -1693,8 +1699,7 @@ async function changePassword(handle, callback) {
 
         toastr.success('Password changed successfully', 'Password Changed');
         callback();
-    }
-    catch (error) {
+    } catch (error) {
         console.error('Error changing password:', error);
     }
 }
@@ -1821,7 +1826,6 @@ async function changeName(handle, name, callback) {
 
         toastr.success('Name changed successfully', 'Name Changed');
         callback();
-
     } catch (error) {
         console.error('Error changing name:', error);
     }
@@ -1861,7 +1865,6 @@ async function restoreSnapshot(name, callback) {
     } catch (error) {
         console.error('Error restoring snapshot:', error);
     }
-
 }
 
 /**
@@ -1967,7 +1970,6 @@ async function viewSettingsSnapshots() {
                     const content = await loadSnapshotContent(snapshot.name);
                     contentBlock.val(content);
                 }
-
             });
             template.find('.snapshotList').append(snapshotBlock);
         }
@@ -2033,7 +2035,6 @@ async function resetEverything(callback) {
     } catch (error) {
         console.error('Error resetting everything:', error);
     }
-
 }
 
 async function openUserProfile() {

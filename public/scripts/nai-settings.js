@@ -183,8 +183,7 @@ export function loadNovelPreset(preset) {
         $('#amount_gen').val(preset.max_length).trigger('input');
         $('#max_context_unlocked').prop('checked', needsUnlock).trigger('change');
         $('#max_context').val(preset.max_context).trigger('input');
-    }
-    else {
+    } else {
         setGenerationParamsFromPreset(preset);
     }
 
@@ -466,10 +465,8 @@ function getBadWordIds(banned_tokens, tokenizerType) {
         if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
             const tokens = getTextTokens(tokenizerType, trimmed.slice(1, -1));
             result.push(tokens);
-        }
-
-        // Raw token ids, JSON serialized
-        else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        } else if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            // Raw token ids, JSON serialized
             try {
                 const tokens = JSON.parse(trimmed);
 
@@ -481,10 +478,8 @@ function getBadWordIds(banned_tokens, tokenizerType) {
             } catch (err) {
                 console.log(`Failed to parse bad word token list: ${trimmed}`, err);
             }
-        }
-
-        // Apply permutations
-        else {
+        } else {
+            // Apply permutations
             const permutations = getBadWordPermutations(trimmed).map(t => getTextTokens(tokenizerType, t));
             result.push(...permutations);
         }
@@ -745,8 +740,7 @@ function tryParseStreamingError(response, decoded) {
             toastr.error(data.message || data.error?.message || response.statusText, 'NovelAI API');
             throw new Error(data);
         }
-    }
-    catch {
+    } catch {
         // No JSON. Do nothing.
     }
 }
