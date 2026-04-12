@@ -2,7 +2,7 @@
  * CardApp Context - builds the ctx object passed to CardApp's init() function.
  */
 
-import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders, openCharacterChat, doNewChat, closeCurrentChat, getChatsFromFiles, displayPastChats } from '../../../script.js';
+import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders, openCharacterChat, doNewChat, closeCurrentChat, getPastCharacterChats } from '../../../script.js';
 import { getContext } from '../../extensions.js';
 import { executeSlashCommandsWithOptions } from '../../slash-commands.js';
 
@@ -207,10 +207,7 @@ export function buildContext(container, charId, config) {
         async getChatList() {
             const context = getContext();
             if (!context.characterId && context.characterId !== 0) return [];
-            const character = context.characters[context.characterId];
-            if (!character) return [];
-            const data = await getChatsFromFiles(character, false);
-            return data || [];
+            return await getPastCharacterChats(context.characterId);
         },
 
         /**
