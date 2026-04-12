@@ -1,0 +1,39 @@
+#card-app-container {
+    width: 100%;
+    height: 100%;
+    position: relative;
+    overflow: auto;
+}
+
+#card-app-error {
+    padding: 20px;
+    text-align: center;
+    color: var(--SmartThemeBodyColor, #ccc);
+}
+
+#card-app-error .card-app-error-message {
+    margin: 10px 0;
+    padding: 10px;
+    background: rgba(255, 0, 0, 0.1);
+    border: 1px solid rgba(255, 0, 0, 0.3);
+    border-radius: 5px;
+    font-family: monospace;
+    white-space: pre-wrap;
+    text-align: left;
+    max-height: 200px;
+    overflow: auto;
+}
+
+#card-app-error .card-app-exit-btn {
+    margin-top: 15px;
+    padding: 8px 20px;
+    cursor: pointer;
+    border-radius: 5px;
+    background: var(--SmartThemeBlurTintColor, #333);
+    color: var(--SmartThemeBodyColor, #ccc);
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+}
+
+#card-app-error .card-app-exit-btn:hover {
+    opacity: 0.8;
+}
