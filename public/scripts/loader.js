@@ -1,4 +1,4 @@
-import { loader } from './action-loader.js';
+import { loader, getActiveLoaderHandles } from './action-loader.js';
 
 /**
  * Handle for the legacy loader created by showLoader().
@@ -7,7 +7,7 @@ import { loader } from './action-loader.js';
 let legacyLoaderHandle = null;
 
 export function isLoaderVisible() {
-    return Boolean(loaderPopup) || !preloaderYoinked;
+    return getActiveLoaderHandles().length > 0 || !!document.getElementById('preloader');
 }
 
 /**
