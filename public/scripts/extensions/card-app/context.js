@@ -2,7 +2,7 @@
  * CardApp Context - builds the ctx object passed to CardApp's init() function.
  */
 
-import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders } from '../../../script.js';
+import { eventSource, event_types, chat, chat_metadata, this_chid, characters, getRequestHeaders, openCharacterChat, doNewChat, closeCurrentChat, getChatsFromFiles, displayPastChats } from '../../../script.js';
 import { getContext } from '../../extensions.js';
 import { executeSlashCommandsWithOptions } from '../../slash-commands.js';
 
@@ -196,6 +196,46 @@ export function buildContext(container, charId, config) {
                 chat_metadata[namespace] = {};
             }
             chat_metadata[namespace][key] = value;
+        },
+
+        // ==================== Chat Management ====================
+
+        /**
+         * Get list of all chats for the current character.
+         * @returns {Promise<Array<{file_name: string, mes: string, last_mes: string, file_size: number}>>}
+         */
+        async getChatList() {
+            const context = getContext();
+            if (!context.characterId && context.characterId !== 0) return [];
+            const character = context.characters[context.characterId];
+            if (!character) return [];
+            const data = await getChatsFromFiles(character, false);
+            return data || [];
+        },
+
+        /**
+         * Switch to a different chat.
+         * @param {string} chatName - The chat file name to switch to
+         * @returns {Promise<void>}
+         */
+        async switchChat(chatName) {
+            await openCharacterChat(chatName);
+        },
+
+        /**
+         * Create a new chat.
+         * @returns {Promise<void>}
+         */
+        async newChat() {
+            await doNewChat();
+        },
+
+        /**
+         * Close the current chat (return to character list).
+         * @returns {Promise<void>}
+         */
+        async closeChat() {
+            await closeCurrentChat();
         },
 
         // ==================== Slash Commands ====================
