@@ -18,6 +18,7 @@ import { toggle as slideToggle } from 'slidetoggle';
 import chalk from 'chalk';
 import yaml from 'yaml';
 import * as chevrotain from 'chevrotain';
+import { gzipSync, gzip } from 'fflate';
 
 const libBundle = {
     lodash,
@@ -40,6 +41,8 @@ const libBundle = {
     chalk,
     yaml,
     chevrotain,
+    gzipSync,
+    gzip,
     initialized: true,
 };
 
@@ -64,6 +67,8 @@ export {
     chalk,
     yaml,
     chevrotain,
+    gzipSync,
+    gzip,
 };
 
 export default libBundle;

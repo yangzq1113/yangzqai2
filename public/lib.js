@@ -26,8 +26,9 @@ import coreBundle, {
     chalk,
     yaml,
     chevrotain,
+    gzipSync,
+    gzip,
 } from './lib.core.bundle.js';
-import { gzipSync, gzip } from 'fflate';
 
 let optionalBundlePromise = null;
 
