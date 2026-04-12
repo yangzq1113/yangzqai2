@@ -173,6 +173,17 @@ export function createContainer() {
         document.body.appendChild(container);
     }
 
+    // Add a floating menu button so users can still access Luker's options menu
+    const menuBtn = document.createElement('button');
+    menuBtn.id = 'card-app-menu-btn';
+    menuBtn.innerHTML = '☰';
+    menuBtn.title = 'Menu';
+    menuBtn.addEventListener('click', () => {
+        const optionsBtn = document.getElementById('options_button');
+        if (optionsBtn) optionsBtn.click();
+    });
+    container.appendChild(menuBtn);
+
     return container;
 }
 
