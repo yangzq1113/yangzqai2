@@ -64,12 +64,18 @@ export function buildContext(container, charId, config) {
          * @returns {Promise<void>}
          */
         async sendMessage(text, options = {}) {
-            const context = getContext();
             if (options.silent) {
                 // TODO: implement silent mode (send to LLM without saving to chat)
                 console.warn('[CardApp] Silent mode not yet implemented, sending normally');
             }
-            await context.generate(text);
+            // Write text to the hidden send_textarea and trigger the send flow
+            const textarea = document.getElementById('send_textarea');
+            if (textarea) {
+                textarea.value = text;
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            const { sendTextareaMessage } = await import('../../../script.js');
+            await sendTextareaMessage();
         },
 
         /**
