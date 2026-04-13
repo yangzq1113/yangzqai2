@@ -93,6 +93,8 @@ import {
     extension_settings,
     ModuleWorkerWrapper,
     openThirdPartyExtensionMenu,
+    registerExtensionApi,
+    getExtensionApi,
     renderExtensionTemplate,
     renderExtensionTemplateAsync,
     saveMetadataDebounced,
@@ -2343,6 +2345,8 @@ export function getContext() {
         unshallowCharacter,
         unshallowGroupMembers,
         openThirdPartyExtensionMenu,
+        registerExtensionApi,
+        getExtensionApi,
         symbols: {
             ignore: IGNORE_SYMBOL,
         },

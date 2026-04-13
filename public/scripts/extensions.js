@@ -28,6 +28,35 @@ export let extensionNames = [];
 export let extensionTypes = {};
 
 /**
+ * Registry for extension APIs.
+ * Core extensions and third-party plugins can register public APIs here,
+ * making them accessible to other extensions via getContext().getExtensionApi(name).
+ * @type {Record<string, object>}
+ */
+const extensionApis = {};
+
+/**
+ * Register a public API for an extension.
+ * @param {string} name - Unique extension identifier (e.g. 'card-app', 'memory-graph')
+ * @param {object} api - Object containing the public API methods/properties
+ */
+export function registerExtensionApi(name, api) {
+    if (extensionApis[name]) {
+        console.warn(`[extensions] Overwriting existing API for '${name}'`);
+    }
+    extensionApis[name] = api;
+}
+
+/**
+ * Get the registered API for an extension.
+ * @param {string} name - Extension identifier
+ * @returns {object|undefined} The registered API, or undefined if not registered
+ */
+export function getExtensionApi(name) {
+    return extensionApis[name];
+}
+
+/**
  * A set of active extensions.
  * @type {Set<string>}
  */
