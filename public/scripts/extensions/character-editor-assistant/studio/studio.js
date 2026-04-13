@@ -33,6 +33,11 @@ let currentAvatar = null;
 let currentFile = null;
 let fileList = [];
 
+// CodeMirror 6 state
+let cmEditor = null;
+let cmModules = null;
+let cmLanguageCompartment = null;
+
 // AI chat state
 let conversationMessages = [];
 let isSending = false;
@@ -150,6 +155,160 @@ async function ensureSkeletonFiles(charId) {
  }
 }
 
+// ==================== CodeMirror 6 ====================
+
+/**
+ * Lazily load the CodeMirror 6 bundle.
+ * @returns {Promise<object>} The CM6 module exports
+ */
+async function loadCM6() {
+    if (cmModules) return cmModules;
+    cmModules = await import('/codemirror.bundle.js');
+    return cmModules;
+}
+
+/**
+ * Get the CM6 language extension for a file path.
+ * @param {string} filePath
+ * @returns {object} CM6 language extension
+ */
+function getLanguageForFile(filePath) {
+    if (!cmModules) return [];
+    const ext = (filePath || '').split('.').pop()?.toLowerCase();
+    switch (ext) {
+        case 'js': case 'mjs': case 'jsx': case 'ts': case 'tsx':
+            return cmModules.javascript({ jsx: ext === 'jsx' || ext === 'tsx', typescript: ext === 'ts' || ext === 'tsx' });
+        case 'css':
+            return cmModules.css();
+        case 'html': case 'htm': case 'svg':
+            return cmModules.html();
+        case 'json':
+            return cmModules.json();
+        case 'md': case 'markdown':
+            return cmModules.markdown();
+        default:
+            return [];
+    }
+}
+
+/**
+ * Create a CM6 editor instance in the given container.
+ * @param {HTMLElement} container
+ * @param {string} content
+ * @param {string} filePath
+ */
+async function createCMEditor(container, content = '', filePath = '') {
+    const cm = await loadCM6();
+    cmLanguageCompartment = new cm.Compartment();
+
+    const lukerTheme = cm.EditorView.theme({
+        '&': {
+            height: '100%',
+            fontSize: '13px',
+        },
+        '.cm-scroller': {
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            overflow: 'auto',
+        },
+        '.cm-gutters': {
+            borderRight: '1px solid var(--SmartThemeBorderColor, #333)',
+            backgroundColor: 'color-mix(in oklab, var(--SmartThemeBlurTintColor, #1e1e1e) 90%, transparent)',
+        },
+        '.cm-activeLineGutter': {
+            backgroundColor: 'color-mix(in oklab, var(--SmartThemeBodyColor, #fff) 12%, transparent)',
+        },
+        '.cm-activeLine': {
+            backgroundColor: 'color-mix(in oklab, var(--SmartThemeBodyColor, #fff) 6%, transparent)',
+        },
+        '.cm-selectionBackground': {
+            backgroundColor: 'color-mix(in oklab, var(--SmartThemeBodyColor, #fff) 18%, transparent) !important',
+        },
+        '&.cm-focused .cm-cursor': {
+            borderLeftColor: 'var(--SmartThemeBodyColor, #fff)',
+        },
+    }, { dark: true });
+
+    const extensions = [
+        cm.lineNumbers(),
+        cm.highlightActiveLineGutter(),
+        cm.highlightSpecialChars(),
+        cm.history(),
+        cm.foldGutter(),
+        cm.drawSelection(),
+        cm.dropCursor(),
+        cm.EditorState.allowMultipleSelections.of(true),
+        cm.indentOnInput(),
+        cm.syntaxHighlighting(cm.defaultHighlightStyle, { fallback: true }),
+        cm.bracketMatching(),
+        cm.closeBrackets(),
+        cm.autocompletion(),
+        cm.rectangularSelection(),
+        cm.crosshairCursor(),
+        cm.highlightActiveLine(),
+        cm.highlightSelectionMatches(),
+        cm.keymap.of([
+            ...cm.closeBracketsKeymap,
+            ...cm.defaultKeymap,
+            ...cm.searchKeymap,
+            ...cm.historyKeymap,
+            ...cm.foldKeymap,
+            ...cm.completionKeymap,
+            ...cm.lintKeymap,
+            cm.indentWithTab,
+        ]),
+        cmLanguageCompartment.of(getLanguageForFile(filePath)),
+        cm.oneDark,
+        lukerTheme,
+        cm.EditorView.lineWrapping,
+    ];
+
+    cmEditor = new cm.EditorView({
+        state: cm.EditorState.create({
+            doc: content,
+            extensions,
+        }),
+        parent: container,
+    });
+}
+
+/**
+ * Set the content of the CM6 editor.
+ * @param {string} content
+ * @param {string} [filePath]
+ */
+function setCMContent(content, filePath = '') {
+    if (!cmEditor) return;
+    cmEditor.dispatch({
+        changes: { from: 0, to: cmEditor.state.doc.length, insert: content },
+    });
+    // Update language mode if file changed
+    if (cmLanguageCompartment && cmModules) {
+        cmEditor.dispatch({
+            effects: cmLanguageCompartment.reconfigure(getLanguageForFile(filePath)),
+        });
+    }
+}
+
+/**
+ * Get the current content from the CM6 editor.
+ * @returns {string}
+ */
+function getCMContent() {
+    if (!cmEditor) return '';
+    return cmEditor.state.doc.toString();
+}
+
+/**
+ * Destroy the CM6 editor instance.
+ */
+function destroyCMEditor() {
+    if (cmEditor) {
+        cmEditor.destroy();
+        cmEditor = null;
+    }
+    cmLanguageCompartment = null;
+}
+
 // ==================== UI ====================
 
 function escapeHtml(str) {
@@ -204,7 +363,7 @@ function buildRightPanelHtml() {
  </div>
  <div class="card-app-studio-editor-area">
  <div class="card-app-studio-file-tabs" data-studio-tabs></div>
- <textarea class="card-app-studio-code" data-studio-code spellcheck="false" wrap="off"></textarea>
+ <div class="card-app-studio-code" data-studio-code></div>
  </div>
  <div class="card-app-studio-file-tree">
  <div class="card-app-studio-file-tree-header">
@@ -320,12 +479,11 @@ async function handleRollback(hash) {
 }
 
 async function openFile(filePath) {
- const codeArea = document.querySelector('[data-studio-code]');
- if (!codeArea || !currentCharId) return;
+ if (!currentCharId) return;
 
  try {
  const content = await fetchFileContent(currentCharId, filePath);
- codeArea.value = content;
+ setCMContent(content, filePath);
  currentFile = filePath;
 
  // Update file list highlight
@@ -339,16 +497,15 @@ async function openFile(filePath) {
  }
  } catch (err) {
  console.error(`[${MODULE_NAME}] Failed to open file:`, err);
- codeArea.value = `// Error loading ${filePath}: ${err.message}`;
+ setCMContent(`// Error loading ${filePath}: ${err.message}`, filePath);
  }
 }
 
 async function handleSaveCurrentFile() {
- const codeArea = document.querySelector('[data-studio-code]');
- if (!codeArea || !currentFile || !currentCharId) return;
+ if (!currentFile || !currentCharId) return;
 
  try {
- await saveFileContent(currentCharId, currentFile, codeArea.value);
+ await saveFileContent(currentCharId, currentFile, getCMContent());
         toastr.success(tFormat('Saved ${0}', currentFile));
  await reloadCardApp();
  } catch (err) {
@@ -422,6 +579,12 @@ export async function openCardAppStudio(charId) {
  const fileListEl = document.querySelector('[data-studio-file-list]');
  if (fileListEl) renderFileList(fileListEl);
 
+ // Initialize CodeMirror 6 editor
+ const codeContainer = document.querySelector('[data-studio-code]');
+ if (codeContainer) {
+     await createCMEditor(codeContainer, '', '');
+ }
+
  // Open first file
  const firstFile = fileList.find(f => f.type === 'file');
  if (firstFile) {
@@ -454,6 +617,9 @@ export async function openCardAppStudio(charId) {
 
 export async function closeCardAppStudio() {
  if (!isStudioOpen) return;
+
+ // Destroy CM6 editor
+ destroyCMEditor();
 
  // Remove panels
  document.getElementById(STUDIO_PANEL_LEFT_ID)?.remove();
@@ -663,19 +829,8 @@ function handleStudioKeydown(e) {
         return;
     }
 
-    // Tab in code editor: insert tab character instead of changing focus
-    const codeArea = document.querySelector('[data-studio-code]');
-    if (e.key === 'Tab' && document.activeElement === codeArea) {
-        e.preventDefault();
-        const start = codeArea.selectionStart;
-        const end = codeArea.selectionEnd;
-        codeArea.value = codeArea.value.substring(0, start) + '    ' + codeArea.value.substring(end);
-        codeArea.selectionStart = codeArea.selectionEnd = start + 4;
-        return;
-    }
-
-    // Escape: Close studio (only if not in textarea)
-    if (e.key === 'Escape' && document.activeElement?.tagName !== 'TEXTAREA') {
+    // Escape: Close studio (only if not focused in AI input textarea or CM6 editor)
+    if (e.key === 'Escape' && document.activeElement?.tagName !== 'TEXTAREA' && !document.activeElement?.closest('.cm-editor')) {
         closeCardAppStudio();
         return;
     }

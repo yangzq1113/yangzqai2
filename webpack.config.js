@@ -95,6 +95,7 @@ export default function getPublicLibConfig({ forceDist = false, pruneCache = fal
         entry: {
             'lib.core.bundle': path.join(serverDirectory, 'public/lib-bundle-core.js'),
             'lib.optional.bundle': path.join(serverDirectory, 'public/lib-bundle-optional.js'),
+            'codemirror.bundle': path.join(serverDirectory, 'public/lib-bundle-codemirror.js'),
         },
         cache: {
             type: 'filesystem',

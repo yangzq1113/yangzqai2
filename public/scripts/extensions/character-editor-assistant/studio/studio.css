@@ -72,9 +72,7 @@ body.card-app-studio-active #sheld {
 .card-app-studio-tab { padding: 6px 14px; font-size: 12px; color: var(--SmartThemeBodyColor, #999); border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; }
 .card-app-studio-tab.active { color: var(--SmartThemeBodyColor, #fff); border-bottom-color: var(--SmartThemeQuoteColor, #4a9eff); }
 .card-app-studio-code {
-    flex: 1; width: 100%; padding: 12px; border: none; background: transparent;
-    color: var(--SmartThemeBodyColor, #ccc); font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-    font-size: 13px; line-height: 1.6; resize: none; outline: none; overflow: auto; tab-size: 4; box-sizing: border-box;
+    flex: 1; width: 100%; overflow: hidden; position: relative;
 }
 /* File Tree */
 .card-app-studio-file-tree { border-top: 1px solid var(--SmartThemeBorderColor, #333); flex-shrink: 0; max-height: 200px; overflow-y: auto; }
@@ -87,9 +85,9 @@ body.card-app-studio-active #sheld {
 .card-app-studio-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-app-studio-file-size { font-size: 11px; opacity: 0.5; flex-shrink: 0; }
 .card-app-studio-empty { padding: 12px; text-align: center; color: var(--SmartThemeBodyColor, #666); font-size: 12px; }
-/* Code area enhancements */
-.card-app-studio-code::placeholder { color: color-mix(in oklab, var(--SmartThemeBodyColor) 30%, transparent); }
-.card-app-studio-code:focus { background: color-mix(in oklab, var(--SmartThemeBodyColor) 3%, transparent); }
+/* CM6 editor fills container */
+.card-app-studio-code .cm-editor { height: 100%; }
+.card-app-studio-code .cm-scroller { overflow: auto; }
 /* Chat message code blocks */
 .card-app-studio-chat-msg pre {
     background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent);
@@ -106,8 +104,7 @@ body.card-app-studio-active #sheld {
 /* Smooth transitions */
 .card-app-studio-panel { transition: width 0.2s ease; }
 body.card-app-studio-active #sheld { transition: margin 0.3s ease; }
-/* Selection color in code area */
-.card-app-studio-code::selection { background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 30%, transparent); }
+
 /* Scrollbar */
 .card-app-studio-panel ::-webkit-scrollbar { width: 5px; }
 .card-app-studio-panel ::-webkit-scrollbar-track { background: transparent; }
