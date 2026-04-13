@@ -234,6 +234,7 @@ export function createCharacterEditorUi(deps) {
         <div class="inline-drawer-content">
             <div class="cea_row">
                 <div class="menu_button" id="cea_open_editor_popup">${escapeHtml(i18n('Open Editor'))}</div>
+                <div class="menu_button" id="cea_open_cardapp_studio"><i class="fa-solid fa-code"></i> ${escapeHtml(i18n('CardApp Studio'))}</div>
             </div>
             <label class="checkbox_label"><input id="cea_replace_sync" type="checkbox"/> ${escapeHtml(i18n('Enable lorebook sync popup after Replace/Update'))}</label>
             <label for="cea_sync_llm_preset">${escapeHtml(i18n('Model request LLM preset name'))}</label>
@@ -350,6 +351,23 @@ export function createCharacterEditorUi(deps) {
 
         root.on('click.cea', '#cea_open_editor_popup', async function () {
             await openCharacterEditorPopup(getContext());
+        });
+
+        root.on('click.cea', '#cea_open_cardapp_studio', async function () {
+            const context = getContext();
+            const cardAppApi = context.getExtensionApi('card-app');
+            const charId = cardAppApi?.getCharId?.();
+            if (!charId) {
+                toastr.warning(i18n('No character selected or character has no avatar.'));
+                return;
+            }
+            try {
+                const { openCardAppStudio } = await import('./studio/studio.js');
+                await openCardAppStudio(charId);
+            } catch (err) {
+                console.error('[CEA] Failed to open CardApp Studio:', err);
+                toastr.error(String(err?.message || err));
+            }
         });
     }
 

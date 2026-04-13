@@ -6,11 +6,16 @@
 
 import { getRequestHeaders, saveSettingsDebounced } from '../../../../script.js';
 import { translate } from '../../../i18n.js';
-import { extension_settings } from '../../../extensions.js';
-import { reloadCardApp } from '../index.js';
+import { extension_settings, getExtensionApi } from '../../../extensions.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
 
 const MODULE_NAME = 'card-app/studio';
+
+/** Reload CardApp via the core extension API. */
+async function reloadCardApp() {
+    const api = getExtensionApi('card-app');
+    if (api?.reloadCardApp) await api.reloadCardApp();
+}
 
 function t(text) {
     return translate(String(text || ''));
