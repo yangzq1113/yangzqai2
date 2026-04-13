@@ -4,9 +4,9 @@
  * Layout: Left panel (AI chat) | Center (real chat/CardApp) | Right panel (code editor)
  */
 
-import { getRequestHeaders, saveSettingsDebounced } from '../../../../script.js';
+import { getRequestHeaders } from '../../../../script.js';
 import { translate } from '../../../i18n.js';
-import { extension_settings, getExtensionApi } from '../../../extensions.js';
+import { extension_settings, getContext, getExtensionApi } from '../../../extensions.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
 
 const MODULE_NAME = 'card-app/studio';
@@ -29,6 +29,7 @@ const STUDIO_PANEL_RIGHT_ID = 'card-app-studio-right';
 
 let isStudioOpen = false;
 let currentCharId = null;
+let currentAvatar = null;
 let currentFile = null;
 let fileList = [];
 
@@ -37,42 +38,82 @@ let conversationMessages = [];
 let isSending = false;
 let activeAbortController = null;
 
-const SETTINGS_KEY = 'card_app_studio';
+const SESSION_NAMESPACE = 'cardapp_studio_sessions';
 const MAX_PERSISTED_MESSAGES = 100;
 
-// ==================== Session Persistence ====================
+// ==================== Session Persistence (Character Sidecar) ====================
 
-function getStudioSettings() {
-    if (!extension_settings[SETTINGS_KEY]) {
-        extension_settings[SETTINGS_KEY] = { sessions: {} };
-    }
-    return extension_settings[SETTINGS_KEY];
+/**
+ * Get the current character's avatar string for sidecar storage.
+ * @returns {string} The avatar URL (e.g. 'xxx.png')
+ */
+function getCurrentAvatar() {
+    if (currentAvatar) return currentAvatar;
+    const context = getContext();
+    const character = context.characters?.[context.characterId];
+    return String(character?.avatar || '').trim();
 }
 
-function loadSession(charId) {
-    const settings = getStudioSettings();
-    const session = settings.sessions?.[charId];
-    if (session && Array.isArray(session.messages)) {
-        return session.messages.slice(-MAX_PERSISTED_MESSAGES);
+async function loadSession() {
+    const avatar = getCurrentAvatar();
+    if (!avatar) return [];
+    try {
+        const response = await fetch('/api/characters/state/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar, namespace: SESSION_NAMESPACE }),
+            cache: 'no-cache',
+        });
+        if (!response.ok) return [];
+        const payload = await response.json().catch(() => null);
+        const data = payload?.data;
+        if (data && Array.isArray(data.messages)) {
+            return data.messages.slice(-MAX_PERSISTED_MESSAGES);
+        }
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] Failed to load session from sidecar:`, err);
     }
     return [];
 }
 
-function saveSession(charId, messages) {
-    const settings = getStudioSettings();
-    if (!settings.sessions) settings.sessions = {};
-    settings.sessions[charId] = {
-        messages: messages.slice(-MAX_PERSISTED_MESSAGES),
-        updatedAt: Date.now(),
-    };
-    saveSettingsDebounced();
+async function saveSession(messages) {
+    const avatar = getCurrentAvatar();
+    if (!avatar) return;
+    try {
+        await fetch('/api/characters/state/set', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: avatar,
+                namespace: SESSION_NAMESPACE,
+                data: {
+                    messages: messages.slice(-MAX_PERSISTED_MESSAGES),
+                    updatedAt: Date.now(),
+                },
+            }),
+            cache: 'no-cache',
+        });
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] Failed to save session to sidecar:`, err);
+    }
 }
 
-function clearSession(charId) {
-    const settings = getStudioSettings();
-    if (settings.sessions) {
-        delete settings.sessions[charId];
-        saveSettingsDebounced();
+async function clearSession() {
+    const avatar = getCurrentAvatar();
+    if (!avatar) return;
+    try {
+        await fetch('/api/characters/state/set', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                avatar_url: avatar,
+                namespace: SESSION_NAMESPACE,
+                data: null,
+            }),
+            cache: 'no-cache',
+        });
+    } catch (err) {
+        console.warn(`[${MODULE_NAME}] Failed to clear session from sidecar:`, err);
     }
 }
 
@@ -370,6 +411,10 @@ export async function openCardAppStudio(charId) {
  }
 
  currentCharId = charId;
+ // Cache the full avatar string for sidecar session storage
+ const context = getContext();
+ const character = context.characters?.[context.characterId];
+ currentAvatar = String(character?.avatar || '').trim();
  isStudioOpen = true;
 
  // Ensure skeleton files exist
@@ -410,7 +455,7 @@ export async function openCardAppStudio(charId) {
  }
 
  // Load persisted conversation
- conversationMessages = loadSession(charId);
+ conversationMessages = await loadSession();
 
  // Render persisted messages in chat
  const chatEl = document.querySelector('[data-studio-chat]');
@@ -433,7 +478,7 @@ export async function openCardAppStudio(charId) {
  console.log(`[${MODULE_NAME}] Studio opened for ${charId}`);
 }
 
-export function closeCardAppStudio() {
+export async function closeCardAppStudio() {
  if (!isStudioOpen) return;
 
  // Remove panels
@@ -443,14 +488,15 @@ export function closeCardAppStudio() {
  // Remove body class
  document.body.classList.remove('card-app-studio-active');
 
+    // Save conversation before clearing state
+    if (currentCharId && conversationMessages.length > 0) {
+        await saveSession(conversationMessages);
+    }
     isStudioOpen = false;
     currentCharId = null;
+    currentAvatar = null;
     currentFile = null;
     fileList = [];
-    // Save conversation before closing
-    if (currentCharId && conversationMessages.length > 0) {
-        saveSession(currentCharId, conversationMessages);
-    }
     conversationMessages = [];
     isSending = false;
     if (activeAbortController) {
@@ -572,7 +618,7 @@ async function handleAISend() {
         isSending = false;
         syncComposerState();
         // Auto-save conversation
-        if (currentCharId) saveSession(currentCharId, conversationMessages);
+        if (currentCharId) await saveSession(conversationMessages);
     }
 }
 
@@ -583,7 +629,7 @@ function handleAIStop() {
     }
 }
 
-function handleStudioClick(e) {
+async function handleStudioClick(e) {
     const actionEl = e.target.closest('[data-studio-action]');
     if (!actionEl) return;
 
@@ -609,7 +655,7 @@ function handleStudioClick(e) {
             break;
         case 'clear-chat': {
             conversationMessages = [];
-            if (currentCharId) clearSession(currentCharId);
+            if (currentCharId) await clearSession();
             const chatEl = document.querySelector('[data-studio-chat]');
             if (chatEl) chatEl.innerHTML = '';
             break;
