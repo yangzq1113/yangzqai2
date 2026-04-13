@@ -191,24 +191,7 @@ export function buildMemoryGraphSettingsHtml(deps) {
                 <option value="hybrid_llm">${escapeHtml(i18n('Hybrid + LLM Rerank'))}</option>
             </select>
             <div id="luker_rpg_memory_hybrid_settings" style="display:none">
-                <label for="luker_rpg_memory_embedding_source">${escapeHtml(i18n('Embedding source'))}</label>
-                <select id="luker_rpg_memory_embedding_source" class="text_pole">
-                    <option value="transformers">Transformers (local)</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="openrouter">OpenRouter</option>
-                    <option value="cohere">Cohere</option>
-                    <option value="mistral">Mistral</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="llamacpp">LlamaCpp</option>
-                    <option value="vllm">vLLM</option>
-                    <option value="nomicai">NomicAI</option>
-                    <option value="makersuite">Google AI</option>
-                    <option value="chutes">Chutes</option>
-                    <option value="nanogpt">NanoGPT</option>
-                    <option value="electronhub">ElectronHub</option>
-                </select>
-                <label for="luker_rpg_memory_embedding_model">${escapeHtml(i18n('Embedding model (empty = source default)'))}</label>
-                <input id="luker_rpg_memory_embedding_model" class="text_pole" type="text" placeholder="text-embedding-3-small" />
+                <small style="opacity:0.85">${escapeHtml(i18n('Embedding uses Vector Storage extension settings (source & model).'))}</small>
                 <label>${escapeHtml(i18n('Vector pre-filter Top-K'))} <input id="luker_rpg_memory_vector_topk" class="text_pole" type="number" min="5" max="100" step="1" /></label>
                 <label>${escapeHtml(i18n('Max recall results'))} <input id="luker_rpg_memory_hybrid_max_results" class="text_pole" type="number" min="3" max="50" step="1" /></label>
             </div>

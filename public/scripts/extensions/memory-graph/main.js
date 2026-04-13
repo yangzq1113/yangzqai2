@@ -13571,8 +13571,7 @@ function bindUi() {
 
     // Recall method selector + hybrid settings visibility
     root.find('#luker_rpg_memory_recall_method').val(String(settings.recallMethod || 'llm'));
-    root.find('#luker_rpg_memory_embedding_source').val(String(settings.embeddingSource || 'transformers'));
-    root.find('#luker_rpg_memory_embedding_model').val(String(settings.embeddingModel || ''));
+
     root.find('#luker_rpg_memory_vector_topk').val(String(settings.vectorTopK || 20));
     root.find('#luker_rpg_memory_hybrid_max_results').val(String(settings.hybridMaxResults || 15));
     root.find('#luker_rpg_memory_rerank_source').val(String(settings.rerankSource || 'cohere'));
@@ -13592,14 +13591,7 @@ function bindUi() {
         updateHybridSettingsVisibility();
         saveSettingsDebounced();
     });
-    root.find('#luker_rpg_memory_embedding_source').off('change').on('change', function () {
-        settings.embeddingSource = String(jQuery(this).val() || 'transformers').trim();
-        saveSettingsDebounced();
-    });
-    root.find('#luker_rpg_memory_embedding_model').off('change input').on('change input', function () {
-        settings.embeddingModel = String(jQuery(this).val() || '').trim();
-        saveSettingsDebounced();
-    });
+
     root.find('#luker_rpg_memory_vector_topk').off('change input').on('change input', function () {
         settings.vectorTopK = Math.max(5, Math.min(100, Math.floor(Number(jQuery(this).val()) || 20)));
         jQuery(this).val(String(settings.vectorTopK));

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 FunnyCups (https://github.com/funnycups)
 
 import { getRequestHeaders } from '../../../script.js';
+import { extension_settings } from '../../extensions.js';
 import { getStringHash } from '../../utils.js';
 
 const VECTOR_COLLECTION_PREFIX = 'mg_';
@@ -46,15 +47,48 @@ export const EMBEDDING_DEFAULT_MODELS = {
 // ---------------------------------------------------------------------------
 
 /**
- * Build vector config from memory-graph settings.
- * @param {object} settings - The memory-graph extension settings.
+ * Source-to-model-key mapping for Vector Storage extension settings.
+ * @type {Record<string, string>}
+ */
+const VECTOR_EXT_MODEL_KEYS = {
+    openai: 'openai_model',
+    electronhub: 'electronhub_model',
+    openrouter: 'openrouter_model',
+    togetherai: 'togetherai_model',
+    cohere: 'cohere_model',
+    ollama: 'ollama_model',
+    vllm: 'vllm_model',
+    webllm: 'webllm_model',
+    palm: 'google_model',
+    vertexai: 'google_model',
+    chutes: 'chutes_model',
+    nanogpt: 'nanogpt_model',
+    siliconflow: 'siliconflow_model',
+};
+
+/**
+ * Build vector config by reading the Vector Storage extension settings.
+ * Falls back to memory-graph's own legacy fields if Vector Storage is not configured.
+ * @param {object} [_settings] - Unused (kept for call-site compat).
  * @returns {{source: string, model: string, collectionPrefix: string}}
  */
-export function getVectorConfigFromSettings(settings) {
-    const source = EMBEDDING_SOURCES.includes(settings?.embeddingSource)
-        ? settings.embeddingSource
+export function getVectorConfigFromSettings(_settings) {
+    const vectorExt = extension_settings?.vectors;
+    if (vectorExt && vectorExt.source) {
+        const source = String(vectorExt.source).trim();
+        const modelKey = VECTOR_EXT_MODEL_KEYS[source];
+        const model = modelKey ? String(vectorExt[modelKey] || '').trim() : '';
+        return {
+            source,
+            model: model || EMBEDDING_DEFAULT_MODELS[source] || '',
+            collectionPrefix: VECTOR_COLLECTION_PREFIX,
+        };
+    }
+    // Fallback: legacy memory-graph settings (embeddingSource / embeddingModel)
+    const source = EMBEDDING_SOURCES.includes(_settings?.embeddingSource)
+        ? _settings.embeddingSource
         : 'transformers';
-    const model = String(settings?.embeddingModel || EMBEDDING_DEFAULT_MODELS[source] || '').trim();
+    const model = String(_settings?.embeddingModel || EMBEDDING_DEFAULT_MODELS[source] || '').trim();
     return {
         source,
         model,
