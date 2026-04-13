@@ -652,13 +652,8 @@
 /* Compact the title/memo textarea so controls don't overflow */
 .world_entry .inline-drawer-header > .world_entry_thin_controls {
     min-width: 0;
-    flex: 1 1 0;
+    flex: 1 1 auto;
     overflow: hidden;
-}
-
-.WIEntryTitleAndStatus {
-    flex: 1 1 12rem;
-    min-width: 0;
 }
 
 .WIEntryTitleAndStatus textarea[name="comment"] {
