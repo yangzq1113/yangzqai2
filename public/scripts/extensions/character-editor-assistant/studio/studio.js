@@ -406,9 +406,8 @@ async function createCMEditor(container, content = '', filePath = '') {
         cm.syntaxHighlighting(cm.defaultHighlightStyle, { fallback: true }),
         cm.bracketMatching(),
         cm.closeBrackets(),
-        cm.autocompletion({
-            override: [createCtxCompletionSource(cm)],
-        }),
+        cm.autocompletion(),
+        cm.EditorState.languageData.of(() => [{ autocomplete: createCtxCompletionSource(cm) }]),
         cm.rectangularSelection(),
         cm.crosshairCursor(),
         cm.highlightActiveLine(),
