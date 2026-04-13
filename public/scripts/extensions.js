@@ -1845,6 +1845,50 @@ export async function writeExtensionField(characterId, key, value) {
 }
 
 /**
+ * Read character-level sidecar state for a given namespace.
+ * Data is stored in a separate sidecar file alongside the character card,
+ * without modifying the card JSON itself.
+ * @param {string} avatar - Character avatar filename (e.g. 'xxx.png')
+ * @param {string} namespace - Storage namespace (e.g. 'my_extension')
+ * @returns {Promise<any>} The stored data, or null if not found
+ */
+export async function getCharacterState(avatar, namespace) {
+    const response = await fetch('/api/characters/state/get', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: avatar, namespace }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`Character state read failed (${response.status}): ${detail || response.statusText}`);
+    }
+    const payload = await response.json().catch(() => null);
+    return payload && typeof payload === 'object' ? payload.data : null;
+}
+
+/**
+ * Write character-level sidecar state for a given namespace.
+ * Pass null as data to delete the sidecar entry.
+ * @param {string} avatar - Character avatar filename (e.g. 'xxx.png')
+ * @param {string} namespace - Storage namespace (e.g. 'my_extension')
+ * @param {any} data - Data to store (or null to delete)
+ * @returns {Promise<void>}
+ */
+export async function setCharacterState(avatar, namespace, data) {
+    const response = await fetch('/api/characters/state/set', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar_url: avatar, namespace, data }),
+        cache: 'no-cache',
+    });
+    if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`Character state write failed (${response.status}): ${detail || response.statusText}`);
+    }
+}
+
+/**
  * Prompts the user to enter the Git URL of the extension to import.
  * After obtaining the Git URL, makes a POST request to '/api/extensions/install' to import the extension.
  * If the extension is imported successfully, a success message is displayed.

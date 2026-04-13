@@ -95,6 +95,8 @@ import {
     openThirdPartyExtensionMenu,
     registerExtensionApi,
     getExtensionApi,
+    getCharacterState,
+    setCharacterState,
     renderExtensionTemplate,
     renderExtensionTemplateAsync,
     saveMetadataDebounced,
@@ -2347,6 +2349,8 @@ export function getContext() {
         openThirdPartyExtensionMenu,
         registerExtensionApi,
         getExtensionApi,
+        getCharacterState,
+        setCharacterState,
         symbols: {
             ignore: IGNORE_SYMBOL,
         },
