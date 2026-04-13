@@ -4,13 +4,16 @@ import fs from 'node:fs';
 import mime from 'mime-types';
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import simpleGit from 'simple-git';
+import { createGitClient } from '../git/client.js';
 
 import { resolvePathWithinParent } from '../util.js';
 
 export const router = express.Router();
 
 // ==================== Git Version Control ====================
+
+const gitClient = createGitClient();
+console.info(`[card-app] Git backend: ${gitClient.backend}`);
 
 /**
  * Ensure a CardApp directory has a git repo initialized.
@@ -22,15 +25,13 @@ async function ensureGitRepo(charDir) {
     }
     const gitDir = path.join(charDir, '.git');
     if (!fs.existsSync(gitDir)) {
-        const git = simpleGit({ baseDir: charDir });
-        await git.init();
-        await git.addConfig('user.name', 'CardApp Studio');
-        await git.addConfig('user.email', 'studio@luker.local');
+        await gitClient.init(charDir);
+        await gitClient.setConfig(charDir, 'user.name', 'CardApp Studio');
+        await gitClient.setConfig(charDir, 'user.email', 'studio@luker.local');
         // Initial commit if files exist
         const files = fs.readdirSync(charDir).filter(f => f !== '.git');
         if (files.length > 0) {
-            await git.add('-A');
-            await git.commit('Initial commit');
+            await gitClient.commitIfChanged(charDir, 'Initial commit');
         }
     }
 }
@@ -44,12 +45,7 @@ async function autoCommit(charDir, message) {
     try {
         const gitDir = path.join(charDir, '.git');
         if (!fs.existsSync(gitDir)) return;
-        const git = simpleGit({ baseDir: charDir });
-        await git.add('-A');
-        const status = await git.status();
-        if (status.files.length > 0) {
-            await git.commit(message);
-        }
+        await gitClient.commitIfChanged(charDir, message);
     } catch (err) {
         console.warn('[card-app] Auto-commit failed:', err.message);
     }
@@ -255,14 +251,7 @@ router.get('/:charId/history', async (request, response) => {
         const charDir = path.join(request.user.directories.cardApps, charId);
         await ensureGitRepo(charDir);
 
-        const git = simpleGit({ baseDir: charDir });
-        const log = await git.log({ maxCount: 50 });
-        const commits = log.all.map(entry => ({
-            hash: entry.hash.substring(0, 7),
-            fullHash: entry.hash,
-            message: entry.message,
-            date: entry.date,
-        }));
+        const commits = await gitClient.log(charDir, 50);
         return response.json({ commits });
     } catch (err) {
         console.error('[card-app] Error getting history:', err);
@@ -289,8 +278,7 @@ router.post('/:charId/rollback', express.json(), async (request, response) => {
             return response.status(400).json({ error: 'No git repository found' });
         }
 
-        const git = simpleGit({ baseDir: charDir });
-        await git.reset(['--hard', hash]);
+        await gitClient.resetHard(charDir, hash);
         return response.json({ ok: true });
     } catch (err) {
         console.error('[card-app] Error rolling back:', err);
@@ -317,8 +305,7 @@ router.get('/:charId/diff/:hash', async (request, response) => {
             return response.status(400).json({ error: 'No git repository found' });
         }
 
-        const git = simpleGit({ baseDir: charDir });
-        const diff = await git.diff([`${hash}~1`, hash]).catch(() => git.diff([hash]));
+        const diff = await gitClient.diff(charDir, hash);
         return response.json({ diff });
     } catch (err) {
         console.error('[card-app] Error getting diff:', err);
