@@ -217,10 +217,12 @@ function registerLocaleData() {
         'No history yet': '暂无历史记录',
         'Loading...': '加载中...',
         'Rollback to this version? This cannot be undone.': '回滚到此版本？此操作不可撤销。',
-        'Rolled back successfully': '回滚成功',
-    });
-    addLocaleData('zh-tw', {
-        'Character Editor Assistant': '角色卡編輯助手',
+ 'Rolled back successfully': '回滚成功',
+ 'Rollback failed: ${0}': '回滚失败：${0}',
+ 'Error: ${0}': '错误：${0}',
+ });
+ addLocaleData('zh-tw', {
+ 'Character Editor Assistant': '角色卡編輯助手',
         'Open Editor': '開啟編輯器',
         'Character Editor': '角色編輯器',
         'Enable lorebook sync popup after Replace/Update': '替換/更新角色卡後啟用世界書同步彈窗',
@@ -353,8 +355,10 @@ function registerLocaleData() {
         'No history yet': '暫無歷史記錄',
         'Loading...': '載入中...',
         'Rollback to this version? This cannot be undone.': '回滾到此版本？此操作不可撤銷。',
-        'Rolled back successfully': '回滾成功',
-    });
+ 'Rolled back successfully': '回滾成功',
+ 'Rollback failed: ${0}': '回滾失敗：${0}',
+ 'Error: ${0}': '錯誤：${0}',
+ });
 }
 
 function clone(value) {

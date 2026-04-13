@@ -282,7 +282,7 @@ async function renderHistory() {
             </div>`;
         }).join('');
     } catch (err) {
-        historyEl.innerHTML = `<div class="card-app-studio-empty">Error: ${escapeHtml(err.message)}</div>`;
+        historyEl.innerHTML = `<div class="card-app-studio-empty">${escapeHtml(tFormat('Error: ${0}', err.message))}</div>`;
     }
 }
 
@@ -315,7 +315,7 @@ async function handleRollback(hash) {
         await renderHistory();
         await reloadCardApp();
     } catch (err) {
-        toastr.error(`Rollback failed: ${err.message}`);
+        toastr.error(tFormat('Rollback failed: ${0}', err.message));
     }
 }
 
@@ -586,7 +586,7 @@ async function handleAISend() {
         }
     } catch (err) {
         if (loadingEl?.parentNode) loadingEl.remove();
-        renderChatMessage('assistant', err.message === 'Request aborted' ? t('(Request cancelled)') : `Error: ${err.message}`);
+        renderChatMessage('assistant', err.message === 'Request aborted' ? t('(Request cancelled)') : tFormat('Error: ${0}', err.message));
     } finally {
         if (activeAbortController === controller) activeAbortController = null;
         isSending = false;
