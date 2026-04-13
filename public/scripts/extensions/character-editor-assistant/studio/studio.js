@@ -308,6 +308,55 @@ function getLanguageForFile(filePath) {
 }
 
 /**
+ * Create a completion source for CardApp ctx API.
+ * @param {object} cm - CM6 modules
+ * @returns {function} Completion source function
+ */
+function createCtxCompletionSource(cm) {
+    const ctxCompletions = [
+        { label: 'ctx.sendMessage', type: 'method', info: 'Send a message (triggers AI response)', detail: '(text: string, options?: object) => void' },
+        { label: 'ctx.executeSlashCommand', type: 'method', info: 'Execute a slash command', detail: '(command: string) => void' },
+        { label: 'ctx.getHistory', type: 'method', info: 'Get chat history array', detail: '(limit?: number, offset?: number) => Array' },
+        { label: 'ctx.getCharacterData', type: 'method', info: 'Get character data object', detail: '() => object' },
+        { label: 'ctx.getVariable', type: 'method', info: 'Get a chat variable', detail: '(name: string) => any' },
+        { label: 'ctx.setVariable', type: 'method', info: 'Set a chat variable (persisted)', detail: '(name: string, value: any) => void' },
+        { label: 'ctx.stopGeneration', type: 'method', info: 'Stop current message generation', detail: '() => void' },
+        { label: 'ctx.continueGeneration', type: 'method', info: 'Continue generating current message', detail: '() => void' },
+        { label: 'ctx.swipe', type: 'method', info: 'Swipe to get alternative response', detail: '() => void' },
+        { label: 'ctx.regenerate', type: 'method', info: 'Regenerate last AI message', detail: '() => void' },
+        { label: 'ctx.setInterval', type: 'method', info: 'Auto-cleanup interval (safer than window.setInterval)', detail: '(fn: function, ms: number) => number' },
+        { label: 'ctx.setTimeout', type: 'method', info: 'Auto-cleanup timeout (safer than window.setTimeout)', detail: '(fn: function, ms: number) => number' },
+        { label: 'ctx.addEventListener', type: 'method', info: 'Auto-cleanup event listener', detail: '(target: EventTarget, event: string, handler: function, options?: object) => void' },
+        { label: 'ctx.onDispose', type: 'method', info: 'Register cleanup callback when CardApp unmounts', detail: '(callback: function) => void' },
+        { label: 'ctx.getChatList', type: 'method', info: 'List all chats for this character', detail: '() => Array' },
+        { label: 'ctx.switchChat', type: 'method', info: 'Switch to a different chat', detail: '(id: string) => void' },
+        { label: 'ctx.newChat', type: 'method', info: 'Create and switch to a new chat', detail: '() => void' },
+        { label: 'ctx.closeChat', type: 'method', info: 'Close current chat', detail: '() => void' },
+        { label: 'ctx.renderText', type: 'method', info: 'Render markdown/formatting to HTML', detail: '(text: string) => string' },
+        { label: 'ctx.editMessage', type: 'method', info: 'Edit a message by ID', detail: '(id: number, text: string) => void' },
+        { label: 'ctx.deleteMessage', type: 'method', info: 'Delete a message by ID', detail: '(id: number) => void' },
+        { label: 'ctx.deleteLastMessage', type: 'method', info: 'Delete the last message', detail: '() => void' },
+        { label: 'ctx.container', type: 'property', info: 'The CardApp container DOM element', detail: 'HTMLElement' },
+        { label: 'ctx.charId', type: 'property', info: 'Current character ID', detail: 'string' },
+        { label: 'ctx.eventSource', type: 'property', info: 'Luker event bus', detail: 'EventEmitter' },
+        { label: 'ctx.registerRenderer', type: 'method', info: 'Register custom message renderer', detail: '({ renderMessage, removeMessage }) => void' },
+        { label: 'ctx.getChatState', type: 'method', info: 'Get namespaced chat state', detail: '(namespace: string) => object' },
+        { label: 'ctx.setChatState', type: 'method', info: 'Set namespaced chat state', detail: '(namespace: string, key: string, value: any) => void' },
+    ];
+
+    return function ctxCompletion(context) {
+        const word = context.matchBefore(/ctx\.\w*/);
+        if (!word) return null;
+        if (word.from === word.to && !context.explicit) return null;
+
+        return {
+            from: word.from,
+            options: ctxCompletions,
+        };
+    };
+}
+
+/**
  * Create a CM6 editor instance in the given container.
  * @param {HTMLElement} container
  * @param {string} content
@@ -357,7 +406,9 @@ async function createCMEditor(container, content = '', filePath = '') {
         cm.syntaxHighlighting(cm.defaultHighlightStyle, { fallback: true }),
         cm.bracketMatching(),
         cm.closeBrackets(),
-        cm.autocompletion(),
+        cm.autocompletion({
+            override: [createCtxCompletionSource(cm)],
+        }),
         cm.rectangularSelection(),
         cm.crosshairCursor(),
         cm.highlightActiveLine(),
