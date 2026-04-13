@@ -6,7 +6,7 @@
 
 import { getRequestHeaders } from '../../../../script.js';
 import { translate } from '../../../i18n.js';
-import { DOMPurify, showdown } from '../../../../lib.js';
+import { DOMPurify, DiffMatchPatch, showdown } from '../../../../lib.js';
 import { extension_settings, getContext, getExtensionApi, getCharacterState, setCharacterState } from '../../../extensions.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
 
@@ -876,42 +876,69 @@ function renderMarkdown(text) {
  * @returns {string} HTML string
  */
 function generateDiffPreview(oldContent, newContent, filePath) {
-    if (oldContent === null) {
-        // New file
+    const isNewFile = oldContent === null || oldContent === undefined;
+    const headerLabel = isNewFile ? t('New file') : t('Modified');
+
+    if (isNewFile) {
+        // New file — show all lines as additions
         const lines = String(newContent).split('\n');
-        const preview = lines.slice(0, 20).map(line => `<div class="diff-line new">+ ${escapeHtml(line)}</div>`).join('');
-        const more = lines.length > 20 ? `<div class="diff-more">...and ${lines.length - 20} more lines</div>` : '';
+        const maxShow = 30;
+        const preview = lines.slice(0, maxShow).map((line, i) =>
+            `<tr class="diff-row diff-add"><td class="diff-ln">${i + 1}</td><td class="diff-text"><span class="diff-marker">+</span>${escapeHtml(line) || '&nbsp;'}</td></tr>`,
+        ).join('');
+        const more = lines.length > maxShow
+            ? `<tr class="diff-row diff-more"><td colspan="2">${escapeHtml(tFormat('...${0} more lines', lines.length - maxShow))}</td></tr>`
+            : '';
         return `<div class="card-app-studio-diff-preview">
-            <div class="diff-header">New file: <strong>${escapeHtml(filePath)}</strong></div>
-            ${preview}${more}
+            <div class="diff-header"><span class="diff-badge add">${escapeHtml(headerLabel)}</span> <strong>${escapeHtml(filePath)}</strong></div>
+            <table class="diff-table">${preview}${more}</table>
         </div>`;
     }
 
-    // Existing file modification
-    const oldLines = String(oldContent).split('\n');
-    const newLines = String(newContent).split('\n');
-    const maxLines = Math.max(oldLines.length, newLines.length);
-    const diffLines = [];
-    
-    for (let i = 0; i < Math.min(maxLines, 15); i++) {
-        const oldLine = oldLines[i] ?? '';
-        const newLine = newLines[i] ?? '';
-        if (oldLine === newLine) {
-            diffLines.push(`<div class="diff-line unchanged">  ${escapeHtml(oldLine)}</div>`);
-        } else if (!newLines[i] && oldLines[i]) {
-            diffLines.push(`<div class="diff-line old">- ${escapeHtml(oldLine)}</div>`);
-        } else if (!oldLines[i] && newLines[i]) {
-            diffLines.push(`<div class="diff-line new">+ ${escapeHtml(newLine)}</div>`);
-        } else {
-            diffLines.push(`<div class="diff-line old">- ${escapeHtml(oldLine)}</div>`);
-            diffLines.push(`<div class="diff-line new">+ ${escapeHtml(newLine)}</div>`);
+    // Existing file — compute line-level diff with DiffMatchPatch
+    const dmp = new DiffMatchPatch();
+    const { chars1, chars2, lineArray } = dmp.diff_linesToChars_(String(oldContent), String(newContent));
+    const diffs = dmp.diff_main(chars1, chars2, false);
+    dmp.diff_charsToLines_(diffs, lineArray);
+
+    const rows = [];
+    let oldLineNum = 1;
+    let newLineNum = 1;
+    let totalRows = 0;
+    const maxRows = 60;
+
+    for (const [op, text] of diffs) {
+        const lines = text.split('\n');
+        if (lines[lines.length - 1] === '') lines.pop();
+
+        for (const line of lines) {
+            if (totalRows >= maxRows) break;
+            if (op === 0) {
+                rows.push(`<tr class="diff-row diff-eq"><td class="diff-ln">${oldLineNum}</td><td class="diff-ln">${newLineNum}</td><td class="diff-text">${escapeHtml(line) || '&nbsp;'}</td></tr>`);
+                oldLineNum++;
+                newLineNum++;
+            } else if (op === -1) {
+                rows.push(`<tr class="diff-row diff-del"><td class="diff-ln">${oldLineNum}</td><td class="diff-ln"></td><td class="diff-text"><span class="diff-marker">−</span>${escapeHtml(line) || '&nbsp;'}</td></tr>`);
+                oldLineNum++;
+            } else if (op === 1) {
+                rows.push(`<tr class="diff-row diff-add"><td class="diff-ln"></td><td class="diff-ln">${newLineNum}</td><td class="diff-text"><span class="diff-marker">+</span>${escapeHtml(line) || '&nbsp;'}</td></tr>`);
+                newLineNum++;
+            }
+            totalRows++;
         }
+        if (totalRows >= maxRows) break;
     }
 
-    const more = maxLines > 15 ? `<div class="diff-more">...and ${maxLines - 15} more lines</div>` : '';
+    const totalOldLines = String(oldContent).split('\n').length;
+    const totalNewLines = String(newContent).split('\n').length;
+    const remaining = Math.max(totalOldLines, totalNewLines) - totalRows;
+    const more = remaining > 0
+        ? `<tr class="diff-row diff-more"><td colspan="3">${escapeHtml(tFormat('...${0} more lines', remaining))}</td></tr>`
+        : '';
+
     return `<div class="card-app-studio-diff-preview">
-        <div class="diff-header">Modified: <strong>${escapeHtml(filePath)}</strong></div>
-        ${diffLines.join('')}${more}
+        <div class="diff-header"><span class="diff-badge mod">${escapeHtml(headerLabel)}</span> <strong>${escapeHtml(filePath)}</strong></div>
+        <table class="diff-table">${rows.join('')}${more}</table>
     </div>`;
 }
 
