@@ -531,6 +531,17 @@ function handleStudioKeydown(e) {
         return;
     }
 
+    // Tab in code editor: insert tab character instead of changing focus
+    const codeArea = document.querySelector('[data-studio-code]');
+    if (e.key === 'Tab' && document.activeElement === codeArea) {
+        e.preventDefault();
+        const start = codeArea.selectionStart;
+        const end = codeArea.selectionEnd;
+        codeArea.value = codeArea.value.substring(0, start) + '    ' + codeArea.value.substring(end);
+        codeArea.selectionStart = codeArea.selectionEnd = start + 4;
+        return;
+    }
+
     // Escape: Close studio (only if not in textarea)
     if (e.key === 'Escape' && document.activeElement?.tagName !== 'TEXTAREA') {
         closeCardAppStudio();
