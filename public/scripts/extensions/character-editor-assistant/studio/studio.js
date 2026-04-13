@@ -53,9 +53,12 @@ let cmLanguageCompartment = null;
 let conversationMessages = [];
 let isSending = false;
 let activeAbortController = null;
+let currentSessionId = null;
 
 const SESSION_NAMESPACE = 'cardapp_studio_sessions';
 const MAX_PERSISTED_MESSAGES = 100;
+const MAX_SESSIONS = 20;
+const SESSION_VERSION = 1;
 
 // ==================== Session Persistence (Character Sidecar) ====================
 
@@ -70,31 +73,133 @@ function getCurrentAvatar() {
     return String(character?.avatar || '').trim();
 }
 
-async function loadSession() {
+/**
+ * Load all sessions from sidecar, migrate old format if needed.
+ * @returns {Promise<Array>} Array of session objects
+ */
+async function loadAllSessions() {
     const avatar = getCurrentAvatar();
     if (!avatar) return [];
     try {
         const data = await getCharacterState(avatar, SESSION_NAMESPACE);
-        if (data && Array.isArray(data.messages)) {
-            return data.messages.slice(-MAX_PERSISTED_MESSAGES);
+        if (!data) return [];
+        
+        // Migrate old single-session format to new multi-session format
+        if (Array.isArray(data.messages)) {
+            // Old format: { messages, updatedAt }
+            const migrated = {
+                version: SESSION_VERSION,
+                sessions: [
+                    {
+                        id: generateSessionId(),
+                        messages: data.messages.slice(-MAX_PERSISTED_MESSAGES),
+                        updatedAt: data.updatedAt || Date.now(),
+                        summary: 'Migrated session',
+                    },
+                ],
+            };
+            await setCharacterState(avatar, SESSION_NAMESPACE, migrated);
+            return migrated.sessions;
         }
+        
+        // New format: { version, sessions }
+        if (data.version === SESSION_VERSION && Array.isArray(data.sessions)) {
+            return data.sessions;
+        }
+        
+        return [];
     } catch (err) {
-        console.warn(`[${MODULE_NAME}] Failed to load session from sidecar:`, err);
+        console.warn(`[${MODULE_NAME}] Failed to load sessions from sidecar:`, err);
+        return [];
     }
-    return [];
 }
 
-async function saveSession(messages) {
+/**
+ * Save all sessions to sidecar.
+ * @param {Array} sessions
+ */
+async function saveAllSessions(sessions) {
     const avatar = getCurrentAvatar();
     if (!avatar) return;
     try {
-        await setCharacterState(avatar, SESSION_NAMESPACE, {
-            messages: messages.slice(-MAX_PERSISTED_MESSAGES),
-            updatedAt: Date.now(),
-        });
+        const data = {
+            version: SESSION_VERSION,
+            sessions: sessions.slice(-MAX_SESSIONS).map(s => ({
+                ...s,
+                messages: s.messages.slice(-MAX_PERSISTED_MESSAGES),
+            })),
+        };
+        await setCharacterState(avatar, SESSION_NAMESPACE, data);
     } catch (err) {
-        console.warn(`[${MODULE_NAME}] Failed to save session to sidecar:`, err);
+        console.warn(`[${MODULE_NAME}] Failed to save sessions to sidecar:`, err);
     }
+}
+
+/**
+ * Load a specific session by ID.
+ * @param {string} sessionId
+ * @returns {Promise<Array>} Messages array
+ */
+async function loadSession(sessionId) {
+    const sessions = await loadAllSessions();
+    const session = sessions.find(s => s.id === sessionId);
+    return session ? session.messages : [];
+}
+
+/**
+ * Save the current session.
+ * @param {string} sessionId
+ * @param {Array} messages
+ * @param {string} [summary]
+ */
+async function saveCurrentSession(sessionId, messages, summary = null) {
+    const sessions = await loadAllSessions();
+    const existingIndex = sessions.findIndex(s => s.id === sessionId);
+    
+    const sessionData = {
+        id: sessionId,
+        messages: messages.slice(-MAX_PERSISTED_MESSAGES),
+        updatedAt: Date.now(),
+        summary: summary || (existingIndex >= 0 ? sessions[existingIndex].summary : 'New session'),
+    };
+    
+    if (existingIndex >= 0) {
+        sessions[existingIndex] = sessionData;
+    } else {
+        sessions.push(sessionData);
+    }
+    
+    await saveAllSessions(sessions);
+}
+
+/**
+ * Delete a session by ID.
+ * @param {string} sessionId
+ */
+async function deleteSession(sessionId) {
+    const sessions = await loadAllSessions();
+    const filtered = sessions.filter(s => s.id !== sessionId);
+    await saveAllSessions(filtered);
+}
+
+/**
+ * Generate a session summary from the first user message.
+ * @param {Array} messages
+ * @returns {string}
+ */
+function generateSessionSummary(messages) {
+    const firstUserMsg = messages.find(m => m.role === 'user');
+    if (!firstUserMsg || !firstUserMsg.content) return 'New session';
+    const text = String(firstUserMsg.content).trim();
+    return text.length > 50 ? text.substring(0, 47) + '...' : text;
+}
+
+/**
+ * Generate a unique session ID.
+ * @returns {string}
+ */
+function generateSessionId() {
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
 async function clearSession() {
@@ -348,8 +453,16 @@ function buildLeftPanelHtml() {
 <div id="${STUDIO_PANEL_LEFT_ID}" class="card-app-studio-panel left">
  <div class="card-app-studio-panel-header">
     <span class="card-app-studio-title">🤖 ${escapeHtml(t('AI Assistant'))}</span>
+    <button class="card-app-studio-btn small" data-studio-action="sessions-toggle" title="${escapeHtml(t('Sessions'))}">📋</button>
     <button class="card-app-studio-btn small" data-studio-action="clear-chat" title="${escapeHtml(t('Clear chat'))}">🗑</button>
     <button class="card-app-studio-close-btn" data-studio-action="close" title="${escapeHtml(t('Close Studio'))}">✕</button>
+ </div>
+ <div class="card-app-studio-sessions-panel" data-studio-sessions style="display: none;">
+    <div class="card-app-studio-sessions-header">
+        <span>${escapeHtml(t('Sessions'))}</span>
+        <button class="card-app-studio-btn small" data-studio-action="new-session">+ ${escapeHtml(t('New'))}</button>
+    </div>
+    <div class="card-app-studio-sessions-list" data-studio-sessions-list></div>
  </div>
  <div class="card-app-studio-chat" data-studio-chat></div>
  <div class="card-app-studio-composer">
@@ -602,8 +715,18 @@ export async function openCardAppStudio(charId) {
  await openFile(firstFile.path);
  }
 
- // Load persisted conversation
- conversationMessages = await loadSession();
+ // Load or create session
+ const sessions = await loadAllSessions();
+ if (sessions.length > 0) {
+     // Load most recent session
+     sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+     currentSessionId = sessions[0].id;
+     conversationMessages = sessions[0].messages || [];
+ } else {
+     // Create new session
+     currentSessionId = generateSessionId();
+     conversationMessages = [];
+ }
 
  // Render persisted messages in chat
  const chatEl = document.querySelector('[data-studio-chat]');
@@ -640,8 +763,9 @@ export async function closeCardAppStudio() {
  document.body.classList.remove('card-app-studio-active');
 
     // Save conversation before clearing state
-    if (currentCharId && conversationMessages.length > 0) {
-        await saveSession(conversationMessages);
+    if (currentSessionId && conversationMessages.length > 0) {
+        const summary = generateSessionSummary(conversationMessages);
+        await saveCurrentSession(currentSessionId, conversationMessages, summary);
     }
     isStudioOpen = false;
     currentCharId = null;
@@ -649,6 +773,7 @@ export async function closeCardAppStudio() {
     currentFile = null;
     fileList = [];
     conversationMessages = [];
+    currentSessionId = null;
     isSending = false;
     if (activeAbortController) {
         activeAbortController.abort();
@@ -859,6 +984,144 @@ function syncComposerState() {
     if (input) input.disabled = isSending;
 }
 
+/**
+ * Render the session list UI.
+ */
+async function renderSessionList() {
+    const listEl = document.querySelector('[data-studio-sessions-list]');
+    if (!listEl) return;
+    
+    const sessions = await loadAllSessions();
+    
+    if (sessions.length === 0) {
+        listEl.innerHTML = `<div class="card-app-studio-empty">${escapeHtml(t('No sessions yet'))}</div>`;
+        return;
+    }
+    
+    // Sort by updatedAt descending
+    sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    
+    listEl.innerHTML = sessions.map(session => {
+        const isCurrent = session.id === currentSessionId;
+        const timeAgo = formatTimeAgo(new Date(session.updatedAt).toISOString());
+        return `
+            <div class="card-app-studio-session-item ${isCurrent ? 'current' : ''}" data-session-id="${escapeHtml(session.id)}">
+                <div class="session-info">
+                    <span class="session-summary">${escapeHtml(session.summary)}</span>
+                    <span class="session-time">${escapeHtml(timeAgo)}</span>
+                </div>
+                <div class="session-actions">
+                    ${isCurrent ? `<span class="session-badge">${escapeHtml(t('Current'))}</span>` : `<button class="card-app-studio-btn small" data-studio-action="load-session" data-session-id="${escapeHtml(session.id)}">${escapeHtml(t('Load'))}</button>`}
+                    <button class="card-app-studio-btn small" data-studio-action="delete-session" data-session-id="${escapeHtml(session.id)}" title="${escapeHtml(t('Delete'))}">🗑</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+/**
+ * Toggle the sessions panel visibility.
+ */
+function toggleSessionsPanel() {
+    const panel = document.querySelector('[data-studio-sessions]');
+    if (!panel) return;
+    
+    const isVisible = panel.style.display !== 'none';
+    panel.style.display = isVisible ? 'none' : 'flex';
+    
+    if (!isVisible) {
+        renderSessionList();
+    }
+}
+
+/**
+ * Create a new session.
+ */
+async function createNewSession() {
+    // Save current session if it has messages
+    if (currentSessionId && conversationMessages.length > 0) {
+        const summary = generateSessionSummary(conversationMessages);
+        await saveCurrentSession(currentSessionId, conversationMessages, summary);
+    }
+    
+    // Create new session
+    currentSessionId = generateSessionId();
+    conversationMessages = [];
+    
+    // Clear chat UI
+    const chatEl = document.querySelector('[data-studio-chat]');
+    if (chatEl) chatEl.innerHTML = '';
+    
+    // Update session list
+    await renderSessionList();
+    
+    toastr.info(t('New session created'));
+}
+
+/**
+ * Load a session by ID.
+ * @param {string} sessionId
+ */
+async function loadSessionById(sessionId) {
+    try {
+        // Save current session if it has messages
+        if (currentSessionId && conversationMessages.length > 0) {
+            const summary = generateSessionSummary(conversationMessages);
+            await saveCurrentSession(currentSessionId, conversationMessages, summary);
+        }
+        
+        // Load new session
+        const messages = await loadSession(sessionId);
+        currentSessionId = sessionId;
+        conversationMessages = messages;
+        
+        // Clear and re-render chat
+        const chatEl = document.querySelector('[data-studio-chat]');
+        if (chatEl) {
+            chatEl.innerHTML = '';
+            for (const msg of conversationMessages) {
+                if (msg.role === 'user') {
+                    renderChatMessage('user', msg.content);
+                } else if (msg.role === 'assistant' && msg.content) {
+                    renderChatMessage('assistant', msg.content);
+                }
+            }
+        }
+        
+        // Update session list
+        await renderSessionList();
+        
+        toastr.success(t('Session loaded'));
+    } catch (err) {
+        toastr.error(tFormat('Load failed: ${0}', err.message));
+    }
+}
+
+/**
+ * Delete a session by ID.
+ * @param {string} sessionId
+ */
+async function deleteSessionById(sessionId) {
+    if (!confirm(t('Delete this session?'))) return;
+    
+    try {
+        await deleteSession(sessionId);
+        
+        // If deleting current session, create a new one
+        if (sessionId === currentSessionId) {
+            currentSessionId = generateSessionId();
+            conversationMessages = [];
+            const chatEl = document.querySelector('[data-studio-chat]');
+            if (chatEl) chatEl.innerHTML = '';
+        }
+        
+        await renderSessionList();
+        toastr.success(t('Session deleted'));
+    } catch (err) {
+        toastr.error(tFormat('Delete failed: ${0}', err.message));
+    }
+}
+
 async function handleAISend() {
     const input = document.querySelector('[data-studio-input]');
     if (!input || !currentCharId) return;
@@ -910,8 +1173,11 @@ async function handleAISend() {
         if (activeAbortController === controller) activeAbortController = null;
         isSending = false;
         syncComposerState();
-        // Auto-save conversation
-        if (currentCharId) await saveSession(conversationMessages);
+        // Auto-save conversation with summary
+        if (currentCharId && currentSessionId && conversationMessages.length > 0) {
+            const summary = generateSessionSummary(conversationMessages);
+            await saveCurrentSession(currentSessionId, conversationMessages, summary);
+        }
     }
 }
 
@@ -948,9 +1214,28 @@ async function handleStudioClick(e) {
             break;
         case 'clear-chat': {
             conversationMessages = [];
-            if (currentCharId) await clearSession();
+            if (currentSessionId) {
+                await deleteSession(currentSessionId);
+                currentSessionId = generateSessionId();
+            }
             const chatEl = document.querySelector('[data-studio-chat]');
             if (chatEl) chatEl.innerHTML = '';
+            break;
+        }
+        case 'sessions-toggle':
+            toggleSessionsPanel();
+            break;
+        case 'new-session':
+            await createNewSession();
+            break;
+        case 'load-session': {
+            const sessionId = actionEl.dataset.sessionId;
+            if (sessionId) await loadSessionById(sessionId);
+            break;
+        }
+        case 'delete-session': {
+            const sessionId = actionEl.dataset.sessionId;
+            if (sessionId) await deleteSessionById(sessionId);
             break;
         }
         case 'refresh-history':

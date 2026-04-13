@@ -223,6 +223,14 @@ function registerLocaleData() {
         'Approve file change?': '批准文件更改？',
         'Send': '发送',
         'Stop': '停止',
+        'Sessions': '会话',
+        'New': '新建',
+        'No sessions yet': '暂无会话',
+        'New session created': '新会话已创建',
+        'Session loaded': '会话已加载',
+        'Delete this session?': '删除此会话？',
+        'Session deleted': '会话已删除',
+        'Delete failed: ${0}': '删除失败：${0}',
  });
  addLocaleData('zh-tw', {
  'Character Editor Assistant': '角色卡編輯助手',
@@ -364,6 +372,14 @@ function registerLocaleData() {
         'Approve file change?': '批准檔案變更？',
         'Send': '發送',
         'Stop': '停止',
+        'Sessions': '會話',
+        'New': '新建',
+        'No sessions yet': '暫無會話',
+        'New session created': '新會話已建立',
+        'Session loaded': '會話已載入',
+        'Delete this session?': '刪除此會話？',
+        'Session deleted': '會話已刪除',
+        'Delete failed: ${0}': '刪除失敗：${0}',
  });
 }
 
