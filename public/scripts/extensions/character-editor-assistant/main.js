@@ -15,7 +15,7 @@ import {
 } from '../../../script.js';
 import { DOMPurify } from '../../../lib.js';
 import { sendOpenAIRequest } from '../../openai.js';
-import { extension_settings, getContext } from '../../extensions.js';
+import { extension_settings, getContext, getCharacterState, setCharacterState } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup } from '../../popup.js';
 import { convertCharacterBook, deleteWorldInfo, newWorldInfoEntryTemplate, setWorldInfoButtonClass, updateWorldInfoList } from '../../world-info.js';
@@ -682,47 +682,12 @@ function getCharacterOperationStateKey(context, avatar = '') {
     return String(record.avatar || '').trim();
 }
 
-async function getCharacterStateSidecar(context, avatar, namespace) {
-    const response = await fetch('/api/characters/state/get', {
-        method: 'POST',
-        headers: context.getRequestHeaders(),
-        body: JSON.stringify({
-            avatar_url: avatar,
-            namespace,
-        }),
-        cache: 'no-cache',
-    });
-    if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        throw new Error(`Character state read failed (${response.status}): ${detail || response.statusText}`);
-    }
-    const payload = await response.json().catch(() => null);
-    return payload && typeof payload === 'object' ? payload.data : null;
-}
-
-async function setCharacterStateSidecar(context, avatar, namespace, data) {
-    const response = await fetch('/api/characters/state/set', {
-        method: 'POST',
-        headers: context.getRequestHeaders(),
-        body: JSON.stringify({
-            avatar_url: avatar,
-            namespace,
-            data: clone(data),
-        }),
-        cache: 'no-cache',
-    });
-    if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        throw new Error(`Character state write failed (${response.status}): ${detail || response.statusText}`);
-    }
-}
-
 async function getOperationStateSidecar(context, avatar) {
-    return await getCharacterStateSidecar(context, avatar, MODULE_NAME);
+    return await getCharacterState(avatar, MODULE_NAME);
 }
 
 async function setOperationStateSidecar(context, avatar, state) {
-    await setCharacterStateSidecar(context, avatar, MODULE_NAME, state);
+    await setCharacterState(avatar, MODULE_NAME, clone(state));
 }
 
 async function loadOperationState(context, { force = false, avatar = '' } = {}) {
@@ -862,13 +827,12 @@ function normalizeCharacterEditorSessionStore(rawStore) {
 }
 
 async function loadCharacterEditorSessionStore(context, avatar) {
-    const raw = await getCharacterStateSidecar(context, avatar, CHARACTER_EDITOR_SESSION_NAMESPACE);
+    const raw = await getCharacterState(avatar, CHARACTER_EDITOR_SESSION_NAMESPACE);
     return normalizeCharacterEditorSessionStore(raw || createEmptyCharacterEditorSessionStore());
 }
 
 async function persistCharacterEditorSessionStore(context, avatar, store) {
-    await setCharacterStateSidecar(
-        context,
+    await setCharacterState(
         avatar,
         CHARACTER_EDITOR_SESSION_NAMESPACE,
         normalizeCharacterEditorSessionStore(store),

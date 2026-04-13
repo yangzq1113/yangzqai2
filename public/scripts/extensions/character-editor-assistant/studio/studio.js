@@ -6,7 +6,7 @@
 
 import { getRequestHeaders } from '../../../../script.js';
 import { translate } from '../../../i18n.js';
-import { extension_settings, getContext, getExtensionApi } from '../../../extensions.js';
+import { extension_settings, getContext, getExtensionApi, getCharacterState, setCharacterState } from '../../../extensions.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
 
 const MODULE_NAME = 'card-app/studio';
@@ -58,15 +58,7 @@ async function loadSession() {
     const avatar = getCurrentAvatar();
     if (!avatar) return [];
     try {
-        const response = await fetch('/api/characters/state/get', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ avatar_url: avatar, namespace: SESSION_NAMESPACE }),
-            cache: 'no-cache',
-        });
-        if (!response.ok) return [];
-        const payload = await response.json().catch(() => null);
-        const data = payload?.data;
+        const data = await getCharacterState(avatar, SESSION_NAMESPACE);
         if (data && Array.isArray(data.messages)) {
             return data.messages.slice(-MAX_PERSISTED_MESSAGES);
         }
@@ -80,18 +72,9 @@ async function saveSession(messages) {
     const avatar = getCurrentAvatar();
     if (!avatar) return;
     try {
-        await fetch('/api/characters/state/set', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatar_url: avatar,
-                namespace: SESSION_NAMESPACE,
-                data: {
-                    messages: messages.slice(-MAX_PERSISTED_MESSAGES),
-                    updatedAt: Date.now(),
-                },
-            }),
-            cache: 'no-cache',
+        await setCharacterState(avatar, SESSION_NAMESPACE, {
+            messages: messages.slice(-MAX_PERSISTED_MESSAGES),
+            updatedAt: Date.now(),
         });
     } catch (err) {
         console.warn(`[${MODULE_NAME}] Failed to save session to sidecar:`, err);
@@ -102,16 +85,7 @@ async function clearSession() {
     const avatar = getCurrentAvatar();
     if (!avatar) return;
     try {
-        await fetch('/api/characters/state/set', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                avatar_url: avatar,
-                namespace: SESSION_NAMESPACE,
-                data: null,
-            }),
-            cache: 'no-cache',
-        });
+        await setCharacterState(avatar, SESSION_NAMESPACE, null);
     } catch (err) {
         console.warn(`[${MODULE_NAME}] Failed to clear session from sidecar:`, err);
     }

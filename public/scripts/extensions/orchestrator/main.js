@@ -3,7 +3,7 @@
 // Implementation source: Toolify: Empower any LLM with function calling capabilities. (https://github.com/funnycups/Toolify)
 
 import { extension_prompt_roles, extension_prompt_types, getRequestHeaders, saveSettings, saveSettingsDebounced } from '../../../script.js';
-import { extension_settings, getContext } from '../../extensions.js';
+import { extension_settings, getContext, getCharacterState, setCharacterState } from '../../extensions.js';
 import { addLocaleData, translate } from '../../i18n.js';
 import { sendOpenAIRequest } from '../../openai.js';
 import { getStringHash } from '../../utils.js';
@@ -5979,40 +5979,7 @@ function getCharacterIndexByAvatar(context, avatar) {
     return (context.characters || []).findIndex(char => String(char?.avatar || '') === target);
 }
 
-async function getCharacterStateSidecar(context, avatar, namespace) {
-    const response = await fetch('/api/characters/state/get', {
-        method: 'POST',
-        headers: context.getRequestHeaders(),
-        body: JSON.stringify({
-            avatar_url: avatar,
-            namespace,
-        }),
-        cache: 'no-cache',
-    });
-    if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        throw new Error(`Character state read failed (${response.status}): ${detail || response.statusText}`);
-    }
-    const payload = await response.json().catch(() => null);
-    return payload && typeof payload === 'object' ? payload.data : null;
-}
 
-async function setCharacterStateSidecar(context, avatar, namespace, data) {
-    const response = await fetch('/api/characters/state/set', {
-        method: 'POST',
-        headers: context.getRequestHeaders(),
-        body: JSON.stringify({
-            avatar_url: avatar,
-            namespace,
-            data: structuredClone(data),
-        }),
-        cache: 'no-cache',
-    });
-    if (!response.ok) {
-        const detail = await response.text().catch(() => '');
-        throw new Error(`Character state write failed (${response.status}): ${detail || response.statusText}`);
-    }
-}
 
 function getCharacterExtensionDataByAvatar(context, avatar) {
     const character = getCharacterByAvatar(context, avatar);
@@ -8150,13 +8117,12 @@ function findLatestAiIterationHistorySessionByMode(historyState, mode) {
 }
 
 async function loadAiIterationHistoryState(context, avatar) {
-    const raw = await getCharacterStateSidecar(context, avatar, ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE);
+    const raw = await getCharacterState(avatar, ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE);
     return normalizeAiIterationHistoryState(raw || createEmptyAiIterationHistoryState());
 }
 
 async function persistAiIterationHistoryState(context, avatar, historyState) {
-    await setCharacterStateSidecar(
-        context,
+    await setCharacterState(
         avatar,
         ORCH_CHARACTER_ITERATION_HISTORY_NAMESPACE,
         normalizeAiIterationHistoryState(historyState),
