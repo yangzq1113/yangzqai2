@@ -4,8 +4,9 @@
  * Layout: Left panel (AI chat) | Center (real chat/CardApp) | Right panel (code editor)
  */
 
-import { getRequestHeaders } from '../../../../script.js';
+import { getRequestHeaders, saveSettingsDebounced } from '../../../../script.js';
 import { translate } from '../../../i18n.js';
+import { extension_settings } from '../../../extensions.js';
 import { reloadCardApp } from '../index.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
 
@@ -30,6 +31,45 @@ let fileList = [];
 let conversationMessages = [];
 let isSending = false;
 let activeAbortController = null;
+
+const SETTINGS_KEY = 'card_app_studio';
+const MAX_PERSISTED_MESSAGES = 100;
+
+// ==================== Session Persistence ====================
+
+function getStudioSettings() {
+    if (!extension_settings[SETTINGS_KEY]) {
+        extension_settings[SETTINGS_KEY] = { sessions: {} };
+    }
+    return extension_settings[SETTINGS_KEY];
+}
+
+function loadSession(charId) {
+    const settings = getStudioSettings();
+    const session = settings.sessions?.[charId];
+    if (session && Array.isArray(session.messages)) {
+        return session.messages.slice(-MAX_PERSISTED_MESSAGES);
+    }
+    return [];
+}
+
+function saveSession(charId, messages) {
+    const settings = getStudioSettings();
+    if (!settings.sessions) settings.sessions = {};
+    settings.sessions[charId] = {
+        messages: messages.slice(-MAX_PERSISTED_MESSAGES),
+        updatedAt: Date.now(),
+    };
+    saveSettingsDebounced();
+}
+
+function clearSession(charId) {
+    const settings = getStudioSettings();
+    if (settings.sessions) {
+        delete settings.sessions[charId];
+        saveSettingsDebounced();
+    }
+}
 
 // ==================== File API ====================
 
@@ -118,6 +158,7 @@ function buildLeftPanelHtml() {
 <div id="${STUDIO_PANEL_LEFT_ID}" class="card-app-studio-panel left">
  <div class="card-app-studio-panel-header">
     <span class="card-app-studio-title">🤖 ${escapeHtml(t('AI Assistant'))}</span>
+    <button class="card-app-studio-btn small" data-studio-action="clear-chat" title="${escapeHtml(t('Clear chat'))}">🗑</button>
     <button class="card-app-studio-close-btn" data-studio-action="close" title="${escapeHtml(t('Close Studio'))}">✕</button>
  </div>
  <div class="card-app-studio-chat" data-studio-chat></div>
@@ -273,6 +314,21 @@ export async function openCardAppStudio(charId) {
  await openFile(firstFile.path);
  }
 
+ // Load persisted conversation
+ conversationMessages = loadSession(charId);
+
+ // Render persisted messages in chat
+ const chatEl = document.querySelector('[data-studio-chat]');
+ if (chatEl && conversationMessages.length > 0) {
+     for (const msg of conversationMessages) {
+         if (msg.role === 'user') {
+             renderChatMessage('user', msg.content);
+         } else if (msg.role === 'assistant' && msg.content) {
+             renderChatMessage('assistant', msg.content);
+         }
+     }
+ }
+
  // Bind events
  bindStudioEvents();
 
@@ -293,6 +349,10 @@ export function closeCardAppStudio() {
     currentCharId = null;
     currentFile = null;
     fileList = [];
+    // Save conversation before closing
+    if (currentCharId && conversationMessages.length > 0) {
+        saveSession(currentCharId, conversationMessages);
+    }
     conversationMessages = [];
     isSending = false;
     if (activeAbortController) {
@@ -407,6 +467,8 @@ async function handleAISend() {
         if (activeAbortController === controller) activeAbortController = null;
         isSending = false;
         syncComposerState();
+        // Auto-save conversation
+        if (currentCharId) saveSession(currentCharId, conversationMessages);
     }
 }
 
@@ -441,6 +503,13 @@ function handleStudioClick(e) {
         case 'stop':
             handleAIStop();
             break;
+        case 'clear-chat': {
+            conversationMessages = [];
+            if (currentCharId) clearSession(currentCharId);
+            const chatEl = document.querySelector('[data-studio-chat]');
+            if (chatEl) chatEl.innerHTML = '';
+            break;
+        }
     }
 }
 

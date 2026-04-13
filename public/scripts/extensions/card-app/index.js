@@ -39,6 +39,7 @@ addLocaleData('zh-cn', {
     'Reload': '重载',
     'Close Studio': '关闭 Studio',
     'New file name (e.g. utils.js):': '新文件名（如 utils.js）：',
+    'Clear chat': '清空对话',
 });
 addLocaleData('zh-tw', {
     'Enable CardApp': '啟用 CardApp',
@@ -63,6 +64,7 @@ addLocaleData('zh-tw', {
     'Reload': '重新載入',
     'Close Studio': '關閉 Studio',
     'New file name (e.g. utils.js):': '新檔案名稱（如 utils.js）：',
+    'Clear chat': '清空對話',
 });
 
 // State
