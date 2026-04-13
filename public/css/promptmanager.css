@@ -80,9 +80,10 @@
     align-items: stretch;
     border: none;
     border-left: 3px solid transparent;
-    grid-template-columns: minmax(0, 1fr) 5em;
+    grid-template-columns: minmax(0, 1fr) auto 5em;
     grid-template-rows: auto auto;
     padding: 0.5em 0.65em;
+    column-gap: 0.4em;
     row-gap: 0.4em;
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 95%, transparent);
     transition: background-color var(--animation-duration-2x), border-color var(--animation-duration-2x);
@@ -339,13 +340,13 @@
 
 #completion_prompt_manager #completion_prompt_manager_list .prompt-manager-actions-cell {
     align-self: center;
-    grid-column: 1;
+    grid-column: 2;
     justify-self: end;
 }
 
 #completion_prompt_manager #completion_prompt_manager_list .prompt-manager-tokens-cell {
     align-self: center;
-    grid-column: 2;
+    grid-column: 3;
     justify-self: end;
 }
 
