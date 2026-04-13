@@ -48,13 +48,35 @@ body.card-app-studio-active #sheld {
 .card-app-studio-chat-msg { padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.6; word-break: break-word; }
 .card-app-studio-chat-msg.user { background: color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); margin-left: 10%; }
 .card-app-studio-chat-msg.assistant { background: color-mix(in oklab, var(--SmartThemeBodyColor) 8%, transparent); border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent); }
-.card-app-studio-chat-msg.loading { opacity: 0.7; animation: card-app-studio-pulse 1.5s ease-in-out infinite; }
-@keyframes card-app-studio-pulse { 0%, 100% { opacity: 0.7; } 50% { opacity: 0.4; } }
+.card-app-studio-chat-msg.loading { display: flex; align-items: center; gap: 10px; opacity: 0.85; }
+.card-app-studio-loading-dots { display: flex; gap: 4px; }
+.card-app-studio-loading-dots span {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--SmartThemeQuoteColor, #4a9eff);
+    animation: card-app-studio-dot-bounce 1.4s ease-in-out infinite;
+}
+.card-app-studio-loading-dots span:nth-child(2) { animation-delay: 0.16s; }
+.card-app-studio-loading-dots span:nth-child(3) { animation-delay: 0.32s; }
+@keyframes card-app-studio-dot-bounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+    40% { transform: scale(1); opacity: 1; }
+}
+.card-app-studio-loading-text { font-size: 12px; opacity: 0.7; }
 .card-app-studio-chat-msg.tool { padding: 6px 10px; background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent); border: 1px dashed color-mix(in oklab, var(--SmartThemeBodyColor) 15%, transparent); font-size: 12px; }
 .card-app-studio-tool-call { display: flex; align-items: center; gap: 6px; }
 .card-app-studio-tool-call .tool-icon { font-size: 12px; flex-shrink: 0; }
-.card-app-studio-tool-call .tool-name { font-weight: 600; font-family: monospace; font-size: 11px; color: var(--SmartThemeQuoteColor, #4a9eff); }
-.card-app-studio-tool-call .tool-detail { opacity: 0.7; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-app-studio-tool-call .tool-label { font-weight: 600; font-size: 12px; color: var(--SmartThemeQuoteColor, #4a9eff); }
+.card-app-studio-tool-call .tool-detail { opacity: 0.7; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+/* Markdown content in assistant messages */
+.card-app-studio-msg-content { text-align: left; }
+.card-app-studio-msg-content p { margin: 0 0 8px; }
+.card-app-studio-msg-content p:last-child { margin-bottom: 0; }
+.card-app-studio-msg-content ul, .card-app-studio-msg-content ol { margin: 4px 0; padding-left: 20px; }
+.card-app-studio-msg-content h1, .card-app-studio-msg-content h2, .card-app-studio-msg-content h3, .card-app-studio-msg-content h4 { margin: 8px 0 4px; }
+.card-app-studio-msg-content table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12px; }
+.card-app-studio-msg-content th, .card-app-studio-msg-content td { border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 16%, transparent); padding: 4px 8px; text-align: left; }
+/* User message pre */
+.card-app-studio-chat-msg.user pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: inherit; }
 /* Composer */
 .card-app-studio-composer { padding: 10px 12px; border-top: 1px solid var(--SmartThemeBorderColor, #333); flex-shrink: 0; }
 .card-app-studio-input {

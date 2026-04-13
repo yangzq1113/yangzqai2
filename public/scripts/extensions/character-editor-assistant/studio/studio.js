@@ -6,8 +6,19 @@
 
 import { getRequestHeaders } from '../../../../script.js';
 import { translate } from '../../../i18n.js';
+import { DOMPurify, showdown } from '../../../../lib.js';
 import { extension_settings, getContext, getExtensionApi, getCharacterState, setCharacterState } from '../../../extensions.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
+
+// Markdown converter for AI messages
+const mdConverter = new showdown.Converter({
+    tables: true,
+    strikethrough: true,
+    ghCodeBlocks: true,
+    tasklists: true,
+    simpleLineBreaks: true,
+    openLinksInNewWindow: true,
+});
 
 const MODULE_NAME = 'card-app/studio';
 
@@ -671,17 +682,52 @@ function bindStudioEvents() {
 
 // ==================== AI Chat UI ====================
 
+/**
+ * Render markdown content to sanitized HTML.
+ * @param {string} text
+ * @returns {string}
+ */
+function renderMarkdown(text) {
+    if (!text) return '';
+    const html = mdConverter.makeHtml(text);
+    return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+}
+
+/**
+ * Get a human-readable label for a tool name.
+ * @param {string} name
+ * @returns {{ icon: string, label: string }}
+ */
+function getToolDisplay(name) {
+    const map = {
+        cardapp_list_files: { icon: '📂', label: 'List files' },
+        cardapp_read_file: { icon: '📖', label: 'Read file' },
+        cardapp_write_file: { icon: '✏️', label: 'Write file' },
+        cardapp_patch_file: { icon: '🩹', label: 'Patch file' },
+        cardapp_delete_file: { icon: '🗑️', label: 'Delete file' },
+        cardapp_rename_file: { icon: '📝', label: 'Rename file' },
+    };
+    return map[name] || { icon: '🔧', label: name };
+}
+
 function renderChatMessage(role, content, toolInfo = null) {
     const chatEl = document.querySelector('[data-studio-chat]');
     if (!chatEl) return;
     const msgEl = document.createElement('div');
     msgEl.className = `card-app-studio-chat-msg ${role}`;
     if (toolInfo) {
+        const display = getToolDisplay(toolInfo.name);
         msgEl.innerHTML = `<div class="card-app-studio-tool-call">
             <span class="tool-icon">${toolInfo.ok ? '✅' : '❌'}</span>
-            <span class="tool-name">${escapeHtml(toolInfo.name)}</span>
-            <span class="tool-detail">${escapeHtml(toolInfo.detail)}</span>
+            <span class="tool-label">${escapeHtml(display.icon)} ${escapeHtml(display.label)}</span>
+            ${toolInfo.detail ? `<span class="tool-detail">${escapeHtml(toolInfo.detail)}</span>` : ''}
         </div>`;
+    } else if (role === 'assistant') {
+        msgEl.innerHTML = `<div class="card-app-studio-msg-content">${renderMarkdown(content)}</div>`;
+    } else if (role === 'user') {
+        const pre = document.createElement('pre');
+        pre.textContent = content;
+        msgEl.appendChild(pre);
     } else {
         msgEl.textContent = content;
     }
@@ -694,7 +740,10 @@ function showLoadingMessage() {
     if (!chatEl) return null;
     const msgEl = document.createElement('div');
     msgEl.className = 'card-app-studio-chat-msg assistant loading';
-    msgEl.textContent = t('Thinking...');
+    msgEl.innerHTML = `<div class="card-app-studio-loading-dots">
+        <span></span><span></span><span></span>
+    </div>
+    <span class="card-app-studio-loading-text">${escapeHtml(t('Thinking...'))}</span>`;
     chatEl.appendChild(msgEl);
     chatEl.scrollTop = chatEl.scrollHeight;
     return msgEl;
