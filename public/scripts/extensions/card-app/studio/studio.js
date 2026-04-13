@@ -193,6 +193,13 @@ function buildRightPanelHtml() {
  </div>
  <div class="card-app-studio-file-list" data-studio-file-list></div>
  </div>
+ <div class="card-app-studio-history">
+ <div class="card-app-studio-file-tree-header">
+        <span>📜 ${escapeHtml(t('History'))}</span>
+ <button class="card-app-studio-btn small" data-studio-action="refresh-history" title="${escapeHtml(t('Refresh'))}">↻</button>
+ </div>
+ <div class="card-app-studio-history-list" data-studio-history></div>
+ </div>
 </div>`;
 }
 
@@ -207,6 +214,89 @@ function renderFileList(container) {
  <span class="card-app-studio-file-size">${f.size > 1024 ? (f.size / 1024).toFixed(1) + 'KB' : f.size + 'B'}</span>
  </div>
  `).join('');
+}
+
+async function fetchHistory(charId) {
+    const response = await fetch(`/api/card-app/${encodeURIComponent(charId)}/history`, {
+        headers: getRequestHeaders(),
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.commits || [];
+}
+
+async function rollbackToCommit(charId, hash) {
+    const response = await fetch(`/api/card-app/${encodeURIComponent(charId)}/rollback`, {
+        method: 'POST',
+        headers: { ...getRequestHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hash }),
+    });
+    if (!response.ok) throw new Error(`Rollback failed: ${response.status}`);
+    return await response.json();
+}
+
+async function renderHistory() {
+    const historyEl = document.querySelector('[data-studio-history]');
+    if (!historyEl || !currentCharId) return;
+
+    historyEl.innerHTML = `<div class="card-app-studio-empty">${escapeHtml(t('Loading...'))}</div>`;
+
+    try {
+        const commits = await fetchHistory(currentCharId);
+        if (commits.length === 0) {
+            historyEl.innerHTML = `<div class="card-app-studio-empty">${escapeHtml(t('No history yet'))}</div>`;
+            return;
+        }
+        historyEl.innerHTML = commits.map(c => {
+            const timeAgo = formatTimeAgo(c.date);
+            return `
+            <div class="card-app-studio-history-item" data-studio-commit="${escapeHtml(c.fullHash)}">
+                <div class="card-app-studio-history-info">
+                    <span class="card-app-studio-history-hash">${escapeHtml(c.hash)}</span>
+                    <span class="card-app-studio-history-msg">${escapeHtml(c.message)}</span>
+                </div>
+                <div class="card-app-studio-history-meta">
+                    <span class="card-app-studio-history-time">${escapeHtml(timeAgo)}</span>
+                    <button class="card-app-studio-btn small" data-studio-action="rollback" data-studio-hash="${escapeHtml(c.fullHash)}">↩</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (err) {
+        historyEl.innerHTML = `<div class="card-app-studio-empty">Error: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function formatTimeAgo(dateStr) {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    const diffDay = Math.floor(diffHr / 24);
+    return `${diffDay}d ago`;
+}
+
+async function handleRollback(hash) {
+    if (!currentCharId || !hash) return;
+    if (!confirm(t('Rollback to this version? This cannot be undone.'))) return;
+
+    try {
+        await rollbackToCommit(currentCharId, hash);
+        toastr.success(t('Rolled back successfully'));
+
+        // Refresh everything
+        fileList = await fetchFileList(currentCharId);
+        const fileListEl = document.querySelector('[data-studio-file-list]');
+        if (fileListEl) renderFileList(fileListEl);
+        if (currentFile) await openFile(currentFile);
+        await renderHistory();
+        await reloadCardApp();
+    } catch (err) {
+        toastr.error(`Rollback failed: ${err.message}`);
+    }
 }
 
 async function openFile(filePath) {
@@ -328,6 +418,9 @@ export async function openCardAppStudio(charId) {
          }
      }
  }
+
+ // Load history
+ renderHistory();
 
  // Bind events
  bindStudioEvents();
@@ -508,6 +601,14 @@ function handleStudioClick(e) {
             if (currentCharId) clearSession(currentCharId);
             const chatEl = document.querySelector('[data-studio-chat]');
             if (chatEl) chatEl.innerHTML = '';
+            break;
+        }
+        case 'refresh-history':
+            renderHistory();
+            break;
+        case 'rollback': {
+            const hash = actionEl.dataset.studioHash;
+            if (hash) handleRollback(hash);
             break;
         }
     }

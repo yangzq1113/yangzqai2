@@ -40,6 +40,12 @@ addLocaleData('zh-cn', {
     'Close Studio': '关闭 Studio',
     'New file name (e.g. utils.js):': '新文件名（如 utils.js）：',
     'Clear chat': '清空对话',
+    'History': '历史记录',
+    'Refresh': '刷新',
+    'No history yet': '暂无历史记录',
+    'Loading...': '加载中...',
+    'Rollback to this version? This cannot be undone.': '回滚到此版本？此操作不可撤销。',
+    'Rolled back successfully': '回滚成功',
 });
 addLocaleData('zh-tw', {
     'Enable CardApp': '啟用 CardApp',
@@ -65,6 +71,12 @@ addLocaleData('zh-tw', {
     'Close Studio': '關閉 Studio',
     'New file name (e.g. utils.js):': '新檔案名稱（如 utils.js）：',
     'Clear chat': '清空對話',
+    'History': '歷史記錄',
+    'Refresh': '重新整理',
+    'No history yet': '暫無歷史記錄',
+    'Loading...': '載入中...',
+    'Rollback to this version? This cannot be undone.': '回滾到此版本？此操作不可撤銷。',
+    'Rolled back successfully': '回滾成功',
 });
 
 // State
