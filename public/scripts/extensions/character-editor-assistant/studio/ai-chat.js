@@ -340,6 +340,8 @@ export async function sendAIMessage(charId, conversationMessages, userMessage, o
  systemPrompt = DEFAULT_SYSTEM_PROMPT,
  onToolCall = null,
  onAssistantText = null,
+ llmPresetName = '',
+ apiPresetName = '',
  } = options;
 
  const tools = buildTools();
@@ -382,6 +384,8 @@ export async function sendAIMessage(charId, conversationMessages, userMessage, o
  toolChoice: 'auto',
  replaceTools: true,
  requestScope: 'extension_internal',
+ llmPresetName,
+ apiPresetName,
  functionCallOptions: {
  protocolStyle: TOOL_PROTOCOL_STYLE.JSON_SCHEMA,
  },

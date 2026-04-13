@@ -536,8 +536,14 @@ async function handleAISend() {
     renderChatMessage('user', userText);
     const loadingEl = showLoadingMessage();
     try {
+        // Read preset config from CEA settings
+        const ceaSettings = extension_settings?.character_editor_assistant || {};
+        const llmPresetName = String(ceaSettings.lorebookSyncLlmPresetName || '').trim();
+        const apiPresetName = String(ceaSettings.lorebookSyncApiPresetName || '').trim();
         const result = await sendAIMessage(currentCharId, conversationMessages, userText, {
             abortSignal: controller.signal,
+            llmPresetName,
+            apiPresetName,
             onToolCall: (name, args, toolResult) => {
                 let detail = '';
                 if (name === TOOL_NAMES.READ_FILE) detail = args.path;
