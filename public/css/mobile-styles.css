@@ -533,12 +533,11 @@
         padding: 4px 10px;
     }
 
-    /* Ensure content area gets priority space over textarea */
-    .popup .popup-content {
-        min-height: 80px;
-        flex-shrink: 0;
-        overflow-y: auto;
-    }
+ /* Ensure content area gets priority space over textarea */
+ .popup .popup-content {
+ min-height: 80px;
+ overflow-y: auto;
+ }
 
     /* Limit textarea height so it doesn't eat the screen */
     .popup textarea.popup-input {
