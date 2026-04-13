@@ -18627,7 +18627,7 @@ jQuery(async function () {
             '.ui-widget',
             '.text_pole',
             '#toast-container',
-            '.select2-results',
+            '.select2-dropdown',
         ];
 
         for (const id of forbiddenTargets) {
