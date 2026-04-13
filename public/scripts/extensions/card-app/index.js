@@ -4,11 +4,66 @@
 
 import { eventSource, event_types, getRequestHeaders } from '../../../script.js';
 import { getContext } from '../../extensions.js';
+import { addLocaleData, translate } from '../../i18n.js';
 import { createContainer, destroyContainer, injectScopedCSS, loadEntryModule, showError } from './loader.js';
 import { buildContext } from './context.js';
 import { activateRendererBridge, deactivateRendererBridge } from './renderer.js';
 
 const MODULE_NAME = 'card-app';
+
+function t(text) {
+    return translate(String(text || ''));
+}
+
+// Register i18n locale data
+addLocaleData('zh-cn', {
+    'Enable CardApp': '启用 CardApp',
+    'Entry file': '入口文件',
+    'Open CardApp Studio': '打开 CardApp Studio',
+    'No character selected or character has no avatar.': '未选择角色或角色没有头像。',
+    'CardApp Studio is already open.': 'CardApp Studio 已经打开了。',
+    'Saved ${0}': '已保存 ${0}',
+    'Failed to save: ${0}': '保存失败：${0}',
+    'Created ${0}': '已创建 ${0}',
+    'Failed to create file: ${0}': '创建文件失败：${0}',
+    'Thinking...': '思考中...',
+    '(Request cancelled)': '（请求已取消）',
+    'AI Assistant': 'AI 助手',
+    'Code Editor': '代码编辑器',
+    'Files': '文件',
+    'No files yet': '暂无文件',
+    'Describe what you want to build...': '描述你想要构建的内容...',
+    'Send': '发送',
+    'Stop': '停止',
+    'Save': '保存',
+    'Reload': '重载',
+    'Close Studio': '关闭 Studio',
+    'New file name (e.g. utils.js):': '新文件名（如 utils.js）：',
+});
+addLocaleData('zh-tw', {
+    'Enable CardApp': '啟用 CardApp',
+    'Entry file': '入口檔案',
+    'Open CardApp Studio': '開啟 CardApp Studio',
+    'No character selected or character has no avatar.': '未選擇角色或角色沒有頭像。',
+    'CardApp Studio is already open.': 'CardApp Studio 已經開啟了。',
+    'Saved ${0}': '已儲存 ${0}',
+    'Failed to save: ${0}': '儲存失敗：${0}',
+    'Created ${0}': '已建立 ${0}',
+    'Failed to create file: ${0}': '建立檔案失敗：${0}',
+    'Thinking...': '思考中...',
+    '(Request cancelled)': '（請求已取消）',
+    'AI Assistant': 'AI 助手',
+    'Code Editor': '程式碼編輯器',
+    'Files': '檔案',
+    'No files yet': '暫無檔案',
+    'Describe what you want to build...': '描述你想要建構的內容...',
+    'Send': '傳送',
+    'Stop': '停止',
+    'Save': '儲存',
+    'Reload': '重新載入',
+    'Close Studio': '關閉 Studio',
+    'New file name (e.g. utils.js):': '新檔案名稱（如 utils.js）：',
+});
 
 // State
 let isCardAppActive = false;
@@ -184,7 +239,7 @@ eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
 $(document).on('click', '#card_app_open_studio', async function () {
     const charId = getCharId();
     if (!charId) {
-        toastr.warning('No character selected or character has no avatar.');
+        toastr.warning(t('No character selected or character has no avatar.'));
         return;
     }
     const { openCardAppStudio } = await import('./studio/studio.js');

@@ -5,10 +5,19 @@
  */
 
 import { getRequestHeaders } from '../../../../script.js';
+import { translate } from '../../../i18n.js';
 import { reloadCardApp } from '../index.js';
 import { sendAIMessage, TOOL_NAMES } from './ai-chat.js';
 
 const MODULE_NAME = 'card-app/studio';
+
+function t(text) {
+    return translate(String(text || ''));
+}
+
+function tFormat(text, ...values) {
+    return t(text).replace(/\$\{(\d+)\}/g, (_, idx) => String(values[Number(idx)] ?? ''));
+}
 const STUDIO_PANEL_LEFT_ID = 'card-app-studio-left';
 const STUDIO_PANEL_RIGHT_ID = 'card-app-studio-right';
 
@@ -108,15 +117,15 @@ function buildLeftPanelHtml() {
  return `
 <div id="${STUDIO_PANEL_LEFT_ID}" class="card-app-studio-panel left">
  <div class="card-app-studio-panel-header">
- <span class="card-app-studio-title">🤖 AI Assistant</span>
- <button class="card-app-studio-close-btn" data-studio-action="close" title="Close Studio">✕</button>
+    <span class="card-app-studio-title">🤖 ${escapeHtml(t('AI Assistant'))}</span>
+    <button class="card-app-studio-close-btn" data-studio-action="close" title="${escapeHtml(t('Close Studio'))}">✕</button>
  </div>
  <div class="card-app-studio-chat" data-studio-chat></div>
  <div class="card-app-studio-composer">
- <textarea class="card-app-studio-input" data-studio-input placeholder="Describe what you want to build..." rows="3"></textarea>
+    <textarea class="card-app-studio-input" data-studio-input placeholder="${escapeHtml(t('Describe what you want to build...'))}" rows="3"></textarea>
  <div class="card-app-studio-composer-buttons">
- <button class="card-app-studio-btn primary" data-studio-action="send">Send</button>
- <button class="card-app-studio-btn" data-studio-action="stop" disabled>Stop</button>
+        <button class="card-app-studio-btn primary" data-studio-action="send">${escapeHtml(t('Send'))}</button>
+        <button class="card-app-studio-btn" data-studio-action="stop" disabled>${escapeHtml(t('Stop'))}</button>
  </div>
  </div>
 </div>`;
@@ -126,10 +135,10 @@ function buildRightPanelHtml() {
  return `
 <div id="${STUDIO_PANEL_RIGHT_ID}" class="card-app-studio-panel right">
  <div class="card-app-studio-panel-header">
- <span class="card-app-studio-title">📝 Code Editor</span>
+    <span class="card-app-studio-title">📝 ${escapeHtml(t('Code Editor'))}</span>
  <div class="card-app-studio-header-actions">
- <button class="card-app-studio-btn small" data-studio-action="save" title="Save (Ctrl+S)">💾 Save</button>
- <button class="card-app-studio-btn small" data-studio-action="reload" title="Reload CardApp">↻ Reload</button>
+        <button class="card-app-studio-btn small" data-studio-action="save" title="${escapeHtml(t('Save'))} (Ctrl+S)">💾 ${escapeHtml(t('Save'))}</button>
+        <button class="card-app-studio-btn small" data-studio-action="reload" title="${escapeHtml(t('Reload'))}">↻ ${escapeHtml(t('Reload'))}</button>
  </div>
  </div>
  <div class="card-app-studio-editor-area">
@@ -138,7 +147,7 @@ function buildRightPanelHtml() {
  </div>
  <div class="card-app-studio-file-tree">
  <div class="card-app-studio-file-tree-header">
- <span>📁 Files</span>
+        <span>📁 ${escapeHtml(t('Files'))}</span>
  <button class="card-app-studio-btn small" data-studio-action="new-file" title="New file">+</button>
  </div>
  <div class="card-app-studio-file-list" data-studio-file-list></div>
@@ -149,7 +158,7 @@ function buildRightPanelHtml() {
 function renderFileList(container) {
  const files = fileList.filter(f => f.type === 'file');
  container.innerHTML = files.length === 0
- ? '<div class="card-app-studio-empty">No files yet</div>'
+        ? `<div class="card-app-studio-empty">${escapeHtml(t('No files yet'))}</div>`
  : files.map(f => `
  <div class="card-app-studio-file-item${currentFile === f.path ? ' active' : ''}" data-studio-file="${escapeHtml(f.path)}">
  <i class="${getFileIcon(f.path)}"></i>
@@ -189,16 +198,16 @@ async function handleSaveCurrentFile() {
 
  try {
  await saveFileContent(currentCharId, currentFile, codeArea.value);
- toastr.success(`Saved ${currentFile}`);
+        toastr.success(tFormat('Saved ${0}', currentFile));
  await reloadCardApp();
  } catch (err) {
  console.error(`[${MODULE_NAME}] Failed to save file:`, err);
- toastr.error(`Failed to save: ${err.message}`);
+        toastr.error(tFormat('Failed to save: ${0}', err.message));
  }
 }
 
 async function handleNewFile() {
- const name = prompt('New file name (e.g. utils.js):');
+    const name = prompt(t('New file name (e.g. utils.js):'));
  if (!name || !currentCharId) return;
 
  const safeName = name.trim();
@@ -210,9 +219,9 @@ async function handleNewFile() {
  const fileListEl = document.querySelector('[data-studio-file-list]');
  if (fileListEl) renderFileList(fileListEl);
  await openFile(safeName);
- toastr.success(`Created ${safeName}`);
+        toastr.success(tFormat('Created ${0}', safeName));
  } catch (err) {
- toastr.error(`Failed to create file: ${err.message}`);
+        toastr.error(tFormat('Failed to create file: ${0}', err.message));
  }
 }
 
@@ -220,7 +229,7 @@ async function handleNewFile() {
 
 export async function openCardAppStudio(charId) {
  if (isStudioOpen) {
- toastr.warning('CardApp Studio is already open.');
+        toastr.warning(t('CardApp Studio is already open.'));
  return;
  }
 
@@ -341,7 +350,7 @@ function showLoadingMessage() {
     if (!chatEl) return null;
     const msgEl = document.createElement('div');
     msgEl.className = 'card-app-studio-chat-msg assistant loading';
-    msgEl.textContent = 'Thinking...';
+    msgEl.textContent = t('Thinking...');
     chatEl.appendChild(msgEl);
     chatEl.scrollTop = chatEl.scrollHeight;
     return msgEl;
@@ -393,7 +402,7 @@ async function handleAISend() {
         }
     } catch (err) {
         if (loadingEl?.parentNode) loadingEl.remove();
-        renderChatMessage('assistant', err.message === 'Request aborted' ? '(Request cancelled)' : `Error: ${err.message}`);
+        renderChatMessage('assistant', err.message === 'Request aborted' ? t('(Request cancelled)') : `Error: ${err.message}`);
     } finally {
         if (activeAbortController === controller) activeAbortController = null;
         isSending = false;
