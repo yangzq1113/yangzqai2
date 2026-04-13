@@ -15,6 +15,7 @@
                     <option value="electronhub">Electron Hub</option>
                     <option value="palm">Google AI Studio</option>
                     <option value="vertexai">Google Vertex AI</option>
+                    <option value="jina">Jina AI</option>
                     <option value="koboldcpp">KoboldCpp</option>
                     <option value="llamacpp">llama.cpp</option>
                     <option value="transformers" data-i18n="Local (Transformers)">Local (Transformers)</option>
@@ -138,6 +139,36 @@
                     <option value="embed-english-light-v2.0">embed-english-light-v2.0</option>
                     <option value="embed-multilingual-v2.0">embed-multilingual-v2.0</option>
                 </select>
+            </div>
+            <div class="flex-container flexFlowColumn" id="jina_vectorsModel">
+                <label for="vectors_jina_model" data-i18n="Vectorization Model">
+                    Vectorization Model
+                </label>
+                <select id="vectors_jina_model" class="text_pole">
+                    <option value="jina-embeddings-v3">jina-embeddings-v3 (Multilingual, 8K)</option>
+                    <option value="jina-embeddings-v4">jina-embeddings-v4 (Multimodal, 32K)</option>
+                    <option value="jina-embeddings-v5-text-small">jina-embeddings-v5-text-small (1024-dim, 32K)</option>
+                    <option value="jina-embeddings-v5-text-nano">jina-embeddings-v5-text-nano (768-dim, 8K)</option>
+                    <option value="jina-clip-v2">jina-clip-v2 (Text-Image, 89 langs)</option>
+                </select>
+                <div class="flex-container marginTopBot5">
+                    <label class="checkbox_label flex1" for="vectors_jina_late_chunking">
+                        <input type="checkbox" id="vectors_jina_late_chunking" />
+                        <span data-i18n="Late Chunking">Late Chunking</span>
+                        <i class="fa-solid fa-circle-info opacity50p" title="Preserves cross-chunk context by embedding the entire document first, then extracting chunk embeddings."></i>
+                    </label>
+                </div>
+                <div class="flex-container marginTopBot5">
+                    <div class="flex-container flex1 flexFlowColumn">
+                        <label for="vectors_jina_dimensions">
+                            <small data-i18n="Dimensions (optional)">Dimensions (optional)</small>
+                        </label>
+                        <input type="number" id="vectors_jina_dimensions" class="text_pole" min="1" max="4096" placeholder="Default" />
+                    </div>
+                </div>
+                <i data-i18n="Hint: Set your Jina API key in the Rerank settings or below.">
+                    Hint: Set your Jina API key in the Rerank settings or below.
+                </i>
             </div>
             <div class="flex-container flexFlowColumn" id="together_vectorsModel">
                 <label for="vectors_togetherai_model" data-i18n="Vectorization Model">

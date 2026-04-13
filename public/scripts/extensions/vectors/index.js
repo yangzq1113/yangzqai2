@@ -63,6 +63,9 @@ const settings = {
     electronhub_model: 'text-embedding-3-small',
     openrouter_model: 'openai/text-embedding-3-large',
     cohere_model: 'embed-english-v3.0',
+    jina_model: 'jina-embeddings-v3',
+    jina_late_chunking: false,
+    jina_dimensions: 0,
     ollama_model: 'mxbai-embed-large',
     ollama_keep: false,
     vllm_model: '',
@@ -769,6 +772,11 @@ function getVectorsRequestBody(args = {}) {
         case 'cohere':
             body.model = extension_settings.vectors.cohere_model;
             break;
+        case 'jina':
+            body.model = extension_settings.vectors.jina_model;
+            body.jina_late_chunking = extension_settings.vectors.jina_late_chunking;
+            body.jina_dimensions = extension_settings.vectors.jina_dimensions || undefined;
+            break;
         case 'ollama':
             body.model = extension_settings.vectors.ollama_model;
             body.apiUrl = settings.use_alt_endpoint ? settings.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.OLLAMA];
@@ -898,6 +906,7 @@ function throwIfSourceInvalid() {
         settings.source === 'togetherai' && !secret_state[SECRET_KEYS.TOGETHERAI] ||
         settings.source === 'nomicai' && !secret_state[SECRET_KEYS.NOMICAI] ||
         settings.source === 'cohere' && !secret_state[SECRET_KEYS.COHERE] ||
+        settings.source === 'jina' && !secret_state[SECRET_KEYS.JINA] ||
         settings.source === 'siliconflow' && !secret_state[SECRET_KEYS.SILICONFLOW]) {
         throw new Error('Vectors: API key missing', { cause: 'api_key_missing' });
     }
@@ -1187,6 +1196,7 @@ function toggleSettings() {
     $('#nanogpt_vectorsModel').toggle(settings.source === 'nanogpt');
     $('#openrouter_vectorsModel').toggle(settings.source === 'openrouter');
     $('#cohere_vectorsModel').toggle(settings.source === 'cohere');
+    $('#jina_vectorsModel').toggle(settings.source === 'jina');
     $('#ollama_vectorsModel').toggle(settings.source === 'ollama');
     $('#llamacpp_vectorsModel').toggle(settings.source === 'llamacpp');
     $('#vllm_vectorsModel').toggle(settings.source === 'vllm');
@@ -1847,6 +1857,21 @@ jQuery(async () => {
     });
     $('#vectors_cohere_model').val(settings.cohere_model).on('change', () => {
         settings.cohere_model = String($('#vectors_cohere_model').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+    $('#vectors_jina_model').val(settings.jina_model).on('change', () => {
+        settings.jina_model = String($('#vectors_jina_model').val());
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+    $('#vectors_jina_late_chunking').prop('checked', settings.jina_late_chunking).on('change', () => {
+        settings.jina_late_chunking = $('#vectors_jina_late_chunking').prop('checked');
+        Object.assign(extension_settings.vectors, settings);
+        saveSettingsDebounced();
+    });
+    $('#vectors_jina_dimensions').val(settings.jina_dimensions || '').on('input', () => {
+        settings.jina_dimensions = Number($('#vectors_jina_dimensions').val()) || 0;
         Object.assign(extension_settings.vectors, settings);
         saveSettingsDebounced();
     });

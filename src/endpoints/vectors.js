@@ -14,6 +14,7 @@ import { getExtrasVector, getExtrasBatchVector } from '../vectors/extras-vectors
 import { getMakerSuiteVector, getMakerSuiteBatchVector } from '../vectors/google-vectors.js';
 import { getVertexVector, getVertexBatchVector } from '../vectors/google-vectors.js';
 import { getCohereVector, getCohereBatchVector } from '../vectors/cohere-vectors.js';
+import { getJinaVector, getJinaBatchVector } from '../vectors/jina-vectors.js';
 import { getLlamaCppVector, getLlamaCppBatchVector } from '../vectors/llamacpp-vectors.js';
 import { getVllmVector, getVllmBatchVector } from '../vectors/vllm-vectors.js';
 import { getOllamaVector, getOllamaBatchVector } from '../vectors/ollama-vectors.js';
@@ -29,6 +30,7 @@ const SOURCES = [
     'togetherai',
     'nomicai',
     'cohere',
+    'jina',
     'ollama',
     'llamacpp',
     'vllm',
@@ -73,6 +75,8 @@ async function getVector(source, sourceSettings, text, isQuery, directories) {
             return getVertexVector(text, sourceSettings.model, sourceSettings.request);
         case 'cohere':
             return getCohereVector(text, isQuery, directories, sourceSettings.model);
+        case 'jina':
+            return getJinaVector(text, isQuery, directories, sourceSettings.model, sourceSettings.options);
         case 'llamacpp':
             return getLlamaCppVector(text, sourceSettings.apiUrl, directories);
         case 'vllm':
@@ -139,6 +143,9 @@ async function getBatchVector(source, sourceSettings, texts, isQuery, directorie
             case 'cohere':
                 results.push(...await getCohereBatchVector(batch, isQuery, directories, sourceSettings.model));
                 break;
+            case 'jina':
+                results.push(...await getJinaBatchVector(batch, isQuery, directories, sourceSettings.model, sourceSettings.options));
+                break;
             case 'llamacpp':
                 results.push(...await getLlamaCppBatchVector(batch, sourceSettings.apiUrl, directories));
                 break;
@@ -198,6 +205,15 @@ function getSourceSettings(source, request) {
         case 'cohere':
             return {
                 model: String(request.body.model),
+            };
+        case 'jina':
+            return {
+                model: String(request.body.model || 'jina-embeddings-v3'),
+                options: {
+                    late_chunking: request.body.jina_late_chunking || false,
+                    dimensions: request.body.jina_dimensions || undefined,
+                    task: request.body.jina_task || undefined,
+                },
             };
         case 'llamacpp':
             return {
