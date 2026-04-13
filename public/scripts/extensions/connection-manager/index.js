@@ -727,8 +727,8 @@ async function renderDetailsContent(detailsContent) {
         const globalValue = Boolean(oai_settings.function_calling_plain_text);
         const globalRetryValue = Boolean(oai_settings.function_calling_plain_text_error_retry);
         const globalRetryAttempts = clampPlainTextRetryAttempts(oai_settings.function_calling_plain_text_error_retry_max_attempts);
-        const profileMode = profile ? resolveProfileMode(profile) : '';
-        const supported = !profile || profileMode === 'cc';
+        const profileMode = profile ? resolveProfileMode(profile) : (main_api === 'openai' ? 'cc' : 'tc');
+        const supported = profileMode === 'cc';
         const parsed = profileMode === 'cc'
             ? parseProfileBoolean(profile['function-calling-plain-text'])
             : null;
@@ -839,6 +839,11 @@ async function renderDetailsContent(detailsContent) {
             });
         });
     }
+
+    // Refresh function calling controls when main API changes (cc <-> tc)
+    eventSource.on(event_types.MAIN_API_CHANGED, () => {
+        syncPlainTextFunctionCallingControls();
+    });
 
     $(profiles).on('change', async function () {
         const profileId = String(profiles.value || '');
