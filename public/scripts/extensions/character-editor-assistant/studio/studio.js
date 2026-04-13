@@ -383,7 +383,7 @@ export async function openCardAppStudio(charId) {
  const link = document.createElement('link');
  link.id = 'card-app-studio-style';
  link.rel = 'stylesheet';
- link.href = '/scripts/extensions/card-app/studio/studio.css';
+ link.href = '/scripts/extensions/character-editor-assistant/studio/studio.css';
  document.head.appendChild(link);
  }
 
