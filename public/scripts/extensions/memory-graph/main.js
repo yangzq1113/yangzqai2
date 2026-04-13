@@ -12475,6 +12475,10 @@ function ensureStyles() {
     gap: 8px;
     align-items: stretch;
     text-align: left;
+    max-height: 70vh;
+    max-height: 70dvh;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .luker-rpg-memory-advanced-popup label {
