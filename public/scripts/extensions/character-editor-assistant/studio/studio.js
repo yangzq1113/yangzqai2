@@ -694,6 +694,53 @@ function renderMarkdown(text) {
 }
 
 /**
+ * Generate a simple unified diff view.
+ * @param {string|null} oldContent
+ * @param {string} newContent
+ * @param {string} filePath
+ * @returns {string} HTML string
+ */
+function generateDiffPreview(oldContent, newContent, filePath) {
+    if (oldContent === null) {
+        // New file
+        const lines = String(newContent).split('\n');
+        const preview = lines.slice(0, 20).map(line => `<div class="diff-line new">+ ${escapeHtml(line)}</div>`).join('');
+        const more = lines.length > 20 ? `<div class="diff-more">...and ${lines.length - 20} more lines</div>` : '';
+        return `<div class="card-app-studio-diff-preview">
+            <div class="diff-header">New file: <strong>${escapeHtml(filePath)}</strong></div>
+            ${preview}${more}
+        </div>`;
+    }
+
+    // Existing file modification
+    const oldLines = String(oldContent).split('\n');
+    const newLines = String(newContent).split('\n');
+    const maxLines = Math.max(oldLines.length, newLines.length);
+    const diffLines = [];
+    
+    for (let i = 0; i < Math.min(maxLines, 15); i++) {
+        const oldLine = oldLines[i] ?? '';
+        const newLine = newLines[i] ?? '';
+        if (oldLine === newLine) {
+            diffLines.push(`<div class="diff-line unchanged">  ${escapeHtml(oldLine)}</div>`);
+        } else if (!newLines[i] && oldLines[i]) {
+            diffLines.push(`<div class="diff-line old">- ${escapeHtml(oldLine)}</div>`);
+        } else if (!oldLines[i] && newLines[i]) {
+            diffLines.push(`<div class="diff-line new">+ ${escapeHtml(newLine)}</div>`);
+        } else {
+            diffLines.push(`<div class="diff-line old">- ${escapeHtml(oldLine)}</div>`);
+            diffLines.push(`<div class="diff-line new">+ ${escapeHtml(newLine)}</div>`);
+        }
+    }
+
+    const more = maxLines > 15 ? `<div class="diff-more">...and ${maxLines - 15} more lines</div>` : '';
+    return `<div class="card-app-studio-diff-preview">
+        <div class="diff-header">Modified: <strong>${escapeHtml(filePath)}</strong></div>
+        ${diffLines.join('')}${more}
+    </div>`;
+}
+
+/**
  * Get a human-readable label for a tool name.
  * @param {string} name
  * @returns {{ icon: string, label: string }}
@@ -733,6 +780,60 @@ function renderChatMessage(role, content, toolInfo = null) {
     }
     chatEl.appendChild(msgEl);
     chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+/**
+ * Render a pending approval request for a file modification.
+ * @param {object} pendingOp - The pending operation object
+ * @returns {Promise<boolean>} Promise that resolves to true if approved, false if rejected
+ */
+function renderPendingApproval(pendingOp) {
+    return new Promise((resolve) => {
+        const chatEl = document.querySelector('[data-studio-chat]');
+        if (!chatEl) {
+            resolve(false);
+            return;
+        }
+
+        const msgEl = document.createElement('div');
+        msgEl.className = 'card-app-studio-chat-msg approval';
+        
+        const diffHtml = generateDiffPreview(pendingOp.old_content, pendingOp.new_content, pendingOp.path);
+        
+        msgEl.innerHTML = `
+            <div class="card-app-studio-approval-header">
+                <span>🔔 ${escapeHtml(t('Approve file change?'))}</span>
+            </div>
+            ${diffHtml}
+            <div class="card-app-studio-approval-actions">
+                <button class="card-app-studio-btn small primary" data-approval-action="approve">${escapeHtml(t('Approve'))}</button>
+                <button class="card-app-studio-btn small" data-approval-action="reject">${escapeHtml(t('Reject'))}</button>
+            </div>
+        `;
+
+        chatEl.appendChild(msgEl);
+        chatEl.scrollTop = chatEl.scrollHeight;
+
+        const approveBtn = msgEl.querySelector('[data-approval-action="approve"]');
+        const rejectBtn = msgEl.querySelector('[data-approval-action="reject"]');
+
+        const handleApprove = () => {
+            approveBtn.disabled = true;
+            rejectBtn.disabled = true;
+            msgEl.classList.add('approved');
+            resolve(true);
+        };
+
+        const handleReject = () => {
+            approveBtn.disabled = true;
+            rejectBtn.disabled = true;
+            msgEl.classList.add('rejected');
+            resolve(false);
+        };
+
+        approveBtn.addEventListener('click', handleApprove, { once: true });
+        rejectBtn.addEventListener('click', handleReject, { once: true });
+    });
 }
 
 function showLoadingMessage() {
@@ -788,6 +889,9 @@ async function handleAISend() {
                 else if (name === TOOL_NAMES.RENAME_FILE) detail = `${args.from_path} → ${args.to_path}`;
                 else if (name === TOOL_NAMES.LIST_FILES) detail = `${toolResult?.files?.length || 0} files`;
                 renderChatMessage('tool', '', { name, detail, ok: toolResult.ok });
+            },
+            onPendingApproval: async (pendingOp) => {
+                return await renderPendingApproval(pendingOp);
             },
         });
         if (loadingEl?.parentNode) loadingEl.remove();

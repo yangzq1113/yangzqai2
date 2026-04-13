@@ -157,3 +157,70 @@ body.card-app-studio-active #sheld { transition: margin 0.3s ease; }
     .card-app-studio-panel.right { width: 300px; }
     body.card-app-studio-active #sheld { margin-left: 280px; margin-right: 300px; }
 }
+
+/* Approval/Diff UI */
+.card-app-studio-chat-msg.approval {
+    background: color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 12%, transparent);
+    border: 1px solid color-mix(in oklab, var(--SmartThemeQuoteColor, #4a9eff) 25%, transparent);
+    padding: 12px;
+}
+.card-app-studio-chat-msg.approval.approved {
+    background: color-mix(in oklab, #22c55e 12%, transparent);
+    border-color: color-mix(in oklab, #22c55e 25%, transparent);
+    opacity: 0.7;
+}
+.card-app-studio-chat-msg.approval.rejected {
+    background: color-mix(in oklab, #ef4444 12%, transparent);
+    border-color: color-mix(in oklab, #ef4444 25%, transparent);
+    opacity: 0.7;
+}
+.card-app-studio-approval-header {
+    font-weight: 600;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+.card-app-studio-diff-preview {
+    background: color-mix(in oklab, var(--SmartThemeBodyColor) 5%, transparent);
+    border: 1px solid color-mix(in oklab, var(--SmartThemeBodyColor) 12%, transparent);
+    border-radius: 6px;
+    padding: 8px;
+    margin: 8px 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+.card-app-studio-diff-preview .diff-header {
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 12px;
+}
+.card-app-studio-diff-preview .diff-line {
+    padding: 2px 4px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.card-app-studio-diff-preview .diff-line.old {
+    background: color-mix(in oklab, #ef4444 15%, transparent);
+    color: #fca5a5;
+}
+.card-app-studio-diff-preview .diff-line.new {
+    background: color-mix(in oklab, #22c55e 15%, transparent);
+    color: #86efac;
+}
+.card-app-studio-diff-preview .diff-line.unchanged {
+    opacity: 0.5;
+}
+.card-app-studio-diff-preview .diff-more {
+    padding: 4px;
+    text-align: center;
+    opacity: 0.6;
+    font-size: 11px;
+}
+.card-app-studio-approval-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    justify-content: flex-end;
+}

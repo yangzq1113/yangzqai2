@@ -203,9 +203,12 @@ function applyPatch(content, oldText, newText) {
  * @param {string} charId - Character ID
  * @param {string} toolName - Tool name
  * @param {object} args - Tool arguments
+ * @param {object} options
+ * @param {boolean} [options.deferWriteOps=false] - If true, return pending_approval for write/patch operations
  * @returns {Promise<object>} Tool result
  */
-async function executeTool(charId, toolName, args) {
+async function executeTool(charId, toolName, args, options = {}) {
+ const { deferWriteOps = false } = options;
  try {
  switch (toolName) {
  case TOOL_NAMES.LIST_FILES: {
@@ -217,6 +220,23 @@ async function executeTool(charId, toolName, args) {
  return { ok: true, content };
  }
  case TOOL_NAMES.WRITE_FILE: {
+ if (deferWriteOps) {
+ // Fetch existing content if any
+ let oldContent = null;
+ try {
+ oldContent = await fetchFileContent(charId, args.path);
+ } catch {
+ // File doesn't exist, oldContent remains null
+ }
+ return {
+ ok: true,
+ pending_approval: true,
+ operation: 'write_file',
+ path: args.path,
+ old_content: oldContent,
+ new_content: args.content,
+ };
+ }
  await saveFileContent(charId, args.path, args.content);
  return { ok: true, message: `File ${args.path} written successfully.` };
  }
@@ -225,6 +245,18 @@ async function executeTool(charId, toolName, args) {
  const patched = applyPatch(current, args.old_text, args.new_text);
  if (patched === null) {
  return { ok: false, error: `old_text not found in ${args.path}. Use read_file to check current content.` };
+ }
+ if (deferWriteOps) {
+ return {
+ ok: true,
+ pending_approval: true,
+ operation: 'patch_file',
+ path: args.path,
+ old_content: current,
+ new_content: patched,
+ old_text: args.old_text,
+ new_text: args.new_text,
+ };
  }
  await saveFileContent(charId, args.path, patched);
  return { ok: true, message: `File ${args.path} patched successfully.` };
@@ -332,6 +364,7 @@ let makeCallId = (() => {
  * @param {string} [options.systemPrompt]
  * @param {function} [options.onToolCall] - Callback when a tool is called: (toolName, args, result) => void
  * @param {function} [options.onAssistantText] - Callback when assistant produces text: (text) => void
+ * @param {function} [options.onPendingApproval] - Callback when a file modification needs approval: (pendingOp) => Promise<boolean> (true=approved, false=rejected)
  * @returns {Promise<{assistantText: string, toolCalls: Array, modifiedFiles: string[]}>}
  */
 export async function sendAIMessage(charId, conversationMessages, userMessage, options = {}) {
@@ -340,6 +373,7 @@ export async function sendAIMessage(charId, conversationMessages, userMessage, o
  systemPrompt = DEFAULT_SYSTEM_PROMPT,
  onToolCall = null,
  onAssistantText = null,
+ onPendingApproval = null,
  llmPresetName = '',
  apiPresetName = '',
  } = options;
@@ -423,8 +457,52 @@ export async function sendAIMessage(charId, conversationMessages, userMessage, o
  const args = call.args && typeof call.args === 'object' ? call.args : {};
  const callId = String(call.id || '').trim() || makeCallId();
 
- const result = await executeTool(charId, name, args);
+ const result = await executeTool(charId, name, args, { deferWriteOps: Boolean(onPendingApproval) });
 
+ // If pending approval, ask user
+ if (result.pending_approval && onPendingApproval) {
+ const approved = await onPendingApproval(result);
+ if (approved) {
+ // Execute the actual file write
+ const finalResult = await executeTool(charId, name, args, { deferWriteOps: false });
+ // Track modified files
+ if (finalResult.ok && [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.PATCH_FILE].includes(name)) {
+ const filePath = args.path || '';
+ if (filePath && !modifiedFiles.includes(filePath)) {
+ modifiedFiles.push(filePath);
+ }
+ }
+ if (onToolCall) {
+ onToolCall(name, args, finalResult);
+ }
+ toolCallsForMessage.push({
+ id: callId,
+ type: 'function',
+ function: { name, arguments: JSON.stringify(args) },
+ });
+ toolResults.push({
+ role: 'tool',
+ tool_call_id: callId,
+ content: JSON.stringify(finalResult),
+ });
+ } else {
+ // User rejected, inform AI
+ const rejectionResult = { ok: false, error: 'User rejected the file modification.' };
+ if (onToolCall) {
+ onToolCall(name, args, rejectionResult);
+ }
+ toolCallsForMessage.push({
+ id: callId,
+ type: 'function',
+ function: { name, arguments: JSON.stringify(args) },
+ });
+ toolResults.push({
+ role: 'tool',
+ tool_call_id: callId,
+ content: JSON.stringify(rejectionResult),
+ });
+ }
+ } else {
  // Track modified files
  if (result.ok && [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.PATCH_FILE].includes(name)) {
  const filePath = args.path || '';
@@ -448,6 +526,7 @@ export async function sendAIMessage(charId, conversationMessages, userMessage, o
  tool_call_id: callId,
  content: JSON.stringify(result),
  });
+ }
  }
 
  // Append assistant message with tool calls

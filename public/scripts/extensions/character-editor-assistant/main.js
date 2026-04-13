@@ -217,9 +217,12 @@ function registerLocaleData() {
         'No history yet': '暂无历史记录',
         'Loading...': '加载中...',
         'Rollback to this version? This cannot be undone.': '回滚到此版本？此操作不可撤销。',
- 'Rolled back successfully': '回滚成功',
- 'Rollback failed: ${0}': '回滚失败：${0}',
- 'Error: ${0}': '错误：${0}',
+        'Rolled back successfully': '回滚成功',
+        'Rollback failed: ${0}': '回滚失败：${0}',
+        'Error: ${0}': '错误：${0}',
+        'Approve file change?': '批准文件更改？',
+        'Send': '发送',
+        'Stop': '停止',
  });
  addLocaleData('zh-tw', {
  'Character Editor Assistant': '角色卡編輯助手',
@@ -355,9 +358,12 @@ function registerLocaleData() {
         'No history yet': '暫無歷史記錄',
         'Loading...': '載入中...',
         'Rollback to this version? This cannot be undone.': '回滾到此版本？此操作不可撤銷。',
- 'Rolled back successfully': '回滾成功',
- 'Rollback failed: ${0}': '回滾失敗：${0}',
- 'Error: ${0}': '錯誤：${0}',
+        'Rolled back successfully': '回滾成功',
+        'Rollback failed: ${0}': '回滾失敗：${0}',
+        'Error: ${0}': '錯誤：${0}',
+        'Approve file change?': '批准檔案變更？',
+        'Send': '發送',
+        'Stop': '停止',
  });
 }
 
