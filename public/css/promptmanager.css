@@ -702,3 +702,278 @@
     display: flex;
     justify-content: center;
 }
+
+/* ========================================
+   Prompt Groups
+   ======================================== */
+
+/* --- Group header row --- */
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto 5em;
+    align-items: center;
+    column-gap: 0.5em;
+    padding: 0.45em 0.65em;
+    cursor: pointer;
+    user-select: none;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, transparent);
+    border-left: 3px solid var(--SmartThemeQuoteColor);
+    transition: background-color var(--animation-duration-2x);
+}
+
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 8%, var(--SmartThemeBlurTintColor));
+}
+
+/* Chevron rotation */
+.prompt-manager-group-toggle {
+    font-size: 0.7em;
+    opacity: 0.6;
+    transition: transform 0.2s ease, opacity 0.15s;
+    width: 1em;
+    text-align: center;
+}
+
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group:hover .prompt-manager-group-toggle {
+    opacity: 1;
+}
+
+li.prompt-manager-group.expanded .prompt-manager-group-toggle {
+    transform: rotate(90deg);
+}
+
+/* Group name area */
+.prompt-manager-group-info {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.prompt-manager-group-icon {
+    font-size: 0.85em;
+    opacity: 0.6;
+    flex-shrink: 0;
+}
+
+.prompt-manager-group-name {
+    font-weight: 600;
+    font-size: calc(var(--mainFontSize) * 0.92);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.prompt-manager-group-count {
+    font-size: calc(var(--mainFontSize) * 0.8);
+    opacity: 0.5;
+    flex-shrink: 0;
+}
+
+/* Group actions */
+.prompt-manager-group-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    justify-content: flex-end;
+}
+
+.prompt-manager-group-actions > span {
+    cursor: pointer;
+    opacity: 0.4;
+    transition: opacity var(--animation-duration-2x);
+    font-size: calc(var(--mainFontSize) * 0.9);
+}
+
+.prompt-manager-group-actions > span:hover {
+    opacity: 1;
+}
+
+/* Pointer devices: hide group actions by default */
+@media (hover: hover) and (pointer: fine) {
+    .prompt-manager-group-actions > span:not(.prompt-manager-group-toggle-all) {
+        opacity: 0;
+    }
+
+    li.prompt-manager-group:hover .prompt-manager-group-actions > span {
+        opacity: 0.5;
+    }
+
+    li.prompt-manager-group .prompt-manager-group-actions > span:hover {
+        opacity: 1;
+    }
+}
+
+/* Group token sum */
+.prompt-manager-group-tokens {
+    font-size: calc(var(--mainFontSize) * 0.85);
+    text-align: right;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+}
+
+/* --- Group child indentation --- */
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group-child {
+    margin-left: 12px;
+    border-left-width: 2px;
+}
+
+/* Collapsed children */
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group-child-hidden {
+    display: none;
+}
+
+/* --- Group edit mode --- */
+.prompt-manager-group-edit-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5em 0.65em;
+    gap: 0.5em;
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, var(--SmartThemeBlurTintColor));
+    border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor) 30%, transparent);
+    border-radius: 6px;
+    margin: 0.25em 0.25em 0.5em;
+}
+
+.prompt-manager-group-edit-toolbar-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: calc(var(--mainFontSize) * 0.9);
+    font-weight: 600;
+}
+
+.prompt-manager-group-edit-toolbar-info .fa-object-group {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.prompt-manager-group-edit-selected-count {
+    font-weight: 400;
+    opacity: 0.7;
+}
+
+.prompt-manager-group-edit-warning {
+    color: var(--fullred);
+    font-size: calc(var(--mainFontSize) * 0.82);
+    font-weight: 400;
+}
+
+.prompt-manager-group-edit-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+}
+
+/* Checkbox in edit mode */
+.prompt-manager-group-select {
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.1s, color 0.1s;
+    font-size: 1em;
+}
+
+.prompt-manager-group-select.selected {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 1;
+}
+
+/* Group color indicators in edit mode */
+.prompt-manager-group-indicator {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+}
+
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group-editing {
+    position: relative;
+}
+
+/* Group color palette */
+.prompt-manager-group-indicator[data-group-color="0"] { background: #5b8def; }
+.prompt-manager-group-indicator[data-group-color="1"] { background: #4ecdc4; }
+.prompt-manager-group-indicator[data-group-color="2"] { background: #f7b731; }
+.prompt-manager-group-indicator[data-group-color="3"] { background: #e056a0; }
+.prompt-manager-group-indicator[data-group-color="4"] { background: #a78bfa; }
+.prompt-manager-group-indicator[data-group-color="5"] { background: #f97316; }
+.prompt-manager-group-indicator[data-group-color="6"] { background: #22d3ee; }
+.prompt-manager-group-indicator[data-group-color="7"] { background: #84cc16; }
+
+/* Group header button in prompt manager header */
+.prompt-manager-group-header-btn {
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity var(--animation-duration-2x);
+    font-size: calc(var(--mainFontSize) * 0.9);
+    padding: 0.15em 0.3em;
+    border-radius: 4px;
+}
+
+.prompt-manager-group-header-btn:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 8%, transparent);
+}
+
+/* Group toggle-all active state */
+.prompt-manager-group-toggle-all.all-enabled {
+    color: var(--SmartThemeQuoteColor);
+}
+
+/* --- Group edit mode: label rows --- */
+.prompt-manager-group-edit-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.35em 0.65em 0.35em 0.85em;
+    position: relative;
+    font-size: calc(var(--mainFontSize) * 0.85);
+    font-weight: 600;
+    opacity: 0.7;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 70%, transparent);
+}
+
+.prompt-manager-group-edit-label-name {
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.prompt-manager-group-edit-label-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+.prompt-manager-group-edit-label-actions > span {
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity var(--animation-duration-2x);
+}
+
+.prompt-manager-group-edit-label-actions > span:hover {
+    opacity: 1;
+}
+
+/* Edit mode: simplified prompt rows */
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group-editing {
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 0.5em;
+    padding: 0.45em 0.65em;
+    position: relative;
+    cursor: pointer;
+    transition: background-color var(--animation-duration-2x);
+}
+
+#completion_prompt_manager #completion_prompt_manager_list li.prompt-manager-group-editing:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 6%, var(--SmartThemeBlurTintColor));
+}
