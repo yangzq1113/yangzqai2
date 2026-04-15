@@ -401,6 +401,31 @@ function registerPresetManagers() {
                 select2Options: {
                     width: '100%',
                 },
+                presetGroupCallbacks: {
+                    getGroups: () => primaryManager.getPresetGroups(),
+                    getGroupForPreset: (name) => primaryManager.getGroupForPreset(name),
+                    createGroup: async (name) => {
+                        const id = primaryManager.createPresetGroup(name);
+                        primaryManager.rebuildSelectWithGroups();
+                        return id;
+                    },
+                    renameGroup: async (groupId, newName) => {
+                        primaryManager.renamePresetGroup(groupId, newName);
+                        primaryManager.rebuildSelectWithGroups();
+                    },
+                    deleteGroup: async (groupId) => {
+                        primaryManager.deletePresetGroup(groupId);
+                        primaryManager.rebuildSelectWithGroups();
+                    },
+                    addToGroup: async (presetName, groupId) => {
+                        primaryManager.addPresetToGroup(presetName, groupId);
+                        primaryManager.rebuildSelectWithGroups();
+                    },
+                    removeFromGroup: async (presetName) => {
+                        primaryManager.removePresetFromGroup(presetName);
+                        primaryManager.rebuildSelectWithGroups();
+                    },
+                },
             });
         }
     });
@@ -995,6 +1020,8 @@ class PresetManager {
                 }
             }
         }
+
+        this.rebuildSelectWithGroups();
     }
 
     /**
@@ -1185,6 +1212,8 @@ class PresetManager {
             delete preset_names[nameToDelete];
         }
 
+        this.removeDeletedPresetFromGroups(nameToDelete);
+
         // switch in UI only when deleting currently selected preset
         const switchPresets = !name || areLookupNamesEqual(this.getSelectedPresetName(), nameToDelete);
 
@@ -1357,6 +1386,226 @@ class PresetManager {
             await syncCharacterBoundOpenAIPresetExtensionField({ presetName, path, value });
         }
     }
+
+    // ===== Preset Group Methods =====
+
+    /**
+     * Gets preset groups for the current API.
+     * @returns {Array<{id: string, name: string, presets: string[]}>}
+     */
+    getPresetGroups() {
+        if (!power_user.preset_groups) {
+            power_user.preset_groups = {};
+        }
+        if (!power_user.preset_groups[this.apiId]) {
+            power_user.preset_groups[this.apiId] = [];
+        }
+        return power_user.preset_groups[this.apiId];
+    }
+
+    /**
+     * Gets the group a preset belongs to, if any.
+     * @param {string} presetName
+     * @returns {{id: string, name: string, presets: string[]}|null}
+     */
+    getGroupForPreset(presetName) {
+        return this.getPresetGroups().find(g => g.presets.includes(presetName)) || null;
+    }
+
+    /**
+     * Creates a new preset group.
+     * @param {string} name
+     * @returns {string} The new group's ID
+     */
+    createPresetGroup(name) {
+        const groups = this.getPresetGroups();
+        const id = `pg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        groups.push({ id, name, presets: [] });
+        saveSettingsDebounced();
+        return id;
+    }
+
+    /**
+     * Renames a preset group.
+     * @param {string} groupId
+     * @param {string} newName
+     */
+    renamePresetGroup(groupId, newName) {
+        const group = this.getPresetGroups().find(g => g.id === groupId);
+        if (group) {
+            group.name = newName;
+            saveSettingsDebounced();
+        }
+    }
+
+    /**
+     * Deletes a preset group (presets become ungrouped).
+     * @param {string} groupId
+     */
+    deletePresetGroup(groupId) {
+        const groups = this.getPresetGroups();
+        const index = groups.findIndex(g => g.id === groupId);
+        if (index !== -1) {
+            groups.splice(index, 1);
+            saveSettingsDebounced();
+        }
+    }
+
+    /**
+     * Adds a preset to a group.
+     * @param {string} presetName
+     * @param {string} groupId
+     */
+    addPresetToGroup(presetName, groupId) {
+        this.removePresetFromGroup(presetName, true);
+        const group = this.getPresetGroups().find(g => g.id === groupId);
+        if (group) {
+            group.presets.push(presetName);
+            saveSettingsDebounced();
+        }
+    }
+
+    /**
+     * Removes a preset from its group.
+     * @param {string} presetName
+     * @param {boolean} [skipSave=false]
+     */
+    removePresetFromGroup(presetName, skipSave = false) {
+        for (const group of this.getPresetGroups()) {
+            const index = group.presets.indexOf(presetName);
+            if (index !== -1) {
+                group.presets.splice(index, 1);
+                break;
+            }
+        }
+        if (!skipSave) {
+            saveSettingsDebounced();
+        }
+    }
+
+    /**
+     * Rebuilds the select element with group structure.
+     * Ungrouped presets go first, then each group as a collapsible section.
+     */
+    rebuildSelectWithGroups() {
+        const $select = $(this.select);
+        const currentValue = $select.val();
+        const groups = this.getPresetGroups();
+
+        if (!groups.length) {
+            return;
+        }
+
+        // Collect all real options (skip existing group headers)
+        const allOptions = [];
+        $select.find('option').each((_, el) => {
+            if (!el.dataset.presetGroupHeader) {
+                allOptions.push({
+                    value: el.value,
+                    text: el.textContent,
+                    selected: el.selected,
+                    attrs: {},
+                });
+                // Preserve data-luker-char-bound if present
+                if (el.getAttribute('data-luker-char-bound')) {
+                    allOptions[allOptions.length - 1].attrs['data-luker-char-bound'] = el.getAttribute('data-luker-char-bound');
+                }
+            }
+        });
+
+        // Track which presets are in groups
+        const groupedPresets = new Set();
+        for (const group of groups) {
+            for (const presetName of group.presets) {
+                groupedPresets.add(presetName);
+            }
+        }
+
+        // Clear and rebuild
+        $select.empty();
+
+        // Add ungrouped presets first
+        for (const opt of allOptions) {
+            if (!groupedPresets.has(opt.text)) {
+                const $option = $('<option></option>').val(opt.value).text(opt.text);
+                for (const [k, v] of Object.entries(opt.attrs)) {
+                    $option.attr(k, v);
+                }
+                $select.append($option);
+            }
+        }
+
+        // Add group headers and their presets
+        for (const group of groups) {
+            const $header = $('<option></option>')
+                .val(`__group_header__${group.id}`)
+                .text(group.name)
+                .attr('data-preset-group-id', group.id)
+                .attr('data-preset-group-header', 'true')
+                .prop('disabled', true);
+            $select.append($header);
+
+            for (const presetName of group.presets) {
+                const opt = allOptions.find(o => o.text === presetName);
+                if (opt) {
+                    const $option = $('<option></option>')
+                        .val(opt.value)
+                        .text(opt.text)
+                        .attr('data-preset-group-id', group.id)
+                        .attr('data-preset-group-member', 'true');
+                    for (const [k, v] of Object.entries(opt.attrs)) {
+                        $option.attr(k, v);
+                    }
+                    $select.append($option);
+                }
+            }
+        }
+
+        // Restore selection
+        if (currentValue) {
+            $select.val(currentValue);
+        }
+
+        // Refresh select2 if initialized
+        if ($select.data('select2')) {
+            $select.trigger('change.select2');
+        }
+    }
+
+    /**
+     * Updates group data when a preset is renamed.
+     * @param {string} oldName
+     * @param {string} newName
+     */
+    updatePresetNameInGroups(oldName, newName) {
+        for (const group of this.getPresetGroups()) {
+            const index = group.presets.indexOf(oldName);
+            if (index !== -1) {
+                group.presets[index] = newName;
+                saveSettingsDebounced();
+                break;
+            }
+        }
+    }
+
+    /**
+     * Removes a preset from groups when deleted.
+     * @param {string} presetName
+     */
+    removeDeletedPresetFromGroups(presetName) {
+        let changed = false;
+        for (const group of this.getPresetGroups()) {
+            const index = group.presets.indexOf(presetName);
+            if (index !== -1) {
+                group.presets.splice(index, 1);
+                changed = true;
+                break;
+            }
+        }
+        if (changed) {
+            saveSettingsDebounced();
+        }
+    }
 }
 
 /**
@@ -1521,6 +1770,8 @@ export async function initPresetManager() {
         const extensions = presetManager.readPresetExtensionField({ name: oldName, path: '' });
         await presetManager.renamePreset(newName);
         await presetManager.writePresetExtensionField({ name: newName, path: '', value: extensions });
+        presetManager.updatePresetNameInGroups(oldName, newName);
+        presetManager.rebuildSelectWithGroups();
         await eventSource.emit(event_types.PRESET_RENAMED, { apiId: apiId, oldName: oldName, newName: newName });
 
         if (apiId === 'openai') {

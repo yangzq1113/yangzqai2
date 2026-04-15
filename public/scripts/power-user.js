@@ -248,6 +248,7 @@ export const power_user = {
     tag_sort_mode: tag_sort_mode.MANUAL,
     disable_group_trimming: false,
     single_line: false,
+    preset_groups: {},
 
     instruct: {
         enabled: false,

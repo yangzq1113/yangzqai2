@@ -464,3 +464,177 @@ span.select2.select2-container .select2-selection__choice__remove:hover {
     transform: scale(1.06);
     outline: none;
 }
+
+/* ===== Preset Group: Header ===== */
+
+.luker-preset-group-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.15rem 0;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--SmartThemeBodyColor) 62%, transparent);
+    border-top: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
+    margin-top: 0.25rem;
+    padding-top: 0.55rem;
+}
+
+.luker-action-select2-dropdown .select2-results__option:has(.luker-preset-group-header) {
+    padding: 0.35rem 0.85rem 0.25rem;
+    background: transparent !important;
+    opacity: 1 !important;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.luker-action-select2-dropdown .select2-results__option:has(.luker-preset-group-header):first-child .luker-preset-group-header {
+    border-top: none;
+    margin-top: 0;
+    padding-top: 0.15rem;
+}
+
+.luker-preset-group-header:hover {
+    color: color-mix(in srgb, var(--SmartThemeBodyColor) 82%, transparent);
+}
+
+/* ===== Preset Group: Chevron ===== */
+
+.luker-preset-group-chevron {
+    flex: 0 0 auto;
+    font-size: 0.6rem;
+    transition: transform 0.2s ease;
+    transform: rotate(0deg);
+}
+
+.luker-preset-group-chevron--expanded {
+    transform: rotate(90deg);
+}
+
+/* ===== Preset Group: Header Label & Count ===== */
+
+.luker-preset-group-header__label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.luker-preset-group-header__count {
+    flex: 0 0 auto;
+    font-weight: 400;
+    font-size: 0.72rem;
+    opacity: 0.6;
+}
+
+/* ===== Preset Group: Action Buttons ===== */
+
+.luker-preset-group-header__actions {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 0.15rem;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.luker-preset-group-header:hover .luker-preset-group-header__actions {
+    opacity: 1;
+}
+
+.luker-preset-group-action {
+    width: 1.4rem;
+    height: 1.4rem;
+    border: none;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.65rem;
+    color: color-mix(in srgb, var(--SmartThemeBodyColor) 52%, transparent);
+    background: transparent;
+    cursor: pointer;
+    transition: color 0.15s, background-color 0.15s;
+}
+
+.luker-preset-group-action:hover {
+    color: var(--SmartThemeBodyColor);
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 12%, transparent);
+}
+
+.luker-preset-group-action[data-action="delete"]:hover {
+    color: #ffb3b3;
+    background: color-mix(in srgb, #b3261e 18%, transparent);
+}
+
+/* ===== Preset Group: Member Indentation ===== */
+
+.luker-preset-group-member {
+    padding-left: 0.6rem;
+}
+
+/* ===== Preset Group: Collapsed Members ===== */
+
+.luker-preset-group-member--hidden {
+    display: none !important;
+}
+
+/* ===== Preset Context Menu ===== */
+
+.luker-preset-ctx-menu {
+    min-width: 160px;
+    max-width: 280px;
+    padding: 0.35rem;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 88%, transparent);
+    background:
+        linear-gradient(180deg,
+            color-mix(in srgb, var(--SmartThemeBlurTintColor) 100%, transparent),
+            color-mix(in srgb, var(--SmartThemeBlurTintColor) 92%, var(--SmartThemeBorderColor)));
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+
+.luker-preset-ctx-menu__item {
+    padding: 0.5rem 0.75rem;
+    border-radius: 7px;
+    font-size: 0.85rem;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background-color 0.12s;
+}
+
+.luker-preset-ctx-menu__item:hover {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 16%, var(--SmartThemeBlurTintColor));
+}
+
+.luker-preset-ctx-menu__item--active {
+    font-weight: 600;
+    color: var(--SmartThemeQuoteColor);
+}
+
+.luker-preset-ctx-menu__item--new {
+    color: color-mix(in srgb, var(--SmartThemeQuoteColor) 80%, var(--SmartThemeBodyColor));
+}
+
+.luker-preset-ctx-menu__item--remove {
+    color: color-mix(in srgb, #b3261e 70%, var(--SmartThemeBodyColor));
+}
+
+.luker-preset-ctx-menu__item--remove:hover {
+    background: color-mix(in srgb, #b3261e 14%, var(--SmartThemeBlurTintColor));
+}
+
+.luker-preset-ctx-menu__divider {
+    height: 1px;
+    margin: 0.25rem 0.5rem;
+    background: color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
+}
