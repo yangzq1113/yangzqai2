@@ -1,9 +1,15 @@
-name: Build Docker Image
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Based on Luker project Docker Publish workflow
+
+name: Docker Publish
 
 on:
   push:
-    branches: ['**']
-    tags: ['*']
+    branches:
+      - '**'
+    tags:
+      - '*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,34 +17,119 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
-    runs-on: debian-latest
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      tags: ${{ steps.metadata.outputs.tags }}
+      labels: ${{ steps.metadata.outputs.labels }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Set lowercase repo name
+        id: image
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "image=${{ env.REGISTRY }}/${REPO_LOWER}" >> "${GITHUB_OUTPUT}"
 
-      - uses: docker/login-action@v3
+      - name: Extract metadata (tags, labels) for the image
+        uses: docker/metadata-action@v5
+        id: metadata
+        with:
+          images: ${{ steps.image.outputs.image }}
+          tags: |
+            type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
+            type=sha,format=short
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
+            type=raw,value=manual,enable=${{ github.event_name == 'workflow_dispatch' }}
+
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,format=short
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
-
-      - uses: docker/build-push-action@v5
+      - name: Build and push linux/amd64 by digest
+        id: build
+        uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          file: Dockerfile
+          platforms: linux/amd64
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/arm64 by digest
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          labels: ${{ needs.prepare.outputs.labels }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+
+  publish-manifest:
+    needs:
+      - prepare
+      - build-amd64
+      - build-arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-arch manifests
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          TAGS: ${{ needs.prepare.outputs.tags }}
+          DIGEST_AMD64: ${{ needs.build-amd64.outputs.digest }}
+          DIGEST_ARM64: ${{ needs.build-arm64.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for tag in ${TAGS}; do
+            docker buildx imagetools create \
+              -t "${tag}" \
+              "${IMAGE}@${DIGEST_AMD64}" \
+              "${IMAGE}@${DIGEST_ARM64}"
+          done
