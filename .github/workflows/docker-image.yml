@@ -78,11 +78,15 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/amd64
+          # 关键：注入环境变量，强制 Node.js 优先使用 IPv4，解决 API 无法连接问题
+          build-args: |
+            NODE_OPTIONS=--dns-result-order=ipv4first
           labels: ${{ needs.prepare.outputs.labels }}
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
 
   build-arm64:
     needs: prepare
+    # 注意：如果你的仓库是私有的且没有开通 ARM Runner，请将此处改为 ubuntu-latest 并配置 QEMU
     runs-on: ubuntu-24.04-arm
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -111,6 +115,8 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/arm64
+          build-args: |
+            NODE_OPTIONS=--dns-result-order=ipv4first
           labels: ${{ needs.prepare.outputs.labels }}
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
 
