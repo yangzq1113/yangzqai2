@@ -1,25 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Based on Luker project Docker Publish workflow
+# Adapted for forked repositories from Luker (https://github.com/funnycups/Luker)
 
-name: Docker Publish
+# This workflow builds and publishes Docker images to GitHub Container Registry (ghcr.io).
+# It supports multi-arch builds (amd64 and arm64).
+
+name: Create Docker Image (Release and Staging)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - '**'
     tags:
       - '*'
-  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
 env:
+  # Uses the current repository name and ghcr.io registry
+  REPO: ${{ github.repository }}
   REGISTRY: ghcr.io
 
 jobs:
   prepare:
+    # Removed the original 'if: github.repository == ...' check to allow building in forks
     runs-on: ubuntu-latest
     outputs:
       image: ${{ steps.image.outputs.image }}
@@ -28,9 +34,8 @@ jobs:
     steps:
       - name: Set lowercase repo name
         id: image
-        run: |
-          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          echo "image=${{ env.REGISTRY }}/${REPO_LOWER}" >> "${GITHUB_OUTPUT}"
+        # Converts repo name to lowercase for Docker registry compatibility
+        run: echo "image=${{ env.REGISTRY }}/${REPO,,}" >> "${GITHUB_OUTPUT}"
 
       - name: Extract metadata (tags, labels) for the image
         uses: docker/metadata-action@v5.5.1
@@ -38,15 +43,16 @@ jobs:
         with:
           images: ${{ steps.image.outputs.image }}
           tags: |
+            # Tag as 'dev' for non-tag pushes
             type=raw,value=dev,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
+            # Short commit SHA tag
             type=sha,format=short
+            # Actual tag name (e.g., v1.0.0)
             type=ref,event=tag
+            # Tag as 'latest' only for stable releases (no '-' in tag name)
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
+            # Manual trigger tag
             type=raw,value=manual,enable=${{ github.event_name == 'workflow_dispatch' }}
-          labels: |
-            org.opencontainers.image.title=Luker
-            org.opencontainers.image.description=LLM Frontend for Power Users
-            org.opencontainers.image.source=${{ github.event.repository.html_url }}
 
   build-amd64:
     needs: prepare
@@ -55,11 +61,7 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-          submodules: recursive
+        uses: actions/checkout@v4.1.2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -78,25 +80,20 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          # 关键：注入环境变量，强制 Node.js 优先使用 IPv4，解决 API 无法连接问题
-          build-args: |
-            NODE_OPTIONS=--dns-result-order=ipv4first
           labels: ${{ needs.prepare.outputs.labels }}
+          # Push by digest first for multi-arch manifest creation later
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
 
   build-arm64:
     needs: prepare
-    # 注意：如果你的仓库是私有的且没有开通 ARM Runner，请将此处改为 ubuntu-latest 并配置 QEMU
+    # Note: ubuntu-24.04-arm is a GitHub-hosted runner for ARM64. 
+    # It is available for public repositories. If your repository is private, you might need to use QEMU.
     runs-on: ubuntu-24.04-arm
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-          submodules: recursive
+        uses: actions/checkout@v4.1.2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -115,8 +112,6 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/arm64
-          build-args: |
-            NODE_OPTIONS=--dns-result-order=ipv4first
           labels: ${{ needs.prepare.outputs.labels }}
           outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
 
